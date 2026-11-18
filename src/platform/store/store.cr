@@ -206,6 +206,13 @@ module Sebas
           @db.query_one?("SELECT value FROM memos WHERE key = ?", key, as: String)
         end
 
+        # 状态机值更新（intent→done/failed）：单写者内覆盖，不影响决策级 memo 的 FWW 语义
+        def memo_replace(key : String, value : String) : Nil
+          sql = "INSERT INTO memos (key, value, created_at) VALUES (?, ?, ?) " \
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+          @db.exec(sql, key, value, now)
+        end
+
         # ---- 会话转录：SQLite 权威 + JSONL 人可读归档双写（§6.1，A4 升级）----
 
         def append_transcript(session_key : String, role : String, content : String) : Nil
