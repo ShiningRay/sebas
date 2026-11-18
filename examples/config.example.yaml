@@ -1,0 +1,41 @@
+# Sebas 配置示例（design.md §3.4 配置树）
+# M0 单账号 MVP：一个 email 账号 + 一个 agent。
+# 敏感值经 ${ENV} 展开；M1-WP7 起改 keyring 引用（*_ref: keyring:...）。
+channels:
+  email:
+    accounts:
+      - id: personal-mailbox
+        platform: imap.example.com    # IMAP/SMTP 主机（gmail-api 路线时为 gmail.com）
+        receive: imap-idle            # imap-idle | gmail-api
+        smtp:
+          port: 465
+          tls: implicit               # implicit | starttls | none
+        credentials:                  # M0 明文过渡（keyring M1-WP7）
+          user: ${MAIL_USER}
+          password: ${MAIL_PASSWORD}
+
+agents:
+  main:
+    model: deepseek/chat              # <provider>/<model>
+    persona_file: agents/main/SOUL.md
+    api_key: ${LLM_API_KEY}           # M0 明文过渡（keyring M1-WP7）
+    memory:
+      window: 50
+    tools:
+      allow: ["*"]
+
+bindings:
+  - channel: email
+    account: personal-mailbox
+    peer: "*"
+    agent: main
+
+gateway:
+  http:
+    bind: 127.0.0.1
+    port: 18790
+    auth: token                       # token | password | tailscale
+  ipc:
+    mode: auto                        # auto | unix | tcp | off
+    port: 18791
+  data_dir: data
