@@ -33,6 +33,7 @@ module Sebas
         getter rules : Array(Routing::BindingRule)
         getter supervisor : Supervisor::Supervisor
         getter reload_manager : Config::ReloadManager?
+        getter http : Admin::HTTP::Server
 
         def initialize(@config : Config::Config, data_dir : String | Path, config_path : String = "",
                        &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
@@ -51,6 +52,11 @@ module Sebas
           @ipc = Admin::IPC::Server.new(@store, @data_dir,
             host: @config.gateway.http.try(&.bind) || "127.0.0.1",
             port: @config.gateway.ipc.port,
+            &->trigger_reload)
+          http_cfg = @config.gateway.http
+          @http = Admin::HTTP::Server.new(@channels, @ipc.tap,
+            http_cfg.try(&.bind) || "127.0.0.1", http_cfg.try(&.port) || 18790,
+            http_cfg.try(&.auth) || "token", ENV["SEBAS_HTTP_TOKEN"]?,
             &->trigger_reload)
           @store.recover!
           spawn_adapters
@@ -81,6 +87,7 @@ module Sebas
 
         def run : Nil
           @ipc.listen
+          @http.listen
           @supervisor.start_all
           consume_bus
           if @config_path.empty?
@@ -132,6 +139,7 @@ module Sebas
 
         def shutdown : Nil
           @reload_manager.try(&.stop_watching)
+          @http.close
           @supervisor.stop_all
           @pool.shutdown
           @bus.close
