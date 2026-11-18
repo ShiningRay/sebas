@@ -1,0 +1,8 @@
+/lib/
+/bin/
+/.shards/
+*.dwarf
+*.o
+sebas
+sebas.exe
+coverage/
