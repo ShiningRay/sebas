@@ -1,11 +1,12 @@
 require "json"
 require "../../routing/binding"
 require "../config/loader"
+require "../config/reload"
+require "../supervisor/supervisor"
 require "../bus/bus"
 require "../store/store"
 require "../../agents/pool"
 require "../../channels/registry"
-require "../../channels/email/adapter"
 require "../../providers/providers"
 require "../../providers/pool"
 require "../../providers/fake_provider"
@@ -30,24 +31,44 @@ module Sebas
         getter providers : Providers::Pool
         getter ipc : Admin::IPC::Server
         getter rules : Array(Routing::BindingRule)
+        getter supervisor : Supervisor::Supervisor
+        getter reload_manager : Config::ReloadManager?
 
-        def initialize(@config : Config::Config, data_dir : String | Path,
+        def initialize(@config : Config::Config, data_dir : String | Path, config_path : String = "",
                        &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
+          @config_path = config_path
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
           @bus = Bus::Bus.new
           @channels = Channels::Registry.new
           @providers = Providers::Pool.new
           @executor = Tools::Executor.new(Tools.default_registry(@channels), @channels)
-          @rules = config.bindings.map do |b|
-            Routing::BindingRule.new(b.channel, b.account || "*", b.peer || "*", b.agent)
-          end
+          @rules = build_rules(config)
           @pool = build_pool
+          Config::CURRENT.set(config)
+          @supervisor = Supervisor::Supervisor.new(@bus)
+          @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
           @ipc = Admin::IPC::Server.new(@store, @data_dir,
             host: @config.gateway.http.try(&.bind) || "127.0.0.1",
-            port: @config.gateway.ipc.port)
+            port: @config.gateway.ipc.port,
+            &->trigger_reload)
           @store.recover!
           spawn_adapters
+        end
+
+        def reload_result_payload(result : Config::ReloadResult) : Hash(String, JSON::Any)
+          {
+            "accepted"         => JSON::Any.new(result.accepted),
+            "errors"           => JSON::Any.new(result.errors.map { |e| JSON::Any.new(e) }),
+            "restart_required" => JSON::Any.new(result.restart_required.map { |e| JSON::Any.new(e) }),
+          }
+        end
+
+        def trigger_reload : Hash(String, JSON::Any)
+          manager = @reload_manager
+          return {"accepted" => JSON::Any.new(false), "errors" => JSON::Any.new([JSON::Any.new("no config path; reload unavailable")]), "restart_required" => JSON::Any.new([] of JSON::Any)} if manager.nil?
+          result = manager.reload_from_file
+          reload_result_payload(result)
         end
 
         def self.default_provider(agent : Config::AgentConfig, api_key : String?) : Providers::Provider
@@ -60,13 +81,58 @@ module Sebas
 
         def run : Nil
           @ipc.listen
-          @channels.start_all
+          @supervisor.start_all
           consume_bus
-          Log.info { "gateway running (data_dir=#{@data_dir})" }
+          if @config_path.empty?
+            Log.info { "gateway running (data_dir=#{@data_dir}; config reload disabled: no config path)" }
+          else
+            manager = @reload_manager
+            return unless manager
+            manager.start_watching
+            Log.info { "gateway running (data_dir=#{@data_dir})" }
+          end
+        end
+
+        # 组件重应用矩阵（§11.3）：数据类热换；账号增删=监督体启停；端口类标 restart
+        private def apply_config(new_config : Config::Config) : Array(String)
+          restart_required = [] of String
+
+          old_http = @config.gateway.http
+          new_http = new_config.gateway.http
+          if old_http && new_http && (old_http.port != new_http.port || old_http.bind != new_http.bind)
+            restart_required << "gateway.http.port/bind changed: sockets are process resources, restart required"
+          end
+
+          # 路由 binding（数据类：换引用即生效）
+          @rules = build_rules(new_config)
+
+          # provider key 热换（下个 turn 生效）
+          new_config.agents.each do |name, agent|
+            @providers.replace(name, @provider_factory.call(agent, nil))
+          end
+
+          # 账号增删 = 监督体启停（email 渠道；wecom/lark M1-WP4/5 合流）
+          old_accounts = @config.channels.email.try(&.accounts.map(&.id)) || [] of String
+          new_accounts = new_config.channels.email.try(&.accounts.map(&.id)) || [] of String
+          (old_accounts - new_accounts).each do |removed|
+            @channels.remove("email", removed)
+            @supervisor.remove_account(removed)
+          end
+          (new_accounts - old_accounts).each do |added|
+            account = new_config.channels.email.try(&.accounts.find(&.id.==(added)))
+            next unless account
+            adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
+            @channels.register(adapter)
+            @supervisor.register(adapter)
+          end
+
+          @config = new_config
+          restart_required
         end
 
         def shutdown : Nil
-          @channels.stop_all
+          @reload_manager.try(&.stop_watching)
+          @supervisor.stop_all
           @pool.shutdown
           @bus.close
           @ipc.close
@@ -86,7 +152,7 @@ module Sebas
             @store.finish_intent(message.event_id, "failed")
             return
           end
-          agent = @config.agents[agent_name]?
+          agent = Config::CURRENT.get.agents[agent_name]?
           unless agent
             Log.error { "audit: binding targets unknown agent #{agent_name}" }
             @store.finish_intent(message.event_id, "failed")
@@ -149,10 +215,18 @@ module Sebas
         private def spawn_adapters : Nil
           if email = @config.channels.email
             email.accounts.each do |account|
-              @channels.register(Channels::Email::EmailChannelAdapter.new(account, @bus))
+              adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
+              @channels.register(adapter)
+              @supervisor.register(adapter)
             end
           end
-          # wecom/lark 渠道 M1 落位（§13 channels/）
+          # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
+        end
+
+        private def build_rules(config : Config::Config) : Array(Routing::BindingRule)
+          config.bindings.map do |b|
+            Routing::BindingRule.new(b.channel, b.account || "*", b.peer || "*", b.agent)
+          end
         end
 
         private def build_pool : Agents::Pool

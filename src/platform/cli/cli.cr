@@ -37,7 +37,7 @@ module Sebas
         end
         config = Config::Loader.load(config_path)
         data_dir = Path[Path[config_path].parent, config.gateway.data_dir]
-        gateway = Gateway.new(config, data_dir) do |agent, _api_key|
+        gateway = Gateway.new(config, data_dir, config_path) do |agent, _api_key|
           Gateway.default_provider(agent, nil)
         end
         gateway.run
@@ -59,7 +59,7 @@ module Sebas
         store.checkpoint(task.id, 1)
         puts "READY"
         STDOUT.flush
-        sleep 120 # 等待父进程强杀
+        sleep 120.seconds # 等待父进程强杀
         store.close
         0
       end

@@ -24,7 +24,7 @@ module Sebas
       store = ipc_store
       store.append_transcript("agent:main:acc1:email:p1", "user", "hello there")
       data_dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
-      server = Admin::IPC::Server.new(store, data_dir, port: 0)
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
       server.listen
       begin
         client = Admin::TUI::Client.new(server.discovery_path)
@@ -61,7 +61,7 @@ module Sebas
     it "rejects oversized frames (8MiB 上限)" do
       store = ipc_store
       data_dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
-      server = Admin::IPC::Server.new(store, data_dir, port: 0)
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
       server.listen
       begin
         raw = TCPSocket.new("127.0.0.1", server.port)
@@ -91,7 +91,7 @@ module Sebas
     it "fans bus events out to subscribed TUI clients (会话流实时观察)" do
       store = ipc_store
       data_dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
-      server = Admin::IPC::Server.new(store, data_dir, port: 0)
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
       server.listen
       begin
         client = Admin::TUI::Client.new(server.discovery_path)

@@ -18,6 +18,10 @@ module Sebas
         getter agents : Hash(String, AgentConfig) = {} of String => AgentConfig
         getter bindings : Array(BindingConfig) = [] of BindingConfig
         getter gateway : GatewayConfig = GatewayConfig.new
+
+        # 热更新整根替换需要可空构造（CURRENT 初始占位）
+        def initialize
+        end
       end
 
       class Channels

@@ -10,6 +10,10 @@ module Sebas
         @mutex.synchronize { @adapters[{adapter.channel_type, adapter.account_id}] = adapter }
       end
 
+      def remove(channel_type : String, account_id : String) : Nil
+        @mutex.synchronize { @adapters.delete({channel_type, account_id}) }
+      end
+
       def find(channel_type : String, account_id : String) : ChannelAdapter?
         @mutex.synchronize { @adapters[{channel_type, account_id}]? }
       end

@@ -70,7 +70,8 @@ module Sebas
 
         def initialize(@store : Platform::Store::Store, data_dir : Path,
                        @host : String = "127.0.0.1", @port : Int32 = DEFAULT_PORT,
-                       @token : String = Random::Secure.hex(16))
+                       @token : String = Random::Secure.hex(16),
+                       &@on_reload : -> Hash(String, JSON::Any))
           discovery_dir = data_dir / "ipc"
           Dir.mkdir_p(discovery_dir)
           @discovery_path = discovery_dir / "discovery.json"
@@ -202,7 +203,10 @@ module Sebas
           when "events.subscribe"
             io.puts(ok_response(frame.id, {"subscribed" => JSON::Any.new(true)}))
           when "config.status"
-            io.puts(ok_response(frame.id, {"reload" => JSON::Any.new("hot reload lands in M1-WP8")}))
+            io.puts(ok_response(frame.id, {"reload" => JSON::Any.new("config.reload command available")}))
+          when "config.reload"
+            result = @on_reload.call
+            io.puts(ok_response(frame.id, result))
           else
             io.puts(error_response(frame.id, "unknown command: #{frame.type}"))
           end

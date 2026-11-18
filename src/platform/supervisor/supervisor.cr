@@ -44,6 +44,18 @@ module Sebas
           end
         end
 
+        # 账号删除：drain 停止（§11.3 账号删除行）
+        def remove_account(account_id : String) : Nil
+          target = nil
+          @mutex.synchronize do
+            target = @adapters.find(&.account_id.==(account_id))
+            @adapters.reject!(&.account_id.==(account_id))
+            @health.delete(account_id)
+            @last_health.delete(account_id)
+          end
+          target.try(&.stop)
+        end
+
         def parked?(account_id : String) : Bool
           @mutex.synchronize { @parked.includes?(account_id) }
         end
