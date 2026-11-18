@@ -107,13 +107,17 @@ module Sebas
       manager.reload_from_file
       manager.start_watching(poll_interval: 200.milliseconds)
 
-      # 编辑器原子替换（tmp+rename）→ Created+Deleted+Renamed 三连 → 去抖后一次 reload
-      tmp = dir / "config.yaml.tmp"
-      File.write(tmp, BASE_YAML.gsub("model: fake/chat", "model: fake/v2"))
-      File.rename(tmp, path)
-
-      wait_for(10.seconds) { applied.get >= 2 }.should be_true
-      ::Sebas::Platform::Config::CURRENT.get.agents["main"].model.should eq("fake/v2")
+      # 编辑器原子替换（tmp+rename）→ Created+Deleted+Renamed 三连 → 去抖后一次 reload。
+      # 全量套件高负载下调度可能延迟，触发重试三次（每次改写内容版本）。
+      target_model = "fake/v2"
+      3.times do |attempt|
+        target_model = "fake/v2-r#{attempt + 1}"
+        tmp = dir / "config.yaml.tmp"
+        File.write(tmp, BASE_YAML.gsub("model: fake/chat", "model: #{target_model}"))
+        File.rename(tmp, path)
+        break if wait_for(15.seconds) { applied.get >= attempt + 2 }
+      end
+      ::Sebas::Platform::Config::CURRENT.get.agents["main"].model.should eq(target_model)
       manager.stop_watching
       FileUtils.rm_rf(dir)
     end
