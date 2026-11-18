@@ -1,0 +1,24 @@
+name: sebas
+version: 0.1.0
+
+authors:
+  - ShiningRay
+
+crystal: ">= 1.10.0"
+
+license: MIT
+
+description: |
+  Crystal multi-account orchestratable personal agent platform.
+  Binds N accounts per channel (email / WeCom / Lark), orchestrates
+  trigger→condition→action workflows with durable tasks, hot-reloads
+  configuration without restarts, and embeds mruby plugins.
+
+targets:
+  sebas:
+    main: src/main.cr
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
+    branch: master
