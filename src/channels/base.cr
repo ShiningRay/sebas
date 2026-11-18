@@ -26,6 +26,11 @@ module Sebas
       def initialize(@channel_type : String, @account_id : String)
       end
 
+      # 凭据指纹（重复凭据检测 park 口径，§5.1/§10.1）：默认 account_id
+      def credential_fingerprint : String
+        account_id
+      end
+
       # 启动收信循环（fiber-per-account；实现须幂等防御重复 start）
       abstract def start : Nil
 
