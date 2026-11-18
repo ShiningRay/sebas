@@ -6,7 +6,7 @@ BIN = bin/sebas
 export TMP := $(shell cygpath -w /tmp 2>/dev/null || echo /tmp)
 export TEMP := $(TMP)
 
-.PHONY: build spec lint release format clean
+.PHONY: build spec lint release format drill clean
 
 build:
 	@mkdir -p $(dir $(BIN))
@@ -21,6 +21,10 @@ lint:
 release:
 	@mkdir -p $(dir $(BIN))
 	crystal build --release --progress -o $(BIN) src/main.cr
+
+# M0-WP8 强杀演练：构建 release 后跑门禁演练 spec（含 taskkill /F 口径）
+drill: release
+	crystal spec spec/platform/cli/gateway_spec.cr
 
 format:
 	crystal tool format

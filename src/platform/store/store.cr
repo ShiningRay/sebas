@@ -109,6 +109,19 @@ module Sebas
           rows > 0
         end
 
+        # 启动恢复：未完成 intents（pending/dispatched）→ 重新投递队列（M0-WP8 强杀续跑）
+        record IntentRow, id : String, kind : String, payload : String, status : String
+
+        def unfinished_intents : Array(IntentRow)
+          rows = [] of IntentRow
+          @db.query("SELECT id, kind, payload, status FROM intents WHERE status IN ('pending', 'dispatched') ORDER BY created_at") do |result_set|
+            result_set.each do
+              rows << IntentRow.new(result_set.read(String), result_set.read(String), result_set.read(String), result_set.read(String))
+            end
+          end
+          rows
+        end
+
         def intent_status(request_id : String) : String?
           @db.query_one?("SELECT status FROM intents WHERE id = ?", request_id, as: String)
         end

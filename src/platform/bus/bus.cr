@@ -1,5 +1,7 @@
 # 事件总线（M0-WP5）：有界 Channel，事件显式携带账号上下文（design.md §4.1，B3 反向断言：
 # 无全局单 Loop；autobot B4 教训——事件从 day one 带账号维度）
+require "json"
+
 module Sebas
   module Platform
     module Bus
@@ -9,14 +11,18 @@ module Sebas
         channel_type : String,
         account_id : String,
         peer : String,
-        content : String
+        content : String do
+        include ::JSON::Serializable
+      end
 
       # 账号生命周期事件（连接断开/恢复、token 失效等，§7.1 触发源之一；M1 起填充）
       record AccountEvent,
         event_id : String,
         channel_type : String,
         account_id : String,
-        kind : String
+        kind : String do
+        include ::JSON::Serializable
+      end
 
       # 事件联合（autobot bus/events.cr:122 先例：union alias + case/in 分派）
       alias Event = InboundMessage | AccountEvent
