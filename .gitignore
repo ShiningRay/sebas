@@ -7,3 +7,5 @@ sebas
 sebas.exe
 coverage/
 tmp-drill-*/
+/.crystal/
+probe-crash.db*
