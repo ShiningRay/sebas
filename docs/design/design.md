@@ -767,8 +767,8 @@ src/plugins/               # 可选脚本层（§12）：mrb_state 池（每插�
 4. **企微回调明文布局** `random(16B)+msg_len(4B)+msg+receiveid`：官方描述 + 多第三方实现一致，官方原理小节未逐字核对（渠道笔记未验证 #2）。
 5. **飞书单个 API → 频控等级映射**：等级表已有，每个接口属哪级需控制台查询（渠道笔记未验证 #6）。
 6. **Crystal 企微加解密自实现**：无官方库，AES-CBC/SHA1/Base64 需对照官方测试向量做对称测试（设计层面可控，实现未验证）。
-7. **`naqvis/file_watcher` Windows 实测**：ReadDirectoryChangesW 路径未在本仓库冒烟（纯文档查证）；接入时先写 ~10 行 demo 验证编辑器原子写（rename 替换）事件语义（热更新笔记 §9.3）。
-8. **`Atomic(Config)` snippet 编译冒烟**：`Atomic#swap` 详注与 reference type 的矛盾以方法可用清单为准，但 `Atomic(Config).new` 未跑编译验证——实现前 5 分钟冒烟（热更新笔记 §9.4）。
+7. **`naqvis/file_watcher` Windows 实测**：**已冒烟验证（2026-11-18，[review/smoke-ex-w1-03.md](review/smoke-ex-w1-03.md)）**——watch 单文件路径零事件，须 watch 父目录+按路径过滤；编辑器原子替换（tmp+rename）产生 `Created(tmp)+Deleted(target)+Renamed(target)` 三连，`Deleted` 不得解释为配置被删，去抖窗口内按路径聚合判定；mtime 轮询兜底保留（热更新笔记 §9.3）。
+8. **`Atomic(Config)` snippet 编译冒烟**：**已冒烟验证（2026-11-18，[review/smoke-ex-w1-03.md](review/smoke-ex-w1-03.md)）**——reference type 全部方法（new/get/set/swap/compare_and_set）编译并运行正确，`Atomic#swap` 详注歧义消项；整根替换路线成立（热更新笔记 §9.4）。
 9. **企微/飞书换 secret 后旧 access_token 强制失效行为**：未验证；热换渠道凭据若依赖「主动作废」需实测，保守做法=等 TTL 自然过期（≤2h）或维护失效标记（热更新笔记 §9.7）。
 10. **mrb.cr 84/0 为本地未提交状态**（task-4 修复链）；issue #1 修复的提交/CI 状态未复核；mruby `$SAFE` 现状未逐字核对（不影响沙箱结论，§12.3）（热更新笔记 §9.5/§9.6）。
 11. **Hermes SIGUSR2 reload（#48918/#54941）落地进度**：仅核到 2026-09 PR #66777 提及「在途」，当前是否合并未追（热更新笔记 §9.8）。

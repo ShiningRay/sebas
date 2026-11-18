@@ -392,8 +392,8 @@ M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP6 另依赖 M1-WP8）
 
 | 条目 | 处置 | 落点 |
 |---|---|---|
-| 15.1.7 file_watcher Windows 实测 | **前置冒烟**：~10 行 demo 验证 ReadDirectoryChangesW 事件语义（编辑器原子写 rename 替换） | EX-W1-03（W1 内完成，结果回写 design.md） |
-| 15.1.8 `Atomic(Config)` 编译冒烟 | **前置冒烟**：5 分钟级编译验证，消 `Atomic#swap` 详注歧义 | EX-W1-03 |
+| 15.1.7 file_watcher Windows 实测 | ✅ **已完成**（2026-11-18）：watch 须对父目录+路径过滤；原子替换为 Created+Deleted+Renamed 三连，去抖聚合；[smoke-ex-w1-03.md](review/smoke-ex-w1-03.md) | EX-W1-03（结果回写 design.md §15.1.7） |
+| 15.1.8 `Atomic(Config)` 编译冒烟 | ✅ **已完成**（2026-11-18）：reference type 全方法可用，详注歧义消项；[smoke-ex-w1-03.md](review/smoke-ex-w1-03.md) | EX-W1-03（结果回写 design.md §15.1.8） |
 | 15.1.6 企微 crypto 官方测试向量 | WP 内验收自带（向量对称测试即消项） | M1-WP4 |
 | 15.1.1 企微 AIBot API 未逐页核对 | **开工首日核对** 0.5–1 pd+demo；不符则回调备选升级（估时内含） | M1-WP4 |
 | 15.1.9 换 secret 旧 token 失效行为 | 保守做法（TTL 自然过期+失效标记）不依赖该行为，不阻塞 | M1-WP3 |
