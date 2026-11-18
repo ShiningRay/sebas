@@ -1,4 +1,5 @@
 require "json"
+require "../../routing/binding"
 require "../config/loader"
 require "../bus/bus"
 require "../store/store"
@@ -28,6 +29,7 @@ module Sebas
         getter channels : Channels::Registry
         getter providers : Providers::Pool
         getter ipc : Admin::IPC::Server
+        getter rules : Array(Routing::BindingRule)
 
         def initialize(@config : Config::Config, data_dir : String | Path,
                        &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
@@ -37,6 +39,9 @@ module Sebas
           @channels = Channels::Registry.new
           @providers = Providers::Pool.new
           @executor = Tools::Executor.new(Tools.default_registry(@channels), @channels)
+          @rules = config.bindings.map do |b|
+            Routing::BindingRule.new(b.channel, b.account || "*", b.peer || "*", b.agent)
+          end
           @pool = build_pool
           @ipc = Admin::IPC::Server.new(@store, @data_dir,
             host: @config.gateway.http.try(&.bind) || "127.0.0.1",
@@ -74,12 +79,24 @@ module Sebas
           return unless replay || @store.record_intent(message.event_id, "message", message.to_json)
           @store.finish_intent(message.event_id, "dispatched")
 
-          agent_name, agent = first_agent
+          # Binding 路由（M1-WP1）：most-specific 解析；无匹配 fail-closed 丢弃+审计
+          agent_name = Routing::Table.resolve(@rules, message.channel_type, message.account_id, message.peer)
+          unless agent_name
+            Log.warn { "audit: inbound dropped without matching binding (channel=#{message.channel_type} account=#{message.account_id} peer=#{message.peer} event=#{message.event_id})" }
+            @store.finish_intent(message.event_id, "failed")
+            return
+          end
+          agent = @config.agents[agent_name]?
+          unless agent
+            Log.error { "audit: binding targets unknown agent #{agent_name}" }
+            @store.finish_intent(message.event_id, "failed")
+            return
+          end
           session_key = Agents.session_key(agent_name, message.account_id, message.channel_type, message.peer)
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
-          reply = agent_turn(agent, session_key)
+          reply = agent_turn(agent_name, agent, session_key)
           @store.checkpoint(task.id, 1) # provider 完成 checkpoint（重放不再调 provider）
 
           send_args = JSON.parse({channel: message.channel_type, peer: message.peer, content: reply}.to_json)
@@ -116,23 +133,17 @@ module Sebas
           end
         end
 
-        private def agent_turn(agent : Config::AgentConfig, session_key : String) : String
+        private def agent_turn(agent_name : String, agent : Config::AgentConfig, session_key : String) : String
           # 每 turn 取配置快照纪律（§11.2④）：M0 单配置整根即快照；M1 起 Atomic(Config).get
           history = @store.transcripts(session_key).last(agent.memory.try(&.window) || 50).map do |row|
             role = row.role == "agent" ? "assistant" : row.role
             Providers::Message.new(role, row.content)
           end
-          provider = @providers.for_agent("main") { @provider_factory.call(agent, nil) }
+          provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
           completion = provider.complete(history)
           return completion.text if completion.ok?
           Log.error { "provider error: #{completion.error}" }
           "(provider error: #{completion.error})"
-        end
-
-        private def first_agent : Tuple(String, Config::AgentConfig)
-          entry = @config.agents.first?
-          raise ::Exception.new("no agent configured") unless entry
-          entry
         end
 
         private def spawn_adapters : Nil

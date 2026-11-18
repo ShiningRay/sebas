@@ -34,6 +34,8 @@ def gw_test_config : ::Sebas::Platform::Config::Config
             credentials: { user: me@example.com, password: p }
     agents:
       main: { model: fake/chat }
+    bindings:
+      - { channel: email, account: test-acc, peer: "*", agent: main }
     YAML
   ::Sebas::Platform::Config::Loader.from_content(yaml)
 end
@@ -143,6 +145,22 @@ module Sebas
       store2.intent_status("evt-crash-1").should eq("done")
       store2.close
       smtp.close
+    end
+
+    it "drops inbound without matching binding and audits it (M1-WP1 fail-closed)" do
+      dir = gateway_tmp_dir("failclosed")
+      config = gw_test_config
+      gateway = Platform::CLI::Gateway.new(config, dir) do |agent, _key|
+        Providers::FakeProvider.new(agent.model, ["never"])
+      end
+      gateway.process_message(Platform::Bus::InboundMessage.new(
+        "evt-nobind-1", "email", "unknown-acc", "x@y.z", "hi"
+      ))
+      store = Platform::Store::Store.new(Path[dir, "sebas.db"])
+      store.intent_status("evt-nobind-1").should eq("failed") # 丢弃并留审计
+      store.transcripts("agent:main:unknown-acc:email:x@y.z").should be_empty
+      store.close
+      gateway.shutdown
     end
 
     it "survives a real process kill and resumes from checkpoint (taskkill /F 口径)" do
