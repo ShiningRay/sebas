@@ -15,6 +15,12 @@ description: |
   configuration without restarts, and embeds mruby plugins.
 
 dependencies:
+  db:
+    github: crystal-lang/crystal-db
+    version: ~> 0.13
+  sqlite3:
+    github: crystal-lang/crystal-sqlite3
+    version: ~> 0.21
   file_watcher:
     github: naqvis/file_watcher
     branch: main

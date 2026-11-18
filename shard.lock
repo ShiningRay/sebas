@@ -4,7 +4,15 @@ shards:
     git: https://github.com/crystal-ameba/ameba.git
     version: 1.7.1-dev+git.commit.3a76b04b1d25b7261331972135e8b3edf4e1ba5b
 
+  db:
+    git: https://github.com/crystal-lang/crystal-db.git
+    version: 0.15.0
+
   file_watcher:
     git: https://github.com/naqvis/file_watcher.git
     version: 0.1.0+git.commit.35cb80931798b36c4868b241cef0e8d5105b0175
+
+  sqlite3:
+    git: https://github.com/crystal-lang/crystal-sqlite3.git
+    version: 0.24.0
 
