@@ -225,6 +225,15 @@ module Sebas
           end
         end
 
+        # 管理面：会话键列表（sessions.list）
+        def session_keys : Array(String)
+          keys = [] of String
+          @db.query("SELECT DISTINCT session_key FROM transcripts ORDER BY session_key") do |result_set|
+            result_set.each { keys << result_set.read(String) }
+          end
+          keys
+        end
+
         def transcripts(session_key : String) : Array(TranscriptRow)
           rows = [] of TranscriptRow
           @db.query(
