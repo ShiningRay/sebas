@@ -131,7 +131,7 @@ module Sebas
     end
 
     it "streams SSE events to subscribed clients" do
-      server, channels, bus = started_server("tok-1")
+      server, _channels, bus = started_server("tok-1")
       begin
         # 原始 socket 读 SSE（HTTP::Client body_io 无读超时，避免挂起）
         sock = TCPSocket.new("127.0.0.1", server.port)

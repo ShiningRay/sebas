@@ -30,13 +30,14 @@ module Sebas
             # fail-closed：token 模式未配置令牌 → API 不可用（回调面仍可用：回调走各平台验签）
             Log.warn { "http auth=token but no token configured; API routes disabled (callbacks still served)" }
           end
-          @server = ::HTTP::Server.new do |ctx|
+          server = ::HTTP::Server.new do |ctx|
             route(ctx)
           end
-          address = @server.not_nil!.bind_tcp(@bind, @port)
+          @server = server
+          address = server.bind_tcp(@bind, @port)
           @port = address.port
           spawn(name: "sebas-http") do
-            @server.not_nil!.listen
+            server.listen
           rescue ::Exception
             nil
           end
