@@ -646,6 +646,8 @@ end
 - **每次调用的注入**：runner 校验请求后注入 `$action`、`$config`、`$context`、`$payload`、`$idempotency_key`，执行 `plugin.rb` 完成注册，再按 `$action` 精确调用 handler。`$context` 的授权身份以宿主保存的原始值为准，插件修改全局变量不能扩大权限。
 - **无跨调用 Ruby 状态**：全局变量、block 和对象只在本次进程有效，不能当缓存或持久状态；持久状态经白名单 capability 保存并带 schema 版本。
 - **JSON-like 协议**：只传数字/字符串/布尔/null/数组/哈希，不传 Crystal/Ruby 对象或 Proc。请求包含 `protocol_version`、`request_id`、`plugin_id`、`action`、`context`、`payload`、`config`；stdin 输入请求，stdout 返回结果，stderr 仅受限诊断。采用有长度上限的 NDJSON，校验恰好一个结果、schema、大小和请求 ID；预研 `RESULT` 行不是兼容承诺。
+- **capability 宿主调用（host-call）帧**：handler 执行期间经宿主 driver 访问外部服务的协议按双向帧定义——插件向 stdout 输出 `{"type": "capability_call", "call_id", "capability", "op", "params"}`；宿主校验该 capability 已在 manifest 声明且在授权快照内、`params` 通过校验后执行 driver，并向 stdin 写回 `{"type": "capability_result", "call_id", "ok", "result" | "error"}`。执行期间 stdin 保持打开，宿主不发任何非应答帧。
+- **host-call 语义**：注入脚本的 `capability(capability, op, params)` 是上述协议的同步封装，按 `call_id` 关联请求与应答。`capability_call`/`capability_result` 属传输帧，**不计入「恰好一个结果」**——最终结果必须是最后一行 result 帧，其后再有任何输出（含新 host-call）即拒绝该次调用；单次调用的 host-call 次数、单帧大小与总时长上限取 manifest 声明与宿主全局上限的较小者，超限按结构化错误终止；driver 调用一律以宿主注入的 agent/session scope 执行，插件不能传任意 URL、路径或凭据；host-call 失败以结构化 error 交付插件，插件仍须产出唯一最终结果。
 - **能力声明**：`memory.backend` 等扩展点和 capability 由 manifest 静态声明，宿主按 active 版本及授权快照派发。外部服务由宿主 driver 执行，agent/session scope 由宿主注入。
 - **单入口、无原生依赖**：首版只有 `plugin.rb`，不支持包内 DLL/so、安装脚本、自动依赖下载或其他 `require` 文件。复杂插件的受控多文件、显式初始化和按插件常驻 worker 属于后续演进，见[插件复杂化演进规划](review/plugin-evolution.md)，不改变当前包契约或 M3 验收。
 
@@ -681,7 +683,7 @@ end
 
 ### 12.5 激活与热重载 = 先验后换版本指针
 
-- 安装包先写入独立版本目录并完整校验，通过后才原子切换当前版本指针。每次调用固定 `(plugin_id, version, config_snapshot)`；在途调用用旧快照，新调用用新版本。
+- 安装/升级包先写入独立版本目录并完整校验，通过后保持 staged（升级场景为已安装待激活）；**当前版本指针只在显式 `enable`/`activate` 成功时原子切换**（§12.7 状态机 `absent → staged → installed(disabled) → enabled(active)`），安装或升级本身不切换指针。每次调用固定 `(plugin_id, version, config_snapshot)`；在途调用用旧快照，新调用用新版本。
 - `sebas plugin dev <目录>` 提供开发 watch，修改仅影响新调用；生产不直接监视或加载任意 `plugins/*.rb`。
 - 解析、manifest、注册集合、配置迁移或授权校验失败，旧 active 版本保持不变。
 - 复用 §11「触发—校验—换引用—每 turn 快照」管线，payload 是插件版本指针和 manifest，而非 Config 或 mrb_state。
@@ -708,7 +710,7 @@ remote-memory-1.2.0.sebas-plugin
   "actions": ["remember", "recall", "forget"],
   "capabilities": ["memory_driver.remote"],
   "timeout_ms": 1500,
-  "config_schema": {"kind_weights": {"type": "object", "required": false}}
+  "config_schema": {"kind_weights": {"type": "object", "required": false, "additionalProperties": {"type": "number"}}}
 }
 ```
 
@@ -758,7 +760,7 @@ sebas plugin rollback remote-memory 1.2.0
 ```
 
 1. 按安装流程校验新版本；`api_version` 主版本不兼容拒绝自动升级。新增/提升 capability、扩展点或风险等级必须再次显式批准，未批准不激活。
-2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：备份/检查点→迁移→验证→切换指针；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。
+2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：备份/检查点→**排空在途旧版本调用**→迁移→验证；指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。**不兼容 schema 迁移前必须排空在途旧版本调用**：有界等待旧快照调用结束，超时未结束者按结构化错误终止（副作用已有幂等/memo 保护），迁移期间拒绝或排队新调用；无法排空时须为旧调用提供版本化兼容数据视图，禁止旧版本代码直接访问迁移后的新 schema。
 3. `activate` 原子换指针；当前 turn/调用继续旧快照，新调用用新版本。默认保留当前版及上一已知可回滚版；未被引用的旧版按保留策略清理，不立即删除唯一回滚点。
 4. 降级安装默认拒绝；`rollback` 只允许 registry 中且与当前数据 schema 兼容的已安装版本，否则提示恢复相应备份。升级不重试未完成的副作用动作，幂等键按 §7.3 执行。
 
@@ -792,7 +794,7 @@ sebas plugin uninstall remote-memory --purge
 
 ### 12.11 钩子目录与执行语义（首版闭集）
 
-对照 [OpenClaw typed hooks](https://docs.openclaw.ai/plugins/hooks)、[Hermes plugin hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks) 与 [Pi Durable task hooks](https://earendil.com/posts/pi-durable/#hooks)，首版采用 21 个明确命名的钩子；未列出的专属能力不自动成为 Sebas 契约。同步 `before/transform` 与 `observe` 必须分开实现，不能一律当异步事件处理。
+对照 [OpenClaw typed hooks](https://docs.openclaw.ai/plugins/hooks)、[Hermes plugin hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks) 与 [Pi Durable task hooks](https://earendil.com/posts/pi-durable/#hooks)，首版采用 22 个明确命名的钩子（`gateway.start` 与 `gateway.stop` 是两个独立名称，验收分别覆盖）；未列出的专属能力不自动成为 Sebas 契约。同步 `before/transform` 与 `observe` 必须分开实现，不能一律当异步事件处理。
 
 | 域 | 钩子 | 类型 | 宿主注入点与契约 |
 |---|---|---|---|
@@ -912,7 +914,7 @@ src/plugins/               # 可选脚本层（§12）：manifest/包校验/regi
 | **M0 · MVP** | 单账号闭环：1 个 email 账号 + 1 个 agent；效应三明治持久层；基础工具（发消息/读邮件）；NDJSON TUI 最小面 | 收发消息全链路；**强制杀进程（POSIX kill -9 / Windows taskkill /F）后重启续跑**（对照 Pi 恢复演练建立自动化用例）；发信幂等键生效（重复投递不重发） |
 | **M1 · 多账号完备 + 配置热更新** | 账号数组+binding 路由；企微智能机器人长连接、飞书 WebSocket；TokenProvider；限流桶；keyring 凭据；会话键账号维度；**热更新四正交件**（file_watcher 双通道触发 / 先验后换 / Atomic 换引用 / 组件重应用矩阵，§11） | **同渠道 N 账号并存互不串扰**（两企微账号同 chat_id 不撞会话）；receiveid 校验；token 提前刷新与失效重取；限流桶触发退避；**运行中改配置（加/删账号、改路由、换 provider key）不重启进程生效**；配置写坏（YAML 语法错/binding 引用悬空）保旧运行并报警；改监听端口得到「需重启」明确提示 |
 | **M2 · 编排完备** | 触发→条件→动作 DSL；cron/事件/webhook 统一；审批节点（超时 deny/无人值守 deny/hardline）；lease+回收+预算；append-only 账本 | workflow run 崩溃重放幂等；审批超时 deny 实测；预算熔断；runs 回放与审计 |
-| **M3 · 协作 + 插件脚本层** | 多 agent 定义与路由；message_agent + max_hops 防环；subagent 信号量；**裁剪 mruby 子进程插件层**（能力白名单+watchdog、manifest/JSON-like 协议、`.sebas-plugin` 包与生命周期，§12） | max_hops=4 拦截互发死循环；并发上限生效；subagent 崩溃后找回同一子任务；死循环可终止不卡宿主；崩溃只影响该次调用；开发脚本热重载生效；安装默认禁用、升级保配置/数据可回滚、被引用卸载拒绝、purge 需确认；21 个首版 hook 精确派发、同步 gate deny、观察失败跳过 |
+| **M3 · 协作 + 插件脚本层** | 多 agent 定义与路由；message_agent + max_hops 防环；subagent 信号量；**裁剪 mruby 子进程插件层**（能力白名单+watchdog、manifest/JSON-like 协议、`.sebas-plugin` 包与生命周期，§12） | max_hops=4 拦截互发死循环；并发上限生效；subagent 崩溃后找回同一子任务；死循环可终止不卡宿主；崩溃只影响该次调用；开发脚本热重载生效；安装默认禁用、升级保配置/数据可回滚、被引用卸载拒绝、purge 需确认；22 个首版 hook 精确派发（gateway.start/stop 分别验证）、同步 gate deny、观察失败跳过 |
 
 排期依据：热更新排 **M1**——「加账号」本身就是热更新组件矩阵的一行（账号增删=监督体 fiber 启停，§11.3），M1 核心验收要求账号数组「加了就生效」，四正交件必须同期落地（Hermes 无热重载的教训是「账号体系与重载割裂则用户必烦」）。插件层排 **M3**——可选模块后置：M0-M2 的扩展需求由 SKILL.md（A7）承接（§12.1 分工），主链路先稳。
 
@@ -1000,7 +1002,7 @@ src/plugins/               # 可选脚本层（§12）：manifest/包校验/regi
 | 38 | 插件层=每动作裁剪 mruby 子进程；激活=版本指针先验后换 | 用户确认的子进程修订；[m3-plugin-feasibility.md](review/m3-plugin-feasibility.md)；mrb.cr 84/84 复核 |
 | 39 | gembox/资源约束/能力白名单/watchdog；子进程不代替 OS 资源限制，不靠 $SAFE | 热更新笔记 §8b + 子进程修订 |
 | 40 | manifest + JSON-like 协议 + `.sebas-plugin` 独立分发；不做市场 | 热更新笔记 §8d + 2026-11-19 用户确认的包与生命周期方案 |
-| 41 | 热重载/激活与配置热更新共用触发-校验-换引用管线；配置/代码/数据分离；卸载保留数据；21 个首版 hook 精确派发 | 热更新笔记 §8e.3 + §12.5~§12.11；OpenClaw/Hermes/Pi hook 目录核实 |
+| 41 | 热重载/激活与配置热更新共用触发-校验-换引用管线；配置/代码/数据分离；卸载保留数据；22 个首版 hook 精确派发 | 热更新笔记 §8e.3 + §12.5~§12.11；OpenClaw/Hermes/Pi hook 目录核实 |
 
 ---
 

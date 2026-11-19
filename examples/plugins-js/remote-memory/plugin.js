@@ -70,15 +70,22 @@ switch (action) {
       limit: limit * 3,
     });
 
-    const weights = config.kind_weights || {};
+    // 只接受自身属性上的有限数值权重：缺失/继承属性/非数值用默认 1.0，配置的 0 保留。
+    const weights = config.kind_weights instanceof Object ? config.kind_weights : {};
     const items = response.items
-      .map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        text: item.text,
-        score: item.score * (weights[item.kind] || 1.0),
-        metadata: item.metadata,
-      }))
+      .map((item) => {
+        const hasOwn =
+          Object.prototype.hasOwnProperty.call(weights, item.kind) &&
+          Number.isFinite(weights[item.kind]);
+        const weight = hasOwn ? weights[item.kind] : 1.0;
+        return {
+          id: item.id,
+          kind: item.kind,
+          text: item.text,
+          score: item.score * weight,
+          metadata: item.metadata,
+        };
+      })
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 

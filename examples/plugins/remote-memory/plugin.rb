@@ -80,13 +80,16 @@ when "recall"
   })
 
   # 示例排序：后端相关性 × 用户配置的记忆类型权重。
-  weights = config["kind_weights"] || {}
+  # 只接受显式配置的数值权重：缺失/非数值用默认 1.0，配置的 0 保留（JSON-like 值无 NaN/Infinity）。
+  weights = config["kind_weights"].is_a?(Hash) ? config["kind_weights"] : {}
   items = response["items"].map do |item|
+    raw_weight = weights.key?(item["kind"]) ? weights[item["kind"]] : nil
+    weight = raw_weight.is_a?(Numeric) ? raw_weight : 1.0
     {
       "id" => item["id"],
       "kind" => item["kind"],
       "text" => item["text"],
-      "score" => item["score"] * (weights[item["kind"]] || 1.0),
+      "score" => item["score"] * weight,
       "metadata" => item["metadata"]
     }
   end

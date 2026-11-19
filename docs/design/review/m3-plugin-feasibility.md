@@ -74,6 +74,6 @@ WP4~WP6 产品化恢复后，验收条目（死循环拦截/单次调用故障�
 
 ## 五、对 design.md 的回写结果（2026-11-19 用户确认）
 
-已回写主设计：§12 的「进程内 mrb_state 池」演进为「每动作独立子进程 + 版本指针激活」，原 `register(api)` 不再作为子进程入口；沙箱、watchdog、热重载语义保留。§12.6~§12.10 补齐单文件 `.sebas-plugin` 包、安装目录、启停、升级/回滚、迁移与卸载数据语义；§12.11 另定 21 个首版 hook 与 manifest 声明/精确派发契约。实施承载为 development-plan.md M3-WP4~WP6；本报告的环境 blocker 与降级门禁结论不因设计补全而改变。
+已回写主设计：§12 的「进程内 mrb_state 池」演进为「每动作独立子进程 + 版本指针激活」，原 `register(api)` 不再作为子进程入口；沙箱、watchdog、热重载语义保留。§12.6~§12.10 补齐单文件 `.sebas-plugin` 包、安装目录、启停、升级/回滚、迁移与卸载数据语义；§12.11 另定 22 个首版 hook（gateway.start/stop 分别验证）与 manifest 声明/精确派发契约。实施承载为 development-plan.md M3-WP4~WP6；本报告的环境 blocker 与降级门禁结论不因设计补全而改变。
 
 **后续接口定稿注意**：预研 `RESULT` 行仅作原型；产品协议采用有长度上限的 NDJSON 请求/结果，宿主校验 schema、请求 ID 和 capability，具体以 design.md §12.2 为准。

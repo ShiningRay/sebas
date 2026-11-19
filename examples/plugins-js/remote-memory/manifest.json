@@ -16,7 +16,8 @@
   "config_schema": {
     "kind_weights": {
       "type": "object",
-      "required": false
+      "required": false,
+      "additionalProperties": {"type": "number"}
     }
   }
 }

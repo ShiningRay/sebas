@@ -6,25 +6,19 @@
 
 ## 请求
 
+宿主在每次调用注入 `on_hook(name, handler)` 与 `emit(result)`；脚本以 `on_hook("memory.remember.before", …)` 登记 handler（manifest 已声明该钩子，未登记的名称不会派发，§12.2 精确注册）。`memory.remember.before` 的 payload 结构：
+
 ```javascript
-const request = {
-  protocol_version: 1,
-  request_id: "req-js-02",
-  plugin_id: "memory-guard-js",
-  action: "memory.remember.before",
-  context: { agent_id: "main", session_id: "session-01" },
-  config: {},
-  payload: {
-    entry: {
-      kind: "memory",
-      text: "决定采用 PostgreSQL 保存任务状态",
-      tags: ["database"],
-    },
+const payload = {
+  entry: {
+    kind: "memory",
+    text: "决定采用 PostgreSQL 保存任务状态",
+    tags: ["database"],
   },
 };
 ```
 
-宿主注入 `emit(result)`，脚本返回：
+宿主注入 `emit(result)`，handler 返回三种决策之一：
 
 ```javascript
 { decision: "allow", entry: null, reason: null }

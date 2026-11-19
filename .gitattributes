@@ -1,4 +1,4 @@
-# 本仓文本统一 UTF-8（无 BOM）；显式声明，避免 Windows 工具按本地代码页猜测。
+# 仓库与工作区文本统一 UTF-8（无 BOM）：working-tree-encoding 声明 Git 读写工作区所用的编码；编辑器与工具链须各自配置为 UTF-8，本属性不改变其行为。
 * text=auto working-tree-encoding=UTF-8
 *.cr text eol=lf working-tree-encoding=UTF-8
 *.yml text eol=lf working-tree-encoding=UTF-8

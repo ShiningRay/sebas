@@ -226,7 +226,7 @@
 - 验收：**runs 回放与审计**（任一 run 可按事件序重放展示）（§14 M2 验收第 4 条 [来源: design.md:L751]）。
 - 风险：无实质风险。
 
-### M3 · 协作 + 插件脚本层——估时合计 15–24 pd（包与生命周期 +1.5–2.5 pd；21 个 hook/DSL/初始化 +2.5–3.5 pd）
+### M3 · 协作 + 插件脚本层——估时合计 15–24 pd（包与生命周期 +1.5–2.5 pd；22 个 hook/DSL/初始化 +2.5–3.5 pd）
 
 **M3-WP1 多 agent 定义与路由**（1–1.5 pd）
 - 目标：N 个 agent 大脑可定义可路由。
@@ -261,11 +261,11 @@
 - 风险：本机解释器产物 blocker 未消项时，WP4~WP6 仍按 B.3 降级条款只交预研，不宣称产品化。
 
 **M3-WP5 沙箱、钩子目录与宿主注入点**（4–6 pd）
-- 目标：插件失控不伤宿主；首版 21 个命名 hook 各有真实宿主注入点和可测失败语义。
-- 范围：gembox 裁剪（WP4）、allocf/OS 资源约束、capability 与 scope 双重白名单、watchdog 终止进程树及迟到输出丢弃；实现 design.md §12.11 的消息（3）、Agent（2）、LLM（4）、工具（3）、会话/压缩（4）、记忆（2）、任务（2）、Gateway（start/stop 合 1）共 21 个 hook；gate/transform 同步链、priority、deny fail-closed、observe 隔离、递归/次数/总预算限制、memo/idempotency。
+- 目标：插件失控不伤宿主；首版 22 个命名 hook 各有真实宿主注入点和可测失败语义。
+- 范围：gembox 裁剪（WP4）、allocf/OS 资源约束、capability 与 scope 双重白名单、watchdog 终止进程树及迟到输出丢弃；实现 design.md §12.11 的消息（3）、Agent（2）、LLM（4）、工具（3）、会话/压缩（4）、记忆（2）、任务（2）、Gateway（start/stop 两名分别验证）共 22 个 hook；gate/transform 同步链、priority、deny fail-closed、observe 隔离、递归/次数/总预算限制、memo/idempotency。
 - 交付物：沙箱配置、hook registry/dispatcher 与各注入点 spec、恶意插件样本（死循环/内存爆/未授权 API/递归 hook/非法 transform）。
 - 依赖：M3-WP4；M2-WP2（task 生命周期）、M1-WP9（gateway 管理边界）。会话压缩若实现时仍无生产压缩器，先交付明确的 `SessionCompactor` 接口与协议完整实现，不能用假 hook 声称完成生产压缩。
-- 验收：**插件死循环被 watchdog 超时终止不卡宿主**（§14 M3 验收第 4 条）；未授权 capability 拒绝；21 个 hook 按目录逐一验证精确派发与 payload schema；gate 异常/超时 deny、observe 异常跳过；transform 不越权；task 重放 memo 不重复副作用；资源上限与后代进程清理有实测证据。
+- 验收：**插件死循环被 watchdog 超时终止不卡宿主**（§14 M3 验收第 4 条）；未授权 capability 拒绝；22 个 hook 按目录逐一验证精确派发与 payload schema；gate 异常/超时 deny、observe 异常跳过；transform 不越权；task 重放 memo 不重复副作用；资源上限与后代进程清理有实测证据。
 - 风险：OS 资源限制/进程树终止的 Windows 行为须实测；LLM/工具/消息 hook 可能接触敏感内容，须按 manifest capability 最小化 payload 并脱敏。
 
 **M3-WP6 插件包、热重载与生命周期**（3–5 pd）
@@ -318,7 +318,7 @@ M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP5 另依赖 M2-WP2/M1
 4. docs 同步：实现行为与 design.md/本文档一致，偏差处回写设计文档（CLAUDE.md 规矩 1）。
 5. 风险复核：该期新增风险/未验证项进入 §15.1 口径记录（回写 design.md）。
 
-阶段门禁 Go/No-Go 判据：M0 若强杀恢复不达标 → No-Go 返工 WP3/WP8；M1 若双账号串扰 → No-Go 返工 WP1（不接受「演示绕过」）；M3 若 mrb.cr 复核不可用 → 降级为技术预研 Go（见 M3-WP4 风险）。[推演]
+阶段门禁 Go/No-Go 判据：M0 若强杀恢复不达标 → No-Go 返工 WP3/WP8；M1 若双账号串扰 → No-Go 返工 WP1（不接受「演示绕过」）；M3 若 mrb.cr 复核不可用**或 Windows 新 mruby.exe 链接环境 blocker 未消项**（恢复路径见 [review/m3-plugin-feasibility.md](review/m3-plugin-feasibility.md)）→ WP4~WP6 降级为技术预研 Go，降级证据 = 可行性报告与本机链接失败复现记录，产品化验收延至 blocker 消项后重跑（见 M3-WP4 风险）。[推演]
 
 ---
 

@@ -188,6 +188,6 @@ remote-memory/
 
 ## 七、与当前路线图的衔接
 
-- **M3 不扩容**：WP4~WP6 仍按单文件、每动作子进程和 21 个首版 hook 验收；P1~P3 不作为 M3 门禁的隐含交付物。
+- **M3 不扩容**：WP4~WP6 仍按单文件、每动作子进程和 22 个首版 hook 验收；P1~P3 不作为 M3 门禁的隐含交付物。
 - **产品化 blocker 不变**：mruby.exe 本机 Windows 构建问题仍需按 [m3-plugin-feasibility.md](m3-plugin-feasibility.md) 消项，不能用未来 worker 方案掩盖。
 - **版本承诺**：本文中的目录、manifest 特性名、worker 约束均为预案；实际开启 P1/P3 时须回写 design.md §12、包 schema 与对应 WP 验收，不以本文自动授权实现。

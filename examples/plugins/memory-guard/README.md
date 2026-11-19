@@ -6,22 +6,14 @@
 
 ## 请求与返回
 
-宿主提供 `request` 和 `emit(result)`：
+宿主在每次调用注入 `on_hook(name) { |payload| … }` 与 `emit(result)`；脚本以 `on_hook "memory.remember.before"` 登记 handler（manifest 已声明该钩子，未登记的名称不会派发，§12.2 精确注册）。`memory.remember.before` 的 payload 结构：
 
 ```ruby
-request = {
-  "protocol_version" => 1,
-  "request_id" => "req-02",
-  "plugin_id" => "memory-guard",
-  "action" => "memory.remember.before",
-  "context" => {"agent_id" => "main", "session_id" => "session-01"},
-  "config" => {},
-  "payload" => {
-    "entry" => {
-      "kind" => "memory",
-      "text" => "决定采用 PostgreSQL 保存任务状态",
-      "tags" => ["database"]
-    }
+payload = {
+  "entry" => {
+    "kind" => "memory",
+    "text" => "决定采用 PostgreSQL 保存任务状态",
+    "tags" => ["database"]
   }
 }
 ```
