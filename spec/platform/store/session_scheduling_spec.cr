@@ -147,6 +147,18 @@ describe "会话输入调度持久化（M3-WP1）" do
       store.close
     end
 
+    it "admission 扩展批次 last_seq 序号范围" do
+      store = sched_store("batch-seq-range")
+      batch = sched_batch("sess-a:batch:1", first: 5_i64, last: 5_i64)
+      store.create_session_batch(batch)
+      store.admit_session_input(sched_envelope("evt-7", seq: 7_i64), batch, 0).should be_true
+      store.admit_session_input(sched_envelope("evt-9", sender: "bob", seq: 9_i64), batch, 1).should be_true
+      row = store.session_batch("sess-a:batch:1").should_not be_nil
+      row.first_seq.should eq(5)
+      row.last_seq.should eq(9)
+      store.close
+    end
+
     it "seal 后输入必入下一批：原批不再接受新成员（调用方开新批，唯一约束兜底）" do
       store = sched_store("seal-then-next")
       batch = sched_batch("sess-a:batch:1")

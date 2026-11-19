@@ -477,6 +477,11 @@ module Sebas
               "INSERT INTO session_batch_members (event_id, batch_id, position) VALUES (?, ?, ?)",
               env.event_id, batch.batch_id, position
             )
+            # 扩展批次的持久序号范围（批次记录须反映其实际覆盖的接收序）
+            connection.exec(
+              "UPDATE session_batches SET last_seq = MAX(last_seq, ?) WHERE batch_id = ?",
+              env.received_seq, batch.batch_id
+            )
           end
           inserted
         end
