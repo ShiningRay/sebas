@@ -334,6 +334,10 @@ M1 九包全部落地；§14 M1 七条验收全过（N 账号不串扰 / receive
 
 M2 六包全部落地；§14 M2 四条验收全过（崩溃重放幂等 / 审批超时 deny 注入时钟实测 / 预算熔断留痕 / runs 回放审计），门禁三命令绿；证据见 [review/m2-gate.md](review/m2-gate.md)。期间关键缺陷回写：intents_with_prefix LIKE 参数漏传（已修，详见 m2-gate.md）。M3 允许开工。
 
+## B.7 M3 门禁结论（2026-11-19）
+
+M3 WP1/2/3 验收全过（max_hops=4 拦截互发死循环 / 并发上限排队不失控 / subagent 崩溃经 ownerTaskId 找回同一子任务），门禁三命令绿。WP4~6（mrb.cr 插件层）按 B.3 预设条款降级为技术预研：mrb.cr 甄别通过（84/84）但本机 Windows 工具链当日无法链接新 mruby.exe（环境级 blocker，恢复路径已列），架构与构件（sebas-stdio gem、build_config 补丁、子进程沙盒解释器方案）已产出——详见 [review/m3-plugin-feasibility.md](review/m3-plugin-feasibility.md) 与 [review/m3-gate.md](review/m3-gate.md)。M0–M2 全部产品化验收保持有效。
+
 ## C. 首迭代执行计划（W1–W2）
 
 > 目标：交付 M0 骨架与首条纵深（配置→持久层开工），并完成影响 M1 排期的两项前置冒烟。单人全职，块容量 5 pd/周。
