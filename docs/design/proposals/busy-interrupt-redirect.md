@@ -33,7 +33,7 @@
 
 ### 2.2 redirect（重定向）
 
-- **= interrupt + 新指令**：中止当前 turn（同 2.1），新指令持久化为独立输入事件（原始 envelope 保留），走正常 admission，获得队列优先位（插到该会话已排队批次之前、后续批次之后——不越过既有已 dispatch 批次）。
+- **= interrupt + 新指令**：中止当前 turn（同 2.1），新指令持久化为独立输入事件（原始 envelope 保留），走正常 admission，并获得**队首插队位**——以接受时刻为准的固定顺序「R, 既有已排队批次（A…）, 此后新到批次（B…）」：R 排在所有已排队批次之前、所有后续新到批次之后；已 dispatch/running 的批次不受影响。
 - 新 turn 使用新 `generation`；旧 turn 的未消费 pending steer 按世代规则失效转 queued，不注入新世代（沿用调度契约）。
 - run/审计：新输入与新 turn 正常落账，旧 turn 终态 `interrupted` 附 `redirected_to: event_id`。
 
@@ -58,14 +58,14 @@
 |---|---|
 | turn 未启动 / 已结束 | 降级 `queued` 后续批次（新输入不丢，按正常批次执行） |
 | 活跃 subagent / session 压缩边界（generation 变化） | 降级 `queued`（Hermes 同款先例） |
-| 长工具执行中（协作式取消未到边界） | 保持 `accepted`，工具自然结束后生效；超过上限（如 `interrupt.max_wait_ms`）降级 `queued` 并审计 |
+| 长工具执行中（协作式取消未到边界） | 保持 `accepted`，工具自然结束后生效；超过 `interrupt.max_wait_ms`：**有新输入（redirect）→ 新指令降级 `queued`（不丢）**；**无新输入（纯 interrupt）→ 回执终态 `expired`（原因 `tool_not_ended`），turn 保持运行至自然结束——不取消、不伪造取消、不凭空造出「后续批次」** |
 | 无效 generation / 无权限 | `rejected`，附原因 |
 
 ## 5. 与调度契约的整合点
 
 - **调度层**：调度契约只增加「控制通道操作」的定义引用，queue/debounce/steer 语义不变；redirect 的「队列优先位」在 scheduler 中实现为受审计的显式插队，不改变普通输入的 FIFO 保证。
-- **AgentRuntime（WP4 产物）**：interrupt 在「模型响应 → 工具调用 → 工具结果落库 → drain steer → 下一次模型调用」循环的**模型调用前**检查中断标记；drain steer 仍发生在工具边界，两者互不取代（pending steer 未注入的按 steer 降级规则转后续批次）。
-- **管理面**：`sessions.interrupt` / `sessions.redirect`（IPC + HTTP 双入口）、渠道显式 `/interrupt` / `/redirect` 命令（来源须明确控制语义，同 steer 的来源纪律）；事件 `interrupt.accepted/cancelled/redirected/queued/rejected`。
+- **AgentRuntime（WP4 产物）**：循环顺序修订为「模型响应 → 工具调用 → 工具结果落库 → **检查 interrupt（先于 steer）** → drain steer → 下一次模型调用」。interrupt 生效时：turn 终止/重定向，**pending steer 不标记 injected，而是按 steer 降级规则转后续批次**——严禁 steer 先被标注入、中断又阻止模型调用看到它（否则伪报 injected）。
+- **管理面**：`sessions.interrupt` / `sessions.redirect`（IPC + HTTP 双入口）、渠道显式 `/interrupt` / `/redirect` 命令（来源须明确控制语义，同 steer 的来源纪律）；事件 `interrupt.accepted/cancelled/redirected/queued/expired/rejected`（expired 为无输入 interrupt 的显式失败终态，订阅者可观察）。
 
 ## 6. 非目标
 
