@@ -19,3 +19,9 @@ mrb_mruby_sebas_stdio_gem_init(mrb_state *mrb)
 {
   mrb_define_method(mrb, mrb->kernel_module, "sebas_print", sebas_print, MRB_ARGS_REQ(1));
 }
+
+void
+mrb_mruby_sebas_stdio_gem_final(mrb_state *mrb)
+{
+  (void)mrb; /* stdout-only channel holds no mrb state */
+}
