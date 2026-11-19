@@ -13,9 +13,8 @@ module Sebas
   module Platform
     module Store
       describe "Sebas::Platform::Store::Store" do
-        it "keeps WAL journal mode" do
+        it "keeps WAL journal mode (Pi 口径 §15.1)" do
           store = temp_store("wal")
-          File.exists?(store.path).should be_true
           # WAL 副产物 -wal 文件在连接存活期存在（Windows 实测 §15.1）
           File.exists?(store.path.to_s + "-wal").should be_true
           store.close

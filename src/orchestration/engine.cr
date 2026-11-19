@@ -30,6 +30,16 @@ module Sebas
         run_id
       end
 
+      # 异步启动（gateway 口径）：spawn 逐动作执行
+      private def spawn_run(run_id : String, workflow : DSL::Workflow, trigger_event_id : String) : Nil
+        spawn(name: "sebas-run:#{run_id}") do
+          execute_phases(run_id, workflow, "agent:main:engine:orchestration")
+          @store.finish_intent("run:#{workflow.id}:#{trigger_event_id}", "done")
+        rescue ex : ::Exception
+          Log.error(exception: ex) { "run #{run_id} crashed" }
+        end
+      end
+
       # 同步执行（spec/测试口径）：逐动作推进，phase 尾 checkpoint
       def run_sync(workflow : DSL::Workflow, trigger_event_id : String,
                    ctx_session : String = "agent:main:engine:orchestration") : Tools::ToolResult

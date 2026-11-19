@@ -86,8 +86,8 @@ module Sebas
           uri = "sqlite3:#{@path.to_s.gsub('\\', '/')}" \
                 "?initial_pool_size=1&max_pool_size=1&checkout_timeout=5"
           @db = ::DB.open(uri)
-          @db.exec("PRAGMA journal_mode=WAL")
           # Pi 口径（§15.1 WAL）：WAL + synchronous=NORMAL——掉电可丢最新一笔，进程级强杀不丢
+          @db.exec("PRAGMA journal_mode=WAL")
           @db.exec("PRAGMA synchronous=NORMAL")
           @db.exec("PRAGMA busy_timeout=5000")
           SCHEMA.each { |ddl| @db.exec(ddl) }
@@ -111,6 +111,17 @@ module Sebas
 
         # 启动恢复：未完成 intents（pending/dispatched）→ 重新投递队列（M0-WP8 强杀续跑）
         record IntentRow, id : String, kind : String, payload : String, status : String
+
+        # 前缀查询 intents（触发器/管理面 runs.list 复用）
+        def intents_with_prefix(prefix : String) : Array(IntentRow)
+          rows = [] of IntentRow
+          @db.query("SELECT id, kind, payload, status FROM intents WHERE id LIKE ? || '%' ORDER BY created_at", prefix) do |result_set|
+            result_set.each do
+              rows << IntentRow.new(result_set.read(String), result_set.read(String), result_set.read(String), result_set.read(String))
+            end
+          end
+          rows
+        end
 
         def unfinished_intents : Array(IntentRow)
           rows = [] of IntentRow
