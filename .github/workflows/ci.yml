@@ -15,8 +15,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 分支保护要求 spec / ameba 四项始终报告状态，所以这些 job 不整体跳过，
+  # 而是在内部判断「本次改动是否影响构建或测试」，纯文档改动直接成功返回。
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect build-relevant changes
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # 手动触发一律跑完整门禁。
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 计算本次改动范围；拿不到可靠基线时保守地跑完整门禁。
+          base=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            # 新建分支/强推时 before 为全 0，没有可比较的基线。
+            case "$EVENT_BEFORE" in
+              0000000000000000000000000000000000000000) base="" ;;
+              *) base="$EVENT_BEFORE" ;;
+            esac
+          fi
+
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "No usable diff base ($base); running the full gate."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$base"...HEAD)
+
+          # 影响编译、测试或 CI 行为的路径。docs/、*.md、LICENSE 与
+          # examples/ 下的插件示例都不参与构建，因此纯文档改动会跳过门禁。
+          build_relevant='^(src/|spec/|\.github/|shard\.yml|shard\.lock|Makefile|\.ameba\.yml|\.editorconfig|\.gitattributes|\.gitignore)'
+
+          if printf '%s\n' "$changed" | grep -qE "$build_relevant"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Changed files:" && printf '%s\n' "$changed"
+
   spec:
     name: spec / ${{ matrix.os }}
+    needs: changes
     strategy:
       fail-fast: false
       matrix:
@@ -29,10 +93,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Skip (documentation-only change)
+        if: needs.changes.outputs.code != 'true'
+        run: echo "No build-relevant changes; skipping specs."
+
       - name: Setup toolchain
+        if: needs.changes.outputs.code == 'true'
         uses: ./.github/actions/setup
 
       - name: Cache shards
+        if: needs.changes.outputs.code == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -42,16 +112,20 @@ jobs:
           restore-keys: shards-${{ runner.os }}-
 
       - name: Install shards
+        if: needs.changes.outputs.code == 'true'
         run: shards install --frozen
 
       - name: Format check
+        if: needs.changes.outputs.code == 'true'
         run: crystal tool format --check
 
       - name: Spec
+        if: needs.changes.outputs.code == 'true'
         run: crystal spec --no-color
 
   lint:
     name: ameba
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -60,10 +134,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Skip (documentation-only change)
+        if: needs.changes.outputs.code != 'true'
+        run: echo "No build-relevant changes; skipping lint."
+
       - name: Setup toolchain
+        if: needs.changes.outputs.code == 'true'
         uses: ./.github/actions/setup
 
       - name: Cache shards
+        if: needs.changes.outputs.code == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -73,14 +153,19 @@ jobs:
           restore-keys: shards-${{ runner.os }}-
 
       - name: Install shards
+        if: needs.changes.outputs.code == 'true'
         run: shards install --frozen
 
       - name: Lint
+        if: needs.changes.outputs.code == 'true'
         run: make lint
 
+  # 三平台 release 构建成本最高（macOS runner 经常排队十几分钟），只在
+  # main 分支与手动触发时跑；PR 由 spec 覆盖编译正确性。
   release-build:
     name: release build / ${{ matrix.os }}
-    needs: spec
+    needs: [changes, spec]
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
