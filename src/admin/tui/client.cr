@@ -41,8 +41,8 @@ module Sebas
 
         # 读到谓词命中的帧；事件行经 on_event 回调
         def read_response(timeout : Time::Span = @read_timeout, &match : Hash(String, JSON::Any) -> Bool) : Hash(String, JSON::Any)?
-          deadline = Time.monotonic + timeout
-          while Time.monotonic < deadline
+          deadline = Time.instant + timeout
+          while Time.instant < deadline
             line = @io.gets
             return if line.nil?
             data = JSON.parse(line).as_h?

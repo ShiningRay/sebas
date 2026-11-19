@@ -4,7 +4,7 @@ require "../../../src/platform/store/store"
 
 # spec 助手（Crystal 1.22 不允许 def 直接出现在 describe 块内，置于顶层）
 def temp_store(name : String) : ::Sebas::Platform::Store::Store
-  dir = Path[ENV["TEMP"], "sebas-store-spec", name]
+  dir = Path[Dir.tempdir, "sebas-store-spec", name]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end

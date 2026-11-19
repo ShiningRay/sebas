@@ -3,7 +3,7 @@ require "file_utils"
 require "../../src/agents/skills/skills"
 
 def skills_tmp_dir : Path
-  dir = Path[ENV["TEMP"], "sebas-skills-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-skills-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   Dir.mkdir_p(dir)
   dir
@@ -48,7 +48,7 @@ module Sebas
     end
 
     it "returns empty on a missing skills dir" do
-      skills, errors = Agents::Skills.load_dir(Path[ENV["TEMP"], "sebas-skills-spec", "nonexistent-xyz"])
+      skills, errors = Agents::Skills.load_dir(Path[Dir.tempdir, "sebas-skills-spec", "nonexistent-xyz"])
       skills.should be_empty
       errors.should be_empty
     end

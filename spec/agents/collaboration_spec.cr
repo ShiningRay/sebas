@@ -7,13 +7,13 @@ require "../../src/tools/executor"
 require "../../src/platform/store/store"
 
 def m3_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-m3-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-m3-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end
 
 def m3_agents_dir
-  dir = Path[ENV["TEMP"], "sebas-m3-spec", "agents-#{Random::Secure.hex(4)}"]
+  dir = Path[Dir.tempdir, "sebas-m3-spec", "agents-#{Random::Secure.hex(4)}"]
   FileUtils.rm_rf(dir)
   Dir.mkdir_p(dir)
   dir

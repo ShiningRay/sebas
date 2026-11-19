@@ -64,7 +64,7 @@ module Sebas
     end
 
     it "handles GET URL verification (echo within 1s 口径)" do
-      dir = Path[ENV["TEMP"], "sebas-wecom-spec", Random::Secure.hex(4)]
+      dir = Path[Dir.tempdir, "sebas-wecom-spec", Random::Secure.hex(4)]
       FileUtils.rm_rf(dir)
       store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
       adapter, _bus = build_adapter(store)
@@ -82,7 +82,7 @@ module Sebas
     end
 
     it "publishes inbound messages and deduplicates msgid (§5.5 排重)" do
-      dir = Path[ENV["TEMP"], "sebas-wecom-spec", Random::Secure.hex(4)]
+      dir = Path[Dir.tempdir, "sebas-wecom-spec", Random::Secure.hex(4)]
       FileUtils.rm_rf(dir)
       store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
       adapter, bus = build_adapter(store)
@@ -110,7 +110,7 @@ module Sebas
     end
 
     it "rejects bad signature with 401 (fail-closed)" do
-      dir = Path[ENV["TEMP"], "sebas-wecom-spec", Random::Secure.hex(4)]
+      dir = Path[Dir.tempdir, "sebas-wecom-spec", Random::Secure.hex(4)]
       FileUtils.rm_rf(dir)
       store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
       adapter, bus = build_adapter(store)

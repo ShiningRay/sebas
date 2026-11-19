@@ -21,7 +21,7 @@ class NoopTool < ::Sebas::Tools::Tool
 end
 
 def runs_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-runs-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-runs-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end
@@ -122,7 +122,7 @@ module Sebas
       engine.run_sync(wf, "evt-ipc-1")
       view = ::Sebas::Orchestration::RunsView.new(store, ledger)
 
-      server = ::Sebas::Admin::IPC::Server.new(store, Path[ENV["TEMP"], "sebas-runs-spec", Random::Secure.hex(4)],
+      server = ::Sebas::Admin::IPC::Server.new(store, Path[Dir.tempdir, "sebas-runs-spec", Random::Secure.hex(4)],
         port: 0, runs_view: view) do
         {"accepted" => JSON::Any.new(true)} of String => JSON::Any
       end

@@ -4,7 +4,7 @@ require "../../src/orchestration/ledger"
 require "../../src/platform/store/store"
 
 def ledger_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-ledger-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-ledger-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end

@@ -146,7 +146,7 @@ module Sebas
         end
 
         it "loads from a file and rejects a missing path" do
-          path = Path[ENV["TEMP"], "sebas-spec-config.yaml"]
+          path = Path[Dir.tempdir, "sebas-spec-config.yaml"]
           File.write(path, VALID_YAML)
           config = Loader.load(path)
           config.agents.size.should eq(1)

@@ -6,7 +6,7 @@ require "../../src/tools/executor"
 require "../../src/platform/store/store"
 
 def trig_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-trig-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-trig-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end

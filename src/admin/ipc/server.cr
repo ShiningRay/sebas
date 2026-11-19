@@ -121,7 +121,6 @@ module Sebas
         # 客户端处理：握手 → 读帧 fiber + 事件扇出 select → 命令分派
         private def handle_client(io : TCPSocket) : Nil
           io.sync = true
-          subscriber_id : String? = nil
           hello = handshake(io)
           return unless hello
           subscriber_id = Random::Secure.hex(8)

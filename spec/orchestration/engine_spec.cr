@@ -28,7 +28,7 @@ class CountingTool < ::Sebas::Tools::Tool
 end
 
 def engine_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-engine-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-engine-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end

@@ -32,8 +32,8 @@ class CountingAdapter < ::Sebas::Channels::ChannelAdapter
 end
 
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
-  deadline = Time.monotonic + seconds
-  until Time.monotonic > deadline
+  deadline = Time.instant + seconds
+  until Time.instant > deadline
     return true if condition.call
     sleep 10.milliseconds
   end
@@ -41,7 +41,7 @@ def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
 end
 
 def fresh_store : ::Sebas::Platform::Store::Store
-  dir = Path[ENV["TEMP"], "sebas-tools-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-tools-spec", Random::Secure.hex(4)]
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end
 

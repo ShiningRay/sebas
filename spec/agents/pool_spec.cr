@@ -8,8 +8,8 @@ require "../../src/providers/fake_provider"
 
 # spec 助手：轮询等待条件成立（默认 5s 超时）
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
-  deadline = Time.monotonic + seconds
-  until Time.monotonic > deadline
+  deadline = Time.instant + seconds
+  until Time.instant > deadline
     return true if condition.call
     sleep 10.milliseconds
   end

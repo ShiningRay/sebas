@@ -5,8 +5,8 @@ require "../../src/admin/tui/client"
 require "../../src/platform/store/store"
 
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
-  deadline = Time.monotonic + seconds
-  until Time.monotonic > deadline
+  deadline = Time.instant + seconds
+  until Time.instant > deadline
     return true if condition.call
     sleep 10.milliseconds
   end
@@ -14,7 +14,7 @@ def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
 end
 
 def ipc_store : ::Sebas::Platform::Store::Store
-  dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end
 
@@ -23,7 +23,7 @@ module Sebas
     it "handshakes, serves sessions.read and health via discovery" do
       store = ipc_store
       store.append_transcript("agent:main:acc1:email:p1", "user", "hello there")
-      data_dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
       server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
       server.listen
       begin
@@ -60,7 +60,7 @@ module Sebas
 
     it "rejects oversized frames (8MiB 上限)" do
       store = ipc_store
-      data_dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
       server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
       server.listen
       begin
@@ -90,7 +90,7 @@ module Sebas
 
     it "fans bus events out to subscribed TUI clients (会话流实时观察)" do
       store = ipc_store
-      data_dir = Path[ENV["TEMP"], "sebas-ipc-spec", Random::Secure.hex(4)]
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
       server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
       server.listen
       begin

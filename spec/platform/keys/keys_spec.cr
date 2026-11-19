@@ -4,7 +4,7 @@ require "../../../src/platform/keys/vault"
 require "../../../src/platform/keys/win_credential_manager"
 
 def tmp_vault_dir(name : String) : Path
-  dir = Path[ENV["TEMP"], "sebas-keys-spec", "#{name}-#{Random::Secure.hex(4)}"]
+  dir = Path[Dir.tempdir, "sebas-keys-spec", "#{name}-#{Random::Secure.hex(4)}"]
   FileUtils.rm_rf(dir)
   Dir.mkdir_p(dir)
   dir
@@ -50,20 +50,27 @@ module Sebas
       FileUtils.rm_rf(dir)
     end
 
-    it "uses Windows Credential Manager as raw master-key store (FFI spike, §15.1)" do
-      store = ::Sebas::Platform::Keys::WinCredentialStore.new("sebas.spec")
-      key = Random::Secure.random_bytes(32)
-      begin
-        store.set_raw("test/master", key)
-        read_back = store.get_raw("test/master")
-        read_back = Bytes[0] if read_back.nil?
-        read_back.should eq(key)
-        store.delete_raw("test/master")
-        store.get_raw("test/master").should be_nil # 幂等删除
-      rescue ex : ::Sebas::Platform::Keys::WinCredentialStore::CredentialError
-        fail "Windows Credential Manager FFI spike failed: #{ex.message}"
+    {% if flag?(:windows) %}
+      it "uses Windows Credential Manager as raw master-key store (FFI spike, §15.1)" do
+        store = ::Sebas::Platform::Keys::WinCredentialStore.new("sebas.spec")
+        key = Random::Secure.random_bytes(32)
+        begin
+          store.set_raw("test/master", key)
+          read_back = store.get_raw("test/master")
+          read_back = Bytes[0] if read_back.nil?
+          read_back.should eq(key)
+          store.delete_raw("test/master")
+          store.get_raw("test/master").should be_nil # 幂等删除
+        rescue ex : ::Sebas::Platform::Keys::WinCredentialStore::CredentialError
+          fail "Windows Credential Manager FFI spike failed: #{ex.message}"
+        end
       end
-    end
+    {% else %}
+      it "reports no OS keyring on non-Windows platforms (降级路径可探测)" do
+        store = ::Sebas::Platform::Keys::WinCredentialStore.new("sebas.spec")
+        store.get_raw("test/master").should be_nil
+      end
+    {% end %}
 
     it "falls back to a master-key file when the OS keyring is unavailable" do
       dir = tmp_vault_dir("fallback")

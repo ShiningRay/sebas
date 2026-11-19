@@ -4,7 +4,7 @@ require "../../src/orchestration/approvals/approvals"
 require "../../src/platform/store/store"
 
 def approval_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-approval-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-approval-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end

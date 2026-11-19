@@ -4,7 +4,7 @@ require "../../../src/sebas"
 
 # 热更新四正交件（M1-WP8）：触发→先验后换→Atomic 换引用→组件重应用（§11.2/§11.3）
 def reload_tmp_dir(name : String) : Path
-  dir = Path[ENV["TEMP"], "sebas-reload-spec", "#{name}-#{Random::Secure.hex(4)}"]
+  dir = Path[Dir.tempdir, "sebas-reload-spec", "#{name}-#{Random::Secure.hex(4)}"]
   FileUtils.rm_rf(dir)
   Dir.mkdir_p(dir)
   dir

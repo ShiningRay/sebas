@@ -16,7 +16,7 @@ def wait_for(seconds : Time::Span = 10.seconds, &condition : -> Bool) : Bool
 end
 
 def gateway_tmp_dir(name : String) : Path
-  dir = Path[ENV["TEMP"], "sebas-gateway-spec", "#{name}-#{Random::Secure.hex(4)}"]
+  dir = Path[Dir.tempdir, "sebas-gateway-spec", "#{name}-#{Random::Secure.hex(4)}"]
   FileUtils.rm_rf(dir)
   Dir.mkdir_p(dir)
   dir
@@ -73,7 +73,9 @@ module Sebas
       ))
       gateway.run
 
-      ok = wait_for { smtp.mails.size == 1 }
+      # 以 intent 落 done 为完成判据：发信成功 → 账本/记录落库在 shutdown 前完成（Linux CI 上
+      # `smtp.mails.size == 1` 会早于 intent 状态可见，出现假红）
+      ok = wait_for { gateway.store.intent_status("evt-e2e-1") == "done" }
       gateway.shutdown
       ok.should be_true
       mail = smtp.mails.first
@@ -163,11 +165,15 @@ module Sebas
       gateway.shutdown
     end
 
-    it "survives a real process kill and resumes from checkpoint (taskkill /F 口径)" do
-      exe = Path["bin", "sebas.exe"]
+    it "survives a real process kill and resumes from checkpoint (taskkill /F / SIGKILL 口径)" do
+      exe =
+        {% if flag?(:windows) %}
+          Path[File.expand_path("bin/sebas.exe")]
+        {% else %}
+          Path[File.expand_path("bin/sebas")]
+        {% end %}
       unless File.exists?(exe)
-        pending "release binary not built (run `make release` for the full drill)"
-        next
+        pending! "release binary not built (run `make release` for the full drill)"
       end
       dir = Path["tmp-drill-#{Random::Secure.hex(4)}"]
       FileUtils.rm_rf(dir)
@@ -186,7 +192,7 @@ module Sebas
         kill = Process.run("taskkill", ["/F", "/PID", process.pid.to_s])
         kill.exit_code.should eq(0)
       {% else %}
-        Process.kill(Signal::KILL, process.pid)
+        Process.signal(Signal::KILL, process.pid)
       {% end %}
       process.wait
 

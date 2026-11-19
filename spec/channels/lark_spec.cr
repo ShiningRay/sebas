@@ -7,7 +7,7 @@ require "../../src/platform/store/store"
 require "../../src/platform/bus/bus"
 
 def lark_tmp_store
-  dir = Path[ENV["TEMP"], "sebas-lark-spec", Random::Secure.hex(4)]
+  dir = Path[Dir.tempdir, "sebas-lark-spec", Random::Secure.hex(4)]
   FileUtils.rm_rf(dir)
   ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
 end

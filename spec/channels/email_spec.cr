@@ -6,8 +6,8 @@ require "../support/fake_imap_server"
 require "../support/fake_smtp_server"
 
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
-  deadline = Time.monotonic + seconds
-  until Time.monotonic > deadline
+  deadline = Time.instant + seconds
+  until Time.instant > deadline
     return true if condition.call
     sleep 10.milliseconds
   end
