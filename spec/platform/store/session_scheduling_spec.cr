@@ -120,6 +120,20 @@ describe "会话输入调度持久化（M3-WP1）" do
       store.close
     end
 
+    it "admission 拒绝非 collecting 批次（事务内前置校验，独立于唯一约束）" do
+      store = sched_store("admit-not-collecting")
+      batch = sched_batch("sess-a:batch:1")
+      store.create_session_batch(batch)
+      store.transition_session_batch("sess-a:batch:1",
+        ::Sebas::Sessions::Scheduling::BatchStatus::Collecting,
+        ::Sebas::Sessions::Scheduling::BatchStatus::Sealed, seal_reason: "idle").should be_true
+      expect_raises(::Sebas::Platform::Store::StoreError, "not collecting") do
+        store.admit_session_input(sched_envelope("evt-late", seq: 9_i64), batch, 1)
+      end
+      store.batch_inputs("sess-a:batch:1").size.should eq(0) # 输入未入已 sealed 批
+      store.close
+    end
+
     it "seal 后输入必入下一批：原批不再接受新成员（调用方开新批，唯一约束兜底）" do
       store = sched_store("seal-then-next")
       batch = sched_batch("sess-a:batch:1")

@@ -22,10 +22,6 @@ module Sebas
         def to_s : String
           super.downcase
         end
-
-        def self.parse?(raw : String) : InputStatus?
-          parse?(raw.downcase)
-        end
       end
 
       enum BatchStatus

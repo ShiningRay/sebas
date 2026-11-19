@@ -125,7 +125,7 @@ module Sebas
         end
 
         private def self.int_field(label : String, fields : Hash(String, YAML::Any)) : Int64?
-          raw = fields[label.rchop("debounce.")]?
+          raw = fields[label.lchop("debounce.")]?
           return unless raw
           iv = raw.as_i?
           raise PolicyError.new("#{label} must be an integer") unless iv

@@ -455,6 +455,13 @@ module Sebas
           inserted = false
           @db.transaction do |tx|
             connection = tx.connection
+            # admission 前置校验：批次必须仍为 collecting（调用方持有的引用可能
+            # 在本事务开始前已被其他路径 seal——唯一约束不阻止此情况）
+            stored_status = connection.query_one?(
+              "SELECT status FROM session_batches WHERE batch_id = ?", batch.batch_id, as: String)
+            unless stored_status == ::Sebas::Sessions::Scheduling::BatchStatus::Collecting.to_s
+              raise StoreError.new("batch #{batch.batch_id} is #{stored_status || "missing"}, not collecting — admission rejected")
+            end
             rows = connection.exec(
               "INSERT OR IGNORE INTO session_inputs " \
               "(event_id, session_key, source, sender, received_seq, received_at, source_occurred_at, payload, policy_snapshot, status, batch_id) " \

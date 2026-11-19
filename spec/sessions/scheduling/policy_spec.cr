@@ -1,4 +1,5 @@
 require "spec"
+require "yaml"
 require "../../../src/sessions/scheduling/policy"
 require "../../../src/platform/config/loader"
 
@@ -89,6 +90,21 @@ describe Sebas::Sessions::Scheduling::Policy do
       p.idle_ms.should eq(500)
       p.max_wait_ms.should eq(3000)
       p.max_messages.should eq(20) # 未提供字段继承内置默认
+    end
+
+    it "workflow.batch 数值经 from_any 真实消费（不静默回落默认）" do
+      node = YAML.parse("batch_mode: debounce\ndebounce:\n  idle_ms: 1500")
+      cfg = Sebas::Sessions::Scheduling::SessionPolicyConfig.from_any(node)
+      p = Sebas::Sessions::Scheduling::Policy.resolve_workflow(cfg)
+      p.idle_ms.should eq(1500)
+    end
+
+    it "workflow.batch 数值超范围仍被校验（不因解析路径绕过硬范围）" do
+      node = YAML.parse("batch_mode: debounce\ndebounce:\n  idle_ms: 99999")
+      expect_raises(Sebas::Sessions::Scheduling::PolicyError, "idle_ms") do
+        Sebas::Sessions::Scheduling::Policy.resolve_workflow(
+          Sebas::Sessions::Scheduling::SessionPolicyConfig.from_any(node))
+      end
     end
   end
 
