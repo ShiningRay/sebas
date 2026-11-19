@@ -4,6 +4,7 @@
 > 核验对象：`docs/agent-platform-design/development-plan.md`（397 行，WBS/排期/门禁/首迭代执行计划）。
 > 核验依据：design.md 850 行版（已三轮核验放行）+ 六份调研笔记压缩结论 + 仓库 CLAUDE.md。
 > 方法：全文通读 + design.md 五段定点回查（L84-92、L494-512、L700-741、L742-770）+ 算术逐项复算 + DAG 沿链走查。工具 6/25 次，未改 development-plan.md。
+> **版本说明（2026-11-19）**：本文中的行号、WBS 和估时只对应当时快照；现行 M3-WP4~WP6 的子进程/包生命周期及新估时以 development-plan.md 当前版本为准。
 
 ---
 

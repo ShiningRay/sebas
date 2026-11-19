@@ -10,10 +10,10 @@
 
 | 输入 | 路径 | 关键事实 | 来源 |
 |---|---|---|---|
-| 设计主体 | [design.md](design.md) | 16 章：三正交概念/分层架构/多账号/编排/协作/管理面/安全/热更新(§11)/插件(§12)/目录结构(§13)/M0-M3 路线图(§14)/风险(§15)/来源对照表 41 条(§16)+附录 5 项待决策 | [来源: design.md:L1-L850] |
-| 目录结构基线 | design.md §13 | src/{platform,config,bus,supervisor,store,keys}/+channels/routing/agents/orchestration/tools/providers/admin/plugins/ 模块划分与 A1-A10 承接表 | [来源: design.md:L688-L741] |
-| 里程碑验收 | design.md §14 | M0-M3 各期验收要点+排期依据（热更新 M1、插件 M3） | [来源: design.md:L745-L756] |
-| 风险与未验证 | design.md §15 | 未验证 13 条（15.1）/架构风险 7 条（15.2）/取舍 3 条（15.3） | [来源: design.md:L760-L792] |
+| 设计主体 | [design.md](design.md) | 16 章：三正交概念/分层架构/多账号/编排/协作/管理面/安全/热更新(§11)/插件(§12：子进程+包生命周期)/目录结构(§13)/M0-M3 路线图(§14)/风险(§15)/来源对照表 41 条(§16)+附录 | [来源: design.md §1~§16] |
+| 目录结构基线 | design.md §13 | src/{platform,config,bus,supervisor,store,keys}/+channels/routing/agents/orchestration/tools/providers/admin/plugins/ 模块划分与 A1-A10 承接表 | [来源: design.md §13] |
+| 里程碑验收 | design.md §14 | M0-M3 各期验收要点+排期依据（热更新 M1、插件 M3） | [来源: design.md §14] |
+| 风险与未验证 | design.md §15 | 未验证 13 条（15.1）/架构风险 7 条（15.2）/取舍 3 条（15.3）；mrb.cr 甄别与 Windows 构建 blocker 已更新 | [来源: design.md §15] |
 | 质量门禁惯例 | 仓库 CLAUDE.md | `crystal spec` 全过 / `./bin/ameba` 无警告 / `make release` 成功 / 改动须同步 docs | [来源: 仓库:CLAUDE.md 质量标准节] |
 | 格式范本 | tessell/docs/plan.md、plan-execution.md | `M*-WP*` 编号、pd 区间估算、相对周、EX-W1-01 执行分块、DoD 分层、状态与证据边界纪律 | [来源: 任务输入] |
 | 平台命名 | design.md 附录 1 | **已定名 Seneschal**（[naming.md](naming.md) 14 候选撞名全核实；用户保留推翻权，推翻则全文再替换） | [来源: design.md:L846] |
@@ -226,7 +226,7 @@
 - 验收：**runs 回放与审计**（任一 run 可按事件序重放展示）（§14 M2 验收第 4 条 [来源: design.md:L751]）。
 - 风险：无实质风险。
 
-### M3 · 协作 + 插件脚本层——估时合计 11–18 pd
+### M3 · 协作 + 插件脚本层——估时合计 15–24 pd（包与生命周期 +1.5–2.5 pd；21 个 hook/DSL/初始化 +2.5–3.5 pd）
 
 **M3-WP1 多 agent 定义与路由**（1–1.5 pd）
 - 目标：N 个 agent 大脑可定义可路由。
@@ -252,29 +252,29 @@
 - 验收：**并发上限生效（超限排队不失控）+ subagent 崩溃后找回同一子任务**（§14 M3 验收第 2/3 条 [来源: design.md:L752]）。
 - 风险：无实质风险。
 
-**M3-WP4 mrb.cr 集成基线**（3–5 pd）
-- 目标：mruby 嵌入跑通（硬需求④载体）。
-- 范围：`plugins/`：每插件独立 mrb_state 池、register(api) 契约、JSON-like 传值、gembox 裁剪构建（gembox 裁剪 mruby-io/socket [来源: design.md §12.3]）、plugins/*.rb 目录发现+manifest。
-- 交付物：插件运行时+首个示例插件。
-- 依赖：M3-WP1；**前置**：mrb.cr 84/0 提交状态复核+上游 issue #1 修复状态（15.1.10 [来源: design.md:L773]）——0.5 pd 甄别，若不可用则评估 vendored 快照方案（不扩 M3 总区间上限）。
-- 验收：示例插件注册工具可被 agent 调用；**插件崩溃只重建该 state 不卡宿主**（§14 M3 验收第 5 条 [来源: design.md:L752]）。
-- 风险：mrb.cr 维护状态（84/0 本地未提交）是 M3 最大不确定项——开工前复核，必要时 M3-WP4~WP6 整体降级为「技术预研」里程碑（门禁判据变为可行性报告而非产品化）。
+**M3-WP4 裁剪 mruby 子进程运行时**（4–6 pd）
+- 目标：子进程插件协议与精确 action/hook 派发跑通（硬需求④载体；design.md §12.2~§12.3）。
+- 范围：`plugins/`：每动作独立裁剪 mruby 子进程、manifest + JSON-like 请求/结果协议、gembox 无 mruby-io/socket、请求 ID/schema/大小校验；`$action/$config/$context/$payload` 注入；`on_action/on_hook` 声明式 DSL；manifest 与注册集合一致性校验；`hook → 订阅插件` 索引；显式 install/enable/disable action（无隐式 init）；宿主工具与受控 `memory.backend` 扩展点。
+- 交付物：进程 runner+DSL/精确派发 spec+首个示例插件。
+- 依赖：M3-WP1；mrb.cr 甄别已完成（84/84，2026-11-19），但产品化受 Windows 新 mruby.exe 链接环境 blocker，恢复路径见 [review/m3-plugin-feasibility.md](review/m3-plugin-feasibility.md)。
+- 验收：示例插件注册工具可被 agent 调用；**只派发 manifest 声明且本次注册 handler 的插件，不群发**；未声明/未注册/重复注册拒绝；初始化 action 不被普通 hook 隐式重复执行；**插件崩溃只影响该次调用并返回结构化错误，不卡宿主**（§14 M3 验收第 5 条）；请求缺字段、重复/超限结果和跨 scope capability 被拒绝。
+- 风险：本机解释器产物 blocker 未消项时，WP4~WP6 仍按 B.3 降级条款只交预研，不宣称产品化。
 
-**M3-WP5 沙箱三闸+watchdog**（2–4 pd）
-- 目标：插件失控不伤宿主。
-- 范围：三闸（gembox 裁剪已在 WP4、allocf 内存配额覆写、宿主 API 白名单）+watchdog 超时 [来源: design.md §16#39]。
-- 交付物：沙箱配置+恶意插件测试样本（死循环/内存爆/未授权 API 调用三例）。
-- 依赖：M3-WP4。
-- 验收：**插件死循环被 watchdog 超时拦截不卡宿主**（§14 M3 验收第 4 条 [来源: design.md:L752]）；未授权 API 调用被白名单拒绝。
-- 风险：allocf 覆写在 Crystal 编译链的实操未验证 [来源: design.md §12.3]——估时区间上限覆盖调通成本。
+**M3-WP5 沙箱、钩子目录与宿主注入点**（4–6 pd）
+- 目标：插件失控不伤宿主；首版 21 个命名 hook 各有真实宿主注入点和可测失败语义。
+- 范围：gembox 裁剪（WP4）、allocf/OS 资源约束、capability 与 scope 双重白名单、watchdog 终止进程树及迟到输出丢弃；实现 design.md §12.11 的消息（3）、Agent（2）、LLM（4）、工具（3）、会话/压缩（4）、记忆（2）、任务（2）、Gateway（start/stop 合 1）共 21 个 hook；gate/transform 同步链、priority、deny fail-closed、observe 隔离、递归/次数/总预算限制、memo/idempotency。
+- 交付物：沙箱配置、hook registry/dispatcher 与各注入点 spec、恶意插件样本（死循环/内存爆/未授权 API/递归 hook/非法 transform）。
+- 依赖：M3-WP4；M2-WP2（task 生命周期）、M1-WP9（gateway 管理边界）。会话压缩若实现时仍无生产压缩器，先交付明确的 `SessionCompactor` 接口与协议完整实现，不能用假 hook 声称完成生产压缩。
+- 验收：**插件死循环被 watchdog 超时终止不卡宿主**（§14 M3 验收第 4 条）；未授权 capability 拒绝；21 个 hook 按目录逐一验证精确派发与 payload schema；gate 异常/超时 deny、observe 异常跳过；transform 不越权；task 重放 memo 不重复副作用；资源上限与后代进程清理有实测证据。
+- 风险：OS 资源限制/进程树终止的 Windows 行为须实测；LLM/工具/消息 hook 可能接触敏感内容，须按 manifest capability 最小化 payload 并脱敏。
 
-**M3-WP6 插件热重载与生命周期**（1.5–2.5 pd）
-- 目标：改插件脚本免重启。
-- 范围：整 VM 替换（mrb_close 重建+先验后换共用配置管线）[来源: design.md §16#41]。
-- 交付物：热重载 spec。
-- 依赖：M3-WP5、M1-WP8（共用触发-校验-换引用管线）。
-- 验收：**改插件脚本热重载生效**（§14 M3 验收第 6 条 [来源: design.md:L752]）；重载期间在飞任务不受干扰。
-- 风险：无实质风险。
+**M3-WP6 插件包、热重载与生命周期**（3–5 pd）
+- 目标：单文件插件可分发、免重启开发重载，安装/升级/卸载不破坏配置与数据。
+- 范围：`.sebas-plugin` ZIP 白名单及路径/大小校验；`plugins/installed/<id>/versions/`、staging、registry 原子版本指针；开发目录 watch；安装默认禁用、显式授权与启停；升级/配置数据迁移/回滚；引用检查、卸载保留数据、purge 确认；CLI 与管理 API 共用 service（design.md §12.4~§12.9）。
+- 交付物：pack/dev 工具、生命周期 service/API/CLI、恶意包与生命周期 spec、示例包。
+- 依赖：M3-WP5、M1-WP8（共用触发-校验-换引用管线）、M1-WP9（管理 API）。
+- 验收：**改开发目录脚本仅影响新调用，在途调用不受干扰**；安装默认禁用；同版本异摘要、路径穿越/压缩炸弹、未批准新 capability 均拒绝；升级保留配置/数据且失败保旧可回滚；被引用卸载拒绝、默认卸载保留数据、purge 有确认。
+- 风险：ZIP 安全限制、原子替换与 Windows 文件占用须测试；签名/远程市场不在本包范围。复杂插件的受控多文件与常驻 worker 见 [review/plugin-evolution.md](review/plugin-evolution.md)，**不计入 M3 WP4~WP6 范围或门禁**。
 
 ---
 
@@ -288,7 +288,7 @@ M1: WP1 → WP2 → WP3 → {WP4, WP5} → WP6
     WP1 → {WP7, WP9}        （凭据/HTTP 与渠道并行）
     WP2+WP7 → WP8            （热更新依赖监督体+keyring）
 M2: WP1 → WP2 → {WP3, WP5} → {WP4, WP6}
-M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP6 另依赖 M1-WP8）
+M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP5 另依赖 M2-WP2/M1-WP9；WP6 另依赖 M1-WP8）
 ```
 
 自查：全部边单向、无回边、无跨期回依赖（M2/M3 包仅依赖本期或前期包），**无环**。[推演]
@@ -302,11 +302,11 @@ M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP6 另依赖 M1-WP8）
 | M0 | 17–25 pd | 3.5–5 周 | W1–W5/W6 |
 | M1 | 19.5–30 pd | 4–6 周 | W5/W6–W11 |
 | M2 | 12.5–19 pd | 2.5–4 周 | W11/W12–W15 |
-| M3 | 11–18 pd | 2.5–4 周 | W15/W16–W19 |
-| **总计** | **60–92 pd** | **12–19 周** | **W1–W19** |
-| +缓冲 | +0–10 pd（Tessell 口径） | +0–2 周 | **总 60–102 pd ≈ W1–W21** |
+| M3 | 15–24 pd | 3–5 周 | W15/W16–W20/W21 |
+| **总计** | **64–98.5 pd** | **13–20 周** | **W1–W20/W21** |
+| +缓冲 | +0–10 pd（Tessell 口径） | +0–2 周 | **总 64–108.5 pd ≈ W1–W22** |
 
-算术自查：M0 下限 1+1.5+3+3+3+2+0.5+2+1=17、上限 2+2.5+4+4+4+3+1+3+1.5=25 ✓；M1 下限 2+1.5+2+3+2+1+1.5+4+2.5=19.5、上限 3+2.5+3+5+3+1.5+2.5+6+3.5=30 ✓；M2 下限 2+3+2+2+2+1.5=12.5、上限 3+4+3+3+3+2.5=19 ✓；M3 下限 1+1.5+2+3+2+1.5=11、上限 1.5+2+3+5+4+2.5=18 ✓；总和下 17+19.5+12.5+11=60、上 25+30+19+18=92 ✓；含缓冲上限 102 pd（102/5=20.4 周，保守进位 W21）✓。各期之间允许上一期末溢出顺延（周区间首端重叠表达此意），不做并行压缩。[推演]
+算术自查：M0=17–25、M1=19.5–30、M2=12.5–19 沿用已验收 WBS；M3 下限 1+1.5+2+4+4+3=15.5、上限 1.5+2+3+6+6+5=23.5（WP4/5 因 DSL/21 hook 各 +1 pd，包与生命周期此前已 +1.5–2.5 pd）；总和精确下 17+19.5+12.5+15.5=64.5、上 25+30+19+23.5=97.5。下表 M3 按对外区间取整为 15–24，故取整合计为 64–98.5；含精确缓冲上限 107.5 pd（107.5/5=21.5 周，保守进位 W22）。各期之间允许上一期末溢出顺延（周区间首端重叠表达此意），不做并行压缩。[推演]
 
 ### B.3 里程碑门禁（M-gate）
 
@@ -369,17 +369,17 @@ M3 WP1/2/3 验收全过（max_hops=4 拦截互发死循环 / 并发上限排队�
 | §6 会话与记忆 | M0-WP3（FTS5+JSONL 双写）→ M0-WP6（记忆读写工具）→ M0-WP6b（SKILL.md 加载器，A7） |
 | §7 编排 | M2-WP1~WP6 |
 | §8 协作 | M3-WP1~WP3 |
-| §9 管理面 | M0-WP7（NDJSON）→ M1-WP9（HTTP）→ M1-WP8（reload 命令）→ M2-WP6（runs API） |
+| §9 管理面 | M0-WP7（NDJSON）→ M1-WP9（HTTP）→ M1-WP8（reload 命令）→ M2-WP6（runs API）→ M3-WP6（插件生命周期 API） |
 | §10 安全模型 | M0-WP6（registry risk/replay）→ M1-WP7（keyring）→ M2-WP4（审批）→ M3-WP5（沙箱） |
 | §11 配置热更新 | M1-WP8（+EX-W1-03 前置冒烟） |
-| §12 插件脚本层 | M3-WP4~WP6 |
+| §12 插件脚本层 | M3-WP4（子进程/DSL/精确 action+hook 派发）→ M3-WP5（21 hook 注入与沙箱）→ M3-WP6（包与生命周期） |
 | §13 目录结构 | 全 WP 的模块归属总表（A 节各包「范围」字段已逐一对齐 §13 目录；**skills/ 归 M0-WP6b、providers/ 归 M0-WP5 实例池骨架——原隐含承载现显式声明**） |
 | §14 路线图 | 本计划 A/B 节本体（验收勾稽） |
 | §15 风险 | E 节前置冒烟+各 WP 风险栏+M-gate 第 5 条 |
 | §16 来源对照表 | 本文 0 节证据纪律（引用不升级） |
-| 附录 5 项待决策 | 显式承接 3 项（第 1 项已解决=定名 Seneschal）；附录 2（MVP 首渠道）与附录 5（插件首批能力+risk 调低权）为用户决策依赖：确认后分别落 M0-WP4（email 适配器）与 M3-WP 范围 |
+| 附录 5 项待决策 | 第 1 项已定名 Seneschal；附录 5 首批能力已定为工具/钩子/定时/受控 `memory.backend`，risk 只能由宿主策略调整（design.md §12.9）；附录 2 首渠道 email 已落地 |
 
-自查：16 章全部有承载；§14 各期验收逐条落进 WP 验收（A 节各包内以 [来源: design.md:L749-L752] 逐条标注）。[推演]
+自查：16 章全部有承载；§14 各期验收逐条落进 WP 验收，跨文档定位统一使用 design.md §14 对应期次，避免行号随修订漂移。[推演]
 
 ### D.2 开放问题（计划视角发现，**不发明新设计决策**——设计变更归属 design.md 修订）
 
@@ -414,7 +414,7 @@ M3 WP1/2/3 验收全过（max_hops=4 拦截互发死循环 / 并发上限排队�
 | 15.1.1 企微 AIBot API 未逐页核对 | **开工首日核对** 0.5–1 pd+demo；不符则回调备选升级（估时内含） | M1-WP4 |
 | 15.1.9 换 secret 旧 token 失效行为 | 保守做法（TTL 自然过期+失效标记）不依赖该行为，不阻塞 | M1-WP3 |
 | 15.1.2 Gmail IMAP IDLE 不可靠 | M0 单账号以「收到一封」为验收界；稳定性记录不阻塞门禁 | M0-WP4 |
-| 15.1.10 mrb.cr 84/0 提交状态 | M3 开工前复核甄别 0.5 pd；不可用则 M3 插件三包降级为技术预研 | M3-WP4 |
+| 15.1.10 mruby 运行形态与构建 | mrb.cr 84/84 甄别已完成；运行改为每动作子进程。本机新 mruby.exe 链接 blocker 未消项时 WP4~6 仍按降级条款交预研 | M3-WP4 |
 
 不进 M0/M1 关键路径的其余未验证项（15.1.3 Gmail 15 连接、15.1.4 企微明文布局、15.1.5 飞书频控映射、15.1.11 Hermes reload 进度、15.1.12/13 OpenClaw 正文未取）不影响排期，实现到对应模块时按 design.md §15.1 原口径处置。[推演]
 

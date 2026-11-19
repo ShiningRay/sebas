@@ -4,6 +4,7 @@
 > 核验对象：`docs/agent-platform-design/design.md`（713 行，14 章+附录，工部尚书产出）。
 > 核验依据：`docs/agent-platform-design/research/` 下六份调研笔记（Hermes / OpenClaw / Pi / autobot / 渠道 / 旁证）+ `src/autobot/` 真实源码行号抽查。
 > 方法：只读核验。design.md 全文两遍通读；三份外部项目笔记逐断言回查；autobot 行号 8 处实抽源码；未跑任何命令、未改任何被核验文件。
+> **版本说明（2026-11-19）**：本文仅核验早期设计快照；进程内 mrb_state/register(api)/mrb_close 相关断言已被现行 design.md §12 的子进程协议取代，不应继续作为当前契约引用。
 
 ---
 

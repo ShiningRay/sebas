@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "remote-memory",
+  "version": "0.1.0",
+  "api_version": "1",
+  "entrypoint": "plugin.rb",
+  "provides": ["memory.backend"],
+  "actions": ["remember", "recall", "forget"],
+  "capabilities": [
+    "memory_driver.write",
+    "memory_driver.query",
+    "memory_driver.delete"
+  ],
+  "timeout_ms": 1500,
+  "config_schema": {
+    "kind_weights": {
+      "type": "object",
+      "required": false
+    }
+  }
+}
