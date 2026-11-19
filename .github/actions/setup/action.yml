@@ -30,17 +30,13 @@ runs:
     # macOS 自带 SQLite（含 FTS5），但不带 OpenSSL 开发文件：自托管机器上
     # `crystal build` 会报 `ld: library not found for -lssl`。
     #
-    # 这里**只探测、不安装**：自托管机器上 `brew install` 会顺带升级 git 等
-    # 依赖，拉包失败时整条流水线跟着红（实测 gettext 下载 502）。先找已经
-    # 装好的 openssl keg（3 / 4 / 无版本号 / libressl 都认），只补装 pkg-config
-    # 这类无依赖的小包，最后把 PKG_CONFIG_PATH/LDFLAGS 指到真实 keg
-    # （install-crystal 可能残留一个指向已卸载 openssl@1.1 的路径）。
+    # 这里**只探测、绝不安装**：这台机器上 `brew install` 会顺带升级 git，
+    # 拉到 ftp.gnu.org 的 gettext/libunistring 时网络失败，整条流水线跟着红
+    # （实测两次）。思路是纯定位——在 Homebrew 目录里找现成的 openssl keg，
+    # 再用 CRYSTAL_LIBRARY_PATH 直接把 keg 交给 Crystal，绕过 pkg-config。
     - name: Locate OpenSSL toolchain (macOS)
       if: runner.os == 'macOS'
       shell: bash
-      env:
-        HOMEBREW_NO_AUTO_UPDATE: "1"
-        HOMEBREW_NO_INSTALL_CLEANUP: "1"
       run: |
         set -euo pipefail
 
@@ -48,35 +44,53 @@ runs:
           echo "::error::clang not found — install Xcode Command Line Tools on the self-hosted runner: xcode-select --install"
           exit 1
         fi
-        if ! command -v brew >/dev/null 2>&1; then
+
+        brew_bin=""
+        for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew "$(command -v brew 2>/dev/null || true)"; do
+          if [ -x "$candidate" ]; then
+            brew_bin="$candidate"
+            break
+          fi
+        done
+        if [ -z "$brew_bin" ]; then
           echo "::error::Homebrew not found — install it on the self-hosted runner: https://brew.sh"
           exit 1
         fi
+        brew_prefix="$("$brew_bin" --prefix)"
 
-        # pkg-config 无第三方依赖，缺失时补装是安全的。
-        command -v pkg-config >/dev/null 2>&1 || brew install pkg-config
-
+        # 直接扫 keg 目录，不调用 brew（避免任何隐式升级）。
         openssl_prefix=""
-        for keg in openssl@4 openssl@3 openssl; do
-          if brew list --versions "$keg" >/dev/null 2>&1; then
-            candidate="$(brew --prefix "$keg")"
-            if [ -n "$(find "$candidate/lib" -name 'libssl.dylib' -o -name 'libssl.a' 2>/dev/null | head -1)" ]; then
-              openssl_prefix="$candidate"
-              break
-            fi
+        for dir in \
+          "$brew_prefix/opt/openssl@4" \
+          "$brew_prefix/opt/openssl@3" \
+          "$brew_prefix/opt/openssl" \
+          /usr/local/opt/openssl@4 \
+          /usr/local/opt/openssl@3 \
+          /usr/local/opt/openssl; do
+          if [ -f "$dir/lib/libssl.dylib" ] || [ -f "$dir/lib/libssl.a" ]; then
+            openssl_prefix="$dir"
+            break
           fi
         done
 
         if [ -z "$openssl_prefix" ]; then
-          echo "::error::No Homebrew OpenSSL with libssl found. Install one on the self-hosted runner: brew install openssl@3"
+          echo "::error::No OpenSSL keg with libssl found. Install one on the self-hosted runner: brew install openssl@3"
           exit 1
         fi
 
+        # CRYSTAL_LIBRARY_PATH 优先于 pkg-config，可绕开机器上残留的错误路径。
         {
-          echo "PKG_CONFIG_PATH=${openssl_prefix}/lib/pkgconfig"
+          echo "CRYSTAL_LIBRARY_PATH=${openssl_prefix}/lib"
           echo "LDFLAGS=-L${openssl_prefix}/lib"
           echo "CPPFLAGS=-I${openssl_prefix}/include"
         } >> "$GITHUB_ENV"
+
+        # pkg-config 存在时顺带修正它的搜索路径（不安装）。
+        if command -v pkg-config >/dev/null 2>&1 && [ -d "${openssl_prefix}/lib/pkgconfig" ]; then
+          echo "PKG_CONFIG_PATH=${openssl_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
+        else
+          echo "pkg-config unavailable; relying on CRYSTAL_LIBRARY_PATH for libssl/libcrypto."
+        fi
 
         echo "clang: $(clang --version | head -1)"
         echo "openssl: ${openssl_prefix}"
