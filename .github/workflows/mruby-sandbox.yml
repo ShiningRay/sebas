@@ -67,8 +67,8 @@ jobs:
           echo "--- exit code 通道（mruby-exit）---"
           RC=0; $MRUBY -e "exit 3" || RC=$?; test "$RC" -eq 3
           echo "--- gembox 裁剪（无 IO）---"
-          test "$($MRUBY -e "sebas_print defined?(File).to_s")" = "nil"
-          test "$($MRUBY -e "sebas_print defined?(IO).to_s")" = "nil"
+          test "$($MRUBY -e "sebas_print defined?(File).inspect")" = "nil"
+          test "$($MRUBY -e "sebas_print defined?(IO).inspect")" = "nil"
           echo "--- sebas_print 输出 ---"
           test "$($MRUBY -e "sebas_print 'sebas-ok'")" = "sebas-ok"
           echo "ALL SMOKE CHECKS PASSED"
