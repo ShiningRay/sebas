@@ -36,7 +36,7 @@ runs:
       # shards directory): the import lib goes to `.build-deps\lib` via LIB, and the
       # DLL lands next to `bin/sebas.exe` so spawned binaries resolve it.
       run: |
-        vcpkg install sqlite3:x64-windows
+        vcpkg install "sqlite3[fts5]:x64-windows"
         $root = $env:VCPKG_INSTALLATION_ROOT
         $deps = "$PWD\.build-deps\lib"
         New-Item -ItemType Directory -Force -Path $deps, "$PWD\bin" | Out-Null
