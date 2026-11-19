@@ -78,7 +78,9 @@ jobs:
           # examples/ 下的插件示例都不参与构建，因此纯文档改动会跳过门禁。
           build_relevant='^(src/|spec/|\.github/|shard\.yml|shard\.lock|Makefile|\.ameba\.yml|\.editorconfig|\.gitattributes|\.gitignore)'
 
-          if printf '%s\n' "$changed" | grep -qE "$build_relevant"; then
+          # 用 here-string 而非管道：`printf | grep -q` 在 pipefail 下，grep 提前
+          # 退出会让 printf 收到 SIGPIPE，整条管道返回 141，反而把「命中」判成未命中。
+          if grep -qE "$build_relevant" <<< "$changed"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
