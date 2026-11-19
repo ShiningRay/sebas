@@ -1,6 +1,7 @@
 require "json"
 require "../platform/store/store"
 require "../tools/executor"
+require "./ledger"
 require "./dsl/dsl"
 require "../log"
 
@@ -16,7 +17,8 @@ module Sebas
       getter store : ::Sebas::Platform::Store::Store
 
       def initialize(@store : ::Sebas::Platform::Store::Store,
-                     @executor : Tools::Executor, @account_id : String = "engine")
+                     @executor : Tools::Executor, @account_id : String = "engine",
+                     @ledger : Ledger? = nil)
       end
 
       # 启动一次 workflow run：意图先落库（效应三明治第①步）→ 逐动作执行（第②步）→ 结果落库（第③步）
@@ -79,6 +81,7 @@ module Sebas
 
       private def execute_phases(run_id : String, workflow : DSL::Workflow,
                                  ctx_session : String, from_phase : Int32 = 0) : Tools::ToolResult
+        @ledger.try(&.append(run_id, "run.start", %({"workflow": "#{workflow.id}", "actions": #{workflow.actions.size}})))
         workflow.actions.each_with_index do |action, index|
           next if index < from_phase # 重放：跳过已 checkpoint 的 phase（不重复执行）
 
@@ -91,6 +94,7 @@ module Sebas
           end
 
           @store.memo_put(memo_key, "running")
+          @ledger.try(&.append(run_id, "action.start", %({"id": "#{action.id}", "tool": "#{action.tool}"})))
           result = @executor.run(action.tool, ::JSON.parse(action.args),
             Tools::ToolContext.new(ctx_session, @account_id, run_id, @store))
 
@@ -98,14 +102,17 @@ module Sebas
             # phase 尾 commit checkpoint + 结果 memo（效应三明治第②③步）
             @store.memo_replace(memo_key, "done:#{result.output[0, 120]}")
             @store.checkpoint(run_id, index + 1)
+            @ledger.try(&.append(run_id, "action.done", %({"id": "#{action.id}"})))
           else
             # 动作失败：意图 memo 标 failed 允许重试；run 标 failed；intent 保持 dispatched
             @store.memo_replace(memo_key, "failed:#{result.error}")
             @store.fail_task(run_id, "action #{action.id} failed: #{result.error}")
+            @ledger.try(&.append(run_id, "action.failed", %({"id": "#{action.id}", "error": #{result.error.inspect}})))
             return Tools::ToolResult.error("run #{run_id} failed at #{action.id}: #{result.error}")
           end
         end
         @store.complete_task(run_id, %({"workflow": "#{workflow.id}", "actions": #{workflow.actions.size}}))
+        @ledger.try(&.append(run_id, "run.done", %({"workflow": "#{workflow.id}"})))
         Tools::ToolResult.success("run #{run_id} completed")
       end
     end

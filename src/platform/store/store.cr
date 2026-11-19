@@ -196,6 +196,11 @@ module Sebas
           ids
         end
 
+        # run task 状态（不存在返回 nil；不抛行缺失异常）
+        def task_status?(task_id : String) : String?
+          @db.query_one?("SELECT status FROM tasks WHERE id = ?", task_id, as: String)
+        end
+
         def unfinished_intents : Array(IntentRow)
           rows = [] of IntentRow
           @db.query("SELECT id, kind, payload, status FROM intents WHERE status IN ('pending', 'dispatched') ORDER BY created_at") do |result_set|

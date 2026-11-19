@@ -71,6 +71,7 @@ module Sebas
         def initialize(@store : Platform::Store::Store, data_dir : Path,
                        @host : String = "127.0.0.1", @port : Int32 = DEFAULT_PORT,
                        @token : String = Random::Secure.hex(16),
+                       @runs_view : ::Sebas::Orchestration::RunsView? = nil,
                        &@on_reload : -> Hash(String, JSON::Any))
           discovery_dir = data_dir / "ipc"
           Dir.mkdir_p(discovery_dir)
@@ -207,9 +208,21 @@ module Sebas
           when "config.reload"
             result = @on_reload.call
             io.puts(ok_response(frame.id, result))
+          when "runs.list", "runs.get"
+            io.puts(runs_response(frame))
           else
             io.puts(error_response(frame.id, "unknown command: #{frame.type}"))
           end
+        end
+
+        private def runs_response(frame : Frame) : String
+          if frame.type == "runs.list"
+            runs = @runs_view.try(&.list) || [] of JSON::Any
+            return ok_response(frame.id, {"runs" => JSON::Any.new(runs)})
+          end
+          run_id = frame.field("run_id").try(&.as_s?) || ""
+          result = @runs_view.try(&.get(run_id))
+          result ? ok_response(frame.id, result) : error_response(frame.id, "run not found")
         end
 
         private def ok_response(id : String?, payload : Hash(String, JSON::Any)) : String

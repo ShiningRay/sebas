@@ -3,6 +3,7 @@ require "json"
 require "../../log"
 require "../../platform/bus/bus"
 require "../../channels/registry"
+require "../../orchestration/runs_view"
 
 # HTTP 管理面（M1-WP9，design.md §9.1 入口 B）：与渠道回调面共用同一监听器；
 # 鉴权 token 模式（§9.1 子集，剔除 none/trusted-proxy）；SSE 事件流。
@@ -21,6 +22,7 @@ module Sebas
         def initialize(@channels : Channels::Registry, @tap : IPC::EventTap,
                        @bind : String = "127.0.0.1", @port : Int32 = 18790,
                        @auth_mode : String = "token", @token : String? = nil,
+                       @runs_view : ::Sebas::Orchestration::RunsView? = nil,
                        &@on_reload : -> Hash(String, JSON::Any))
         end
 
@@ -66,6 +68,10 @@ module Sebas
             ctx.response.print(%({"error": "unauthorized"}))
             return
           end
+          route_api(ctx, path)
+        end
+
+        private def route_api(ctx : ::HTTP::Server::Context, path : String) : Nil
           case {ctx.request.method, path}
           when {"GET", "/api/v1/system.health"}
             ctx.response.content_type = "application/json"
@@ -76,12 +82,29 @@ module Sebas
           when {"POST", "/api/v1/config.reload"}
             ctx.response.content_type = "application/json"
             ctx.response.print(@on_reload.call.to_json)
+          when {"GET", "/api/v1/runs.list"}
+            ctx.response.content_type = "application/json"
+            ctx.response.print({runs: @runs_view.try(&.list) || [] of JSON::Any}.to_json)
+          when {"GET", "/api/v1/runs.get"}
+            serve_run(ctx)
           when {"GET", "/api/v1/events"}
             serve_sse(ctx)
           else
             ctx.response.status_code = 404
             ctx.response.content_type = "application/json"
             ctx.response.print(%({"error": "unknown api route"}))
+          end
+        end
+
+        private def serve_run(ctx : ::HTTP::Server::Context) : Nil
+          run_id = ctx.request.query_params["run_id"]? || ""
+          result = @runs_view.try(&.get(run_id))
+          ctx.response.content_type = "application/json"
+          if result
+            ctx.response.print(result.to_json)
+          else
+            ctx.response.status_code = 404
+            ctx.response.print(%({"error": "run not found"}))
           end
         end
 
