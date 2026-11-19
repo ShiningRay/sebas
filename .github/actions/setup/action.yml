@@ -20,7 +20,10 @@ runs:
     - name: Install SQLite3 (Linux)
       if: runner.os == 'Linux'
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      # *-dev packages ship the .a archives used by the static release link
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsqlite3-dev libyaml-dev libpcre2-dev
 
     - name: Set up MSVC environment (Windows)
       if: runner.os == 'Windows'
