@@ -36,6 +36,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_AFTER: ${{ github.event.after }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
@@ -46,16 +47,20 @@ jobs:
             exit 0
           fi
 
-          # 计算本次改动范围；拿不到可靠基线时保守地跑完整门禁。
+          # 基线：PR 用 merge-base 三点比较；push 比较前后两个快照（两点）。
+          # push 若用三点，强推回退会因 merge-base 落在旧提交上而误报「无改动」。
           base=""
+          range_args=()
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="$PR_BASE_SHA"
+            range_args=("${base}...${EVENT_AFTER}")
           elif [ "$EVENT_NAME" = "push" ]; then
             # 新建分支/强推时 before 为全 0，没有可比较的基线。
             case "$EVENT_BEFORE" in
               0000000000000000000000000000000000000000) base="" ;;
               *) base="$EVENT_BEFORE" ;;
             esac
+            range_args=("$base" "$EVENT_AFTER")
           fi
 
           if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
@@ -64,7 +69,10 @@ jobs:
             exit 0
           fi
 
-          changed=$(git diff --name-only "$base"...HEAD)
+          # -z 关闭路径引号转义：中文/空格文件名默认会被 quotePath 转义成带引号的
+          # 转义串，锚定正则就匹配不上。--no-renames 让改名同时报告旧、新两个路径，
+          # src/ 被搬走或移出时也不会漏判。
+          changed=$(git diff --name-only -z --no-renames "${range_args[@]}" | tr '\0' '\n')
 
           # 影响编译、测试或 CI 行为的路径。docs/、*.md、LICENSE 与
           # examples/ 下的插件示例都不参与构建，因此纯文档改动会跳过门禁。
