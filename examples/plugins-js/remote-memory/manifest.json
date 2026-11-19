@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "remote-memory-js",
+  "version": "0.1.0",
+  "api_version": "1",
+  "runtime": "quickjs",
+  "entrypoint": "plugin.js",
+  "provides": ["memory.backend"],
+  "actions": ["remember", "recall", "forget"],
+  "capabilities": [
+    "memory_driver.write",
+    "memory_driver.query",
+    "memory_driver.delete"
+  ],
+  "timeout_ms": 1500,
+  "config_schema": {
+    "kind_weights": {
+      "type": "object",
+      "required": false,
+      "additionalProperties": {"type": "number"}
+    }
+  }
+}
