@@ -4,6 +4,7 @@
 - **验收基准**：用户原话（m00252，逐字）：「帮我重新起个名字，然后撰写开发计划文档」——两条需求：①起名 ②开发计划文档。lead 已裁断采用 Seneschal，文档保留用户推翻路径。
 - **验收对象**：`docs/agent-platform-design/naming.md`（79 行）、`docs/agent-platform-design/development-plan.md`（407 行修订版）。核验卷宗：`review/development-plan-verification.md`。
 - **验收性质**：需求满足度终验（大理寺卿核「事实真不真」，本官验「需求满不满足」）；只读不改被验文件，预算 ≤8 次工具调用，实际 8/8（read×6：两交付+卷宗+design.md 定点+Tessell 先例；write×1；send_message×1）。
+- **版本说明（2026-11-19）**：本文是当时的规划快照验收；现行 M3-WP4~WP6 已按子进程与完整插件包生命周期修订，排期以 development-plan.md 当前版本为准。
 
 ## 一、总判定
 

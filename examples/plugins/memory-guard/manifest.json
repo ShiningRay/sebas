@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "memory-guard",
+  "version": "0.1.0",
+  "api_version": "1",
+  "entrypoint": "plugin.rb",
+  "provides": ["hook"],
+  "actions": ["memory.remember.before"],
+  "hooks": ["memory.remember.before"],
+  "capabilities": [],
+  "timeout_ms": 100,
+  "config_schema": {}
+}
