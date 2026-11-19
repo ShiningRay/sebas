@@ -455,14 +455,9 @@ module Sebas
           inserted = false
           @db.transaction do |tx|
             connection = tx.connection
-            # admission 前置校验：批次必须仍为 collecting（调用方持有的引用可能
-            # 在本事务开始前已被其他路径 seal——唯一约束不阻止此情况）
-            stored_status = connection.query_one?(
-              "SELECT status FROM session_batches WHERE batch_id = ?", batch.batch_id, as: String)
-            unless stored_status == ::Sebas::Sessions::Scheduling::BatchStatus::Collecting.to_s
-              raise StoreError.new("batch #{batch.batch_id} is #{stored_status || "missing"}, not collecting — admission rejected")
-            end
-            rows = connection.exec(
+            # 去重先于状态守卫：同 event_id 重投（即使其原批次已被 seal）按幂等
+            # 返回 false，不抛错——文档契约「同 event_id 二次投递返回 false」
+            dup_rows = connection.exec(
               "INSERT OR IGNORE INTO session_inputs " \
               "(event_id, session_key, source, sender, received_seq, received_at, source_occurred_at, payload, policy_snapshot, status, batch_id) " \
               "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'batched', ?)",
@@ -470,7 +465,13 @@ module Sebas
               env.received_at, env.source_occurred_at, env.payload,
               env.policy_snapshot.to_json, batch.batch_id
             ).rows_affected
-            next unless rows > 0
+            next unless dup_rows > 0
+            # 状态守卫在去重之后：新事件才需要批次为 collecting
+            stored_status = connection.query_one?(
+              "SELECT status FROM session_batches WHERE batch_id = ?", batch.batch_id, as: String)
+            unless stored_status == ::Sebas::Sessions::Scheduling::BatchStatus::Collecting.to_s
+              raise StoreError.new("batch #{batch.batch_id} is #{stored_status || "missing"}, not collecting — admission rejected")
+            end
             inserted = true
             connection.exec(
               "INSERT INTO session_batch_members (event_id, batch_id, position) VALUES (?, ?, ?)",

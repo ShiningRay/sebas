@@ -134,6 +134,19 @@ describe "会话输入调度持久化（M3-WP1）" do
       store.close
     end
 
+    it "重复投递已 sealed 批次中的同 event_id → 幂等返回 false（去重先于状态守卫）" do
+      store = sched_store("dup-sealed-batch")
+      batch = sched_batch("sess-a:batch:1")
+      store.create_session_batch(batch)
+      env = sched_envelope("evt-1", seq: 1_i64)
+      store.admit_session_input(env, batch, 0).should be_true
+      store.transition_session_batch("sess-a:batch:1",
+        ::Sebas::Sessions::Scheduling::BatchStatus::Collecting,
+        ::Sebas::Sessions::Scheduling::BatchStatus::Sealed, seal_reason: "idle").should be_true
+      store.admit_session_input(env, batch, 0).should be_false # 不抛 StoreError
+      store.close
+    end
+
     it "seal 后输入必入下一批：原批不再接受新成员（调用方开新批，唯一约束兜底）" do
       store = sched_store("seal-then-next")
       batch = sched_batch("sess-a:batch:1")
