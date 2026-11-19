@@ -355,6 +355,14 @@ end
 - **巩固流程**：会话消息数超 `memory_window` 时后台 fiber 用 LLM 产出更新（autobot A5：`memory_manager.cr` 机制；注意其教训——巩固不得与用户 turn 共用全局单 provider，须用该 agent 绑定的 provider 实例）。
 - **FTS5 检索**：会话与记忆全文索引建在主 SQLite（Hermes FTS5 session search 同路线；旁证建议 4：多账号会话量下 grep 两层不可持续，直接上 FTS5）。
 
+### 6.3 会话输入调度（Proposal，待实施）
+
+支持持久 queue、可配置 debounce 与工具边界 steer：`batch_mode: queue|debounce` 两态 + `steer.enabled` 正交开关；默认 `queue` 且不启用 steer；停止/审批等控制输入走独立通道，不参与聚合。
+
+- 完整契约（状态机与关键时序、参数微调、持久化与恢复、安全边界）：[proposals/session-input-scheduling.md](proposals/session-input-scheduling.md)。
+- 执行状态与 WP 拆分：[tracking issue #9](https://github.com/ShiningRay/sebas/issues/9)（WP 子卡 #3–#8）。
+- 本节仅作指针，不复制契约正文；契约变更先改 proposal 文档走 PR，实现合入后由 WP6 同步回写本文。
+
 ---
 
 ## 7. 编排引擎（硬需求②专章：用户可编排）
