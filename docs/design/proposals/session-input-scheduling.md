@@ -34,7 +34,12 @@
 
 `GatewayConfig` 增加系统级 `gateway.session`，所有支持对话调度的 agent 共用；`AgentConfig.session` 只声明定向覆盖字段；webhook workflow `batch` 仅作用于该 workflow。首版不在 binding 增加第三层覆盖。
 
-优先级固定：**内置安全默认值 → `gateway.session` → `agents.<name>.session` → `workflow.batch`**。嵌套对象按字段递归合并，标量/布尔/枚举整体覆盖；每次 admission 解析一次并保存策略快照。
+继承链分两个作用域，互不跨域：
+
+- **agent 会话**：**内置安全默认值 → `gateway.session` → `agents.<name>.session`**。
+- **workflow**：**内置默认（逐事件 queue）→ `workflow.batch`**。workflow 不继承 `gateway.session` / `agents.*.session`——确定性 workflow 默认一事件一 run（§2 结论 2），只有显式声明 `batch` 才聚合；未声明 `batch` 时无论系统默认为何都按逐事件执行。
+
+同层内嵌套对象按字段递归合并，标量/布尔/枚举整体覆盖；每次 admission 解析一次并保存策略快照。
 
 ### 3.2 配置示例
 
@@ -69,12 +74,13 @@ agents:
 workflows:
   deploy-hook:
     trigger: { type: webhook, source: hooks/deploy }
-    batch:                        # 仅该 workflow 生效
-      mode: debounce
-      idle_ms: 500
-      max_wait_ms: 3000
-      max_messages: 50
-      max_bytes: 65536
+    batch:                        # 仅该 workflow 生效；与会话策略同 schema、同字段名
+      batch_mode: debounce
+      debounce:
+        idle_ms: 500
+        max_wait_ms: 3000
+        max_messages: 50
+        max_bytes: 65536
 ```
 
 ### 3.3 参数微调契约
@@ -128,9 +134,9 @@ workflows:
 
 ### 4.3 Debounce 批次形成
 
-seal 条件（任一满足）：idle 到时（可被新输入重置）；max_wait 到时（不可重置）；达 `max_messages`；达 `max_bytes`；显式 flush；`flush_on_turn_end` 且前一批 running turn 已结束；shutdown/recovery 保守 seal。
+seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0` 时该条件禁用，仅由其余条件封冻）；max_wait 到时（不可重置）；达 `max_messages`；达 `max_bytes`；显式 flush；`flush_on_turn_end` 且前一批 running turn 已结束；shutdown/recovery 保守 seal。
 
-- 聚合桶 = `session_key + sender/source + security_context`；同桶按接收序保序，跨桶由同一 session scheduler 按各桶首条输入接收序依次 seal/dispatch；活跃桶有硬上限，防伪造 sender 绕过限制。
+- 聚合桶键按 `group_by` 取值定义：`sender`（默认）= `session_key + sender/source + security_context`，按发送者/来源隔离；`session` = `session_key + security_context`，允许跨发送者合并但每个成员保留署名与安全上下文。同桶按接收序保序，跨桶由同一 session scheduler 按各桶首条输入接收序依次 seal/dispatch；活跃桶有硬上限，防伪造 sender 绕过限制。
 - 给 LLM 的是带 sender、event type、时间边界的结构化批次；原始 envelope 永久可查，不只保存拼接文本。
 - 空批次、重复事件、定时器重入和 seal/dispatch 竞态必须可测试且无副作用。
 
