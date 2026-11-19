@@ -29,7 +29,7 @@ end
 def runs_workflow(id : String) : ::Sebas::Orchestration::DSL::Workflow
   ::Sebas::Orchestration::DSL::Workflow.new(id, "t", true,
     ::Sebas::Orchestration::DSL::Trigger.new("webhook", "", "hooks/#{id}"),
-    [::Sebas::Orchestration::DSL::Action.new("act", "noop.hit", "{}", "", "", "", 300)])
+    [::Sebas::Orchestration::DSL::Action.new("act", "noop.hit", "{}", "", "", "", 300)], nil)
 end
 
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool

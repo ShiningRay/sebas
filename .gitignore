@@ -27,3 +27,4 @@ data/
 
 # CI toolchain deps (Windows import libs)
 /.build-deps/
+*.exe

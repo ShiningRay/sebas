@@ -1,6 +1,7 @@
 require "yaml"
 require "json"
 require "../../log"
+require "../../sessions/scheduling/policy"
 
 # 编排 DSL（M2-WP1，design.md §7.6）：触发→条件→动作 YAML 解析与校验。
 # v1 条件不做图灵完备（§15.3.21）：仅声明式谓词（元数据匹配 + all/any/not 组合）。
@@ -21,7 +22,8 @@ module Sebas
       record Action, id : String, tool : String, args : String, replay : String,
         idempotency_key : String, approval_mode : String, approval_timeout : Int32
       record Workflow, id : String, description : String, enabled : Bool,
-        trigger : Trigger, actions : Array(Action)
+        trigger : Trigger, actions : Array(Action),
+        batch : ::Sebas::Sessions::Scheduling::SessionPolicyConfig?
 
       module Parser
         extend self
@@ -46,8 +48,18 @@ module Sebas
           Workflow.new(
             id, doc["description"]?.try(&.as_s?) || "",
             doc["enabled"]?.try(&.as_bool?) != false,
-            trigger, actions
+            trigger, actions, parse_batch(doc, id)
           )
+        end
+
+        private def parse_batch(doc : YAML::Any, wf_id : String) : ::Sebas::Sessions::Scheduling::SessionPolicyConfig?
+          node = doc["batch"]?
+          return unless node
+          begin
+            ::Sebas::Sessions::Scheduling::SessionPolicyConfig.from_any(node)
+          rescue ex : ::Sebas::Sessions::Scheduling::PolicyError
+            raise DSLError.new("workflow.#{wf_id}.batch: #{ex.message}")
+          end
         end
 
         private def parse_trigger(node : YAML::Any, wf_id : String) : Trigger
@@ -108,7 +120,21 @@ module Sebas
           agents = agent_names.to_a
           validate_trigger(workflow, errors)
           validate_actions(workflow, agents, errors)
+          validate_batch(workflow, errors)
           errors
+        end
+
+        # workflow.batch 覆盖校验（session-input-scheduling.md §3.1：workflow 作用域
+        # 不继承 gateway.session / agents.*.session；显式字段仍过硬范围校验）
+        private def validate_batch(workflow : Workflow, errors : Array(String)) : Nil
+          return unless wf_batch = workflow.batch
+          begin
+            ::Sebas::Sessions::Scheduling::Policy.resolve_workflow(wf_batch)
+          rescue ex : ::Sebas::Sessions::Scheduling::PolicyError
+            ex.message.to_s.lines.select(&.strip.starts_with?("- ")).each do |line|
+              errors << "workflow.#{workflow.id}.batch: #{line.strip.lchop("- ").strip}"
+            end
+          end
         end
 
         private def validate_trigger(workflow : Workflow, errors : Array(String)) : Nil

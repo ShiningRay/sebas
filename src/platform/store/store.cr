@@ -3,6 +3,8 @@ require "sqlite3"
 require "json"
 require "digest/sha256"
 require "../../log"
+require "../../sessions/scheduling/policy"
+require "../../sessions/scheduling/envelope"
 
 # 持久层（M0-WP3）：SQLite(WAL) 主存储 + JSONL 转录双写 + FTS5 检索（design.md §6/§7.2/§7.3）
 #
@@ -81,16 +83,72 @@ module Sebas
           )
           SQL
         "CREATE INDEX IF NOT EXISTS idx_ledger_run ON ledger(run_id, id)",
-        <<-SQL
+        <<-SQL,
           CREATE TABLE IF NOT EXISTS leases (
             task_id    TEXT PRIMARY KEY,
             owner      TEXT NOT NULL,
             expires_at TEXT NOT NULL
           )
           SQL
+        # ---- 会话输入调度（session-input-scheduling.md §5.1；M3-WP1）----
+        #
+        # 唯一约束即契约：event_id 唯一（一批多事件共享 batch，event 不双归属）、
+        # batch_id + position 唯一（批内顺序不可重排）。
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS session_inputs (
+            event_id          TEXT PRIMARY KEY,
+            session_key       TEXT NOT NULL,
+            source            TEXT NOT NULL,
+            sender            TEXT NOT NULL,
+            received_seq      INTEGER NOT NULL,
+            received_at       TEXT NOT NULL,
+            source_occurred_at TEXT,
+            payload           TEXT NOT NULL,
+            policy_snapshot   TEXT NOT NULL,
+            status            TEXT NOT NULL DEFAULT 'accepted',
+            batch_id          TEXT
+          )
+          SQL
+        "CREATE INDEX IF NOT EXISTS idx_session_inputs_batch ON session_inputs(batch_id, received_seq)",
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS session_batches (
+            batch_id        TEXT PRIMARY KEY,
+            session_key     TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'collecting',
+            policy_snapshot TEXT NOT NULL,
+            first_seq       INTEGER NOT NULL,
+            last_seq        INTEGER NOT NULL,
+            seal_reason     TEXT,
+            created_at      TEXT NOT NULL,
+            sealed_at       TEXT
+          )
+          SQL
+        "CREATE INDEX IF NOT EXISTS idx_session_batches_session ON session_batches(session_key, status)",
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS session_batch_members (
+            event_id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            position INTEGER NOT NULL
+          )
+          SQL
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_batch_members_order ON session_batch_members(batch_id, position)",
+        <<-SQL
+          CREATE TABLE IF NOT EXISTS session_steers (
+            steer_id         TEXT PRIMARY KEY,
+            session_key      TEXT NOT NULL,
+            target_turn_id   TEXT NOT NULL,
+            target_generation INTEGER NOT NULL,
+            payload          TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'accepted',
+            reason           TEXT,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL
+          )
+          SQL
       ]
 
       class Store
+        getter db : ::DB::Database
         getter path : Path
         getter sessions_dir : Path
 
@@ -384,6 +442,175 @@ module Sebas
           # FTS5 语法错误（如裸引号）不炸调用方（SQLite3::Exception 非 DB::Error 子类）
           Sebas::Log.warn { "fts query rejected: #{ex.message}" }
           [] of SearchRow
+        end
+
+        # ---- 会话输入调度持久化（session-input-scheduling.md §5；M3-WP1）----
+        #
+        # admission 原子性（契约 §4.2）：去重（event_id 主键）、原文持久化、
+        # 加入批次在同一 SQLite 事务内完成，成功才对渠道 ACK。
+        # 返回 false = 同 event_id 已存在（重复投递，幂等不重跑）。
+
+        def admit_session_input(env : ::Sebas::Sessions::Scheduling::InputEnvelope, batch : ::Sebas::Sessions::Scheduling::Batch,
+                                position : Int64) : Bool
+          inserted = false
+          @db.transaction do |tx|
+            connection = tx.connection
+            rows = connection.exec(
+              "INSERT OR IGNORE INTO session_inputs " \
+              "(event_id, session_key, source, sender, received_seq, received_at, source_occurred_at, payload, policy_snapshot, status, batch_id) " \
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'batched', ?)",
+              env.event_id, env.session_key, env.source, env.sender, env.received_seq,
+              env.received_at, env.source_occurred_at, env.payload,
+              env.policy_snapshot.to_json, batch.batch_id
+            ).rows_affected
+            next unless rows > 0
+            inserted = true
+            connection.exec(
+              "INSERT INTO session_batch_members (event_id, batch_id, position) VALUES (?, ?, ?)",
+              env.event_id, batch.batch_id, position
+            )
+          end
+          inserted
+        end
+
+        def create_session_batch(batch : ::Sebas::Sessions::Scheduling::Batch) : Nil
+          @db.exec(
+            "INSERT INTO session_batches (batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason, created_at, sealed_at) " \
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            batch.batch_id, batch.session_key, batch.status.to_s, batch.policy_snapshot.to_json,
+            batch.first_seq, batch.last_seq, batch.seal_reason, batch.created_at, batch.sealed_at
+          )
+        end
+
+        # 受守卫的状态迁移：WHERE status = from 保证迁移表由调用方（纯函数）裁决，
+        # 返回 false = 状态已变（seal/新输入竞态由唯一约束 + 本守卫双保险）
+        def transition_session_batch(batch_id : String, from : ::Sebas::Sessions::Scheduling::BatchStatus,
+                                     to : ::Sebas::Sessions::Scheduling::BatchStatus, seal_reason : String? = nil) : Bool
+          if seal_reason
+            changed = @db.exec(
+              "UPDATE session_batches SET status = ?, seal_reason = ?, sealed_at = ? WHERE batch_id = ? AND status = ?",
+              to.to_s, seal_reason, now, batch_id, from.to_s
+            ).rows_affected
+          else
+            changed = @db.exec(
+              "UPDATE session_batches SET status = ? WHERE batch_id = ? AND status = ?",
+              to.to_s, batch_id, from.to_s
+            ).rows_affected
+          end
+          changed > 0
+        end
+
+        def transition_session_input(event_id : String, from : ::Sebas::Sessions::Scheduling::InputStatus,
+                                     to : ::Sebas::Sessions::Scheduling::InputStatus) : Bool
+          changed = @db.exec("UPDATE session_inputs SET status = ? WHERE event_id = ? AND status = ?",
+            to.to_s, event_id, from.to_s).rows_affected
+          changed > 0
+        end
+
+        record SessionBatchRow, batch_id : String, session_key : String, status : String,
+          policy_snapshot : String, first_seq : Int64, last_seq : Int64, seal_reason : String?
+
+        record SessionInputRow, event_id : String, session_key : String, source : String,
+          sender : String, received_seq : Int64, received_at : String,
+          source_occurred_at : String?, payload : String, policy_snapshot : String,
+          status : String, batch_id : String?
+
+        record SessionSteerRow, steer_id : String, session_key : String, target_turn_id : String,
+          target_generation : Int64, payload : String, status : String, reason : String?
+
+        def session_batch(batch_id : String) : SessionBatchRow?
+          @db.query_one?(
+            "SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason FROM session_batches WHERE batch_id = ?",
+            batch_id
+          ) do |result_set|
+            SessionBatchRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
+              result_set.read(String), result_set.read(Int64), result_set.read(Int64), result_set.read(String?))
+          end
+        end
+
+        # 启动恢复（契约 §5.2）：collecting → 立即按原快照 seal（recovery）；
+        # sealed/queued → 重新入队；调用方据此分流。
+        def collecting_batches(session_key : String? = nil) : Array(SessionBatchRow)
+          if session_key
+            query_batches("status = 'collecting' AND session_key = ?", session_key)
+          else
+            query_batches("status = 'collecting'")
+          end
+        end
+
+        def recoverable_batches : Array(SessionBatchRow)
+          query_batches("status IN ('sealed', 'queued')")
+        end
+
+        private def query_batches(where : String, *params) : Array(SessionBatchRow)
+          rows = [] of SessionBatchRow
+          @db.query("SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason " \
+                    "FROM session_batches WHERE #{where} ORDER BY first_seq", *params) do |result_set|
+            result_set.each do
+              rows << SessionBatchRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
+                result_set.read(String), result_set.read(Int64), result_set.read(Int64), result_set.read(String?))
+            end
+          end
+          rows
+        end
+
+        def batch_inputs(batch_id : String) : Array(SessionInputRow)
+          rows = [] of SessionInputRow
+          @db.query(
+            "SELECT i.event_id, i.session_key, i.source, i.sender, i.received_seq, i.received_at, " \
+            "i.source_occurred_at, i.payload, i.policy_snapshot, i.status, i.batch_id " \
+            "FROM session_inputs i JOIN session_batch_members m ON m.event_id = i.event_id " \
+            "WHERE m.batch_id = ? ORDER BY m.position", batch_id
+          ) do |result_set|
+            result_set.each do
+              rows << SessionInputRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
+                result_set.read(String), result_set.read(Int64), result_set.read(String), result_set.read(String?),
+                result_set.read(String), result_set.read(String), result_set.read(String), result_set.read(String?))
+            end
+          end
+          rows
+        end
+
+        # ---- busy steer 持久化（accepted ≠ injected，契约 §4.4）----
+
+        def record_session_steer(steer_id : String, session_key : String, target_turn_id : String,
+                                 target_generation : Int64, payload : String) : Bool
+          rows = @db.exec(
+            "INSERT OR IGNORE INTO session_steers (steer_id, session_key, target_turn_id, target_generation, payload, status, created_at, updated_at) " \
+            "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
+            steer_id, session_key, target_turn_id, target_generation, payload, now, now
+          ).rows_affected
+          rows > 0
+        end
+
+        def transition_session_steer(steer_id : String, from : ::Sebas::Sessions::Scheduling::SteerStatus,
+                                     to : ::Sebas::Sessions::Scheduling::SteerStatus, reason : String? = nil) : Bool
+          changed = @db.exec("UPDATE session_steers SET status = ?, reason = ?, updated_at = ? " \
+                             "WHERE steer_id = ? AND status = ?",
+            to.to_s, reason, now, steer_id, from.to_s).rows_affected
+          changed > 0
+        end
+
+        def session_steers(session_key : String, status : String? = nil) : Array(SessionSteerRow)
+          rows = [] of SessionSteerRow
+          if status
+            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason " \
+                      "FROM session_steers WHERE session_key = ? AND status = ? ORDER BY created_at",
+              session_key, status) do |result_set|
+              result_set.each { rows << read_steer(result_set) }
+            end
+          else
+            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason " \
+                      "FROM session_steers WHERE session_key = ? ORDER BY created_at", session_key) do |result_set|
+              result_set.each { rows << read_steer(result_set) }
+            end
+          end
+          rows
+        end
+
+        private def read_steer(result_set : ::DB::ResultSet) : SessionSteerRow
+          SessionSteerRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
+            result_set.read(Int64), result_set.read(String), result_set.read(String), result_set.read(String?))
         end
 
         private def now : String
