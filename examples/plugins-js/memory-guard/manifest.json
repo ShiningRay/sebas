@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "memory-guard-js",
+  "version": "0.1.0",
+  "api_version": "1",
+  "runtime": "quickjs",
+  "entrypoint": "plugin.js",
+  "provides": ["hook"],
+  "actions": ["memory.remember.before"],
+  "hooks": ["memory.remember.before"],
+  "capabilities": [],
+  "timeout_ms": 100,
+  "config_schema": {}
+}
