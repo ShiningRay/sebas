@@ -14,7 +14,7 @@ end
 def trig_workflow(id : String, type : String, source_or_schedule : String) : ::Sebas::Orchestration::DSL::Workflow
   ::Sebas::Orchestration::DSL::Workflow.new(id, "t", true,
     ::Sebas::Orchestration::DSL::Trigger.new(type, source_or_schedule, source_or_schedule),
-    [::Sebas::Orchestration::DSL::Action.new("act", "counter.hit", "{}", "", "", "", 300)])
+    [::Sebas::Orchestration::DSL::Action.new("act", "counter.hit", "{}", "", "", "", 300)], nil)
 end
 
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool

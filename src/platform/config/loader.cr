@@ -1,11 +1,14 @@
 require "yaml"
 require "./schema"
+require "../../sessions/scheduling/policy"
 
 # 配置加载链（M0-WP2）：读盘 → expand_env → YAML → validate! 失败即拒启
 # （复用 autobot loader.cr:152-166 现链思想，design.md §11.2②；校验器为独立纯函数便于 M1-WP8 热更新先验后换复用）
 module Sebas
   module Platform
     module Config
+      alias Scheduling = ::Sebas::Sessions::Scheduling
+
       class ConfigError < ::Exception; end
 
       # 校验失败：聚合全部可读错误行（先验后换时逐行回报）
@@ -52,12 +55,20 @@ module Sebas
 
         # 校验器（纯函数）：返回错误列表，空数组=合法。
         # M1-WP8 热更新「先验后换」复用本函数，不在此处 raise（拒启由 from_content 负责）。
+        # 会话输入调度策略校验（session-input-scheduling.md §3.4；先验后换复用）
+        private def validate_session_policies(config : Config, errors : Array(String)) : Nil
+          agents_policies = {} of String => Scheduling::SessionPolicyConfig?
+          config.agents.each { |name, agent| agents_policies[name] = agent.session }
+          errors.concat(Scheduling::Policy.validate_config_errors(config.gateway.session, agents_policies))
+        end
+
         def validate(config : Config) : Array(String)
           errors = [] of String
           validate_agents(config, errors)
           validate_channels(config, errors)
           validate_bindings(config, errors)
           validate_gateway(config, errors)
+          validate_session_policies(config, errors)
           errors
         end
 
