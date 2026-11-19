@@ -1,0 +1,71 @@
+name: mruby-sandbox
+
+# #15 恢复路径 2：在无杀软实时拦截的干净 CI 上构建裁剪版 mruby 解释器
+# （本机 Windows 环境级 blocker 的消项路径），并发布 mruby.exe 产物。
+# 解释器 pin 与 build_config 契约见 docs/design/review/m3-plugin-feasibility.md
+# 与 docs/design/design.md §12.4（gembox 裁剪：无 mruby-io / mruby-socket）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/mruby-build/**"
+      - ".github/workflows/mruby-sandbox.yml"
+  pull_request:
+    paths:
+      - "tools/mruby-build/**"
+      - ".github/workflows/mruby-sandbox.yml"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sebas
+      - uses: actions/checkout@v4
+        with:
+          repository: mruby/mruby
+          ref: 831da26b9021de0369d17b71b5667e2941a1a32d # mruby 4.0.0 pinned
+          path: mruby
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-ruby
+      - name: Vendor sandbox gem and build config
+        shell: pwsh
+        run: |
+          Copy-Item sebas/tools/mruby-build/mrbgems/mruby-sebas-stdio -Destination mruby/mrbgems/ -Recurse
+          Copy-Item sebas/tools/mruby-build/mrb_cr.rb -Destination mruby/build_config/
+      - name: Build interpreter
+        run: |
+          cd mruby
+          ruby minirake
+      - name: Smoke verification chain (feasibility §四)
+        run: |
+          MRUBY=./mruby/build/host/bin/mruby.exe
+          echo "--- -e 通道 ---"
+          test "$($MRUBY -e "puts 1")" = "1"
+          echo "--- stdin 通道 ---"
+          test "$(echo 'p 1+1' | $MRUBY)" = "2"
+          echo "--- exit code 通道 ---"
+          $MRUBY -e "exit 3"; test $? -eq 3
+          echo "--- gembox 裁剪（无 IO）---"
+          test "$($MRUBY -e "p defined?(File)")" = "nil"
+          test "$($MRUBY -e "p defined?(IO)")" = "nil"
+          echo "--- sebas_print 输出 ---"
+          test "$($MRUBY -e "print 'sebas-ok'" 2>/dev/null)" = "sebas-ok"
+          echo "ALL SMOKE CHECKS PASSED"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mruby-sandbox-windows
+          path: mruby/build/host/bin/mruby.exe
+          if-no-files-found: error
