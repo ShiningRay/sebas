@@ -56,19 +56,21 @@ jobs:
           cd mruby
           ruby minirake
       - name: Smoke verification chain (feasibility §四)
+        # 沙箱 gembox 无 mruby-print：唯一的输出通道是 sebas_print（C gem）；
+        # 数字转字符串用核心 to_s。
         run: |
           MRUBY=./mruby/build/host/bin/mruby.exe
-          echo "--- -e 通道 ---"
-          test "$($MRUBY -e "puts 1")" = "1"
+          echo "--- -e 通道（sebas_print）---"
+          test "$($MRUBY -e "sebas_print '1'")" = "1"
           echo "--- stdin 通道 ---"
-          test "$(echo 'p 1+1' | $MRUBY)" = "2"
-          echo "--- exit code 通道 ---"
+          test "$(echo "sebas_print (1+1).to_s" | $MRUBY)" = "2"
+          echo "--- exit code 通道（mruby-exit）---"
           $MRUBY -e "exit 3"; test $? -eq 3
           echo "--- gembox 裁剪（无 IO）---"
-          test "$($MRUBY -e "p defined?(File)")" = "nil"
-          test "$($MRUBY -e "p defined?(IO)")" = "nil"
+          test "$($MRUBY -e "sebas_print defined?(File).to_s")" = "nil"
+          test "$($MRUBY -e "sebas_print defined?(IO).to_s")" = "nil"
           echo "--- sebas_print 输出 ---"
-          test "$($MRUBY -e "print 'sebas-ok'" 2>/dev/null)" = "sebas-ok"
+          test "$($MRUBY -e "sebas_print 'sebas-ok'")" = "sebas-ok"
           echo "ALL SMOKE CHECKS PASSED"
       - uses: actions/upload-artifact@v4
         with:
