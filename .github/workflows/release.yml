@@ -52,13 +52,14 @@ jobs:
         shell: bash
         run: mkdir -p bin
 
-      # Linux: link SQLite statically so the tarball runs on any glibc distro
-      # without libsqlite3.so.0 installed. Other platforms use the system library.
-      - name: Build release binary (Linux, static SQLite)
+      # Linux: static-link the C libraries a stock distro may not have
+      # (sqlite3, yaml, pcre2). OpenSSL and zlib stay dynamic — every distro
+      # ships them, and static OpenSSL needs extra provider setup.
+      - name: Build release binary (Linux, static C libs)
         if: runner.os == 'Linux'
         run: >
           crystal build --release --no-debug
-          --link-flags '-Wl,-Bstatic -lsqlite3 -Wl,-Bdynamic'
+          --link-flags '-Wl,-Bstatic -lsqlite3 -lyaml -lpcre2-8 -Wl,-Bdynamic'
           -o bin/sebas src/main.cr
 
       - name: Build release binary
@@ -102,9 +103,9 @@ jobs:
           Copy-Item README.md, LICENSE, CHANGELOG.md $stage
           Copy-Item examples/config.example.yaml $stage
           Compress-Archive -Path $stage/* -DestinationPath "dist/$name.zip"
-          Get-FileHash "dist/$name.zip" -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  $name.zip" } |
-            Out-File -Encoding ascii "dist/$name.zip.sha256"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          # LF line ending so `sha256sum -c` accepts the file on Linux/macOS
+          [IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
