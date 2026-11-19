@@ -716,7 +716,7 @@ remote-memory-1.2.0.sebas-plugin
   "entrypoint": "plugin.rb",
   "provides": ["memory.backend"],
   "actions": ["remember", "recall", "forget"],
-  "capabilities": ["memory_driver.remote"],
+  "capabilities": ["memory_driver.write", "memory_driver.query", "memory_driver.delete"],
   "timeout_ms": 1500,
   "config_schema": {"kind_weights": {"type": "object", "required": false, "additionalProperties": {"type": "number"}}}
 }
@@ -768,7 +768,7 @@ sebas plugin rollback remote-memory 1.2.0
 ```
 
 1. 按安装流程校验新版本；`api_version` 主版本不兼容拒绝自动升级。新增/提升 capability、扩展点或风险等级必须再次显式批准，未批准不激活。
-2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：**排空在途旧版本调用 → 取数据检查点 → 迁移 → 验证**，指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。三个不变量：**(a) 排空是唯一边界**——旧版本代码永远不读迁移后的新 schema：有界等待在途旧快照调用及其已发出的宿主 driver 操作完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分受幂等/memo 保护）；无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。**(b) 检查点在排空边界之后取得，恢复不静默丢弃已确认写入**：已排空调用的全部已确认写入包含在检查点内；兼容视图调用写入版本化兼容数据、不写被迁移 schema——检查点之后被迁移 schema 上无新写入，恢复检查点不丢已确认数据；兼容视图写入按迁移声明的回放规则并入，无法回放的差异在 activate 校验中显式报告。**(c) 从迁移开始到恢复路径完成前，对该插件的新调用保持拒绝或排队**——active 指针仍指旧版本，放行即让旧代码访问新 schema。封锁解除为二选一：`activate` 成功换指针；或迁移失败后宿主恢复旧版本数据并校验版本/数据一致性通过，此时直接放行恢复服务，不要求也不触发 `activate`——迁移失败不得使已恢复的插件无限期不可用。
+2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：**排空在途旧版本调用 → 取数据检查点 → 迁移 → 验证**，指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。三个不变量：**(a) 排空是唯一边界**——旧版本代码永远不读迁移后的新 schema：有界等待在途旧快照调用及其已发出的宿主 driver 操作完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分受幂等/memo 保护）；无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。**(b) 检查点在排空边界之后取得，恢复不静默丢弃已确认写入**：已排空调用的全部已确认写入包含在检查点内；兼容视图调用写入版本化兼容数据、不写被迁移 schema——检查点之后被迁移 schema 上无新写入，恢复检查点不丢已确认数据；兼容视图写入按迁移声明的回放规则并入，无法回放的差异在 activate 校验中显式报告。**(c) 从迁移开始到恢复路径完成前，对该插件的新调用保持拒绝或排队**——active 指针仍指旧版本，放行即让旧代码访问新 schema。封锁解除为二选一：`activate` 成功换指针；或迁移失败后宿主恢复旧版本数据并校验版本/数据一致性通过，此时直接放行恢复服务，不要求也不触发 `activate`——迁移失败不得使已恢复的插件无限期不可用。**迁移成功但 `activate` 校验失败**：数据已在新 schema，禁止回退旧版本——宿主保持封锁并重试 `activate`，或执行迁移声明的回退事务恢复迁移前检查点后按 (b) 解封；不出现「数据已迁移、指针未换、封锁又解除」的中间态。
 3. `activate` 原子换指针；当前 turn/调用继续旧快照，新调用用新版本。默认保留当前版及上一已知可回滚版；未被引用的旧版按保留策略清理，不立即删除唯一回滚点。
 4. 降级安装默认拒绝；`rollback` 只允许 registry 中且与当前数据 schema 兼容的已安装版本，否则提示恢复相应备份。升级不重试未完成的副作用动作，幂等键按 §7.3 执行。
 
@@ -816,7 +816,7 @@ sebas plugin uninstall remote-memory --purge
 | LLM | `llm.request.error` | observe | Provider 每次失败尝试后，含错误类型、状态码、重试序号；不改变既定重试策略 |
 | LLM | `llm.response.transform` | transform | `llm.request.after` 后、最终回复/工具调用解析前，可替换文本；宿主再次解析和校验 |
 | 工具 | `tool.call.before` | gate + transform | registry 查找后、执行前，可改写白名单参数、拒绝或请求审批；risk/replay/审批由宿主裁决，异常与超时 deny |
-| 工具 | `tool.call.after` | observe | 工具成功、业务错误或异常转为 ToolResult 后；只读，含状态与耗时 |
+| 工具 | `tool.call.after` | observe | 工具成功、业务错误或异常转为 ToolResult 后；只读，payload 键见统一执行规则（tool_id/request_id/session_key/status/duration_ms/result_summary） |
 | 工具 | `tool.result.transform` | transform | `tool.call.after` 后、结果返回 Agent 前，可替换受限文本结果；不能改变 replay/risk、幂等账本或已发生副作用 |
 | 会话 | `session.start` | observe | 新会话上下文建立后；仅通知，不得在每次消息时误触发 |
 | 会话 | `session.end` | observe | 会话重置、删除、Gateway 终止等明确边界，带 reason；在预算内做只读收尾 |
@@ -833,6 +833,7 @@ sebas plugin uninstall remote-memory --purge
 **统一执行规则**：
 
 - `on_hook` 的 handler 块参数是该 hook 的 **payload 对象（唯一业务参数）**——如 `memory.remember.before` 的 payload 含 `entry`；各 hook 的 payload 字段由本目录『宿主注入点与契约』列与 manifest 声明约定，runner 按此契约实现；`$config`/`$context`/`$idempotency_key` 经注入变量提供，不占用块参数。
+- **payload 键与类型契约**：表中列出字段的行，其字段即该 hook payload 的必需键，值类型限于 §12.2 JSON-like 原语（string/int/bool/enum/null/数组），宿主不得臆加未列字段，manifest 与宿主实现必须使用同一键名与类型。完整示例——`tool.call.after` payload：`tool_id: string`、`request_id: string`、`session_key: string`、`status: success|error|exception`、`duration_ms: int`、`result_summary: string`（受限文本，不含敏感原文）；`message.sent`：`status: success|error`、`message_id: string|null`、`error_code: string|null`；`memory.remember.after`：`memory_id: string`、`kind: string`、`tags: string[]`；`task.start`：`run_id: string`、`workflow_id: string`；`task.end`：`task_id: string`、`status: string`、`error: object|null`。其余 hook 在 WP5 实现时按本规则定稿。
 - manifest `hooks` 与脚本 `on_hook(name)` 注册集合必须一致，宿主按 §12.2 的索引只调用订阅者；同插件重复注册拒绝，不同插件按 priority（数值大者优先）再按插件 ID/注册序稳定排序。
 - `gate + transform` 同步按序执行，每个处理器接收上一个已校验结果；任一 deny 停止后续处理器。`observe` 按注册快照执行、忽略返回值，可并发但不得阻塞主流程；观察副作用不保证持久化或严格全序。
 - 所有插件调用遵守独立进程、schema/大小限制和 watchdog。gate/transform 的异常、超时、非法结果默认 **deny**；observe 的异常、超时记录脱敏日志并跳过。宿主 hardline 不可被返回结果覆盖。
