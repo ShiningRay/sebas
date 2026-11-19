@@ -36,8 +36,8 @@ on_hook("memory.remember.before", (payload) => {
   if (/决定采用|最终选择|decided to/i.test(normalized)) tags.push("decision");
 
   const uniqueTags = [...new Set(tags)];
-  // 与原始 entry 文本比较：带首尾空白的输入返回 modify，未变化才 allow。
-  const changed = normalized !== raw || uniqueTags.length !== originalTags.length;
+  // 与原始 entry 文本比较（标签按内容比较，先去重）：带首尾空白的输入、重复标签或新增标签都返回 modify。
+  const changed = normalized !== raw || JSON.stringify(uniqueTags) !== JSON.stringify(originalTags);
 
   if (changed) {
     decision("modify", {

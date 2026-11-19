@@ -646,8 +646,8 @@ end
 - **每次调用的注入**：runner 校验请求后注入 `$action`、`$config`、`$context`、`$payload`、`$idempotency_key`，执行 `plugin.rb` 完成注册，再按 `$action` 精确调用 handler。`$context` 的授权身份以宿主保存的原始值为准，插件修改全局变量不能扩大权限。
 - **无跨调用 Ruby 状态**：全局变量、block 和对象只在本次进程有效，不能当缓存或持久状态；持久状态经白名单 capability 保存并带 schema 版本。
 - **JSON-like 协议**：只传数字/字符串/布尔/null/数组/哈希，不传 Crystal/Ruby 对象或 Proc。请求包含 `protocol_version`、`request_id`、`plugin_id`、`action`、`context`、`payload`、`config`；stdin 输入请求，stdout 返回结果，stderr 仅受限诊断。采用有长度上限的 NDJSON，校验恰好一个结果、schema、大小和请求 ID；预研 `RESULT` 行不是兼容承诺。
-- **capability 宿主调用（host-call）帧**：handler 执行期间经宿主 driver 访问外部服务的协议按双向帧定义——插件向 stdout 输出 `{"type": "capability_call", "call_id", "capability", "op", "params"}`；宿主校验该 capability 已在 manifest 声明且在授权快照内、`params` 通过校验后执行 driver，并向 stdin 写回 `{"type": "capability_result", "call_id", "ok", "result" | "error"}`。执行期间 stdin 保持打开，宿主不发任何非应答帧。
-- **host-call 语义**：注入脚本的 `capability(capability, op, params)` 是上述协议的同步封装，按 `call_id` 关联请求与应答。`capability_call`/`capability_result` 属传输帧，**不计入「恰好一个结果」**——最终结果必须是最后一行 result 帧，其后再有任何输出（含新 host-call）即拒绝该次调用；单次调用的 host-call 次数、单帧大小与总时长上限取 manifest 声明与宿主全局上限的较小者，超限按结构化错误终止；driver 调用一律以宿主注入的 agent/session scope 执行，插件不能传任意 URL、路径或凭据；host-call 失败以结构化 error 交付插件，插件仍须产出唯一最终结果。
+- **capability 宿主调用（host-call）帧**：handler 执行期间经宿主 driver 访问外部服务的协议按双向帧定义——插件向 stdout 输出 `{"type": "capability_call", "call_id", "capability", "params"}`；宿主校验该 capability 已在 manifest 声明且在授权快照内（**授权绑定到 capability 名称本身，即其代表的一类 driver 操作；帧内无独立 `op` 字段，capability 内不存在越权操作面**）、`params` 通过该 capability 的 schema 校验后执行 driver，并向 stdin 写回 `{"type": "capability_result", "call_id", "ok", "result" | "error"}`。执行期间 stdin 保持打开，宿主不发任何非应答帧。
+- **host-call 语义**：注入脚本的 `capability(capability, params)` 是上述协议的同步封装，按 `call_id` 关联请求与应答；`params` 为该 capability/driver 定义的结构化参数。`capability_call`/`capability_result` 属传输帧，**不计入「恰好一个结果」**——最终结果必须是最后一行 result 帧，其后再有任何输出（含新 host-call）即拒绝该次调用；单次调用的 host-call 次数、单帧大小与总时长上限取 manifest 声明与宿主全局上限的较小者，超限按结构化错误终止；driver 调用一律以宿主注入的 agent/session scope 执行，插件不能传任意 URL、路径或凭据；host-call 失败以结构化 error 交付插件，插件仍须产出唯一最终结果。
 - **能力声明**：`memory.backend` 等扩展点和 capability 由 manifest 静态声明，宿主按 active 版本及授权快照派发。外部服务由宿主 driver 执行，agent/session scope 由宿主注入。
 - **单入口、无原生依赖**：首版只有 `plugin.rb`，不支持包内 DLL/so、安装脚本、自动依赖下载或其他 `require` 文件。复杂插件的受控多文件、显式初始化和按插件常驻 worker 属于后续演进，见[插件复杂化演进规划](review/plugin-evolution.md)，不改变当前包契约或 M3 验收。
 
@@ -760,7 +760,7 @@ sebas plugin rollback remote-memory 1.2.0
 ```
 
 1. 按安装流程校验新版本；`api_version` 主版本不兼容拒绝自动升级。新增/提升 capability、扩展点或风险等级必须再次显式批准，未批准不激活。
-2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：备份/检查点→**排空在途旧版本调用**→迁移→验证；指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。**不兼容 schema 迁移前必须排空在途旧版本调用**：有界等待旧快照调用结束，超时未结束者按结构化错误终止（副作用已有幂等/memo 保护），迁移期间拒绝或排队新调用；无法排空时须为旧调用提供版本化兼容数据视图，禁止旧版本代码直接访问迁移后的新 schema。
+2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：备份/检查点→**排空在途旧版本调用**→迁移→验证；指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。**不兼容 schema 迁移以「排空」为唯一边界——旧版本代码永远不读迁移后的新 schema**：有界等待在途旧快照调用**及其已发出的宿主 driver 操作**完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分受幂等/memo 保护）；迁移期间拒绝或排队新调用；无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。
 3. `activate` 原子换指针；当前 turn/调用继续旧快照，新调用用新版本。默认保留当前版及上一已知可回滚版；未被引用的旧版按保留策略清理，不立即删除唯一回滚点。
 4. 降级安装默认拒绝；`rollback` 只允许 registry 中且与当前数据 schema 兼容的已安装版本，否则提示恢复相应备份。升级不重试未完成的副作用动作，幂等键按 §7.3 执行。
 
@@ -834,7 +834,8 @@ sebas plugin uninstall remote-memory --purge
 **示例（声明式 DSL）**：
 
 ```ruby
-on_hook "memory.remember.before" do |entry|
+on_hook "memory.remember.before" do |payload|
+  entry = payload["entry"]
   deny!("empty_memory", "Memory text must not be empty") if entry["text"].to_s.empty?
   modify(entry.merge("tags" => (entry["tags"] || []).uniq))
 end

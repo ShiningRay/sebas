@@ -32,8 +32,8 @@ on_hook "memory.remember.before" do |payload|
     tags = tags + ["preference"] if normalized =~ /我喜欢|我偏好|prefer/i
     tags = tags + ["decision"] if normalized =~ /决定采用|最终选择|decided to/i
 
-    # 与原始 entry 文本比较：带首尾空白的输入返回 modify，未变化才 allow。
-    if normalized == raw && tags == (entry["tags"] || [])
+    # 与原始 entry 文本比较（标签先去重）：带首尾空白的输入、重复标签或新增标签都返回 modify。
+    if normalized == raw && tags.uniq == (entry["tags"] || [])
       emit_decision.call("allow")
     else
       emit_decision.call("modify", {

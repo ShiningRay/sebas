@@ -33,7 +33,6 @@ switch (action) {
 
     const result = capability("memory_driver.write", {
       driver,
-      operation: "upsert",
       agent_id: context.agent_id,
       memory_id: payload.memory_id,
       idempotency_key: request.idempotency_key,

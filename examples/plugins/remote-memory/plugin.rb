@@ -39,7 +39,6 @@ when "remember"
   # memory_id 由宿主生成；idempotency_key 防止恢复重放产生重复记忆。
   result = capability("memory_driver.write", {
     "driver" => driver,
-    "operation" => "upsert",
     "agent_id" => context["agent_id"],
     "memory_id" => payload["memory_id"],
     "idempotency_key" => request["idempotency_key"],
