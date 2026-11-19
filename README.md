@@ -14,7 +14,7 @@ Crystal 多账号可编排 Personal Agent 平台 —— 运行在用户自己机
 | 期 | 内容 | 状态 |
 |---|---|---|
 | M0 | MVP：单账号闭环（email 账号 + agent + 持久层 + 基础工具 + NDJSON TUI） | **门禁通过**（[m0-gate.md](docs/design/review/m0-gate.md)；真实邮箱集成验收待外部依赖 E.1） |
-| M1 | 多账号完备 + 配置热更新（binding 路由、企微/飞书、TokenProvider、keyring、热更新四正交件） | 待开始 |
+| M1 | 多账号完备 + 配置热更新（binding 路由、企微/飞书、TokenProvider、keyring、热更新四正交件） | **门禁通过**（[m1-gate.md](docs/design/review/m1-gate.md)；真实账号集成与企微 AIBot/飞书 WS 主路挂外部依赖与协议核对） |
 | M2 | 编排完备（触发→条件→动作 DSL、持久 Task、审批、预算/lease、账本） | 待开始 |
 | M3 | 协作 + 插件脚本层（message_agent 防环、subagent 信号量、mrb.cr 沙箱） | 待开始 |
 
