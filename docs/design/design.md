@@ -643,7 +643,7 @@ end
 - **每动作一个裁剪 mruby 子进程**：每次调用启动新进程，结束即释放 VM。mrb.cr 进程内绑定复核为 **84/84 通过**，但 mruby 无指令级执行配额，进程内死循环无法由宿主 watchdog 打断，故不作为首版运行形态。
 - **静态声明 + 精确注册**：manifest 的 `hooks` 是插件意图和授权上限，宿主据此建立 `hook_name → [(plugin_id, version, priority)]` 索引；`on_hook(name)` 只在该次进程内登记具体 handler。manifest 未声明、handler 未注册、插件未启用或版本不一致均不派发，**不向全部插件广播所有钩子**。
 - **声明校验**：安装时校验 manifest 中 hook 名称、类型、所需 capability 与配置 schema；开发/启用冒烟在无副作用沙箱中加载脚本，收集 handler 并验证 manifest 与注册集合相符。handler 重复、未知 hook、缺 handler、额外注册均拒绝激活。
-- **每次调用的注入**：runner 校验请求后注入 `$action`、`$config`、`$context`、`$payload`、`$idempotency_key`，执行 `plugin.rb` 完成注册，再按 `$action` 精确调用 handler。`$context` 的授权身份以宿主保存的原始值为准，插件修改全局变量不能扩大权限。
+- **每次调用的注入**：runner 校验请求后注入 `$action`、`$config`、`$context`、`$payload`、`$idempotency_key`，执行 `plugin.rb` 完成注册，再按 `$action` 精确调用 handler。**handler 以该 hook/action 的 `$payload` 作为唯一业务参数**（on_hook 块参数即 payload；如 `memory.remember.before` 的 payload 含 `entry`），参数形状由 §12.11 钩子目录与 manifest 声明定义。`$context` 的授权身份以宿主保存的原始值为准，插件修改全局变量不能扩大权限。
 - **无跨调用 Ruby 状态**：全局变量、block 和对象只在本次进程有效，不能当缓存或持久状态；持久状态经白名单 capability 保存并带 schema 版本。
 - **JSON-like 协议**：只传数字/字符串/布尔/null/数组/哈希，不传 Crystal/Ruby 对象或 Proc。请求包含 `protocol_version`、`request_id`、`plugin_id`、`action`、`context`、`payload`、`config`；stdin 输入请求，stdout 返回结果，stderr 仅受限诊断。采用有长度上限的 NDJSON，校验恰好一个结果、schema、大小和请求 ID；预研 `RESULT` 行不是兼容承诺。
 - **capability 宿主调用（host-call）帧**：handler 执行期间经宿主 driver 访问外部服务的协议按双向帧定义——插件向 stdout 输出 `{"type": "capability_call", "call_id", "capability", "params"}`；宿主校验该 capability 已在 manifest 声明且在授权快照内（**授权绑定到 capability 名称本身，即其代表的一类 driver 操作；帧内无独立 `op` 字段，capability 内不存在越权操作面**）、`params` 通过该 capability 的 schema 校验后执行 driver，并向 stdin 写回 `{"type": "capability_result", "call_id", "ok", "result" | "error"}`。执行期间 stdin 保持打开，宿主不发任何非应答帧。
@@ -662,7 +662,7 @@ end
 | 每个 action/hook | 新进程 → 注入本次请求 → 执行脚本声明 → 精确 dispatch 一个 handler | 只执行本次 handler 及其 capability |
 | 禁用/卸载 | 原子摘除注册快照，保留或按 purge 规则处理数据 | 不承诺运行 cleanup；外部资源由宿主 driver 回收 |
 
-- 如插件确需一次性建schema/检查外部服务，声明 `actions: ["install", "enable", "disable"]` 及对应 `on_action`，由宿主在生命周期节点显式调用，遵循幂等、审批、超时与迁移事务；**不是包安装脚本，不在 pack/validate 时执行**。
+- 如插件确需一次性建schema/检查外部服务，声明 `actions: ["install", "enable", "disable"]` 及对应 `on_action`，由宿主在生命周期节点显式调用，遵循幂等、审批、超时与迁移事务；**不是包安装脚本，不在 pack/validate 时执行**。显式 `install` action 属包安装完成后的独立生命周期调用（宿主在 `install`/`enable` 命令节点执行），其外部效应不属于包安装——生命周期表『安装/升级』行的包安装本身始终只解析/注册；action 失败不回滚包安装，包保持在 disabled/staged 状态。
 - `gateway.start` / `gateway.stop` 是生命周期观察钩子，不等于 init/cleanup；需要常驻 worker 的插件不属于首版模型。
 - `enable` 失败保旧版；action 崩溃只影响该次调用，不自动重试副作用。重复 enable/disable 应幂等，升级数据迁移成功与版本指针切换保持原子语义。
 
@@ -715,7 +715,7 @@ remote-memory-1.2.0.sebas-plugin
 ```
 
 - `id` 限小写字母开头的 1–64 位小写字母/数字/连字符；`version` 为 SemVer，`api_version` 为主版本兼容契约。文件名不参与身份或升级判断。
-- 安装器拒绝重复文件/大小写冲突、绝对路径、`..` 穿越、符号链接/重解析点、额外套件和超限包。限额在实现时固定并测试；按 ZIP 解压后总大小和文件数校验，防压缩炸弹。
+- 安装器拒绝重复文件/大小写冲突、绝对路径、`..` 穿越、符号链接/重解析点、额外套件和超限包。限额在实现时固定并测试；防压缩炸弹的限额校验**随解压流式执行**——边解压边累计未压缩字节数与文件条目数，超限立即中止并清理 staging，不得先完整解压再校验。
 - 首版以明确来源与人工审查为信任基础；发布者签名/可信指纹为后续增强。SHA-256 只证明内容完整，不证明作者可信。
 - `pack` 只收录白名单文件；禁止包安装脚本、post-install hook、包内原生扩展与自动依赖解析。
 
@@ -760,7 +760,7 @@ sebas plugin rollback remote-memory 1.2.0
 ```
 
 1. 按安装流程校验新版本；`api_version` 主版本不兼容拒绝自动升级。新增/提升 capability、扩展点或风险等级必须再次显式批准，未批准不激活。
-2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：备份/检查点→**排空在途旧版本调用**→迁移→验证；指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。**不兼容 schema 迁移以「排空」为唯一边界——旧版本代码永远不读迁移后的新 schema**：有界等待在途旧快照调用**及其已发出的宿主 driver 操作**完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分受幂等/memo 保护）；迁移期间拒绝或排队新调用；无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。
+2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：**排空在途旧版本调用 → 取数据检查点 → 迁移 → 验证**，指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。三个不变量：**(a) 排空是唯一边界**——旧版本代码永远不读迁移后的新 schema：有界等待在途旧快照调用及其已发出的宿主 driver 操作完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分受幂等/memo 保护）；无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。**(b) 检查点在排空边界之后取得，恢复不静默丢弃已确认写入**：已排空调用的全部已确认写入包含在检查点内；兼容视图调用写入版本化兼容数据、不写被迁移 schema——检查点之后被迁移 schema 上无新写入，恢复检查点不丢已确认数据；兼容视图写入按迁移声明的回放规则并入，无法回放的差异在 activate 校验中显式报告。**(c) 从迁移开始到 `activate` 成功前，对该插件的新调用保持拒绝或排队**——active 指针仍指旧版本，放行即让旧代码访问新 schema；换指针成功后恢复。
 3. `activate` 原子换指针；当前 turn/调用继续旧快照，新调用用新版本。默认保留当前版及上一已知可回滚版；未被引用的旧版按保留策略清理，不立即删除唯一回滚点。
 4. 降级安装默认拒绝；`rollback` 只允许 registry 中且与当前数据 schema 兼容的已安装版本，否则提示恢复相应备份。升级不重试未完成的副作用动作，幂等键按 §7.3 执行。
 
