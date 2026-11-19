@@ -52,8 +52,25 @@ jobs:
         shell: bash
         run: mkdir -p bin
 
+      # Linux: link SQLite statically so the tarball runs on any glibc distro
+      # without libsqlite3.so.0 installed. Other platforms use the system library.
+      - name: Build release binary (Linux, static SQLite)
+        if: runner.os == 'Linux'
+        run: >
+          crystal build --release --no-debug
+          --link-flags '-Wl,-Bstatic -lsqlite3 -Wl,-Bdynamic'
+          -o bin/sebas src/main.cr
+
       - name: Build release binary
+        if: runner.os != 'Linux'
         run: crystal build --release --no-debug -o bin/sebas src/main.cr
+
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          bin="./bin/sebas"
+          [ "$RUNNER_OS" = "Windows" ] && bin="./bin/sebas.exe"
+          "$bin" version
 
       - name: Package (unix)
         if: runner.os != 'Windows'
