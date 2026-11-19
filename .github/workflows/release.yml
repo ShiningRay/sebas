@@ -48,6 +48,10 @@ jobs:
       - name: Verify gates
         run: crystal spec --no-color
 
+      - name: Create output directory
+        shell: bash
+        run: mkdir -p bin
+
       - name: Build release binary
         run: crystal build --release --no-debug -o bin/sebas src/main.cr
 
