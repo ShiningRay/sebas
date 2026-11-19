@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec:
+    name: spec / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      - name: Cache shards
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib
+            ~/.cache/shards
+          key: shards-${{ runner.os }}-${{ hashFiles('shard.yml', 'shard.lock') }}
+          restore-keys: shards-${{ runner.os }}-
+
+      - name: Install shards
+        run: shards install --frozen
+
+      - name: Format check
+        run: crystal tool format --check
+
+      - name: Spec
+        run: crystal spec --no-color
+
+  lint:
+    name: ameba
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      - name: Cache shards
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib
+            ~/.cache/shards
+          key: shards-${{ runner.os }}-${{ hashFiles('shard.yml', 'shard.lock') }}
+          restore-keys: shards-${{ runner.os }}-
+
+      - name: Install shards
+        run: shards install --frozen
+
+      - name: Lint
+        run: make lint
+
+  release-build:
+    name: release build / ${{ matrix.os }}
+    needs: spec
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      - name: Cache shards
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib
+            ~/.cache/shards
+          key: shards-${{ runner.os }}-${{ hashFiles('shard.yml', 'shard.lock') }}
+          restore-keys: shards-${{ runner.os }}-
+
+      - name: Install shards
+        run: shards install --frozen
+
+      - name: Build release binary
+        run: crystal build --release --no-debug -o bin/sebas src/main.cr
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin="./bin/sebas"
+          [ "${RUNNER_OS:-}" = "Windows" ] && bin="./bin/sebas.exe"
+          "$bin" version
+
+      - name: Crash-recovery drill (M0-WP8)
+        run: crystal spec spec/platform/cli/gateway_spec.cr --no-color

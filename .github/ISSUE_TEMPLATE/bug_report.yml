@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 ShiningRay
+# SPDX-License-Identifier: MIT
+
+name: "🐛 Bug report"
+description: Report a reproducible defect in Sebas / 报告可复现的缺陷
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Please do **not** include secrets, tokens, mail passwords,
+        or private keys. Redact them with `<redacted>`.
+        请勿粘贴任何凭据；用 `<redacted>` 代替。
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `sebas version`, or the commit SHA / release tag.
+      placeholder: "0.1.0 / a645052"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Affected area
+      options:
+        - Email channel
+        - WeCom channel
+        - Lark / Feishu channel
+        - Orchestration (DSL / engine / triggers)
+        - Approvals / budget / ledger
+        - Config & hot reload
+        - Credentials / keyring
+        - Agents / subagents
+        - Plugin layer
+        - Admin HTTP / IPC / TUI
+        - Build / packaging
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic steps. Include the relevant config snippet (redacted).
+      placeholder: |
+        1. config.yaml has ...
+        2. run `./bin/sebas gateway --config config.yaml`
+        3. send ... to ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Paste the error, stack trace, or log lines with credentials removed.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Related issues, workarounds, frequency, environment notes.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed all credentials, tokens, and private keys from this report.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md).
+          required: true

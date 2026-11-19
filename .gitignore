@@ -8,4 +8,22 @@ sebas.exe
 coverage/
 tmp-drill-*/
 /.crystal/
+/.ruby-lsp/
 probe-crash.db*
+*.db
+*.db-shm
+*.db-wal
+master.key
+data/
+
+# Environment overrides — never commit real credentials
+.env
+.env.*
+!.env.example
+
+
+# Ruby LSP vendor tree (tooling artifact, not part of the build)
+/vendor/
+
+# CI toolchain deps (Windows import libs)
+/.build-deps/

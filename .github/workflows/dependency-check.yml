@@ -1,0 +1,84 @@
+name: Dependency check
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: newer shard tags
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Compare shard.lock with upstream tags
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # shard.lock: "name:\n    git: URL\n    version: X"
+          python3 - <<'PY' > report.md
+          import json, os, re, subprocess, urllib.request
+
+          lock = open("shard.lock", encoding="utf-8").read()
+          entries = re.findall(r"\n  (\S+):\n    git: (\S+)\n    version: (\S+)", lock)
+          rows = []
+          for name, url, version in entries:
+              m = re.search(r"github\.com/([^/]+)/([^/]+?)(?:\.git)?$", url)
+              if not m:
+                  continue
+              repo = f"{m.group(1)}/{m.group(2)}"
+              try:
+                  with urllib.request.urlopen(f"https://api.github.com/repos/{repo}/tags?per_page=20") as r:
+                      tags = [t["name"] for t in json.load(r)]
+              except Exception as e:  # network/rate-limit: report, don't fail
+                  rows.append((name, version, "?", "n/a", f"lookup failed: {e}"))
+                  continue
+              latest = next((t for t in tags if re.match(r"^v?\d+\.\d+\.\d+$", t)), "?")
+              pinned = version.split("+git")[0].lstrip("v")
+              newest = latest.lstrip("v")
+              state = "newer tag available" if newest != "?" and newest != pinned else "up to date"
+              rows.append((name, version, latest, repo, state))
+
+          print("## Crystal shard dependency report\n")
+          print("| shard | pinned | latest tag | upstream | state |")
+          print("| --- | --- | --- | --- | --- |")
+          for name, version, latest, repo, state in rows:
+              print(f"| `{name}` | `{version}` | `{latest}` | [{repo}](https://github.com/{repo}) | {state} |")
+
+          stale = [r for r in rows if r[4] == "newer tag available"]
+          print(f"\n{len(stale)} shard(s) have a newer release tag.\n")
+          with open(os.environ.get("GITHUB_OUTPUT", "/dev/null"), "a", encoding="utf-8") as out:
+              out.write("stale=%d\n" % len(stale))
+          PY
+
+      - name: Read report
+        id: report
+        run: |
+          {
+            echo 'body<<EOF'
+            cat report.md
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open or update tracking issue
+        if: steps.check.outputs.stale != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Dependency check: newer shard releases available"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' || true)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file report.md
+          else
+            gh issue create --title "$title" --body-file report.md
+          fi

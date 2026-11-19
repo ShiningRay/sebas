@@ -1,0 +1,46 @@
+name: Setup Crystal + SQLite
+description: >
+  Install Crystal, Shards and a SQLite3 development library for the current OS,
+  so `shards install` and `crystal build` work on Windows, Linux and macOS.
+
+inputs:
+  crystal:
+    description: Crystal version to install.
+    required: false
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - name: Install Crystal
+      uses: crystal-lang/install-crystal@v1
+      with:
+        crystal: ${{ inputs.crystal }}
+
+    - name: Install SQLite3 (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+    - name: Set up MSVC environment (Windows)
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Install SQLite3 (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      # Crystal's Windows build targets MSVC, so it needs the `sqlite3.lib` import
+      # library plus `sqlite3.dll` at run time. Keep them out of `lib/` (that is the
+      # shards directory): the import lib goes to `.build-deps\lib` via LIB, and the
+      # DLL lands next to `bin/sebas.exe` so spawned binaries resolve it.
+      run: |
+        vcpkg install sqlite3:x64-windows
+        $root = $env:VCPKG_INSTALLATION_ROOT
+        $deps = "$PWD\.build-deps\lib"
+        New-Item -ItemType Directory -Force -Path $deps, "$PWD\bin" | Out-Null
+        Copy-Item "$root\installed\x64-windows\lib\sqlite3.lib" "$deps\sqlite3.lib"
+        Copy-Item "$root\installed\x64-windows\bin\sqlite3.dll" "$PWD\bin\sqlite3.dll"
+        "LIB=$deps;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append
+        "PATH=$deps;$PWD\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append

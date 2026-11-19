@@ -1,0 +1,21 @@
+# EditorConfig — https://editorconfig.org
+# 本仓文本统一 UTF-8 / LF；与 .gitattributes 的 working-tree-encoding 保持一致。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{cr,yml,yaml,json,md}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[*.md]
+# 文档里的行尾双空格是显式换行，不做裁剪
+trim_trailing_whitespace = false

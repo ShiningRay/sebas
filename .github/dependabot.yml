@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Crystal shards (shard.yml/shard.lock) are not a Dependabot ecosystem; a scheduled
+  # workflow checks for newer tags and opens an issue instead. See dependency-check.yml.

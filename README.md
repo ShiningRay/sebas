@@ -1,27 +1,218 @@
 # Sebas
 
-Crystal 多账号可编排 Personal Agent 平台 —— 运行在用户自己机器上的 **Crystal 单二进制**：
-同时绑定同渠道 N 个账号（多个 email、多个企业微信、多个飞书/Lark），以「触发→条件→动作」
-编排自动化流程，支持多 agent 协作、配置免重启热更新与 mrb.cr 插件脚本层。
+**A local-first, multi-account orchestration platform for personal agents — shipped as a single Crystal binary.**
 
-- 设计定稿：[docs/design/design.md](docs/design/design.md)（16 章）
-- 开发计划：[docs/design/development-plan.md](docs/design/development-plan.md)（M0–M3 WBS/排期/门禁）
-- 计划核验：[docs/design/review/development-plan-verification.md](docs/design/review/development-plan-verification.md)
-- 命名档案：[docs/design/naming.md](docs/design/naming.md)
+Sebas binds several accounts per channel (multiple mailboxes, multiple WeCom companies,
+multiple Lark/Feishu workspaces) on the machine you own, and lets you orchestrate them
+with a **trigger → condition → action** model: durable tasks, approvals, budgets, and
+hot-reloading configuration without restarting the gateway.
 
-## 里程碑
+> 中文简介：运行在你自己机器上的 Crystal 单二进制 Personal Agent 平台——同一渠道可绑定 N 个账号，
+> 以「触发→条件→动作」编排自动化流程，支持多 agent 协作、配置免重启热更新与插件脚本层。
 
-| 期 | 内容 | 状态 |
-|---|---|---|
-| M0 | MVP：单账号闭环（email 账号 + agent + 持久层 + 基础工具 + NDJSON TUI） | **门禁通过**（[m0-gate.md](docs/design/review/m0-gate.md)；真实邮箱集成验收待外部依赖 E.1） |
-| M1 | 多账号完备 + 配置热更新（binding 路由、企微/飞书、TokenProvider、keyring、热更新四正交件） | **门禁通过**（[m1-gate.md](docs/design/review/m1-gate.md)；真实账号集成与企微 AIBot/飞书 WS 主路挂外部依赖与协议核对） |
-| M2 | 编排完备（触发→条件→动作 DSL、持久 Task、审批、预算/lease、账本） | **门禁通过**（[m2-gate.md](docs/design/review/m2-gate.md)） |
-| M3 | 协作 + 插件脚本层（message_agent 防环、subagent 信号量、mrb.cr 沙箱） | **门禁通过**（WP1/2/3 验收 + 插件三包按预设条款降级技术预研：[m3-gate.md](docs/design/review/m3-gate.md)、[m3-plugin-feasibility.md](docs/design/review/m3-plugin-feasibility.md)） |
+[![CI](https://github.com/ShiningRay/sebas/actions/workflows/ci.yml/badge.svg)](https://github.com/ShiningRay/sebas/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Crystal](https://img.shields.io/badge/crystal-%3E%3D1.19-black)](https://crystal-lang.org)
 
-## 质量门禁（每期 M-gate）
+---
+
+## Contents
+
+- [Why Sebas](#why-sebas)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Project status](#project-status)
+- [Development](#development)
+- [Contributing](#contributing)
+- [Security](#security)
+- [License](#license)
+
+## Why Sebas
+
+Most personal-agent tooling assumes one account, one channel, and a cloud runtime.
+Sebas takes the opposite stance:
+
+| Concern | Sebas approach |
+| --- | --- |
+| Many accounts, one process | Account / Agent / Binding are orthogonal concepts; routing is an explicit table, not hard-coded per channel. |
+| Configuration churn | Validate-then-swap hot reload: an invalid config keeps the previous one running; only socket resources require a restart. |
+| Crash safety | Every inbound message is a durable intent; effects sit between intent and result records, so restarts resume instead of duplicating. |
+| Automation | Workflows are `trigger → condition → action` with approvals, budgets, leases, and an auditable ledger. |
+| Extensibility | A sandboxed script layer keeps custom actions out of the core binary. |
+| Your data | Local-first: state lives in SQLite on your machine, secrets live in the OS keyring. |
+
+## Features
+
+- **Channels** — Email (IMAP IDLE / SMTP), WeCom (企业微信), Lark/Feishu; N accounts each.
+- **Routing** — Most-specific binding resolution across `channel / account / peer → agent`.
+- **Orchestration** — Durable workflow engine with cron, event, webhook, and account triggers;
+  conditions; approval center (fail-closed); ledger, budget circuit-breaker, and leases.
+- **Hot reload** — File-watch plus IPC reload; components re-apply selectively (data hot-swap,
+  listeners flagged as restart-required).
+- **Agents** — Multiple agent personas with independent memory, loop-guarded inter-agent messaging,
+  subagent concurrency limits.
+- **Credentials** — AES-256-GCM vault; master key in the Windows Credential Manager with a
+  file fallback on other platforms.
+- **Admin surfaces** — Local HTTP + IPC admin API and a terminal UI (NDJSON).
+
+## Requirements
+
+- [Crystal](https://crystal-lang.org/install/) **>= 1.19** and [Shards](https://github.com/crystal-lang/shards)
+- A C toolchain plus development headers for **SQLite3**, **OpenSSL**, and **PCRE2**
+- Windows, macOS, or Linux
+
+## Install
+
+### Build from source
 
 ```sh
-crystal spec      # 0 fail
-./bin/ameba       # 无警告
-make release      # 构建成功
+git clone https://github.com/ShiningRay/sebas.git
+cd sebas
+shards install
+make release          # -> bin/sebas (bin/sebas.exe on Windows)
 ```
+
+`shards build sebas` also works if you prefer the Shards default output directory.
+
+### Prebuilt binaries
+
+Starting with `v0.1.0`, release assets are attached to each
+[GitHub release](https://github.com/ShiningRay/sebas/releases) for Linux, macOS, and
+Windows. Download the archive for your platform, extract it, and run `sebas`.
+
+> On Windows, building needs the MSVC Crystal distribution plus a SQLite3 development
+> library (for example `vcpkg install sqlite3`), or an MSYS2 UCRT64 toolchain.
+
+## Quick start
+
+```sh
+# 1. Copy and edit the example configuration
+cp examples/config.example.yaml config.yaml
+
+# 2. Export the values referenced by ${...} in the config
+export MAIL_USER=you@example.com
+export MAIL_PASSWORD=...
+export LLM_API_KEY=...
+
+# 3. Run the resident gateway
+./bin/sebas gateway --config config.yaml
+
+# Inspect the CLI surface
+./bin/sebas --help
+```
+
+The gateway:
+
+1. loads and validates the config (an invalid config refuses to start; during reload the old one is kept);
+2. opens the SQLite store and replays unfinished intents;
+3. binds channel accounts and starts the trigger engine;
+4. serves the local admin API and the terminal UI.
+
+Configuration hot reload is on by default — editing `config.yaml` re-applies the change
+without restarting the process.
+
+## Configuration
+
+See [`examples/config.example.yaml`](examples/config.example.yaml) for the full shape and
+[`docs/design/design.md`](docs/design/design.md) §3.4 for the config tree.
+
+```yaml
+channels:
+  email:
+    accounts:
+      - id: personal-mailbox
+        platform: imap.example.com
+        receive: imap-idle
+        smtp: { port: 465, tls: implicit }
+        credentials:
+          user: ${MAIL_USER}
+          password: ${MAIL_PASSWORD}
+
+agents:
+  main:
+    model: deepseek/chat
+    api_key: ${LLM_API_KEY}
+
+bindings:
+  - { channel: email, account: personal-mailbox, peer: "*", agent: main }
+
+gateway:
+  http: { bind: 127.0.0.1, port: 18790, auth: token }
+  ipc: { mode: auto, port: 18791 }
+  data_dir: data
+```
+
+Secrets are never stored in the config file: `${VAR}` is expanded from the environment,
+and from M1 onward credentials are served from the encrypted vault.
+
+## Architecture
+
+```
+src/
+  platform/       config, store (SQLite), keys/vault, supervisor, bus, CLI, admin
+  channels/       email, wecom, lark + shared rate limiting / markdown
+  routing/        binding resolution
+  agents/         persona pool, skills, subagents
+  orchestration/  DSL, engine, triggers, approvals, ledger, runs view
+  tools/          tool registry and executor
+  providers/      LLM provider pool (fake provider for tests)
+  plugins/        mruby script layer
+```
+
+Design documents (Chinese, as-authored):
+
+- [`docs/design/design.md`](docs/design/design.md) — full design (16 chapters)
+- [`docs/design/development-plan.md`](docs/design/development-plan.md) — M0–M3 WBS, schedule, gates
+- [`docs/design/review/`](docs/design/review/) — milestone gate evidence (`m0-gate.md` … `m3-gate.md`)
+- [`docs/design/research/`](docs/design/research/) — prior-art research notes
+
+## Project status
+
+| Milestone | Scope | Status |
+| --- | --- | --- |
+| M0 | Single-account MVP: email + agent + store + tools + TUI | Gate passed |
+| M1 | Multi-account, multi-channel, hot reload, keyring | Gate passed |
+| M2 | Orchestration DSL, durable tasks, approvals, budget/lease, ledger | Gate passed |
+| M3 | Multi-agent collaboration, loop guard, subagents, plugin sandbox | Gate passed (plugin layer validated as a feasibility study) |
+
+Pre-1.0: APIs and configuration may change between minor releases. See [CHANGELOG.md](CHANGELOG.md).
+
+## Development
+
+```sh
+make build     # debug build
+make spec      # crystal spec
+make lint      # ameba
+make release   # optimized build
+make format    # crystal tool format
+```
+
+The three gates that must stay green (they mirror CI):
+
+```sh
+crystal spec
+crystal tool format --check
+crystal build bin/ameba lib/ameba/bin/ameba.cr && ./bin/ameba
+```
+
+CI runs these on **Windows, Linux, and macOS**, then performs a release build and a
+crash-recovery drill against the built binary.
+
+## Contributing
+
+Issues and pull requests are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md)
+and our [Code of Conduct](CODE_OF_CONDUCT.md) first. `main` is protected: every change
+lands through a pull request with green CI.
+
+## Security
+
+See [SECURITY.md](SECURITY.md). Report vulnerabilities privately through GitHub security
+advisories; do not open a public issue.
+
+## License
+
+[MIT](LICENSE) © 2026 ShiningRay

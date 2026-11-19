@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 ShiningRay
+# SPDX-License-Identifier: MIT
+
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security vulnerability
+    url: https://github.com/ShiningRay/sebas/security/advisories/new
+    about: Report vulnerabilities privately — never in a public issue. / 漏洞请走私密公告。
+  - name: 💬 Questions & ideas
+    url: https://github.com/ShiningRay/sebas/discussions
+    about: Ask usage questions or discuss designs here. / 使用问题与设计讨论。
+  - name: 📖 Design documents
+    url: https://github.com/ShiningRay/sebas/blob/main/docs/design/design.md
+    about: Read the design before proposing architectural changes. / 架构改动前请先读设计。

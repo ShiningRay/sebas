@@ -4,7 +4,7 @@ version: 0.1.0
 authors:
   - ShiningRay
 
-crystal: ">= 1.10.0"
+crystal: ">= 1.19.0"
 
 license: MIT
 
@@ -14,13 +14,16 @@ description: |
   trigger→condition→action workflows with durable tasks, hot-reloads
   configuration without restarts, and embeds mruby plugins.
 
+repository: https://github.com/ShiningRay/sebas
+
 dependencies:
   db:
     github: crystal-lang/crystal-db
-    version: ~> 0.13
+    version: ~> 0.15
   sqlite3:
     github: crystal-lang/crystal-sqlite3
-    version: ~> 0.21
+    version: ~> 0.24
+  # Upstream publishes no tags yet; track main until a release exists.
   file_watcher:
     github: naqvis/file_watcher
     branch: main
@@ -32,4 +35,4 @@ targets:
 development_dependencies:
   ameba:
     github: crystal-ameba/ameba
-    branch: master
+    version: ~> 1.7

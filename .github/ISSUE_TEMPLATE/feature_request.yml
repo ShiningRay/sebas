@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 ShiningRay
+# SPDX-License-Identifier: MIT
+
+name: "✨ Feature request"
+description: Suggest a capability or improvement / 提出功能或改进建议
+title: "[feat] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before proposing a large change, skim `docs/design/design.md` — Sebas is
+        deliberately opinionated (local-first, single binary, fail-closed approvals).
+        大改动请先阅读设计文档，确认与现有设计取舍一致。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior and, if relevant, the config/DSL shape you expect.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, other designs, related tools.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Channels
+        - Orchestration
+        - Agents
+        - Config & hot reload
+        - Credentials
+        - Plugin layer
+        - Admin UI / API
+        - Docs & tooling
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and design docs for this proposal.
+          required: true
