@@ -46,6 +46,11 @@ jobs:
           Copy-Item sebas/tools/mruby-build/mrbgems/mruby-sebas-stdio -Destination mruby/mrbgems/ -Recurse
           Copy-Item sebas/tools/mruby-build/mrb_cr.rb -Destination mruby/build_config/
       - name: Build interpreter
+        # MRUBY_CONFIG=mrb_cr：只构建沙箱裁剪配置（minirake 默认会构建
+        # build_config/ 下全部配置，把 default 的 full-core/bin-mirb/mruby-io
+        # 一并编入——违反 §12.4 gembox 裁剪）
+        env:
+          MRUBY_CONFIG: mrb_cr
         run: |
           cd mruby
           ruby minirake
