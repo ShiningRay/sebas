@@ -12,10 +12,12 @@ inputs:
 runs:
   using: composite
   steps:
+    # 自托管 runner 用 runner token 发请求，避免匿名调用被 GitHub 限流。
     - name: Install Crystal
       uses: crystal-lang/install-crystal@v1
       with:
         crystal: ${{ inputs.crystal }}
+        token: ${{ github.token }}
 
     - name: Install SQLite3 (Linux)
       if: runner.os == 'Linux'
@@ -24,6 +26,22 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libsqlite3-dev libyaml-dev libpcre2-dev
+
+    # macOS 自带 SQLite（含 FTS5）。这里先做工具链自检：自托管机器若没装
+    # Xcode Command Line Tools，要在这一步就给出可读的报错，而不是让它
+    # 到链接阶段才炸出一堆 ld 错误。
+    - name: Check the macOS toolchain
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! xcrun --find clang >/dev/null 2>&1; then
+          echo "::error::clang not found — install Xcode Command Line Tools on the self-hosted runner: xcode-select --install"
+          exit 1
+        fi
+        echo "clang: $(clang --version | head -1)"
+        printf 'sqlite3: '
+        sqlite3 --version 2>/dev/null || echo "(CLI missing; system libsqlite3 will still be linked)"
 
     - name: Set up MSVC environment (Windows)
       if: runner.os == 'Windows'
