@@ -1,4 +1,5 @@
 require "yaml"
+require "../../sessions/scheduling/policy"
 
 # 配置 schema（design.md §3.4 配置树；M0-WP2 承载，M1-WP1 数组化语义已在 day one 就位：
 # channels.<type>.accounts[] 为数组结构，M0 仅运行单账号，M1 起多账号并存）
@@ -9,6 +10,8 @@ require "yaml"
 module Sebas
   module Platform
     module Config
+      alias SessionPolicyConfig = ::Sebas::Sessions::Scheduling::SessionPolicyConfig
+
       # 渠道类型总表（宏样板的展开源；新增渠道在此登记）
       CHANNEL_TYPES = %w[email wecom lark]
 
@@ -89,6 +92,8 @@ module Sebas
         getter api_key : String? # M0 明文过渡；M1-WP7 迁 keyring
         getter memory : MemoryConfig?
         getter tools : ToolsConfig?
+        # 会话输入调度定向覆盖（session-input-scheduling.md §3.1；nil = 全继承 gateway.session）
+        getter session : SessionPolicyConfig?
       end
 
       class MemoryConfig
@@ -114,8 +119,10 @@ module Sebas
         getter http : HttpConfig?
         getter ipc : IpcConfig = IpcConfig.new
         getter data_dir : String = "data"
+        # 会话输入调度系统级默认（session-input-scheduling.md §3.1；作用于所有支持对话调度的 agent）
+        getter session : SessionPolicyConfig?
 
-        def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data")
+        def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data", @session = nil)
         end
       end
 

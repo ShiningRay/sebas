@@ -38,7 +38,7 @@ def engine_workflow(id : String, action_count : Int32) : ::Sebas::Orchestration:
     ::Sebas::Orchestration::DSL::Action.new("a#{i}", "counter.hit", %({"label": "#{id}-a#{i}"}), "", "", "", 300)
   end
   ::Sebas::Orchestration::DSL::Workflow.new(id, "test", true,
-    ::Sebas::Orchestration::DSL::Trigger.new("webhook", "", "hooks/#{id}"), actions)
+    ::Sebas::Orchestration::DSL::Trigger.new("webhook", "", "hooks/#{id}"), actions, nil)
 end
 
 def engine_ctx(store) : ::Sebas::Tools::ToolContext
@@ -136,7 +136,7 @@ module Sebas
         ::Sebas::Orchestration::DSL::Action.new("boom", "unknown.tool", "{}", "", "", "", 300),
       ]
       wf = ::Sebas::Orchestration::DSL::Workflow.new("wf-fail", "test", true,
-        ::Sebas::Orchestration::DSL::Trigger.new("webhook", "", "h"), actions)
+        ::Sebas::Orchestration::DSL::Trigger.new("webhook", "", "h"), actions, nil)
       engine.register(wf)
 
       result = engine.run_sync(wf, "evt-fail-1")
