@@ -137,7 +137,7 @@ workflows:
 seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0` 时该条件禁用，仅由其余条件封冻）；max_wait 到时（不可重置）；达 `max_messages`；达 `max_bytes`；显式 flush；`flush_on_turn_end` 且前一批 running turn 已结束；shutdown/recovery 保守 seal。
 
 - 聚合桶键按 `group_by` 取值定义：`sender`（默认）= `session_key + sender/source + security_context`，按发送者/来源隔离；`session` = `session_key + security_context`，允许跨发送者合并但每个成员保留署名与安全上下文。同桶按接收序保序；跨桶的 seal 判定按各自条件**独立即时触发、互不等待**，dispatch 保持会话级接收序 FIFO——以各批首条输入接收序为键，前序桶仍在 collecting 时后续已 seal 批次排队等待（不重排、不插队，等待时长计入等待指标；前序桶自身受 `max_wait_ms` 约束不会无限阻塞）。活跃桶有硬上限，防伪造 sender 绕过限制。
-- 字节预算 admission：新输入放不进当前 collecting 批次剩余 `max_bytes` 预算时，先按当前策略 seal 当前批（`seal_reason: bytes`）并原子开启新批，该输入进入新批，不丢弃；仅当单条自身超过 `max_bytes` 硬限制才明确拒绝。
+- 字节预算 admission：新输入放不进当前 collecting 批次剩余 `max_bytes` 预算时，先按当前策略 seal 当前批（`seal_reason: bytes`）并原子开启新批，该输入进入新批，不丢弃；仅当单条自身超过 `max_bytes` 硬限制才明确拒绝。seal、建批、入批发生在同一次 admission 事务内，成功后才 ACK（§4.2 原子性同样适用于 seal-再-admit 路径）。
 - 给 LLM 的是带 sender、event type、时间边界的结构化批次；原始 envelope 永久可查，不只保存拼接文本。
 - 空批次、重复事件、定时器重入和 seal/dispatch 竞态必须可测试且无副作用。
 
@@ -149,6 +149,7 @@ seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0
 - 不在工具执行中途篡改参数，不取消正在运行的工具，不修改已完成的 phase。
 - 崩溃若发生在注入边界：无法证明已进入上下文时保守转 queued 并记录 `unknown_not_injected`，不得伪报成功。
 - 注入前 turn 结束、generation 不匹配、无可用工具边界、超过 `steer.max_wait_ms`：自动转 queued 后续批次；多条未消费 steer 按接收序组成一个后续批次，不覆盖旧消息。
+- 转 queued 时普通队列容量满：steer 保留在独立的持久 steer 重试状态中（不静默丢弃、不挤占普通批次），容量可用后按原接收序转为后续批次；重试状态持久化亦超限时按结构化错误显式回执 rejected/expired 并通知，不做静默覆盖。
 - 压缩/session reset 等世代变化必须使旧 steer 失效转 queue，不能注入新世代；首版只 steer 父 turn；外部 webhook 默认 queue/debounce。
 
 ### 4.5 控制通道
@@ -172,7 +173,7 @@ seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0
 
 - `collecting`：立即按原策略快照 seal 并标记 `seal_reason: recovery`，不重新等待完整 debounce。
 - `sealed/queued`：重新入队；`running`：按现有 task 恢复规则处理；结果不确定时沿用现有 fail-closed 口径，不得仅因 pending 存在就自动重放副作用。
-- 已 accepted 未 injected 的 steer 在重启后转为 queued 后续批次并记录原因。
+- 已 accepted 未 injected 的 steer 在重启后转为 queued 后续批次并记录原因（普通队列容量不足时走 §4.4 steer 重试状态口径，不静默丢弃）。
 - 已完成批次不重跑；一批多事件共享 turn/run，审计可追溯全部成员。
 
 ## 6. 安全与可观测性
