@@ -23,12 +23,32 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.detect.outputs.code }}
+      macos_runner: ${{ steps.runner.outputs.macos_runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # 仓库是公开的：fork 的代码绝不能在我们自己的 self-hosted 机器上执行
+      # （runner 能读文件系统、凭据，也能访问内网）。fork PR 回退到 GitHub
+      # 托管 runner；本仓分支与 main 的 push 才用 self-hosted。
+      - name: Pick the macOS runner
+        id: runner
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_HEAD_REPO" ] && [ "$PR_HEAD_REPO" != "$REPO" ]; then
+            echo "macos_runner=macos-latest" >> "$GITHUB_OUTPUT"
+            echo "Fork PR from ${PR_HEAD_REPO} -> hosted macos-latest."
+          else
+            echo "macos_runner=macos-ci" >> "$GITHUB_OUTPUT"
+            echo "First-party run -> self-hosted macOS runner."
+          fi
 
       - name: Detect build-relevant changes
         id: detect
@@ -94,8 +114,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+          - os: macos-latest
+            runner: ${{ needs.changes.outputs.macos_runner }}
+          - os: windows-latest
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     steps:
       - name: Checkout
@@ -170,8 +196,8 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: make lint
 
-  # 三平台 release 构建成本最高（macOS runner 经常排队十几分钟），只在
-  # main 分支与手动触发时跑；PR 由 spec 覆盖编译正确性。
+  # 三平台 release 构建成本最高，只在 main 与手动触发时跑；PR 由 spec 覆盖
+  # 编译正确性。macOS 用 self-hosted（本仓 push 一律由本仓维护者触发）。
   release-build:
     name: release build / ${{ matrix.os }}
     needs: [changes, spec]
@@ -179,8 +205,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - os: ubuntu-latest
+            runner: ubuntu-latest
+          - os: macos-latest
+            runner: ${{ needs.changes.outputs.macos_runner }}
+          - os: windows-latest
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - name: Checkout
