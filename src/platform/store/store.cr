@@ -71,6 +71,23 @@ module Sebas
           SQL
         "CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(" \
         "kind UNINDEXED, key UNINDEXED, body, tokenize='unicode61')",
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS ledger (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts      TEXT NOT NULL,
+            run_id  TEXT NOT NULL,
+            kind    TEXT NOT NULL,
+            payload TEXT
+          )
+          SQL
+        "CREATE INDEX IF NOT EXISTS idx_ledger_run ON ledger(run_id, id)",
+        <<-SQL
+          CREATE TABLE IF NOT EXISTS leases (
+            task_id    TEXT PRIMARY KEY,
+            owner      TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+          )
+          SQL
       ]
 
       class Store
@@ -121,6 +138,62 @@ module Sebas
             end
           end
           rows
+        end
+
+        # ---- append-only 事件账本（§7.4；runs 回放审计 M2-WP6 消费）----
+
+        record LedgerRow, id : Int64, ts : String, run_id : String, kind : String, payload : String
+
+        def ledger_append(run_id : String, kind : String, payload : String = "") : Nil
+          @db.exec("INSERT INTO ledger (ts, run_id, kind, payload) VALUES (?, ?, ?, ?)",
+            now, run_id, kind, payload)
+        end
+
+        def ledger_replay(run_id : String) : Array(LedgerRow)
+          rows = [] of LedgerRow
+          @db.query("SELECT id, ts, run_id, kind, payload FROM ledger WHERE run_id = ? ORDER BY id", run_id) do |result_set|
+            result_set.each do
+              rows << LedgerRow.new(result_set.read(Int64), result_set.read(String), result_set.read(String), result_set.read(String), result_set.read(String))
+            end
+          end
+          rows
+        end
+
+        # ---- 任务 lease（§7.4：租约+过期回收）----
+
+        # 获取租约：已存在且未过期 → false；过期/不存在 → 取得（重派口径）
+        def lease_acquire(task_id : String, owner : String, ttl : Time::Span = 60.seconds) : Bool
+          existing = @db.query_one?("SELECT owner, expires_at FROM leases WHERE task_id = ?", task_id) do |result_set|
+            {result_set.read(String), result_set.read(String)}
+          end
+          if existing
+            _, expires = existing
+            return false if ::Time.parse_rfc3339(expires) > ::Time.utc # 未过期：他人持有
+            @db.exec("DELETE FROM leases WHERE task_id = ?", task_id)  # 过期回收
+          end
+          @db.exec("INSERT INTO leases (task_id, owner, expires_at) VALUES (?, ?, ?)",
+            task_id, owner, (::Time.utc + ttl).to_rfc3339)
+          true
+        end
+
+        def lease_heartbeat(task_id : String, owner : String, ttl : Time::Span = 60.seconds) : Bool
+          changed = @db.exec("UPDATE leases SET expires_at = ? WHERE task_id = ? AND owner = ?",
+            (::Time.utc + ttl).to_rfc3339, task_id, owner).rows_affected
+          changed > 0
+        end
+
+        def lease_release(task_id : String, owner : String) : Nil
+          @db.exec("DELETE FROM leases WHERE task_id = ? AND owner = ?", task_id, owner)
+        end
+
+        # 回收所有过期租约（返回被回收的 task ids）
+        def lease_reap_expired : Array(String)
+          ids = [] of String
+          @db.query("SELECT task_id FROM leases WHERE expires_at <= ?", ::Time.utc.to_rfc3339) do |result_set|
+            result_set.each { ids << result_set.read(String) }
+          end
+          ids.each { |id| @db.exec("DELETE FROM leases WHERE task_id = ?", id) }
+          ids
         end
 
         def unfinished_intents : Array(IntentRow)
