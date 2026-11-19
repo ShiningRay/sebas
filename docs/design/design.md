@@ -824,6 +824,7 @@ sebas plugin uninstall remote-memory --purge
 
 **统一执行规则**：
 
+- `on_hook` 的 handler 块参数是该 hook 的 **payload 对象（唯一业务参数）**——如 `memory.remember.before` 的 payload 含 `entry`；各 hook 的 payload 字段由本目录『宿主注入点与契约』列与 manifest 声明约定，runner 按此契约实现；`$config`/`$context`/`$idempotency_key` 经注入变量提供，不占用块参数。
 - manifest `hooks` 与脚本 `on_hook(name)` 注册集合必须一致，宿主按 §12.2 的索引只调用订阅者；同插件重复注册拒绝，不同插件按 priority（数值大者优先）再按插件 ID/注册序稳定排序。
 - `gate + transform` 同步按序执行，每个处理器接收上一个已校验结果；任一 deny 停止后续处理器。`observe` 按注册快照执行、忽略返回值，可并发但不得阻塞主流程；观察副作用不保证持久化或严格全序。
 - 所有插件调用遵守独立进程、schema/大小限制和 watchdog。gate/transform 的异常、超时、非法结果默认 **deny**；observe 的异常、超时记录脱敏日志并跳过。宿主 hardline 不可被返回结果覆盖。
