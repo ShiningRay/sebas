@@ -19,7 +19,7 @@
 |---|---|---|---|
 | queue | 不打断 | 后续独立批次 | turn 结束后按 FIFO |
 | steer | 不打断 | 工具边界注入 | 工具结果落库后、下次模型调用前 |
-| **interrupt** | **中止剩余执行** | —— | 模型请求边界（协作式，见 §4） |
+| **interrupt** | **中止剩余执行**（未开始的模型调用不再发起；已由飞行中响应返回、尚未启动的工具调用启动前复查并返回结构化 cancelled；已启动工具协作式结束） | —— | 模型调用边界 + 工具启动边界（协作式，见 §4） |
 | **redirect** | **中止剩余执行** | 作为新 turn 输入优先执行 | 中止生效后 |
 
 ## 2. 语义定义
@@ -27,7 +27,7 @@
 ### 2.1 interrupt（中止）
 
 - 目标是已登记 `turn_id + generation` 的运行中 turn；先持久化请求，再标记 turn 中止意图。
-- **模型请求边界生效**：取消在下一次 provider 调用前应用（不等工具边界）——与 steer 相反，interrupt 不需要安全注入点，它只丢弃「尚未开始的模型调用」。
+- **生效边界 = 模型调用边界 + 工具启动边界**：取消在下一次 provider 调用前应用（不等工具边界）；由飞行中模型响应已返回、**尚未启动的工具调用在启动前复查中断标记，不再启动**（写入结构化 `cancelled` 工具结果并落库，代理可见）；已启动的工具调用协作式结束、结果照常落库——与 steer 相反，interrupt 不需要安全注入点，它丢弃「尚未开始的执行」。
 - 已完成并落库的工具结果保留；正在执行的工具调用**协作式取消**：宿主标记取消意图，工具自然结束并落库后生效，不强行终止正在运行的工具进程/调用（不篡改参数、不回滚已发生副作用——与 steer 同一条红线）。
 - turn 以终态 `interrupted` 落账（task/ledger 审计可重放）；不自动重试，不静默改为其他行为。
 
@@ -64,7 +64,7 @@
 ## 5. 与调度契约的整合点
 
 - **调度层**：调度契约只增加「控制通道操作」的定义引用，queue/debounce/steer 语义不变；redirect 的「队列优先位」在 scheduler 中实现为受审计的显式插队，不改变普通输入的 FIFO 保证。
-- **AgentRuntime（WP4 产物）**：循环顺序修订为「模型响应 → 工具调用 → 工具结果落库 → **检查 interrupt（先于 steer）** → drain steer → 下一次模型调用」。interrupt 生效时：turn 终止/重定向，**pending steer 不标记 injected，而是按 steer 降级规则转后续批次**——严禁 steer 先被标注入、中断又阻止模型调用看到它（否则伪报 injected）。
+- **AgentRuntime（WP4 产物）**：循环顺序修订为「模型响应 → **检查 interrupt** → 逐个工具调用（每个启动前复查中断标记；未启动的写入结构化 `cancelled` 结果并落库）→ 工具结果落库 → 检查 interrupt（先于 steer）→ drain steer → 下一次模型调用」。interrupt 生效时：turn 终止/重定向，**pending steer 不标记 injected，而是按 steer 降级规则转后续批次**——严禁 steer 先被标注入、中断又阻止模型调用看到它（否则伪报 injected）。
 - **管理面**：`sessions.interrupt` / `sessions.redirect`（IPC + HTTP 双入口）、渠道显式 `/interrupt` / `/redirect` 命令（来源须明确控制语义，同 steer 的来源纪律）；事件 `interrupt.accepted/cancelled/redirected/queued/expired/rejected`（expired 为无输入 interrupt 的显式失败终态，订阅者可观察）。
 
 ## 6. 非目标
