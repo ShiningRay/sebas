@@ -25,12 +25,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            runner: ubuntu-latest
             artifact: sebas-linux-x86_64
+          # 自托管 macOS runner（标签 macos-ci）；实际架构在打包步骤用 uname -m 决定，
+          # 不再写死 arm64 —— 这台是 Intel X64。
           - os: macos-latest
-            artifact: sebas-macos-arm64
+            runner: macos-ci
+            artifact: sebas-macos
           - os: windows-latest
+            runner: windows-latest
             artifact: sebas-windows-x86_64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -79,6 +84,13 @@ jobs:
         run: |
           set -euo pipefail
           name='${{ matrix.artifact }}'
+          # macOS 资产名带真实架构：self-hosted 机器可能是 Intel 也可能是 Apple Silicon。
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            case "$(uname -m)" in
+              arm64) name="${name}-arm64" ;;
+              *) name="${name}-x86_64" ;;
+            esac
+          fi
           stage="dist/${name}"
           mkdir -p "$stage"
           cp bin/sebas "$stage/"

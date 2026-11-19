@@ -71,7 +71,23 @@ CI additionally builds the binary in release mode on Windows, Linux and macOS.
    a green CI run.
 4. Squash-merge by default; the PR author merges once approved.
 
-*中文要点：从 main 开分支；提交信息用 Conventional Commits 风格；main 受保护需 PR + CI 绿灯；默认 squash 合并。*
+**CI on your PR.** Linux and Windows jobs run on GitHub-hosted runners. The macOS job runs
+on a **self-hosted** machine for branches in this repository, and on a hosted runner for
+pull requests from forks.
+
+Fork pull requests execute workflow files from the PR branch, so the workflow itself cannot
+guarantee where it stops running. The boundary is enforced in repository settings:
+
+- **Approval is required for every run from an external contributor** (not only first-time
+  contributors): no fork workflow — and therefore no fork code — starts until a maintainer
+  clicks "Approve and run".
+- Keep that approval honest by **reviewing the `.github/` diff first**. A fork that rewrites
+  the runner selector would otherwise run its own code on the self-hosted machine once
+  approved. Do not approve a run whose workflow changes you have not read.
+- `release-build` never runs on `pull_request`, so the self-hosted machine is not reachable
+  through the release path.
+
+*中文要点：从 main 开分支；提交信息用 Conventional Commits 风格；main 受保护需 PR + CI 绿灯；默认 squash 合并。macOS job 在本仓分支上跑自托管机器、fork PR 上跑托管 runner。自托管边界由仓库设置保证：**所有**外部贡献者的运行都需维护者批准，批准前必须先读 `.github/` 的 diff——fork 改写 runner 选择器后仍要人工确认；`release-build` 不在 PR 上运行。*
 
 ## Design-first changes
 
