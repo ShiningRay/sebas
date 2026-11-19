@@ -201,6 +201,15 @@ module Sebas
           @db.query_one?("SELECT status FROM tasks WHERE id = ?", task_id, as: String)
         end
 
+        # owner 的全部子任务（Pi ownership 找回口径，M3-WP3）
+        def tasks_by_owner(owner_task_id : String) : Array(TaskRow)
+          rows = [] of TaskRow
+          @db.query("SELECT #{TASK_COLUMNS} FROM tasks WHERE owner_task_id = ? ORDER BY id", owner_task_id) do |result_set|
+            result_set.each { rows << read_task(result_set) }
+          end
+          rows
+        end
+
         def unfinished_intents : Array(IntentRow)
           rows = [] of IntentRow
           @db.query("SELECT id, kind, payload, status FROM intents WHERE status IN ('pending', 'dispatched') ORDER BY created_at") do |result_set|
