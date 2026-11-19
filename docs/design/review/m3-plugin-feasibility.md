@@ -66,6 +66,16 @@ mruby.exe**：
 2. 在干净 CI（GitHub Actions windows-latest 无实时拦截策略）构建并发布解释器产物；
 3. 使用 `clang -fuse-ld=lld`（如可用）规避 collect2/ld 路径。
 
+> **恢复路径 2 已执行（2026-11-20，[#30](https://github.com/ShiningRay/sebas/pull/30)）**：
+> workflow `mruby-sandbox` 在 windows-latest 上以 UCRT64 gcc 构建 mruby 4.0.0 @ 831da26
+> （MRUBY_CONFIG=mrb_cr 只编沙箱配置；vendor 于 sebas 仓 tools/mruby-build/，因 mrb.cr 的
+> vendor/mruby 在 .gitignore 中、构件从未离开本机）。验证链全绿：-e / stdin / exit code /
+> gembox 无 File·IO（rescue NameError 探测）/ sebas_print；mruby.exe 以 artifact 发布。
+> 途中修正四处：minirake 需 MRUBY_CONFIG 钉住裁剪配置（默认会编 default 的 full-core +
+> mruby-io，违反 §12.4）；C gem 须定义 gem_init 与 gem_final 双入口；MSYS2 环境需 git
+> （Lockfile 指纹）；沙箱无 mruby-print，输出仅走 sebas_print。WP4~WP6 产品化的解释器
+> 基线就此解锁（mrb.cr 侧 vendor 同步提交仍待用户决策）。
+
 ## 四、降级期间的可运行替代（已验证）
 
 预研期间已验证「子进程 + 裁剪解释器」的全部行为闭环可用（脚本执行、exit code 通道、
