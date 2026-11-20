@@ -12,7 +12,7 @@
 3. **生产 agent 无工具循环**。`gateway.cr:212-223` 的 `agent_turn` 只做一次 `provider.complete(history)` + 固定 `message.send`，LLM 不产出工具调用。M1 若要求 LLM 自主调用 fork 工具需先建 ReAct 循环；M3「对话流内自然 Fork」以此为硬前置（调度提案 `session-input-scheduling.md:9-11` 亦自认「生产 agent 无工具循环」）。
 4. **三轴定位与路线图错位**：轴①（弱 Session/常驻 Agent）在提案 M0.5–M4 路线图中无任何独立工作包；轴②（轻量创建）半成——`AgentRegistry.get_or_create` 建目录写 SOUL.md 已极轻量，但与 YAML `Config::AgentConfig` 双轨不打通；轴③（Fork/Join）是路线图主体，差距也最大。
 5. **门禁命令存在两组口径**（§5），后续工作包应统一。
-6. **CLAUDE.md 引用失效**：`development-plan.md:17` 所指「仓库 CLAUDE.md」在仓内不存在（递归搜索无果），现行权威为 `development-plan.md` B 条目 + `Makefile` + `.github/workflows/ci.yml`。
+6. **CLAUDE.md 引用失效**：`plan/00-baseline.md 第 0 节` 所指「仓库 CLAUDE.md」在仓内不存在（递归搜索无果），现行权威为 `development-plan.md` B 条目 + `Makefile` + `.github/workflows/ci.yml`。
 
 ## 1. 仓与文档盘点
 
@@ -139,11 +139,11 @@
 - 轴②半成：`AgentRegistry.get_or_create` 建目录写 SOUL.md 已极轻量（`agents.cr:49-57`）——「轻量创建」基础已在；**双轨不打通是主要差距**（AgentInstance 目录/SOUL.md vs `Config::AgentConfig` YAML，`schema.cr:87-97`；两套 persona、无引用校验）。模板库需先统一两轨，否则模板放哪边都只覆盖半仓。
 - 角色卡挂点现成：SKILL.md frontmatter→system prompt（`skills.cr:43-83`）；模板库可挂 SKILL.md 或 SOUL.md 模板化，二选一需设计定夺。
 - 轴①缺位最大：store 无 sessions 元数据表、无休眠/归档态（`store.cr:32-148`）；IPC `sessions.list/read` 只读 transcripts（`ipc/server.cr:187-215`）；「常驻 Agent 前台接待」无任何现成挂点（gateway process_message 与 routing binding 是渠道入站接待，非 agent 级接待）。**且提案 M0.5–M4 路线图无轴①独立工作包**——定位与排期错位，需拍板补工作包或明示并入 M4（§6 Q8）。
-- 归档回收：transcript 无 TTL/归档机制；compaction 设计（`design.md:341-342`）未实现——休眠归档要么等 compaction，要么独立做，需设计定夺。
+- 归档回收：transcript 无 TTL/归档机制；compaction 设计（`design.md §6.1`）未实现——休眠归档要么等 compaction，要么独立做，需设计定夺。
 
 ## 5. 门禁现状（三命令口径找到）
 
-**现行权威三命令**（`development-plan.md:473` B.3 定义；`review/m0-gate.md:42-46` 实测记录）：
+**现行权威三命令**（`plan/schedule/gates.md B.3` B.3 定义；`review/m0-gate.md:42-46` 实测记录）：
 
 | 命令 | 口径 | 最近绿灯 |
 |---|---|---|
@@ -155,7 +155,7 @@
 
 **第三口径**：调度提案 `session-input-scheduling.md:215` 要求四条全绿（make format-check/spec/lint/release）。
 
-三组并存（三命令无 format / CI 四件含 release 但非 PR 门禁 / 调度四条全含）——后续 fork/join 工作包建议沿用 CI 口径为 PR 门禁+release 于交付节点（§6 Q7 拍板）。出处问题：`development-plan.md:17` 称门禁源于「仓库 CLAUDE.md」，**该文件仓内不存在**（递归搜索无果，引用失效）；design.md:932 同口径「crystal spec + ./bin/ameba」为现行书面权威。
+三组并存（三命令无 format / CI 四件含 release 但非 PR 门禁 / 调度四条全含）——后续 fork/join 工作包建议沿用 CI 口径为 PR 门禁+release 于交付节点（§6 Q7 拍板）。出处问题：`plan/00-baseline.md 第 0 节` 称门禁源于「仓库 CLAUDE.md」，**该文件仓内不存在**（递归搜索无果，引用失效）；design.md §14 同口径「crystal spec + ./bin/ameba」为现行书面权威。
 
 ## 6. 开放问题（设计前须首辅拍板）
 
@@ -169,7 +169,7 @@
 | Q6 | 能力衰减口径：白名单交集、显式声明还是两者结合；secrets 明文过渡（`schema.cr:92`）是否同期收敛 | M2 验收核心；口径不定则 spec 无法写（现状 `tools.allow=["*"]` `:104-107`） |
 | Q7 | fork/join 工作包门禁用哪组口径：三命令 / CI 四件 / 调度四条 | 三组并存（§5）；排期文档需单一口径可验收 |
 | Q8 | 轴①（弱 Session/常驻 Agent）在 M0.5–M4 无独立工作包——补工作包、并入 M4、还是明示降级为非目标 | 三轴定位是提案立论主体，路线图却不覆盖轴①，定位与排期错位需明示处理（§4 M4） |
-| Q9 | `development-plan.md:17` 的 CLAUDE.md 失效引用与 `gateway.cr:260` 入队键不一致是否先修 | 均为小修但影响后续文档权威性与调度/fork 接口；修与不修影响排期内容 |
+| Q9 | `plan/00-baseline.md 第 0 节` 的 CLAUDE.md 失效引用与 `gateway.cr:260` 入队键不一致是否先修 | 均为小修但影响后续文档权威性与调度/fork 接口；修与不修影响排期内容 |
 
 ## 7. 未验证与诚实声明
 

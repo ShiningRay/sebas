@@ -30,3 +30,7 @@ data/
 # CI toolchain deps (Windows import libs)
 /.build-deps/
 *.exe
+
+# Python bytecode from tools/ doc checker
+__pycache__/
+*.pyc

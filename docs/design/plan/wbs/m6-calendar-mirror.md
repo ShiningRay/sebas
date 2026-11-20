@@ -1,0 +1,87 @@
+# development-plan M6 · 外部日历/TODO 只读镜像与变化驱动重估（20–34 pd）
+
+> 导航：[设计总览](../../design.md) ｜ [文档索引](../../README.md) ｜ [计划总览](../../development-plan.md) ｜ 上一节：[M5](m5-commitments.md) ｜ 下一节：[M7](m7-projection.md)
+
+### M6 · 外部日历/TODO 只读镜像与变化驱动重估——估时合计 20–34 pd（2026-11-20 追加，v0.4.0）
+
+> 依据：[proposals/commitments-calendar-integration.md](../../proposals/commitments-calendar-integration.md) §6–§7、§9 首闭环第 3 条。期定位：**只读镜像与观察（接入深度 1）+ 显式关联（深度 2）**，不做复制、不做双向（深度 3 归 M7）。
+> 期门禁：调度四条全绿；每 provider 必须有「真机 round-trip + 原文保留」证据，未实测的 provider 不得计入验收（提案 §9「必须验证的边界」第 6 条）。
+> 反蔓延硬约束：canonical superset + adapter，**不做最低公分母双向同步**；JMAP Calendars 不进首期（提案 §7.4）。
+
+**M6.0-WP1 适配器契约、同步元数据与能力矩阵定稿**（1–2 pd）
+- 目标：三 provider 共用一个契约，差异落在矩阵而非分支。
+- 范围：适配器接口（列集合/取页/取增量/能力探测/保原文）；同步元数据六类（provider+account+collection / resource id+href / UID+series+original recurrence key / ETag·changeKey·sequence·updated / sync-token·syncToken·deltaLink+时间窗 / watch-subscription id+expiration）[来源: 提案 §7.4]；能力矩阵模板（VEVENT/VTODO/VALARM/重复/条件写/通知），每格三值「支持/不支持/不宣称」；失败语义 `stale/conflicted/partial_failure/unknown` 与隐私档（跨账户仅 busy）[来源: 提案 §6.4]。
+- 交付物：契约文档（`docs/design/proposals/calendar-adapter-contract.md`）。
+- 依赖：M5.4 门禁。
+- 验收：评审通过；三 provider 在矩阵上无「假设支持」空格；每个不宣称项写明后果。
+- 风险：契约写得过宽会诱导双向同步——接口只暴露读与条件写探测，不暴露全字段写。[推演]
+
+**M6.1-WP1 ExternalLink/同步元数据表与仓储**（2–3 pd）
+- 目标：外部对象在 Sebas 侧的身份、版本与游标可存可查。
+- 范围：ExternalLink 表（内部对象 ↔ 外部资源、来源、权限、同步方向、最后对账结果）；同步元数据列按 M6.0 六类；原始载荷本地留存（不依赖远端回取）；迁移接 M5.1-WP1 迁移器。
+- 交付物：表 + 仓储 + 约束 spec。
+- 依赖：M5.0-WP2（迁移契约）、M6.0-WP1。
+- 验收：同一外部对象重复 upsert 不产生第二行；游标与资源版本分列存储，互不覆盖；原文可完整重放解析。
+- 风险：ID 归并诱惑（UID/iCalUID 当主键）——按提案 §7.1 明确「UID 不作跨平台主键」，复合键强制。[推演]
+
+**M6.1-WP2 增量同步引擎骨架与对账**（3–5 pd）
+- 目标：全量→增量→对账三段可靠，游标只在完整一轮后前推。
+- 范围：首次全量、后续增量；分页未完成不前推游标；`410`/`deltaLink` 失效按范围全量重建；漏通知/订阅失效用增量对账；短时批量变化合并为一次评估；同步结果只落镜像，不改关联 Commitment（评估归 M6.3）[来源: 提案 §6.3、§7.2–§7.3]。
+- 交付物：同步引擎 + 假 provider 契约测试（含 410/部分失败/重复页）。
+- 依赖：M6.1-WP1。
+- 验收：中途 kill 后重启不重复入库且游标不前推；410 触发全量重建且旧游标清除；部分失败标 `partial_failure`。
+- 风险：游标语义各家不同（sync-token vs deltaLink vs syncToken）——引擎只认「不透明游标 + 作用域」二元组。[推演]
+
+**M6.2-WP1 CalDAV 适配器**（3–5 pd）
+- 目标：iCalendar/CalDAV 语义底座可用（RFC 5545/4791/6578）。
+- 范围：集合探测（VEVENT/VTODO/VALARM/sync）；主重复组件与例外同资源处理，不按展开实例分别 PUT；ETag 条件写；完整 ICS 与未知 IANA/X- 属性全保留；`UID + RECURRENCE-ID` 定位系列内实例 [来源: 提案 §7.1]。
+- 交付物：适配器 + 固定响应录制回放 spec。
+- 依赖：M6.1-WP2。
+- 验收：录制回放下系列+例外还原正确；未知属性 round-trip 无损；条件写冲突返回 `conflicted` 不覆盖。
+- 风险：真实 CalDAV 服务端改写资源——首版以「服务端改写即重新拉原文」处理，不做本地推断。[推演]
+
+**M6.2-WP2 Google Calendar 适配器**（3–5 pd）
+- 目标：syncToken 增量与 watch 提示语义正确。
+- 范围：首次全量、后续 `syncToken`；一轮分页完成才存新 token；`410` 对该范围全量重建；`watch` 只当「有变化」提示，channel 过期需重建；重复实例保留 `id/recurringEventId/originalStartTime`；写回按最新资源字段级 diff（本期只探测能力不写）[来源: 提案 §7.2]。
+- 交付物：适配器 + 回放 spec。
+- 依赖：M6.1-WP2。
+- 验收：token 前推时机可断言（分页中断不前推）；watch 过期后仍能靠增量对账收敛；重复实例三层身份完整。
+- 风险：OAuth 只读 scope 需用户侧真实账户（E.1#9）；无真实账户时只交回放证据并**明确标未验证**（提案 §9 第 6 条）。[推演]
+
+**M6.2-WP3 Microsoft Graph 适配器**（3–5 pd）
+- 目标：`calendarView/delta` 与 To Do 独立资源正确建模。
+- 范围：delta 绑定具体日历与时间窗，完整一轮后存 `deltaLink`；通知可能只带资源 ID，漏通知用 delta 对账；Immutable ID + account/mailbox 作用域；系列/实例/例外不按 iCalUID 归并；To Do 与 Event 独立，任务时间块须显式关联 WorkSession [来源: 提案 §7.3]。
+- 交付物：适配器 + 回放 spec。
+- 依赖：M6.1-WP2。
+- 验收：时间窗变化触发新 delta 作用域并旧游标失效；To Do 完成不自动关闭关联 Commitment；例外实例不误并入系列。
+- 风险：同 Google——真实租户/账户未就绪时标未验证，不把回放当集成。[推演]
+
+**M6.3-WP1 外部变化 → 评估 → 重估链路**（2–3 pd）
+- 目标：外部变化只触发评估，绝不直接通知或重排（提案 §6.3）。
+- 范围：变化→增量同步→本地对账→影响判定→重算条件/准备窗口/容量/Checkpoint→撤销失效未投递 Reminder→仅在有新决策/风险/冲突时通知→展示「旧计划 → 新建议 → 原因」三段；已接受/已发生/临近开始默认锁定；涉及他人的修改默认需确认。
+- 交付物：重估链路 + 三段展示 spec。
+- 依赖：M6.2 门禁。
+- 验收：外部改期只产生一条带原因的建议，不自动改 WorkSession；撤销已排未投递提醒可验证；批量变化合并为一次评估。
+- 风险：影响判定需要「关联强度」定义——首版仅按显式 ExternalLink 关联，不做启发式推断。[推演]
+
+**M6.3-WP2 隐私与失败语义落地**（1–2 pd）
+- 目标：失败可见、隐私默认收紧。
+- 范围：跨工作/私人账户默认只共享 busy 或通用标签；每对象显示来源/写入方/权限/同步方向/最后对账结果；连接器停用后意图与历史保留，投影保留或清理由用户选；`stale/conflicted/partial_failure/unknown` 四态在视图与管理面可见；无权限或结果不确定 fail-closed [来源: 提案 §6.4]。
+- 交付物：隐私档 + 失败态 spec。
+- 依赖：M6.3-WP1。
+- 验收：busy-only 账户查不到标题详情；四失败态各有可见位；停用连接器不删意图。
+- 风险：busy-only 与容量计算耦合——容量估算用 busy 即可，不反推详情。[推演]
+
+**M6.4-WP1 真机 round-trip、能力矩阵验证与 v0.4.0 发布**（2–4 pd）
+- 目标：把「声称支持」换成「实测支持」。
+- 范围：真实 Google/Microsoft/CalDAV 账户（E.1#9）各跑一轮：全量→增量→改期/取消/完成→游标失效→物删除；填实能力矩阵；`docs/design/review/m6-gate.md`；tag `v0.4.0`。
+- **时间边界的端到端验收（与 M5.0-WP2 的纯函数 spec 分开）**：M5.0-WP2 只在本地语义层验 DST/全天/跨时区；本包须在**真实 provider 往返链路上**再验一遍，各自给确定期望：
+  - ①DST 缺口（`America/New_York` 2026-03-08 02:30 的 VEVENT）——**两个分支分开验收，证据表各占一格**：ⓐ**接受分支**（provider 按 03:30 或等价 UTC 存储）→ 回读已存对象，显示 provider 归一化后的时间，并标 `ambiguous_local_time`；**不得**本地静默改写成 03:30 却仍显示原文 02:30；证据格填「对象 id + provider 返回时间 + 本地显示时间 + 标记」。ⓑ**拒绝分支**（provider 返回错误）→ 记录 provider 原始拒绝响应（HTTP 状态/错误码/原文），并显式声明**不创建本地镜像 ExternalLink**（该 Attempt 失败即止，不留半条记录）；证据格填「原始错误响应 + 断言 `external_links` 无新增行」。两分支任一路径走通即该项通过，但**证据必须写明走的是哪一支**，不得只写「已验证」。
+  - ②秋季重复——2026-11-01 01:30 建事件后回读，须仍对应同一 UTC 时刻（不是差一小时）。
+  - ③全天跨时区——在 `Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 账户/时区读取，`DATE` 值不变。
+  - 三条（含①的两分支）须全部进入 m6-gate.md 证据表。
+- 交付物：实测矩阵 + m6-gate.md + tag。
+- 依赖：M6.3 门禁、E.1#9。
+- 验收：**至少两 provider 真机 round-trip 全绿方可发版**（提案 §9「必须验证的边界」第 6 条）；未实测 provider 在产品面标「实验/未验证」并列入 gate 未验证项。
+- **provider 数与 CalDAV 顺延的口径裁断（CodeRabbit 问）**：①「至少两 provider」指**真机实测通过数**，不是「已实现数」——回放通过不计入。②CalDAV 若超期顺延 v0.4.1，**Google + Graph 两 provider 真机全绿仍满足 M6 门禁**，v0.4.0 按原计划发布，release notes 明写「CalDAV 顺延 v0.4.1」。③反向不允许：若只有 CalDAV 一家真机通过而 Google/Graph 均未实测，则 provider 数=1，**不足两 provider → 不发 v0.4.0**，整期按 B.3 第 6 条降级为「引擎+回放就绪」并记入 §15.1，v0.4.0 顺延待第二家真机通过。④顺延 v0.4.1 不改变 M6.0–M6.3 的验收有效性，只移动 M6.2-WP1 与 M6.4 的完成时点。
+- 风险：外部账户未就绪则本期降级为「引擎 + 回放就绪、集成未验证」，按 B.3 第 5 条记入 §15.1 口径，不发 v0.4.0。[推演]

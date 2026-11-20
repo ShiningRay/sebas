@@ -6,7 +6,7 @@ BIN = bin/sebas
 export TMP := $(shell cygpath -w /tmp 2>/dev/null || echo /tmp)
 export TEMP := $(TMP)
 
-.PHONY: build spec lint lint-build release format format-check drill clean check
+.PHONY: build spec lint lint-build release format format-check drill clean check docs-check
 
 build:
 	@mkdir -p $(dir $(BIN))
@@ -14,6 +14,10 @@ build:
 
 spec:
 	crystal spec
+
+# 文档自检：死链、失效行号锚、单文件体量。只用 python 标准库。
+docs-check:
+	python3 tools/check_docs.py
 
 # ameba 是 development dependency；未构建时先构建，再运行
 lint: lint-build
