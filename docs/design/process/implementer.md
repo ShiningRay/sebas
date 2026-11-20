@@ -56,6 +56,8 @@ gh pr update-branch  # 或 gh api 调 update-branch
 
 ## 工作逻辑
 
+单 Implementer 的确定性选卡、认领、续跑、解锁和停止规则见 [implementer-loop.md](implementer-loop.md)。选择器和 Harness 执行器分离；在途 PR 收口优先于领取新卡。
+
 ### 串行原则
 
 Implementer 同时只处理一个 PR。单工作树 + 合并互斥，避免交叉污染。
@@ -124,6 +126,7 @@ function execute_work_package(issue):
 
   # 修复循环（repair_round 只计实际修复，CI 等待不消耗轮次）
   repair_round = 0
+  consecutive_stall = 0
   for iteration in 1..30:  # 外层迭代上限防死循环
     if pr.mergeStateStatus == "CLEAN" && get_unresolved_review_threads(pr).empty?:
       break
