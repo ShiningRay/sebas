@@ -141,15 +141,17 @@ function verify_issues_batch(parent_ids, expected_children_map):
       report.must_fix("父卡 ##{parent_id} 子卡不符")
 
   # 全量清单：与预期批次对账（不用仓库级编号连续性——closed issue 和 PR 也占编号）
-  all_issues = gh_issue_list(state="open")
+  # 只检查批次内的 issue：缺失（预期有但没有）和多余（批次标记匹配但不在预期中）。
+  # 批次成员通过 plan 标签 + milestone 归属识别，不依赖 baseline_issue_numbers。
+  batch_issues = gh_issue_list(state="open", label="plan", milestone=target_milestone)
+  batch_numbers = batch_issues.map(.number)
   expected_numbers = expected_children_map.values.flatten + parent_ids
-  actual_numbers = all_issues.map(.number)
-  missing = expected_numbers - actual_numbers
-  extra = actual_numbers - expected_numbers - baseline_issue_numbers
+  missing = expected_numbers - batch_numbers
+  extra = batch_numbers - expected_numbers
   if missing.any?:
     report.must_fix("批次缺失 issue：#{missing}")
   if extra.any?:
-    report.must_fix("批次外多余 issue：#{extra}")
+    report.must_fix("批次外多余 issue（同 milestone 但不在预期清单中）：#{extra}")
 
   # 既有卡零扰动
   baseline_issues = load_baseline_issues()

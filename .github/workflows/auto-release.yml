@@ -23,6 +23,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  actions: write
 
 concurrency:
   group: auto-release
@@ -38,7 +40,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          persist-credentials: false
+          # 保留凭据：后续步骤需要 git push（main / 分支 / tag）。
+          # GITHUB_TOKEN 的 push 不会触发 push 型 workflow，所以最后显式 dispatch release.yml。
+          persist-credentials: true
 
       - name: Configure git identity
         run: |
@@ -74,21 +78,36 @@ jobs:
           current="${{ steps.version.outputs.current }}"
           IFS='.' read -r major minor patch <<< "$current"
           next_minor="$major.$((minor+1)).0"
-          gate_file="docs/design/review/m$((minor+1))-gate.md"
-          # m-gate 证据文件必须存在（Maintainer 在 dispatch 前完成验收）
+          # 从 milestone 映射解析目标版本对应的 M 期编号
+          # 映射表与 docs/design/process/development-workflow.md §2 一致
+          gate_file=$(python3 -c "
+import json, subprocess
+ms = json.loads(subprocess.check_output(['gh', 'api', 'repos/ShiningRay/sebas/milestones', '--jq', '.[] | {title, description}']))
+target = 'v$next_minor'
+for m in ms:
+    if target in m.get('title', ''):
+        for line in m.get('description', '').split('\n'):
+            if line.startswith('order: '):
+                order = line.split(': ')[1].strip().rstrip('x')
+                print(f'docs/design/review/m{order}-gate.md')
+                break
+        break
+" 2>/dev/null || echo "")
+          if [ -z "$gate_file" ]; then
+            echo "::error::cannot resolve milestone gate file for v$next_minor"
+            echo "::error::ensure a milestone exists with title containing '$next_minor' and order in description"
+            exit 1
+          fi
           if [ ! -f "$gate_file" ]; then
             echo "::error::m-gate evidence not found: $gate_file"
             echo "::error::Maintainer must complete m-gate verification before dispatching a minor release."
-            echo "::error::See docs/design/process/development-workflow.md §5 for the M-gate process."
             exit 1
           fi
-          echo "m-gate evidence found: $gate_file"
-          # 确认文件非空且不含 "未实测" 的阻断项
           if grep -q '阻断.*未实测\|未实测.*阻断' "$gate_file"; then
             echo "::error::m-gate contains unverified blockers. Resolve them before releasing."
             exit 1
           fi
-          echo "m-gate check passed for v$next_minor"
+          echo "m-gate check passed for v$next_minor (gate: $gate_file)"
 
       - name: Decide bump track and compute next version
         id: bump
@@ -211,10 +230,10 @@ jobs:
           next="${{ steps.bump.outputs.next }}"
           track="${{ steps.bump.outputs.track }}"
           git add shard.yml src/version.cr CHANGELOG.md
-          git commit -m "chore(release): v$next [skip ci]"
 
           if [ "$track" = "minor" ]; then
-            # minor 走发版 PR：推分支 + 开 PR + 等 CI + squash 合并 + 在合并 commit 上打 tag
+            # minor 走发版 PR：不用 [skip ci]（CI 必须跑），用 release_commit_check 防重入
+            git commit -m "chore(release): v$next"
             branch="chore/release-v$next"
             git checkout -b "$branch"
             git push origin "$branch"
@@ -223,20 +242,43 @@ jobs:
               --body "Auto-generated minor release PR. Merge to tag v$next." \
               --label "release"
             gh pr merge --auto --squash "$branch"
-            echo "Minor release PR created and set to auto-merge. Tag will be created after merge."
-            # 等 PR 合并后在合并 commit 上打 tag
-            gh pr wait --merge "$branch" || true
-            git checkout main
-            git pull origin main
-            git tag -a "v$next" -m "v$next"
+            echo "Minor release PR created with auto-merge. Polling for merge..."
+
+            # 轮询等 PR 合并（gh pr wait 不存在，用 gh pr view 轮询）
+            merge_commit=""
+            for i in $(seq 1 60); do
+              state=$(gh pr view "$branch" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
+              if [ "$state" = "MERGED" ]; then
+                merge_commit=$(gh pr view "$branch" --json mergeCommit --jq '.mergeCommit.oid')
+                break
+              elif [ "$state" = "CLOSED" ]; then
+                echo "::error::PR was closed without merging"
+                exit 1
+              fi
+              echo "  waiting for merge (attempt $i/60, state=$state)..."
+              sleep 30
+            done
+
+            if [ -z "$merge_commit" ]; then
+              echo "::error::timed out waiting for minor release PR to merge"
+              exit 1
+            fi
+
+            echo "PR merged: $merge_commit"
+            # 在 PR 的 merge commit 上打 tag，不是 main 当前 tip
+            git fetch origin main
+            git tag -a "v$next" -m "v$next" "$merge_commit"
             git push origin "v$next"
           else
-            # patch 直接推 main + tag（文档口径：patch 不需要发版 PR）
+            # patch 直接推 main + tag（[skip ci] 防止触发新一轮 auto-release）
+            git commit -m "chore(release): v$next [skip ci]"
             git tag -a "v$next" -m "v$next"
             git push origin main
             git push origin "v$next"
           fi
           echo "Pushed tag v$next; dispatching release.yml to build assets."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Dispatch release.yml for the new tag
         if: steps.bump.outputs.skip != 'true'

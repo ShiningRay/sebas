@@ -93,7 +93,9 @@ function sync_docs_in_pr(pr):
       if needs_update(spec_file, changes):
         update_spec(spec_file, changes)
         git_add(spec_file)
-        log("已同步 #{spec_file}（同一 PR 内）")
+        git_commit("docs(spec): sync #{chapter.file} with implementation changes")
+        git_push(pr.branch)
+        log("已同步并推送 #{spec_file} 到 PR 分支")
 
   # CHANGELOG：PR 负责写入，不做事后补充
   # 每个 PR 必须在 [Unreleased] 段落写入自己的变更行（PR 模板 checklist 要求）。

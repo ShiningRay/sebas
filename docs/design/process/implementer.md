@@ -122,15 +122,20 @@ function execute_work_package(issue):
   # 提 PR
   pr = create_pr(branch, body="Fixes ##{issue.number}\n\n#{summary}")
 
-  # 修复循环
-  for round in 1..5:
+  # 修复循环（repair_round 只计实际修复，CI 等待不消耗轮次）
+  repair_round = 0
+  for iteration in 1..30:  # 外层迭代上限防死循环
     if pr.mergeStateStatus == "CLEAN" && get_unresolved_review_threads(pr).empty?:
+      break
+
+    if repair_round >= 5:
+      consult_fresh_agent(pr)  # 会诊
       break
 
     if pr.mergeStateStatus == "BEHIND":
       gh_pr_update_branch(pr)
       wait_for_ci(pr)
-      continue
+      continue  # 不计 repair_round
 
     threads = get_unresolved_review_threads(pr)
     ci_failures = get_ci_failures(pr)
@@ -138,10 +143,13 @@ function execute_work_package(issue):
 
     if threads.empty? && ci_failures.empty?:
       if ci_pending.any?:
-        wait_for_ci(pr)  # CI 还在跑，等完再重新评估
+        wait_for_ci(pr)  # CI 还在跑，等完再重新评估，不计 repair_round
         continue
       else:
         break
+
+    # 有实际修复工作，计入 repair_round
+    repair_round += 1
 
     for thread in threads:
       fix_or_reply(thread, worktree)

@@ -64,20 +64,28 @@ log "当前版本: $current → 目标版本: $NEXT"
 # 此时严格递增检查会挡住，所以 resume 必须在递增检查之前。
 if [ "$current" = "$NEXT" ] && git log origin/main --oneline -5 | grep -q "chore(release): v$NEXT"; then
   log "检测到 main 上已有 v$NEXT 的 release commit，进入 resume 模式"
-  resume_ver=$(git show origin/main:src/version.cr | grep -oE 'VERSION\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-  if [ "$resume_ver" = "$NEXT" ]; then
-    # 确认 tag 不存在
-    if git rev-parse "v$NEXT" >/dev/null 2>&1 || git ls-remote --tags origin "v$NEXT" | grep -q .; then
-      fail "tag v$NEXT 已存在，无需 resume"
-    fi
-    log "打附注 tag v$NEXT 并推送"
-    git tag -a "v$NEXT" -m "v$NEXT" origin/main
-    git push origin "v$NEXT"
-    log "Resume 完成：tag v$NEXT 已推送"
-    exit 0
-  else
-    fail "main 上有 release commit 但版本号不匹配（$resume_ver ≠ $NEXT），请人工检查"
+  # 解析 release commit 的确切 commit ID（不用 origin/main tip——后续 commit 可能已推进 main）
+  release_commit=$(git log origin/main --oneline -10 | grep "chore(release): v$NEXT" | head -1 | awk '{print $1}')
+  if [ -z "$release_commit" ]; then
+    fail "找不到 v$NEXT 的 release commit"
   fi
+  resume_ver=$(git show "$release_commit":src/version.cr | grep -oE 'VERSION\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+  if [ "$resume_ver" != "$NEXT" ]; then
+    fail "release commit $release_commit 的版本号不匹配（$resume_ver ≠ $NEXT）"
+  fi
+  # 确认 tag 不存在
+  if git rev-parse "v$NEXT" >/dev/null 2>&1 || git ls-remote --tags origin "v$NEXT" | grep -q .; then
+    fail "tag v$NEXT 已存在，无需 resume"
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    log "[dry-run] Resume：将在 commit $release_commit 上打 tag v$NEXT 并推送"
+    exit 0
+  fi
+  log "在 release commit $release_commit 上打附注 tag v$NEXT"
+  git tag -a "v$NEXT" -m "v$NEXT" "$release_commit"
+  git push origin "v$NEXT"
+  log "Resume 完成：tag v$NEXT 已推送"
+  exit 0
 fi
 
 # 5. 严格递增

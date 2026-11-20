@@ -154,14 +154,14 @@ function active_milestone():
     ms.track = null
     for line in desc_lines:
       if line.starts_with("order: "):
-        ms.order = line.sub("order: ", "").strip()
+        ms.order = line.sub("order: ", "").strip().rstrip("x").to_i()
       if line.starts_with("track: "):
         ms.track = line.sub("track: ", "").strip()
     # title 前缀兜底（如 "M4 · v0.2.0 ..."）
     if ms.order == null:
       match = ms.title.match(/^M(\d+)x?/)
       if match:
-        ms.order = match[1]
+        ms.order = match[1].to_i()
 
   sorted = milestones.sort_by(.order)
 
