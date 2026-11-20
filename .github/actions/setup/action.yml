@@ -14,7 +14,7 @@ runs:
   steps:
     # 自托管 runner 用 runner token 发请求，避免匿名调用被 GitHub 限流。
     - name: Install Crystal
-      uses: crystal-lang/install-crystal@v1
+      uses: crystal-lang/install-crystal@47f17b5ecff0cc09e96fa95f5220311329bf4bc8 # v1
       with:
         crystal: ${{ inputs.crystal }}
         token: ${{ github.token }}
@@ -99,7 +99,7 @@ runs:
 
     - name: Set up MSVC environment (Windows)
       if: runner.os == 'Windows'
-      uses: ilammy/msvc-dev-cmd@v1
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
       with:
         arch: x64
 

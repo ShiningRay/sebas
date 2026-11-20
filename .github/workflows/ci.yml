@@ -23,32 +23,12 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.detect.outputs.code }}
-      macos_runner: ${{ steps.runner.outputs.macos_runner }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      # 仓库是公开的：fork 的代码绝不能在我们自己的 self-hosted 机器上执行
-      # （runner 能读文件系统、凭据，也能访问内网）。fork PR 回退到 GitHub
-      # 托管 runner；本仓分支与 main 的 push 才用 self-hosted。
-      - name: Pick the macOS runner
-        id: runner
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_HEAD_REPO" ] && [ "$PR_HEAD_REPO" != "$REPO" ]; then
-            echo "macos_runner=macos-latest" >> "$GITHUB_OUTPUT"
-            echo "Fork PR from ${PR_HEAD_REPO} -> hosted macos-latest."
-          else
-            echo "macos_runner=macos-ci" >> "$GITHUB_OUTPUT"
-            echo "First-party run -> self-hosted macOS runner."
-          fi
 
       - name: Detect build-relevant changes
         id: detect
@@ -108,24 +88,26 @@ jobs:
 
           echo "Changed files:" && printf '%s\n' "$changed"
 
+  # 公开仓库的信任边界：PR 的 workflow 定义来自 PR 的 merge commit，贡献者可以改写它，
+  # 所以 pull_request 事件一律用 GitHub 托管的 macos-latest。只有 push:main、tag、
+  # workflow_dispatch 这类可信任 ref 才落到 self-hosted 的 macos-ci 上（那台机器上有
+  # 本机凭据、家目录与内网访问）。分支保护的必需检查名取自 matrix.runner，PR 上仍是
+  # "spec / macos-latest"。
   spec:
-    name: spec / ${{ matrix.os }}
+    name: spec / ${{ matrix.runner }}
     needs: changes
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            runner: ubuntu-latest
-          - os: macos-latest
-            runner: ${{ needs.changes.outputs.macos_runner }}
-          - os: windows-latest
-            runner: windows-latest
+          - runner: ubuntu-latest
+          - runner: ${{ github.event_name == 'pull_request' && 'macos-latest' || 'macos-ci' }}
+          - runner: windows-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -139,7 +121,7 @@ jobs:
 
       - name: Cache shards
         if: needs.changes.outputs.code == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             lib
@@ -166,7 +148,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -180,7 +162,7 @@ jobs:
 
       - name: Cache shards
         if: needs.changes.outputs.code == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             lib
@@ -197,26 +179,23 @@ jobs:
         run: make lint
 
   # 三平台 release 构建成本最高，只在 main 与手动触发时跑；PR 由 spec 覆盖
-  # 编译正确性。macOS 用 self-hosted（本仓 push 一律由本仓维护者触发）。
+  # 编译正确性。下面的 if 保证 PR 不会进入这里，因此 macOS 直接走 self-hosted。
   release-build:
-    name: release build / ${{ matrix.os }}
+    name: release build / ${{ matrix.runner }}
     needs: [changes, spec]
     if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            runner: ubuntu-latest
-          - os: macos-latest
-            runner: ${{ needs.changes.outputs.macos_runner }}
-          - os: windows-latest
-            runner: windows-latest
+          - runner: ubuntu-latest
+          - runner: macos-ci
+          - runner: windows-latest
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -224,7 +203,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Cache shards
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             lib
