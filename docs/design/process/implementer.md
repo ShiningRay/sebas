@@ -164,7 +164,7 @@ function execute_work_package(issue):
     push(worktree, branch)
     wait_for_ci(pr)
 
-    if no_progress_this_round(round):
+    if no_progress_this_round(repair_round):
       consecutive_stall += 1
     else:
       consecutive_stall = 0

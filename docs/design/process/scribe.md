@@ -72,6 +72,7 @@ PR 模板里有对应 checklist 项："Design docs updated when architecture, co
 
 ```pseudo
 function sync_docs_in_pr(pr):
+  git_checkout_pr_head(pr)  # 切到 PR 分支并确认 HEAD = pr.head，失败则中止
   # 在 PR 被 approve 之前执行，确保文档变更与代码变更在同一个 PR 里被 review 和 CI 检查
   changes = git_diff_files(pr.base, pr.head)
 

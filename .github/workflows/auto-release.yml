@@ -79,20 +79,19 @@ jobs:
           IFS='.' read -r major minor patch <<< "$current"
           next_minor="$major.$((minor+1)).0"
           # 从 milestone 映射解析目标版本对应的 M 期编号
-          # 映射表与 docs/design/process/development-workflow.md §2 一致
-          gate_file=$(python3 -c "
-import json, subprocess
-ms = json.loads(subprocess.check_output(['gh', 'api', 'repos/ShiningRay/sebas/milestones', '--jq', '.[] | {title, description}']))
-target = 'v$next_minor'
-for m in ms:
-    if target in m.get('title', ''):
-        for line in m.get('description', '').split('\n'):
-            if line.startswith('order: '):
-                order = line.split(': ')[1].strip().rstrip('x')
-                print(f'docs/design/review/m{order}-gate.md')
-                break
-        break
-" 2>/dev/null || echo "")
+          gate_file=$(gh api repos/ShiningRay/sebas/milestones \
+            --jq "[.[] | select(.title | contains(\"$next_minor\")) | .description]" \
+            | python3 -c "
+          import sys, json, re
+          descs = json.load(sys.stdin)
+          for desc in descs:
+              for line in desc.split('\n'):
+                  if line.startswith('order: '):
+                      order = line.split(': ')[1].strip().rstrip('x')
+                      print(f'docs/design/review/m{order}-gate.md')
+                      sys.exit(0)
+          sys.exit(1)
+          " 2>/dev/null || echo "")
           if [ -z "$gate_file" ]; then
             echo "::error::cannot resolve milestone gate file for v$next_minor"
             echo "::error::ensure a milestone exists with title containing '$next_minor' and order in description"

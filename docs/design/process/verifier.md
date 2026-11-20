@@ -143,7 +143,7 @@ function verify_issues_batch(parent_ids, expected_children_map):
   # 全量清单：与预期批次对账（不用仓库级编号连续性——closed issue 和 PR 也占编号）
   # 只检查批次内的 issue：缺失（预期有但没有）和多余（批次标记匹配但不在预期中）。
   # 批次成员通过 plan 标签 + milestone 归属识别，不依赖 baseline_issue_numbers。
-  batch_issues = gh_issue_list(state="open", label="plan", milestone=target_milestone)
+  batch_issues = gh_issue_list(state="all", label="plan", milestone=target_milestone)
   batch_numbers = batch_issues.map(.number)
   expected_numbers = expected_children_map.values.flatten + parent_ids
   missing = expected_numbers - batch_numbers
