@@ -1,0 +1,290 @@
+name: Auto Release
+
+# 双轨发版：
+#   - patch 全自动：push 到 main 含 fix(...) 类 commit 时触发
+#   - minor 半自动：Maintainer 在 Actions 页面 workflow_dispatch，输入 "minor"
+# major 不走此 workflow，走人工发版 PR + tag（见 docs/design/process/development-workflow.md §6）。
+#
+# 本 workflow 只负责「决定何时发、发什么版本号、产出 tag」；
+# 构建与发布由既有 release.yml 在 tag 推送后接管，两者通过 tag 解耦。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Release track: 'minor' to bump minor, 'patch' to force a patch"
+        required: true
+        type: choice
+        options:
+          - minor
+          - patch
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: prepare tag
+    runs-on: ubuntu-latest
+    # 只在有实质变更时跑；docs-only push 会被 changes job 跳过
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          # 保留凭据：后续步骤需要 git push（main / 分支 / tag）。
+          # GITHUB_TOKEN 的 push 不会触发 push 型 workflow，所以最后显式 dispatch release.yml。
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Skip if commit is a release commit
+        run: |
+          if git log -1 --pretty=%B | grep -qE '^chore\(release\):'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        id: release_commit_check
+
+      - name: Determine current version
+        id: version
+        run: |
+          set -euo pipefail
+          current=$(grep -oE 'VERSION\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' src/version.cr \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          if [ -z "$current" ]; then
+            echo "::error::cannot read VERSION from src/version.cr"
+            exit 1
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "Current version: $current"
+
+      - name: Verify m-gate evidence for minor releases
+        if: inputs.track == 'minor'
+        run: |
+          set -euo pipefail
+          current="${{ steps.version.outputs.current }}"
+          IFS='.' read -r major minor patch <<< "$current"
+          next_minor="$major.$((minor+1)).0"
+          # 从 milestone 映射解析目标版本对应的 M 期编号
+          gate_file=$(gh api repos/ShiningRay/sebas/milestones \
+            --jq "[.[] | select(.title | contains(\"$next_minor\")) | .description]" \
+            | python3 -c "
+          import sys, json, re
+          descs = json.load(sys.stdin)
+          for desc in descs:
+              for line in desc.split('\n'):
+                  if line.startswith('order: '):
+                      order = line.split(': ')[1].strip().rstrip('x')
+                      print(f'docs/design/review/m{order}-gate.md')
+                      sys.exit(0)
+          sys.exit(1)
+          " 2>/dev/null || echo "")
+          if [ -z "$gate_file" ]; then
+            echo "::error::cannot resolve milestone gate file for v$next_minor"
+            echo "::error::ensure a milestone exists with title containing '$next_minor' and order in description"
+            exit 1
+          fi
+          if [ ! -f "$gate_file" ]; then
+            echo "::error::m-gate evidence not found: $gate_file"
+            echo "::error::Maintainer must complete m-gate verification before dispatching a minor release."
+            exit 1
+          fi
+          if grep -q '阻断.*未实测\|未实测.*阻断' "$gate_file"; then
+            echo "::error::m-gate contains unverified blockers. Resolve them before releasing."
+            exit 1
+          fi
+          echo "m-gate check passed for v$next_minor (gate: $gate_file)"
+
+      - name: Decide bump track and compute next version
+        id: bump
+        env:
+          DISPATCH_TRACK: ${{ inputs.track }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          current="${{ steps.version.outputs.current }}"
+          IFS='.' read -r major minor patch <<< "$current"
+
+          git fetch --tags --force origin >/dev/null
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$latest_tag" ]; then
+            echo "::error::no previous tag found; seed the first tag manually"
+            exit 1
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            track="$DISPATCH_TRACK"
+          else
+            # push 触发：分析 latest_tag..HEAD 的 commit
+            mapfile -t subjects < <(git log --pretty=%s "$latest_tag"..HEAD)
+            if [ "${#subjects[@]}" -eq 0 ]; then
+              echo "No new commits since $latest_tag, nothing to release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            has_feat=false; has_fix=false
+            for s in "${subjects[@]}"; do
+              case "$s" in
+                feat\(*|feat:*) has_feat=true ;;
+                fix\(*|fix:*)  has_fix=true  ;;
+              esac
+            done
+            if [ "$has_feat" = true ]; then
+              echo "::notice::feat detected in push; patch auto-release skipped (belongs to minor track)."
+              if [ "$has_fix" = true ]; then
+                echo "::notice::a fix is blocked behind feat; for urgent fixes use the hotfix branch flow."
+              fi
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$has_fix" = false ]; then
+              echo "No fix commits since $latest_tag, no patch release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            track=patch
+          fi
+
+          case "$track" in
+            minor) next="$major.$((minor+1)).0" ;;
+            patch) next="$major.$minor.$((patch+1))" ;;
+            *) echo "::error::unknown track $track"; exit 1 ;;
+          esac
+
+          # 严格递增 + tag 未占用
+          if git rev-parse "v$next" >/dev/null 2>&1; then
+            echo "::error::tag v$next already exists"
+            exit 1
+          fi
+          ver_gt() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ] && [ "$1" != "$2" ]; }
+          if ! ver_gt "$next" "$current"; then
+            echo "::error::next $next is not greater than current $current"
+            exit 1
+          fi
+
+          echo "track=$track" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Bump: $current -> $next (track=$track)"
+
+      - name: Apply version bump to shard.yml and src/version.cr
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          next="${{ steps.bump.outputs.next }}"
+          current="${{ steps.version.outputs.current }}"
+          sed -i "s/^version: .*/version: $next/" shard.yml
+          sed -i "s/VERSION = \"$current\"/VERSION = \"$next\"/" src/version.cr
+          grep -q "^version: $next" shard.yml
+          grep -q "VERSION = \"$next\"" src/version.cr
+          echo "shard.yml and src/version.cr now at $next"
+
+      - name: Promote CHANGELOG Unreleased section
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          next="${{ steps.bump.outputs.next }}"
+          today=$(date +%F)
+          python3 - "$next" "$today" <<'PY'
+          import re, sys
+          nxt, today = sys.argv[1], sys.argv[2]
+          path = "CHANGELOG.md"
+          text = open(path, encoding="utf-8").read()
+          if "## [Unreleased]" not in text:
+              sys.exit("CHANGELOG.md missing [Unreleased] section")
+          # 把第一个 [Unreleased] 段替换为：空 Unreleased + 新版本段
+          new_section = f"## [Unreleased]\n\n## [{nxt}] - {today}"
+          text = text.replace("## [Unreleased]", new_section, 1)
+          # 底部链接：更新 Unreleased 比较锚点，新增版本链接
+          text = re.sub(
+              r"\[Unreleased\]: https://github\.com/([\w.-]+/[\w.-]+)/compare/v[\d.]+\.\.\.HEAD",
+              f"[Unreleased]: https://github.com/\\1/compare/v{nxt}...HEAD",
+              text,
+          )
+          link = f"[{nxt}]: https://github.com/ShiningRay/sebas/releases/tag/v{nxt}"
+          if link not in text:
+              # 在最后一个版本链接后追加
+              text = text.rstrip() + "\n" + link + "\n"
+          open(path, "w", encoding="utf-8").write(text)
+          PY
+          grep -q "## \[$next\]" CHANGELOG.md
+
+      - name: Commit, tag, and push
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          next="${{ steps.bump.outputs.next }}"
+          track="${{ steps.bump.outputs.track }}"
+          git add shard.yml src/version.cr CHANGELOG.md
+
+          if [ "$track" = "minor" ]; then
+            # minor 走发版 PR：不用 [skip ci]（CI 必须跑），用 release_commit_check 防重入
+            git commit -m "chore(release): v$next"
+            branch="chore/release-v$next"
+            git checkout -b "$branch"
+            git push origin "$branch"
+            gh pr create \
+              --title "chore(release): v$next" \
+              --body "Auto-generated minor release PR. Merge to tag v$next." \
+              --label "release"
+            gh pr merge --auto --squash "$branch"
+            echo "Minor release PR created with auto-merge. Polling for merge..."
+
+            # 轮询等 PR 合并（gh pr wait 不存在，用 gh pr view 轮询）
+            merge_commit=""
+            for i in $(seq 1 60); do
+              state=$(gh pr view "$branch" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
+              if [ "$state" = "MERGED" ]; then
+                merge_commit=$(gh pr view "$branch" --json mergeCommit --jq '.mergeCommit.oid')
+                break
+              elif [ "$state" = "CLOSED" ]; then
+                echo "::error::PR was closed without merging"
+                exit 1
+              fi
+              echo "  waiting for merge (attempt $i/60, state=$state)..."
+              sleep 30
+            done
+
+            if [ -z "$merge_commit" ]; then
+              echo "::error::timed out waiting for minor release PR to merge"
+              exit 1
+            fi
+
+            echo "PR merged: $merge_commit"
+            # 在 PR 的 merge commit 上打 tag，不是 main 当前 tip
+            git fetch origin main
+            git tag -a "v$next" -m "v$next" "$merge_commit"
+            git push origin "v$next"
+          else
+            # patch 直接推 main + tag（[skip ci] 防止触发新一轮 auto-release）
+            git commit -m "chore(release): v$next [skip ci]"
+            git tag -a "v$next" -m "v$next"
+            git push origin main
+            git push origin "v$next"
+          fi
+          echo "Pushed tag v$next; dispatching release.yml to build assets."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dispatch release.yml for the new tag
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          next="${{ steps.bump.outputs.next }}"
+          gh workflow run release.yml -f tag="v$next"
+          echo "Dispatched release.yml for v$next"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

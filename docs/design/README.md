@@ -13,6 +13,7 @@
 | 查当前正在推进的提案 | [proposals/](proposals/) |
 | 追溯某个决策的调研依据 | [research/](research/) |
 | 看历史门禁/验收/核验记录 | [review/](review/) |
+| 开发流程与 Agent 角色分工 | [process/](process/README.md) |
 
 ## 设计正文 `spec/`（17 篇，按章拆自 design.md）
 
@@ -67,6 +68,20 @@
 | [m0-gate.md](review/m0-gate.md) | 58 | M0 门禁证据 |
 
 `review/` 下的报告是**存档证据**，其中出现的行号是当时那一版文件的行号，检索时按「行版」口径读，不再回改。
+
+## 开发流程 `process/`（8 篇）
+
+| 文件 | 主题 |
+|---|---|
+| [process/README.md](process/README.md) | 流程索引与核心原则 |
+| [process/development-workflow.md](process/development-workflow.md) | 开发工作流总纲：分支模型、里程碑、issue、验收、发版 |
+| [process/maintainer.md](process/maintainer.md) | Maintainer（人）：决策与裁决 |
+| [process/implementer.md](process/implementer.md) | Implementer（AI）：实现与交付 |
+| [process/verifier.md](process/verifier.md) | Verifier（AI）：独立核验 |
+| [process/reviewer.md](process/reviewer.md) | Reviewer（AI）：终验复核 |
+| [process/triager.md](process/triager.md) | Triager（AI）：issue 研判 |
+| [process/scribe.md](process/scribe.md) | Scribe（AI）：文档与记忆 |
+| [process/release-manager.md](process/release-manager.md) | Release Manager（AI）：发版执行 |
 
 ## 其他
 

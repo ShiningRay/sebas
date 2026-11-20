@@ -1,0 +1,70 @@
+# Sebas
+
+> Crystal multi-account orchestratable personal agent platform.
+> Binds N accounts per channel (email / WeCom / Lark), orchestrates trigger→condition→action
+> workflows with durable tasks, hot-reloads configuration without restarts, and embeds mruby plugins.
+
+Sebas is a personal agent platform written in Crystal. It manages multiple accounts across
+communication channels, provides a persistent workflow engine with approval gates and budget
+circuit breakers, supports hot-reloadable configuration, and runs plugins in an mruby sandbox.
+The repository uses a structured development process with AI agent roles for implementation,
+verification, triage, and release management.
+
+## Canonical pages
+
+- [Repository](https://github.com/ShiningRay/sebas): source code, issues, milestones, and releases
+- [README](https://github.com/ShiningRay/sebas/blob/main/README.md): project overview, quick start, and feature summary
+- [CHANGELOG](https://github.com/ShiningRay/sebas/blob/main/CHANGELOG.md): version history following Keep a Changelog and semver
+- [Releases](https://github.com/ShiningRay/sebas/releases): tagged releases with Linux/macOS/Windows binaries and sha256 sidecars
+
+## Documentation
+
+- [Design overview](https://github.com/ShiningRay/sebas/blob/main/docs/design/design.md): architecture index linking to spec/ chapters
+- [Development plan](https://github.com/ShiningRay/sebas/blob/main/docs/design/development-plan.md): WBS, DAG, schedule, and milestone gates index
+- [Design spec chapters](https://github.com/ShiningRay/sebas/blob/main/docs/design/spec/README.md): 17 chapters covering architecture, channels, orchestration, plugins, and security
+- [Development plan sections](https://github.com/ShiningRay/sebas/blob/main/docs/design/plan/README.md): work packages, dependencies, schedule, and gate criteria
+- [Design proposals](https://github.com/ShiningRay/sebas/blob/main/docs/design/proposals/): active design proposals (fork-join, scheduling, commitments-calendar, busy-interrupt)
+- [Research notes](https://github.com/ShiningRay/sebas/blob/main/docs/design/research/): prior art, channel research, and architecture comparisons
+- [Review archive](https://github.com/ShiningRay/sebas/blob/main/docs/design/review/): milestone gate evidence and acceptance reports
+
+## Development process
+
+- [Workflow overview](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/development-workflow.md): branch model, milestones, issue lifecycle, verification, and release process
+- [Maintainer role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/maintainer.md): human decision-maker for scheduling, scope, freeze verdicts, and release approval
+- [Implementer role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/implementer.md): AI agent that implements work packages, fixes review comments and CI failures
+- [Verifier role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/verifier.md): AI agent that independently verifies deliverables (read-only, separate context)
+- [Reviewer role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/reviewer.md): AI agent that performs final review after Verifier findings are resolved
+- [Triager role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/triager.md): AI agent that triages issues into six verdicts and assigns metadata
+- [Scribe role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/scribe.md): AI agent that maintains design docs, memory store, and CHANGELOG
+- [Release Manager role](https://github.com/ShiningRay/sebas/blob/main/docs/design/process/release-manager.md): AI agent that executes version bumps, tagging, and asset verification
+
+## Agent integration
+
+- [AGENTS.md](https://github.com/ShiningRay/sebas/blob/main/AGENTS.md): authoritative guide for AI agents working in this repository
+- [CONTRIBUTING.md](https://github.com/ShiningRay/sebas/blob/main/CONTRIBUTING.md): human contributor guide (build, test, PR flow)
+- [SECURITY.md](https://github.com/ShiningRay/sebas/blob/main/SECURITY.md): private vulnerability reporting process
+
+## Key facts
+
+- Language: Crystal >= 1.19
+- Package manager: Shards (bundled with Crystal)
+- Native dependencies: libsqlite3 (with FTS5), OpenSSL, PCRE2
+- Platforms: Linux (x86_64), macOS (x86_64 / arm64), Windows (x86_64)
+- License: MIT
+- Default branch: main (protected, squash-only, 4 required CI checks)
+- Release automation: patch auto-release on fix commits, minor semi-auto via workflow_dispatch, major manual
+- Version source of truth: src/version.cr (synced with shard.yml)
+- Current version: 0.1.0
+- Milestones: M4 (v0.2.0 fork-join), M5 (v0.3.0 commitments), M6 (v0.4.0 calendar mirror), M7 (v0.5.0 projection)
+- CI: 3-platform spec + ameba + release build + docs-check + dependency-check
+- Quality gates: crystal spec (0 failures), crystal tool format --check, ameba (0 issues), check_docs.py (FAIL=0)
+
+## Contact
+
+- [Issues](https://github.com/ShiningRay/sebas/issues): bug reports and feature requests
+- [Discussions](https://github.com/ShiningRay/sebas/discussions): questions and design discussions
+- [Security](https://github.com/ShiningRay/sebas/blob/main/SECURITY.md): private vulnerability reporting
+
+## Publisher
+
+- [ShiningRay](https://github.com/ShiningRay): project author and maintainer
