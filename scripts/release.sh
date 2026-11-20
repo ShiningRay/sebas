@@ -59,6 +59,27 @@ current=$(grep -oE 'VERSION\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' src/version.cr \
 [ -n "$current" ] || fail "无法从 src/version.cr 读取 VERSION"
 log "当前版本: $current → 目标版本: $NEXT"
 
+# ── Resume 路径：main 上已有 release commit 但 tag 未推送 ──
+# 上次 push main 成功但 push tag 失败时，本地版本号已是 NEXT。
+# 此时严格递增检查会挡住，所以 resume 必须在递增检查之前。
+if [ "$current" = "$NEXT" ] && git log origin/main --oneline -5 | grep -q "chore(release): v$NEXT"; then
+  log "检测到 main 上已有 v$NEXT 的 release commit，进入 resume 模式"
+  resume_ver=$(git show origin/main:src/version.cr | grep -oE 'VERSION\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+  if [ "$resume_ver" = "$NEXT" ]; then
+    # 确认 tag 不存在
+    if git rev-parse "v$NEXT" >/dev/null 2>&1 || git ls-remote --tags origin "v$NEXT" | grep -q .; then
+      fail "tag v$NEXT 已存在，无需 resume"
+    fi
+    log "打附注 tag v$NEXT 并推送"
+    git tag -a "v$NEXT" -m "v$NEXT" origin/main
+    git push origin "v$NEXT"
+    log "Resume 完成：tag v$NEXT 已推送"
+    exit 0
+  else
+    fail "main 上有 release commit 但版本号不匹配（$resume_ver ≠ $NEXT），请人工检查"
+  fi
+fi
+
 # 5. 严格递增
 ver_gt() {
   [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
@@ -76,6 +97,13 @@ fi
 # 7. shard.yml 与 src/version.cr 当前一致
 shard_ver=$(grep -oE '^version:\s*[0-9]+\.[0-9]+\.[0-9]+' shard.yml | grep -oE '[0-9.]+')
 [ "$shard_ver" = "$current" ] || fail "shard.yml ($shard_ver) 与 src/version.cr ($current) 不一致"
+
+# ── dry-run 提前退出（不做任何变更） ──────────────────────
+if [ "$DRY_RUN" = true ]; then
+  log "[dry-run] 全部校验通过。版本号 $current → $NEXT 可以发布。"
+  log "[dry-run] 未做任何修改。"
+  exit 0
+fi
 
 # ── 版本号 bump ──────────────────────────────────────────
 log "更新版本号到 $NEXT"
@@ -110,13 +138,6 @@ git commit -m "chore(release): v$NEXT [skip ci]"
 
 log "打附注 tag v$NEXT"
 git tag -a "v$NEXT" -m "v$NEXT"
-
-if [ "$DRY_RUN" = true ]; then
-  log "[dry-run] 跳过 push。回滚命令："
-  echo "  git tag -d v$NEXT"
-  echo "  git reset --hard HEAD~1"
-  exit 0
-fi
 
 log "推送 main + tag"
 git push origin main

@@ -92,11 +92,14 @@ git log --oneline HEAD..origin/<branch>  # 远端是否有别人的新提交
 
 PR 合并前，Implementer 自查 issue 的「验收」节每一条是否都有证据：
 
-- spec 通过数（CI run 链接）
-- ameba 0 issues（CI run 链接）
-- format 绿（CI run 链接）
+- spec 通过数（CI run 链接）*
+- ameba 0 issues（CI run 链接）*
+- format 绿（CI run 链接）*
 - 文档更新（diff 链接）
 - 平台相关代码有三平台编译证据
+
+\* 纯文档 PR（仅改 docs/、*.md、LICENSE 等）豁免 spec/ameba/format 三项——
+CI 的 changes job 会跳过这些步骤，以 docs-check 和 review 意见清零作为验收依据。
 
 缺任一条 → 不合并，先补证据。
 
@@ -121,7 +124,7 @@ function execute_work_package(issue):
 
   # 修复循环
   for round in 1..5:
-    if pr.mergeStateStatus == "CLEAN":
+    if pr.mergeStateStatus == "CLEAN" && get_unresolved_review_threads(pr).empty?:
       break
 
     if pr.mergeStateStatus == "BEHIND":
@@ -131,9 +134,14 @@ function execute_work_package(issue):
 
     threads = get_unresolved_review_threads(pr)
     ci_failures = get_ci_failures(pr)
+    ci_pending = get_ci_pending(pr)
 
     if threads.empty? && ci_failures.empty?:
-      break
+      if ci_pending.any?:
+        wait_for_ci(pr)  # CI 还在跑，等完再重新评估
+        continue
+      else:
+        break
 
     for thread in threads:
       fix_or_reply(thread, worktree)
@@ -158,7 +166,7 @@ function execute_work_package(issue):
       break
 
   # 合并
-  if pr.mergeStateStatus == "CLEAN":
+  if pr.mergeStateStatus == "CLEAN" && get_unresolved_review_threads(pr).empty?:
     squash_merge(pr)
     verify_merged(pr)  # 远程复核 state=MERGED
     fill_issue_evidence(issue, pr)

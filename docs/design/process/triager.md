@@ -147,9 +147,21 @@ function triage_issue(issue):
 function active_milestone():
   milestones = gh_api("repos/.../milestones", state="open")
 
-  # 按编码机制排序
+  # 从 description 提取 order 和 track 元数据
   for ms in milestones:
-    ms.order = extract_order(ms)  # 从 title 前缀或 description 的 order: 行
+    desc_lines = ms.description.split("\n")
+    ms.order = null
+    ms.track = null
+    for line in desc_lines:
+      if line.starts_with("order: "):
+        ms.order = line.sub("order: ", "").strip()
+      if line.starts_with("track: "):
+        ms.track = line.sub("track: ", "").strip()
+    # title 前缀兜底（如 "M4 · v0.2.0 ..."）
+    if ms.order == null:
+      match = ms.title.match(/^M(\d+)x?/)
+      if match:
+        ms.order = match[1]
 
   sorted = milestones.sort_by(.order)
 

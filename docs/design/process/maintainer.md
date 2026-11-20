@@ -51,7 +51,9 @@ Maintainer 不主动执行任务，而是**响应两种输入**：
 每个决策必须锚到具体证据：
 - 排期裁决 → DAG 依赖图 + 容量估算
 - 冻结口径 → m-gate.md 的未实测项清单
-- 发版终审 → Verifier 的核验报告 + CI 全绿 + 产物校验结果
+- 发版终审分两个阶段：
+  - **pre-tag 审批**（打 tag 前）→ Verifier 的核验报告 + CI 全绿 + m-gate.md 证据完整
+  - **post-build 产物验收**（release.yml 跑完后）→ sha256 全过 + 裸容器冒烟通过，过了才关 milestone
 
 不做没有证据支撑的决定。如果证据不足，打回给对应 Agent 补证据。
 

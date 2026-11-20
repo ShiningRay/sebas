@@ -68,10 +68,11 @@ PR 模板里有对应 checklist 项："Design docs updated when architecture, co
 - 仅存安全的用途/位置指针
 - 查询词也不得带秘密
 
-## 伪代码：PR 合并后的文档同步
+## 伪代码：PR 内的文档同步（合并前完成）
 
 ```pseudo
-function sync_docs_on_merge(pr):
+function sync_docs_in_pr(pr):
+  # 在 PR 被 approve 之前执行，确保文档变更与代码变更在同一个 PR 里被 review 和 CI 检查
   changes = git_diff_files(pr.base, pr.head)
 
   # 检测需要文档同步的变更
@@ -91,14 +92,17 @@ function sync_docs_on_merge(pr):
       spec_file = "docs/design/spec/#{chapter.file}"
       if needs_update(spec_file, changes):
         update_spec(spec_file, changes)
-        log("已同步 #{spec_file}")
+        git_add(spec_file)
+        log("已同步 #{spec_file}（同一 PR 内）")
 
-  # CHANGELOG
+  # CHANGELOG：PR 负责写入，不做事后补充
+  # 每个 PR 必须在 [Unreleased] 段落写入自己的变更行（PR 模板 checklist 要求）。
+  # Scribe 的职责是检查该条目是否存在，而不是事后追加——避免重复条目和时序竞争。
   if pr.has_user_visible_changes:
-    changelog_entry = generate_changelog_line(pr)
-    prepend_to_unreleased("CHANGELOG.md", changelog_entry)
+    if !changelog_has_entry_for(pr):
+      request_changes(pr, "CHANGELOG.md 的 [Unreleased] 段落缺少本 PR 的条目，请补充后重新提交")
 
-  # 文档质量检查
+  # 文档质量检查（PR 内的 CI docs-check 会再次验证）
   result = run("python tools/check_docs.py")
   if result.fail_count > 0:
     raise "文档质量门禁未过：#{result.failures}"

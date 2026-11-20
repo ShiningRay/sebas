@@ -21,12 +21,12 @@ Sebas：Crystal 写的多账号可编排个人 agent 平台。
 shards install
 crystal spec                          # 0 failures
 crystal tool format --check           # 不许手改格式
-crystal build bin/ameba lib/ameba/bin/ameba.cr && ./bin/ameba   # 0 issues
+crystal build -o bin/ameba lib/ameba/bin/ameba.cr && ./bin/ameba   # 0 issues
 python tools/check_docs.py            # FAIL=0（WARN 可接受，仅限 docs/design/review/ 存档）
 ```
 
 CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + release build + docs-check。
-`make check` 把上述本地门禁打包执行。
+`make check` 跑 format-check + spec + lint（不含 docs-check）；`make docs-check` 单独跑文档门禁。
 
 ## 目录结构
 

@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Configure git identity
         run: |
@@ -66,6 +66,29 @@ jobs:
           fi
           echo "current=$current" >> "$GITHUB_OUTPUT"
           echo "Current version: $current"
+
+      - name: Verify m-gate evidence for minor releases
+        if: inputs.track == 'minor'
+        run: |
+          set -euo pipefail
+          current="${{ steps.version.outputs.current }}"
+          IFS='.' read -r major minor patch <<< "$current"
+          next_minor="$major.$((minor+1)).0"
+          gate_file="docs/design/review/m$((minor+1))-gate.md"
+          # m-gate 证据文件必须存在（Maintainer 在 dispatch 前完成验收）
+          if [ ! -f "$gate_file" ]; then
+            echo "::error::m-gate evidence not found: $gate_file"
+            echo "::error::Maintainer must complete m-gate verification before dispatching a minor release."
+            echo "::error::See docs/design/process/development-workflow.md §5 for the M-gate process."
+            exit 1
+          fi
+          echo "m-gate evidence found: $gate_file"
+          # 确认文件非空且不含 "未实测" 的阻断项
+          if grep -q '阻断.*未实测\|未实测.*阻断' "$gate_file"; then
+            echo "::error::m-gate contains unverified blockers. Resolve them before releasing."
+            exit 1
+          fi
+          echo "m-gate check passed for v$next_minor"
 
       - name: Decide bump track and compute next version
         id: bump
@@ -186,9 +209,41 @@ jobs:
         run: |
           set -euo pipefail
           next="${{ steps.bump.outputs.next }}"
+          track="${{ steps.bump.outputs.track }}"
           git add shard.yml src/version.cr CHANGELOG.md
           git commit -m "chore(release): v$next [skip ci]"
-          git tag -a "v$next" -m "v$next"
-          git push origin main
-          git push origin "v$next"
-          echo "Pushed main + tag v$next; release.yml will now build assets."
+
+          if [ "$track" = "minor" ]; then
+            # minor 走发版 PR：推分支 + 开 PR + 等 CI + squash 合并 + 在合并 commit 上打 tag
+            branch="chore/release-v$next"
+            git checkout -b "$branch"
+            git push origin "$branch"
+            gh pr create \
+              --title "chore(release): v$next" \
+              --body "Auto-generated minor release PR. Merge to tag v$next." \
+              --label "release"
+            gh pr merge --auto --squash "$branch"
+            echo "Minor release PR created and set to auto-merge. Tag will be created after merge."
+            # 等 PR 合并后在合并 commit 上打 tag
+            gh pr wait --merge "$branch" || true
+            git checkout main
+            git pull origin main
+            git tag -a "v$next" -m "v$next"
+            git push origin "v$next"
+          else
+            # patch 直接推 main + tag（文档口径：patch 不需要发版 PR）
+            git tag -a "v$next" -m "v$next"
+            git push origin main
+            git push origin "v$next"
+          fi
+          echo "Pushed tag v$next; dispatching release.yml to build assets."
+
+      - name: Dispatch release.yml for the new tag
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          next="${{ steps.bump.outputs.next }}"
+          gh workflow run release.yml -f tag="v$next"
+          echo "Dispatched release.yml for v$next"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

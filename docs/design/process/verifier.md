@@ -30,7 +30,7 @@
 
 对已合并的 PR 做只读终验：
 
-- 合并 commit 与远端 main 顶端对齐
+- 合并 commit 是当前 main 顶端的祖先（`git merge-base --is-ancestor <merge_commit> origin/main`），而非必须等于顶端——后续 PR 合并后顶端会前进
 - PR 声称的改动与实际 diff 一致
 - 关联 issue 的关闭状态正确
 
@@ -140,10 +140,16 @@ function verify_issues_batch(parent_ids, expected_children_map):
     else:
       report.must_fix("父卡 ##{parent_id} 子卡不符")
 
-  # 全量清单
+  # 全量清单：与预期批次对账（不用仓库级编号连续性——closed issue 和 PR 也占编号）
   all_issues = gh_issue_list(state="open")
-  if all_issues.has_duplicates? || all_issues.has_gaps?:
-    report.must_fix("编号不连续或有跳号")
+  expected_numbers = expected_children_map.values.flatten + parent_ids
+  actual_numbers = all_issues.map(.number)
+  missing = expected_numbers - actual_numbers
+  extra = actual_numbers - expected_numbers - baseline_issue_numbers
+  if missing.any?:
+    report.must_fix("批次缺失 issue：#{missing}")
+  if extra.any?:
+    report.must_fix("批次外多余 issue：#{extra}")
 
   # 既有卡零扰动
   baseline_issues = load_baseline_issues()

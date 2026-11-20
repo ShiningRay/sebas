@@ -105,7 +105,7 @@ milestone 回答的问题是"这个修复随哪个版本出去"。
 | 已发布版本的普通 bug | 有 workaround、不阻塞主流程 | 下一个 feature milestone | 占用容量，按严重度插在 WP 之间 |
 
 **没有 milestone 的 bug 不允许存在**——留空的 issue 会在只看 milestone 看板时消失。
-"以后修"的正确表达是挂到下一个 feature milestone 或显式 `backlog` 标签 + 评论说明。
+"以后修"的正确表达是挂到下一个 feature milestone + 显式 `backlog` 标签 + 评论说明（milestone 和标签缺一不可）。
 
 ### 工作包卡的关闭流程
 
