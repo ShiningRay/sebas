@@ -191,7 +191,7 @@ sebas plugin uninstall remote-memory --purge
 | 记忆 | `memory.remember.before` | gate + transform | 后端写入前，返回 `allow/modify/deny` entry；宿主重新校验后才写入 |
 | 记忆 | `memory.remember.after` | observe | 后端提交成功后，含 memory_id/kind/tags；失败或 deny 不触发 |
 | 任务 | `task.start` | observe | 持久 workflow/task 创建并落库后，带 run_id/workflow_id；不是每次 phase 重放都创建新任务 |
-| 任务 | `task.end` | observe | task 进入终态后，带 status/error；不能改变终态或重试副作用 |
+| 任务 | `task.end` | observe | task 进入终态后，带 `task_id/status/error`；不能改变终态或重试副作用 |
 | 平台 | `gateway.start` / `gateway.stop` | observe | 插件 registry 就绪后 / 渠道停止前；stop 有全局有界等待，不承诺全部消息已投递 |
 
 `llm.request.error` 的每次尝试语义与 `agent.turn.after` 的最终 turn 语义不得混淆；`session.compact.after` 的提交完成不等于所有下游消费者已刷新。首版**不开放**原始渠道包改写、任意系统提示替换、自由 `claim` 接管 Agent 回复、`before_install`、动态 skill 改写、任意 cron 状态改写；这些需要单独 capability 和威胁模型。

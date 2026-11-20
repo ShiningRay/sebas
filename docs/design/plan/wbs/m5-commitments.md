@@ -6,7 +6,7 @@
 
 > 依据：[proposals/commitments-calendar-integration.md](../../proposals/commitments-calendar-integration.md) §1–§5、§8–§9（提案已随 PR #61 合入 main）。本节只做工作包、依赖、估时与验收；**不新造设计决策**——语义有变更回写提案与 design.md，不在本计划内定。
 > 期定位：把 cron 从「用户产品层」降到「唤醒基础设施层」（提案 §5），新增 Commitment/Checkpoint/Reminder/NotificationDelivery 领域对象与持久 WakeSchedule/Occurrence/Run 链路。**本期不含任何外部日历/TODO 接入**（M6/M7 承接），也不做 tombstone 式 UI。
-> 期门禁：调度四条全绿（`make format-check` + `crystal spec` + `make lint` + `make release`）。**M5.0 例外且需精确表述**：M5.0-WP1 是纯文档包（以评审通过替代命令门禁）；M5.0-WP2 不是纯文档包——它同时交付纯函数时间语义模块与 spec，因此 **M5.0 期门禁 = 文档评审通过 + 调度四条在该模块上全绿**。WP2 的 spec 全绿同时是 **M5.1 开工闸**：两张闸在「spec 绿」上重合，spec 未绿则 M5.0 No-Go 且 M5.1 不得开工，不存在一过一不过（判定以 M5.0-WP2 验收为准，另见 B.3「期内子门禁是开工闸」）。
+> 期门禁：调度四条全绿（`make format-check` + `crystal spec` + `make lint` + `make release`）。**M5.0 例外且需精确表述**：M5.0-WP1 是纯文档包（以评审通过替代命令门禁）；M5.0-WP2 不是纯文档包——它同时交付纯函数时间语义模块与 spec，因此 **M5.0 期门禁 = 文档评审通过 + 调度四条在该模块上全绿**。**M5.1 开工闸 = spec 全绿且 WP2 已完工**（WP2 未完工则 M5.1 不得开工，即便 spec 已绿）。两张闸判定标准不同、可以不等；但 M5.0 No-Go 时 M5.1 必不得开工（判定以 M5.0-WP2 验收为准，另见 B.3「期内子门禁是开工闸」）。
 
 **M5.0-WP1 领域对象、状态机与不变式定稿**（1–1.5 pd）
 - 目标：把提案 §3.2 生命周期、§4.1 十对象、§3.3 提醒纪律收敛为实现契约。
@@ -21,9 +21,10 @@
 - 范围：四类时间表示（UTC instant / 原墙钟+IANA / 全天 `DATE` / floating）的比较与排序规则；`RRULE/RDATE/EXDATE` 原文保留口径与 Occurrence 生成边界；DST 缺口与重复时刻的期望结果表；首版表结构草案与索引；迁移序号方案（`PRAGMA user_version` + 有序迁移）；[spec/14-roadmap.md](../../spec/14-roadmap.md)（§14）追加 M5–M7 行（与 M4.0-WP2 #40 同行编辑，**串行：#40 先落**，避免同文件冲突）[来源: design.md §14 现仅 M0–M3]。
 - 交付物：语义文档 §时间/§DDL 草案 + `spec/14-roadmap.md`（§14）修订 + **纯函数时间语义模块 `src/platform/time_semantics.cr`（比较/排序/缺口与重复解析，无 IO）+ `spec/platform/time_semantics_spec.cr`**（最小实现，估时内已含单测）。
 - 依赖：M5.0-WP1。
-- 验收：**一条规则：spec 未绿则 M5.0 判 No-Go，M5.1 亦不得开工**——本包交付模块与 spec，两者都在 M5.0 期门禁范围内，不存在「文档通过但模块可不过」的形态：
-  - ⓐ**M5.0 期门禁 = 文档评审通过（M5.0-WP1 语义文档 + 本包 §时间/§DDL 草案 + §14 修订）** 且 **调度四条（`make format-check` + `crystal spec` + `make lint` + `make release`）在 `src/platform/time_semantics.cr` 上全绿**，其中 `spec/platform/time_semantics_spec.cr` 全绿是硬条件，不由文档描述替代。
-  - ⓑ**M5.1 开工闸 = `spec/platform/time_semantics_spec.cr` 全绿**。两闸在「spec 绿」这一项上重合，分离之处只在 M5.0 还须文档评审通过；因此 spec 未绿时两张闸**同时不成立**（M5.0 No-Go，M5.1 不得开工），不会出现一张过一张不过。
+- 验收：**判据分两层，不要合并成一句话**——本包交付模块与 spec，两者都在 M5.0 期门禁范围内，因此不存在「文档通过但模块可不过」的形态：
+  - ⓐ**M5.0 期门禁 = 文档评审通过（M5.0-WP1 语义文档 + 本包 §时间/§DDL 草案 + §14 修订）** 且 **调度四条（`make format-check` + `crystal spec` + `make lint` + `make release`）在 `src/platform/time_semantics.cr` 上全绿**。四条任一红（含 `make lint` 红）→ M5.0 No-Go，本包不完工。
+  - ⓑ**M5.1 开工闸 = `spec/platform/time_semantics_spec.cr` 全绿，且本包已完工**。这两条缺一不可：spec 绿只证明时间语义可依赖，M5.1-WP1 要改 `SCHEMA.each` 迁移器（依赖本包交付的表结构与迁移序号方案），所以本包未完工时 M5.1 一律不得开工，哪怕 spec 已经绿。
+  - 因此「spec 绿但 `make lint` 红」的形态下：**M5.0 No-Go，M5.1 也不得开工**——lint 红时本包不算完工，ⓑ 的第二个条件不成立。两张闸**判定标准不同**（M5.0 看调度四条，M5.1 看 spec + 本包完工），可以出现「M5.0 已过而 M5.1 仍需等」以外的差异，但**不会出现「M5.0 No-Go 而 M5.1 可开工」**——M5.1 的第二个条件恒蕴含 M5.0 的第 2~4 条命令全绿。
   - 三类边界用例各给确定期望值，不接受文档描述式验收：①春季缺口（`America/New_York` 2026-03-08 02:30 不存在）→ 拒绝该本地时刻并返回「需用户选择」错误码；②秋季重复（同日 2026-11-01 01:30 出现两次：先 EDT `−04:00`、后 EST `−05:00`）→ 取**第一次，即 UTC 偏移较大者 `−04:00`**（对应较早的 UTC 时刻），并在对象上标注 `ambiguous_local_time`；判定式写成「比较两候选的 UTC 时刻，取较早者」，不得写成「偏移较小者」——`−05:00` 数值更小但对应第二次；③全天跨时区（`Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 读取）→ 仍为同一 `DATE`，不发生日期漂移。另：表草案覆盖 M5.1 全部仓储字段，无悬空外键。
 - 说明：模块与 spec 由本包交付（不另设包、不外推到 M5.1）。**口径统一以本包验收为准**，B.3「M5–M7 期门禁口径」与 M5 期门禁头的表述与之冲突时按本条读。[推演]
 - 风险：时区规则依赖 tzdata 更新——首版以「显式拒绝无法表示的本地时刻并要求用户选择」替代自动猜测。[推演]
