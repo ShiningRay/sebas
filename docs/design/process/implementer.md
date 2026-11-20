@@ -56,8 +56,6 @@ gh pr update-branch  # 或 gh api 调 update-branch
 
 ## 工作逻辑
 
-单 Implementer 的确定性选卡、认领、续跑、解锁和停止规则见 [implementer-loop.md](implementer-loop.md)。选择器和 Harness 执行器分离；在途 PR 收口优先于领取新卡。
-
 ### 串行原则
 
 Implementer 同时只处理一个 PR。单工作树 + 合并互斥，避免交叉污染。
