@@ -276,6 +276,154 @@
 - 验收：**改开发目录脚本仅影响新调用，在途调用不受干扰**；安装默认禁用；同版本异摘要、路径穿越/压缩炸弹、未批准新 capability 均拒绝；升级保留配置/数据且失败保旧可回滚；被引用卸载拒绝、默认卸载保留数据、purge 有确认。
 - 风险：ZIP 安全限制、原子替换与 Windows 文件占用须测试；签名/远程市场不在本包范围。复杂插件的受控多文件与常驻 worker 见 [review/plugin-evolution.md](review/plugin-evolution.md)，**不计入 M3 WP4~WP6 范围或门禁**。
 
+### M4 · Fork/Join 影分身 + 轻量 Agent 团队 + 会话治理——估时合计 27.5–44.5 pd（2026-11-20 追加）
+
+> 依据：[proposals/fork-join-semantics.md](proposals/fork-join-semantics.md)（语义方案核心）+ [proposals/fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md)（架构）+ [fork-join-shadow-clone-analysis.md](fork-join-shadow-clone-analysis.md)（翰林现状核实）+ [proposals/fork-join-shadow-clone-positioning.md](proposals/fork-join-shadow-clone-positioning.md)（定位提案）+ 首辅九问裁断（Q1–Q9，已全部落实）。仓内 M1–M3 已存在，提案原号 M0.5–M4 防撞名重编为 **M4.0–M4.4**，映射见 B.8.1。
+
+**M4.0-WP1 语义/架构提案评审修订定稿**（0.5–1 pd）
+- 目标：fork-join-semantics.md 与 fork-join-shadow-clone-architecture.md 定稿。
+- 范围：吸收用户评审意见修订两提案；Join 语义矩阵 16 格（4 副作用级 × 4 时机）与 any 模式残余分身处置复核；九问裁断逐条回对。
+- 交付物：两提案定稿版。
+- 依赖：无（本轮三文档为输入）。
+- 验收：评审通过（纯文档包门禁，B.3 M4 口径注）；矩阵逐格有策略可指认。
+- 风险：评审若要求矩阵重定义则修订轮次增加——估时按下限单轮计。[推演]
+
+**M4.0-WP2 定稿吸收回写 + 失效引用修正**（1–1.5 pd）
+- 目标：按既有提案→design.md 契约吸收流落定 fork/join。
+- 范围：design.md §8 协作扩展（fork/join 节：键/表/矩阵/衰减摘要）+ §14 路线图延至 M4 [来源: design.md:925-928 现仅到 M3]；本文 :17 的 CLAUDE.md 失效引用修正（该文件仓内不存在，改指本文 B 节 + Makefile + .github/workflows/ci.yml 现行权威 [来源: fork-join-shadow-clone-analysis.md:158]）；本文 M4 段同步勾稽。
+- 交付物：design.md 修订（§8/§14）+ 本文 :17 修正。
+- 依赖：M4.0-WP1 定稿。
+- 验收：design.md §14 含 M4 期验收条目；:17 不再指向不存在文件；docs 与两提案无口径冲突。
+- 风险：改 design.md 既有章节须走 PR 评审（用户授权后执行；本轮只写三文档不动 design.md）。
+
+**M4.1-WP1 生产装配补齐 + 入队键修复**（1.5–2.5 pd）
+- 目标：orchestration/agents 组件进生产链路，消除全线装配欠账（Q4：全线前置，首包）。
+- 范围：gateway 装配 AgentRegistry / Approvals::Center / ForkManager / JoinWriter [来源: 仓库:src/platform/cli/gateway.cr:40-65 现状零装配]；修 consume_bus 入队键硬编码 `"main"` 与处理键 routed agent_name 不一致（入队前先 resolve）[来源: 仓库:src/platform/cli/gateway.cr:260 vs :171]。
+- 交付物：装配链改造 + 分片键一致性 spec。
+- 依赖：M4.0 门禁；E.5（调度接口冻结即可开工，先按 ForkEnvelope 契约预留适配层）。
+- 验收：生产 gateway 进程内组件可达（装配存在性 spec）；同 peer 消息入队/处理键一致（"main" 硬编码消除）。
+- 风险：装配与 apply_config 热更新矩阵交互——装配置 initialize 尾段避让热换路径。[推演]
+
+**M4.1-WP2 expectations 表 + mode 判定器 + 任务树登记**（2–3 pd）
+- 目标：join 落库面（store 新增表，Q2：不复用 tasks kind 扩展）。
+- 范围：expectations DDL（fork_id/parent_task_id/mode all|any|allSettled/deadline/members/回写状态机，详 semantics 文档 §4.1）；mode 判定器（all 等全部不短路、any 首个成功、allSettled 失败也计完成）；分身任务树 kind="fork_child" 复用 TaskRow.parent_id/owner_task_id [来源: 仓库:src/platform/store/store.cr:21-23,30-144]。
+- 交付物：store 表 + 判定器 + 崩溃恢复扫描 spec。
+- 依赖：M4.1-WP1。
+- 验收：三 mode 判定 spec 全过；强杀后 open/settling expectation 续判且不重复回写（memo 幂等）。
+- 风险：SCHEMA 数组追加走 CREATE IF NOT EXISTS 既有惯例，存量库无迁移。[推演]
+
+**M4.1-WP3 ForkManager 快照组装 + 分身执行体**（2–3 pd）
+- 目标：fork 原语可执行（快照→分身任务→turn）。
+- 范围：ForkManager（输入契约 = 任务描述/快照范围/能力声明/角色/join 模式/deadline）；快照 = transcripts 窗口 + system prompt + skills 注入 [来源: 仓库:src/platform/store/store.cr:390-401；src/agents/skills/skills.cr:43-83]；分身 turn 走 HttpProvider 纯消息接口 [来源: 仓库:src/providers/providers.cr:58-88]；ToolContext 扩展子任务句柄 [来源: 仓库:src/tools/registry.cr:44-59 现无]；分身并发信号量默认 3（循 subagent.cr:16 先例）。
+- 交付物：ForkManager + 分身执行体 spec。
+- 依赖：M4.1-WP2；E.5（ForkEnvelope 派发路径：无渠道入站消息、无 sender/peer）。
+- 验收：N=1/N=3 fork 快照内容断言（窗口行数正确、不含 secrets）；超并发闸排队不失控。
+- 风险：快照组装跨 store/skills/providers 三模块——纯函数化快照组装器便于 spec。[推演]
+
+**M4.1-WP4 JoinWriter 分层回写 + 异常时机语义**（1.5–2.5 pd）
+- 目标：join.report 三层回写与四时机语义落地。
+- 范围：L1 结论+关键决策点+副作用清单进父会话 append_transcript [来源: 仓库:src/platform/store/store.cr:372-380]；L2 引用分身会话键+行数范围（全量已双写无需搬运）；四时机（正常/超时/失败/取消）中 M4.1 生效列按默认只读档结构先行；deadline 到期 expired + partial 回写；memo 幂等键 join:<fork_id>:written。
+- 交付物：JoinWriter + 四时机 spec。
+- 依赖：M4.1-WP3。
+- 验收：正常完成回写父会话可见；超时 partial 标注；重放不重复回写。
+- 风险：L1/L2/L3 副作用列本期只有结构无真实写工具——按「结构先行、M4.2 填充」验收。[推演]
+
+**M4.1-WP5 DSL/IPC/HTTP 触发面 + e2e**（1–2 pd）
+- 目标：用户显式 + DSL 声明两条触发路打通（Q3：不动生产 agent_turn）。
+- 范围：KNOWN_TOOLS 加 fork/join [来源: 仓库:src/orchestration/dsl/dsl.cr:113]；DSL 校验（count/mode/deadline 必填）+ 示例 workflow；IPC/HTTP fork/join 命令；fork→分身→join 回写全链 e2e。
+- 交付物：触发面 + e2e spec + 示例 DSL。
+- 依赖：M4.1-WP4。
+- 验收：DSL 声明 3 分身→各自终态→按 mode 回写父会话（一级 Fork + 只读分身最小闭环，提案 M1 门槛）；调度四条门禁绿（B.3 M4 口径注）。
+- 风险：无实质风险。
+
+**M4.2-WP1 能力衰减机制**（1.5–2.5 pd）
+- 目标：生效能力 = fork 显式声明 ∩ 父 tools.allow；未声明用默认只读档（Q6）。
+- 范围：衰减执行面（声明交集 + 白名单外剔除并在回执列明）；默认只读档工具集（无任何写副作用工具、不携带 secrets，semantics 文档 §5.1 表）；tools.allow=["*"] 现状口径下声明全集生效 [来源: 仓库:src/platform/config/schema.cr:94-97]。
+- 交付物：衰减面 + 档位 spec。
+- 依赖：M4.1 门禁。
+- 验收：未声明分身无任何写工具；声明∩白名单交集生效；白名单外声明被拒且回执列明。
+- 风险：现有 4 工具面 [来源: 仓库:src/tools/executor.cr:122-129] 无文件写工具——WP2 含最小文件写示例工具承载冲突场景。[推演]
+
+**M4.2-WP2 副作用四级 + 冲突处理**（2–3 pd）
+- 目标：Join 语义矩阵 16 格可执行；冲突场景 e2e（提案 M2 门槛）。
+- 范围：工具 risk 四值映射（只读/文件写/网络写/不可逆，semantics §2.1）；副作用清单记录（effects 进 join.report）；文件指纹冲突检测（fork 快照记工作区摘要，回写对比→CONFLICT 进父裁决清单，**不自动 merge**）；最小文件写示例工具。
+- 交付物：分级 + 冲突检测 + e2e spec。
+- 依赖：M4.2-WP1。
+- 验收：冲突场景 e2e 全过（父期间改同文件→回写标 CONFLICT 不自动 merge）。
+- 风险：文件指纹快照范围界定——首版按「分身可写路径声明」收窄。[推演]
+
+**M4.2-WP3 approvals 接线：不可逆仅建议权**（1.5–2.5 pd）
+- 目标：分身 L3 不可逆操作必经审批，未批不执行（fail-closed）。
+- 范围：Approvals::Center 生产装配 + IPC approve/deny 命令补齐 [来源: 仓库:src/admin/ipc/server.cr:187-215 现声明 approvals 能力但无命令]；分身 ToolContext 携 unattended/approval_mode；hardline 地板已含 "fork bomb" [来源: 仓库:src/orchestration/approvals/approvals.cr:33-38,50-87]。
+- 交付物：审批链接线 + 拦截 spec。
+- 依赖：M4.2-WP2。
+- 验收：分身 L3 未批不执行；无人值守 deny；批准后执行且审批凭证随 join.report 回写。
+- 风险：无实质风险（Center 语义已完备）。
+
+**M4.2-WP4 secrets 收敛**（1–2 pd）
+- 目标：凭据出明文；分身不携带 secrets（Q6：不留 M4.4）。
+- 范围：AgentConfig.api_key 明文过渡迁 keys/ 模块（M1-WP7 keyring 承接）[来源: 仓库:src/platform/config/schema.cr:83]；分身执行面无凭据直读路径（provider 实例句柄封装 [来源: 仓库:src/providers/pool.cr:12-25]）；日志脱敏复查。
+- 交付物：迁移命令 + 无明文断言 spec。
+- 依赖：M4.2-WP1。
+- 验收：配置树无明文凭据；分身运行期日志 grep 不到 secret；迁移幂等可重跑。
+- 风险：Windows Credential Manager FFI 依赖 M1-WP7 spike 结论 [未验证]——未通则静态加密兜底（估时内含）。[推演]
+
+**M4.3-WP1 ReAct 工具循环**（2–3 pd）
+- 目标：生产 agent_turn 从一次性调用升为工具循环（Q3：独立前置工作包，不提前到 M4.1）。
+- 范围：模型响应→工具调用解析→衰减工具面执行→结果回注→下一轮；轮数上限；循环内 checkpoint 复用 task phase [来源: 仓库:src/platform/cli/gateway.cr:212-223 现状单次调用]。
+- 交付物：ReAct 循环 + 轮上限 spec。
+- 依赖：M4.2 门禁。
+- 验收：LLM 发起工具调用→执行→结果回注→终答全链 spec；无工具调用时行为与现状一致（回归）。
+- 风险：provider 工具调用响应格式解析——FakeProvider 注入模拟先例可用。[来源: rsrs 旁证 M0 落地 FakeProvider]
+
+**M4.3-WP2 对话流内自然 fork**（1.5–2.5 pd）
+- 目标：用户说「并行查三个方案」，Agent 自然分身（fork 是对话一等公民，提案 Q7）。
+- 范围：fork 工具进 ReAct 循环工具面（经能力衰减 + 并发闸 + 一级限制 + L3 审批四重闸，semantics §6）；真实对话场景验收。
+- 交付物：对话内 fork + 审批拦截 spec。
+- 依赖：M4.3-WP1。
+- 验收：真实用户场景验证（提案 M3 门槛）：对话内 fork→join 回写父会话；审批拦截实测（L3 场景被拦）。
+- 风险：LLM 自主 fork 判定确定性——验收以「声明可复现的 prompt 场景」为界。[推演]
+
+**M4.3-WP3 常驻 Agent 前台接待**（1.5–2.5 pd）
+- 目标：匿名/临时会话包装，Session 藏而不删（轴①轻，Q8 拆分第一块）。
+- 范围：未定向消息前台 agent 接待（前台默认档 = 只读 + 转介建议）；前台会话键与生命周期标记；routing 无匹配不再丢弃改投前台（原 fail-closed 审计保留）[来源: 仓库:src/platform/cli/gateway.cr:158-164]。
+- 交付物：前台接待层 + 无匹配转投 spec。
+- 依赖：M4.3-WP1。
+- 验收：无 binding 匿名消息获前台应答并可转介；原审计记录保留。
+- 风险：匿名消息滥用面——首版加每 peer 频率闸（最小化）。[推演]
+
+**M4.4-WP1 注册双轨统一**（2–3 pd）
+- 目标：AgentRegistry 目录/SOUL.md 与 Config::AgentConfig YAML 双轨打通（轴②前置）。
+- 范围：persona/persona_file 引用校验、session/skills 字段补齐 [来源: 仓库:src/agents/agents.cr:49-57；src/platform/config/schema.cr:78-88]；模板落位定夺（SOUL.md vs SKILL.md，M4.4-WP2 前置决策）。
+- 交付物：双轨校验 + 统一读取面 spec。
+- 依赖：M4.3 门禁。
+- 验收：同一 agent 定义两轨一致可互查；悬空引用报错可读；存量 agent 目录只读兼容不强制迁移。[推演]
+- 风险：双轨字段语义对齐工作量超区间上限——先校验后统一分两步走。[推演]
+
+**M4.4-WP2 模板库 + 角色卡**（2–3 pd）
+- 目标：克隆基底 + 人格 patch = Agent 团队模板（轴②）；fork 角色指定（提案 Q5）。
+- 范围：agent 模板（克隆+patch）；SKILL.md frontmatter 角色卡挂点 [来源: 仓库:src/agents/skills/skills.cr:43-83]；fork `role` 参数接线（semantics §1.1）。与插件演进 issue #24 **引用不并卡**：其 P3「按插件隔离常驻 Worker」为不同轨道（启动条件见 [review/plugin-evolution.md](review/plugin-evolution.md)），模板库不依赖它。
+- 交付物：模板库 + 角色卡 spec + 示例模板两则（代码审查员/发布工程师）。
+- 依赖：M4.4-WP1。
+- 验收：从模板克隆 agent 一次成型；fork role 指定生效（system prompt 后缀注入）。
+- 风险：模板爆炸（轴②风险「轻量产生垃圾」）——回收治理在 WP3 承接，本期验收不单列 GC。[推演]
+
+**M4.4-WP3 sessions 元数据表 + 休眠/归档/回收**（2–3 pd）
+- 目标：会话生命周期治理闭环（轴①重，Q8 拆分第二块；提案 M4 门槛）。
+- 范围：sessions 元数据表（store 新增表，架构文档 §5 草案）；状态机 active/dormant/archived；休眠阈值 + 归档命令 + 回收 GC（人工确认非自动删）；不绑 compaction（design.md:341-342 未实现，独立先行）[来源: fork-join-shadow-clone-analysis.md §4 M4]。
+- 交付物：sessions 表 + 生命周期 + GC spec。
+- 依赖：M4.4-WP1。
+- 验收：休眠会话不占 worker；归档可查不可写；回收有人工确认与审计（治理闭环）。
+- 风险：sessions 表扫描性能——按 last_active_at 建索引。[推演]
+
+**M4.4-WP4 IPC/HTTP 管理面扩展**（1–2 pd）
+- 目标：生命周期与模板可管理。
+- 范围：sessions 生命周期查询/归档命令、agent 模板 CRUD API（复用 M1-WP9 鉴权口径）。
+- 交付物：管理 API + spec。
+- 依赖：M4.4-WP2、M4.4-WP3。
+- 验收：归档/休眠状态经 IPC/HTTP 可查可操作；模板 CRUD 未授权 401。
+- 风险：无实质风险。
+
 ---
 
 ## B. 排期与门禁
@@ -289,9 +437,14 @@ M1: WP1 → WP2 → WP3 → {WP4, WP5} → WP6
     WP2+WP7 → WP8            （热更新依赖监督体+keyring）
 M2: WP1 → WP2 → {WP3, WP5} → {WP4, WP6}
 M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP5 另依赖 M2-WP2/M1-WP9；WP6 另依赖 M1-WP8）
+M4: WP0-1 → WP0-2 → WP1-1 → WP1-2 → WP1-3 → WP1-4 → WP1-5
+    M4.2: WP2-1 → {WP2-2, WP2-4}；WP2-2 → WP2-3
+    M4.3: WP3-1 → {WP3-2, WP3-3}
+    M4.4: WP4-1 → {WP4-2, WP4-3}；{WP4-2, WP4-3} → WP4-4
+    （期门禁为边界：M4.0→M4.1→M4.2→M4.3→M4.4 串行）
 ```
 
-自查：全部边单向、无回边、无跨期回依赖（M2/M3 包仅依赖本期或前期包），**无环**。[推演]
+自查：全部边单向、无回边、无跨期回依赖（M2/M3/M4 包仅依赖本期或前期包），**无环**；M4 期边界串行、期内依赖详 A 节 M4 各包「依赖」字段。[推演]
 
 **口径注（S1 修正）**：B.1 图为**排期顺序口径**（表达可并行块与开工次序）；**硬依赖以各 WP「依赖」字段为准**——图与字段存在三处边宽严不一（M0-WP3 图列 WP2 后序而字段仅依赖 WP1；M0-WP5 图含 WP4 前序而字段为 WP2+WP3；M1-WP8 图未画 WP1 直连而字段含 WP1），均为「图严于字段」方向的排期保守，不构成环，**冲突时以字段口径为权威**。[推演]
 
@@ -303,10 +456,13 @@ M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP5 另依赖 M2-WP2/M1
 | M1 | 19.5–30 pd | 4–6 周 | W5/W6–W11 |
 | M2 | 12.5–19 pd | 2.5–4 周 | W11/W12–W15 |
 | M3 | 15–24 pd | 3–5 周 | W15/W16–W20/W21 |
-| **总计** | **64–98.5 pd** | **13–20 周** | **W1–W20/W21** |
-| +缓冲 | +0–10 pd（Tessell 口径） | +0–2 周 | **总 64–108.5 pd ≈ W1–W22** |
+| M4 | 27.5–44.5 pd | 5.5–9 周 | W20/W21–W29/W30 |
+| **M0–M3 小计** | **64–98.5 pd** | **13–20 周** | **W1–W20/W21** |
+| **总计（M0–M4）** | **91.5–143 pd** | **18.5–29 周** | **W1–W29/W30** |
+| +缓冲（M0–M3 口径） | +0–10 pd（Tessell 口径） | +0–2 周 | 总 64–108.5 pd ≈ W1–W22 |
+| +缓冲（含 M4） | +0–10 pd（Tessell 口径） | +0–2 周 | **总 91.5–153 pd ≈ W1–W31** |
 
-算术自查：M0=17–25、M1=19.5–30、M2=12.5–19 沿用已验收 WBS；M3 下限 1+1.5+2+4+4+3=15.5、上限 1.5+2+3+6+6+5=23.5（WP4/5 因 DSL/21 hook 各 +1 pd，包与生命周期此前已 +1.5–2.5 pd）；总和精确下 17+19.5+12.5+15.5=64.5、上 25+30+19+23.5=97.5。下表 M3 按对外区间取整为 15–24，故取整合计为 64–98.5；含精确缓冲上限 107.5 pd（107.5/5=21.5 周，保守进位 W22）。各期之间允许上一期末溢出顺延（周区间首端重叠表达此意），不做并行压缩。[推演]
+算术自查：M0=17–25、M1=19.5–30、M2=12.5–19 沿用已验收 WBS；M3 下限 1+1.5+2+4+4+3=15.5、上限 1.5+2+3+6+6+5=23.5（WP4/5 因 DSL/21 hook 各 +1 pd，包与生命周期此前已 +1.5–2.5 pd）；总和精确下 17+19.5+12.5+15.5=64.5、上 25+30+19+23.5=97.5。下表 M3 按对外区间取整为 15–24，故取整合计为 64–98.5；含精确缓冲上限 107.5 pd（107.5/5=21.5 周，保守进位 W22）。各期之间允许上一期末溢出顺延（周区间首端重叠表达此意），不做并行压缩。[推演] M4 期排期与算术自查详见 B.8.4（2026-11-20 追加）；M4 入总计时以包区间 27.5–44.5 pd 为准（小计 64.5+27.5=92，取整口径 64–98.5 + 27.5–44.5 → 总 91.5–143 pd，见 B.8.4 复算）。[推演]
 
 ### B.3 里程碑门禁（M-gate）
 
@@ -319,6 +475,8 @@ M3: WP1 → {WP2, WP3} ； WP1 → WP4 → WP5 → WP6（WP5 另依赖 M2-WP2/M1
 5. 风险复核：该期新增风险/未验证项进入 §15.1 口径记录（回写 design.md）。
 
 阶段门禁 Go/No-Go 判据：M0 若强杀恢复不达标 → No-Go 返工 WP3/WP8；M1 若双账号串扰 → No-Go 返工 WP1（不接受「演示绕过」）；M3 若 mrb.cr 复核不可用**或 Windows 新 mruby.exe 链接环境 blocker 未消项**（恢复路径见 [review/m3-plugin-feasibility.md](review/m3-plugin-feasibility.md)）→ WP4~WP6 降级为技术预研 Go，降级证据 = 可行性报告与本机链接失败复现记录，产品化验收延至 blocker 消项后重跑（见 M3-WP4 风险）。[推演]
+
+**M4 期门禁口径（Q7 裁断，2026-11-20 追加）**：M4.0–M4.4 各期 M-gate 沿用上述五项框架（§14 勾稽/docs 同步/质量命令/风险复核照旧），第 3 条质量命令改为「调度四条」全绿：`make format-check` + `crystal spec` + `make lint` + `make release` [来源: 仓库:docs/design/proposals/session-input-scheduling.md:215 调度提案先例]；纯文档包（M4.0）以「评审通过」（用户）替代命令门禁。M4 期 Go/No-Go 判据：M4.1 若 fork e2e 不达（分身未跑/回写丢/键漂移）→ No-Go 返工 WP2/WP3；M4.2 若 L3 审批拦截 fail-open → No-Go 返工 WP3（不接受「仅 hardline 拦截」降格）；M4.4 若回收 GC 无人工确认 → No-Go 返工 WP3。上文三命令口径（:473）及其 CLAUDE.md 失效引用在 M4.0-WP2 一并修正。[推演]
 
 ---
 
@@ -337,6 +495,58 @@ M2 六包全部落地；§14 M2 四条验收全过（崩溃重放幂等 / 审批
 ## B.7 M3 门禁结论（2026-11-19）
 
 M3 WP1/2/3 验收全过（max_hops=4 拦截互发死循环 / 并发上限排队不失控 / subagent 崩溃经 ownerTaskId 找回同一子任务），门禁三命令绿。WP4~6（mrb.cr 插件层）按 B.3 预设条款降级为技术预研：mrb.cr 甄别通过（84/84）但本机 Windows 工具链当日无法链接新 mruby.exe（环境级 blocker，恢复路径已列），架构与构件（sebas-stdio gem、build_config 补丁、子进程沙盒解释器方案）已产出——详见 [review/m3-plugin-feasibility.md](review/m3-plugin-feasibility.md) 与 [review/m3-gate.md](review/m3-gate.md)。M0–M2 全部产品化验收保持有效。
+
+## B.8 M4 期排期与执行分块（2026-11-20 追加，Q9）
+
+### B.8.1 提案原号 ↔ M4.x 映射（防撞名：仓内 M1–M3 已存在）
+
+| 提案原号 | 内容 | 重编 | 轴覆盖 |
+|---|---|---|---|
+| M0.5 | fork/join 语义文档评审定稿 + 吸收回写 | M4.0 | 轴③基座 |
+| M1 | 生产装配补齐 + 一级 Fork 只读分身最小闭环 | M4.1 | 轴③主线 |
+| M2 | 文件写 + 副作用冲突 + 能力衰减 + secrets 收敛 | M4.2 | 轴③主线 |
+| M3 | 对话流内自然 Fork（ReAct 前置）+ 前台接待 | M4.3 | 轴③ + 轴①轻 |
+| M4 | 双轨统一 + 模板库/角色卡 + 休眠/归档/回收 | M4.4 | 轴①重 + 轴② |
+
+三轴覆盖自查（验收标准 3）：轴①=M4.3-WP3（前台接待）+ M4.4-WP3（生命周期治理）各一包；轴②=M4.4-WP1/WP2；轴③=M4.1–M4.3 全部主线包。三轴各有至少一包落位。[推演]
+
+### B.8.2 M4 期级排期（相对周 = M4 开工后第 N 工作周，禁止绝对日期）
+
+| 期 | 估时合计 | 周区间 | 包数 |
+|---|---|---|---|
+| M4.0 | 1.5–2.5 pd | 0.5 周 | 2 |
+| M4.1 | 8–13 pd | 1.5–2.5 周 | 5 |
+| M4.2 | 6–10 pd | 1–2 周 | 4 |
+| M4.3 | 5–8 pd | 1–1.5 周 | 3 |
+| M4.4 | 7–11 pd | 1.5–2 周 | 4 |
+| **M4 合计** | **27.5–44.5 pd** | **5.5–9 周** | **18** |
+
+全程序顺延坐标（B.2 表）：M3 止于 W20/W21 → M4 占 W20/W21–W29/W30；含缓冲总 91.5–153 pd ≈ W1–W31。
+
+### B.8.3 M4 执行周块表（单人全职 5 pd/周；溢出顺延 W*+1-D1，不压缩范围）
+
+| 块 | 包（预估 pd） | 块内合计 |
+|---|---|---|
+| W1（块容量 5 pd） | M4.0-WP1 评审定稿 0.5–1；M4.0-WP2 吸收回写+失效引用修正 1–1.5；M4.1-WP1 装配补齐+入队键修复 1.5–2.5 | 3–5 pd |
+| W2（块容量 5 pd） | M4.1-WP2 expectations 表+判定器 2–3；M4.1-WP3 ForkManager+分身执行体 2–3 | 4–6 pd |
+| W3（块容量 5 pd，含承接 W2 溢出 ≤1 pd） | M4.1-WP4 JoinWriter+四时机 1.5–2.5；M4.1-WP5 DSL/IPC/HTTP 触发面+e2e 1–2 | 2.5–4.5 pd |
+| W4（块容量 5 pd） | M4.2-WP1 能力衰减 1.5–2.5；M4.2-WP2 四级+冲突 2–3 | 3.5–5.5 pd |
+| W5（块容量 5 pd，含承接 W4 溢出 ≤0.5 pd） | M4.2-WP3 approvals 接线 1.5–2.5；M4.2-WP4 secrets 收敛 1–2 | 2.5–4.5 pd |
+| W6（块容量 5 pd） | M4.3-WP1 ReAct 循环 2–3；M4.3-WP2 对话流内 fork 1.5–2.5 | 3.5–5.5 pd |
+| W7（块容量 5 pd，含承接 W6 溢出 ≤0.5 pd；块留白即 M4.3 门禁与真实场景验证缓冲） | M4.3-WP3 前台接待 1.5–2.5 | 1.5–2.5 pd |
+| W8（块容量 5 pd） | M4.4-WP1 双轨统一 2–3；M4.4-WP2 模板库+角色卡 2–3 | 4–6 pd |
+| W9（块容量 5 pd，含承接 W8 溢出 ≤1 pd） | M4.4-WP3 sessions 表+休眠/归档/回收 2–3；M4.4-WP4 管理面扩展 1–2 | 3–5 pd |
+| **总表尾** | +缓冲 | **+0–10 pd（Tessell 口径）≈ +0–2 周** |
+
+溢出顺延注：W2 块内上限 6 pd 超容量 ≤1 pd → 顺延 W3-D1，不压缩 WP3 spec 范围；W4 上限 5.5 超 ≤0.5 → 顺延 W5-D1；W6 上限 5.5 超 ≤0.5 → 顺延 W7-D1；W8 上限 6 超 ≤1 → 顺延 W9-D1。其余块上限 ≤5 pd 无溢出。
+
+### B.8.4 M4 算术自查（两套数字同步复算，B.2 原口径）
+
+包合计=期合计：M4.0 下 0.5+1=1.5 / 上 1+1.5=2.5；M4.1 下 1.5+2+2+1.5+1=8 / 上 2.5+3+3+2.5+2=13；M4.2 下 1.5+2+1.5+1=6 / 上 2.5+3+2.5+2=10；M4.3 下 2+1.5+1.5=5 / 上 3+2.5+2.5=8；M4.4 下 2+2+2+1=7 / 上 3+3+3+2=11。**M4 总 = 27.5–44.5 pd，18 包，每包 ≤3 pd**（验收标准 3）✓。
+块-包对账：18 包全落块（W1×3、W2×2、W3×2、W4×2、W5×2、W6×2、W7×1、W8×2、W9×2 = 18）✓；块上限仅 W2/W4/W6/W8 四处超容量且均已附顺延注（B.8.3），其余块 ≤5 pd ✓。
+依赖序：M4.0(W1)→M4.1(W1–W3)→M4.2(W4–W5)→M4.3(W6–W7)→M4.4(W8–W9) 期边界串行无回边（B.1 图）✓。
+周换算：27.5/5=5.5 周、44.5/5=8.9 周 → 5.5–9 周；块表 9 周含 W7 门禁留白 ✓。
+全程序合计（B.2 表复算）：M0–M3 小计 64–98.5 + M4 27.5–44.5 = **91.5–143 pd**；周 13–20 + 5.5–9 = **18.5–29 周**；含缓冲 +0–10 pd → 总 91.5–153 pd ≈ W1–W31（153/5=30.6 保守进位）。B.2 精确口径旁注（M0–M3 精确 64.5–97.5）：精确并计 92–142 pd，对外取整 91.5–143，两式均在区间内一致。[推演]
 
 ## C. 首迭代执行计划（W1–W2）
 
@@ -403,6 +613,9 @@ M3 WP1/2/3 验收全过（max_hops=4 拦截互发死循环 / 并发上限排队�
 | 2 | 企微测试企业+自建应用/AIBot 创建+可信 IP 配置（出口 IP 共享注意 §15.2.18 [来源: design.md:L784]） | M1-WP4 | M1 开工（约 W5/W6）前 |
 | 3 | 飞书自建应用（WS 长连接仅自建应用可用 [来源: design.md §16#11]） | M1-WP5 | 同上 |
 | 4 | Gmail 路线决策（若走 API：GCP 项目+OAuth 凭据） | M0-WP4 估时分叉 | EX-W2-06 开工前（最迟 W2-D3） |
+| 5 | 调度轨 issue #9 WP1/WP2 已合或 admission/envelope 接口冻结（PR #32 已定型 policy/envelope/Store 单事务 admission；fork 入队为调度输入类型扩展——无渠道入站消息、无 sender/peer，Q5 迁就其接口）。注：WP1（contract+migration+纯函数状态机）已随 185e37b 合入 main，开工条件余 WP2 部分待满足 | M4.1 全期（ForkEnvelope 派发路径） | M4.1 开工前 |
+| 6 | M4 语义/架构两提案文档评审（用户过目：fork-join-semantics.md + fork-join-shadow-clone-architecture.md） | M4.0-WP1 定稿 → M4.0-WP2 吸收回写 | M4.0 期内 |
+| 7 | 插件演进 issue #24 启动条件（**引用不并卡**：见 [review/plugin-evolution.md](review/plugin-evolution.md)；其 P3 常驻 Worker 与模板库仅留交叉引用） | M4.4-WP2 模板库 | 无等待（非阻塞） |
 
 ### E.2 §15.1 未验证项中影响 M0/M1 排期的前置冒烟（逐条挑出）
 
