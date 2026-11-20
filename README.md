@@ -163,10 +163,11 @@ src/
   plugins/        mruby script layer
 ```
 
-Design documents (Chinese, as-authored):
+Design documents (Chinese, as-authored) — start at [`docs/design/README.md`](docs/design/README.md):
 
-- [`docs/design/design.md`](docs/design/design.md) — full design (16 chapters)
-- [`docs/design/development-plan.md`](docs/design/development-plan.md) — M0–M3 WBS, schedule, gates
+- [`docs/design/design.md`](docs/design/design.md) — design overview; the 16 chapters live in [`docs/design/spec/`](docs/design/spec/README.md)
+- [`docs/design/development-plan.md`](docs/design/development-plan.md) — plan overview; WBS, schedule and gates live in [`docs/design/plan/`](docs/design/plan/README.md)
+- [`docs/design/proposals/`](docs/design/proposals/) — approved proposals not yet implemented
 - [`docs/design/review/`](docs/design/review/) — milestone gate evidence (`m0-gate.md` … `m3-gate.md`)
 - [`docs/design/research/`](docs/design/research/) — prior-art research notes
 

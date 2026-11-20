@@ -95,7 +95,20 @@ Large behavioral changes go through a design note under `docs/design/` (see exis
 `design.md` chapters and milestone gate records). A PR that changes architecture should
 link that note.
 
-*中文要点：架构级改动先在 docs/design 下留设计说明，并在 PR 中链接。*
+Documentation is split by topic under `docs/design/`: `spec/` holds the design chapters,
+`plan/` holds the WBS, schedule and gates. [docs/design/README.md](docs/design/README.md)
+is the map — start there. When editing docs, run the docs gate locally:
+
+```sh
+python3 tools/check_docs.py
+```
+
+It fails on dead relative links and on `design.md:L749`-style line anchors (line numbers
+drift on every edit — cite `§section` or a file path instead), and warns when a single
+Markdown file exceeds 400 lines. Never let a file grow into a thousand-line monolith
+again; split it by chapter or section and link the pieces.
+
+*中文要点：架构级改动先在 docs/design 下留设计说明，并在 PR 中链接。文档按主题分在 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `python3 tools/check_docs.py`：死链与行号锚报错（行号随每次编辑漂移，一律改用 §节号 或文件路径），单文件超 400 行告警。*
 
 ## Security
 
