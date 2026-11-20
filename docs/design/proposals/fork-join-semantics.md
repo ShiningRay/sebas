@@ -45,11 +45,11 @@ fork 调用（DSL action / IPC / HTTP 显式命令，M4.1；对话流内自然�
 
 快照 = fork 那一刻父会话上下文的只读拷贝，三部分：
 
-1. **transcripts 窗口读取**：`store.transcripts(parent_session).last(window)`，即父会话最近 window 行消息 [来源: 仓库:src/platform/store/store.cr:390-401；调用先例 gateway.cr:214]。
+1. **transcripts 窗口读取**：`store.transcripts(parent_session).last(window)`，即父会话最近 window 行消息 [来源: 仓库:src/platform/store/store.cr:406-417；调用先例 gateway.cr:214]。
 2. **system prompt**：父 agent persona（system prompt 组装沿用现有装配口径）。
 3. **skills 注入**：SKILL.md frontmatter 指令注入 [来源: 仓库:src/agents/skills/skills.cr:43-83]。
 
-边界（**快照不含**）：父 agent 的 secrets（api_key 等，§5.3）；父未落地的在途消息（只读已落库 transcripts，天然一致 [来源: 仓库:src/platform/store/store.cr:372-380]）；其他会话的 transcript（跨会话隔离，五段键分片 [来源: 仓库:src/agents/pool.cr:11-12]）。
+边界（**快照不含**）：父 agent 的 secrets（api_key 等，§5.3）；父未落地的在途消息（只读已落库 transcripts，天然一致 [来源: 仓库:src/platform/store/store.cr:387-395]）；其他会话的 transcript（跨会话隔离，五段键分片 [来源: 仓库:src/agents/pool.cr:11-12]）。
 
 快照注入走 `HttpProvider.complete(messages)` 纯消息数组接口，直接可用 [来源: 仓库:src/providers/providers.cr:58-88]；provider 实例经 `Providers::Pool.for_agent` 取用 [来源: 仓库:src/providers/pool.cr:12-25]。
 
@@ -59,7 +59,7 @@ fork 调用（DSL action / IPC / HTTP 显式命令，M4.1；对话流内自然�
 - fork 分身五段取值：**agent 段 = 父 agent_id**（分身以父人格运行）；**account 段 = `"internal"`**；**channel_type 段新增枚举值 `"fork"`**；**peer 段 = fork_id**。即 `agent:<父agent_id>:internal:fork:<fork_id>`。
 - 先例对齐：subagent 已用 `(agent_id, "internal", "subagent", subtask_key)` 四参数先例 [来源: 仓库:src/agents/subagent.cr:44,56]——fork 与之同构，仅 channel_type 枚举值不同，Pool 分片、transcripts 键、调度 admit 三处无需新机制 [来源: analysis.md §3.1]。
 - fork_id 格式：`fork:<uuid4 短码>`（[推演]：循 subagent `task_id="sub:#{subtask_key}"` 可读前缀先例 [来源: 仓库:src/agents/subagent.cr:33]）。
-- **任务树登记**：每个分身一行 tasks，`kind="fork_child"`，`parent_id = owner_task_id = 父任务 id`——直接复用现成 `TaskRow(id,parent_id,kind,status,phase,restart_count,owner_task_id)` 字段，不加列 [来源: 仓库:src/platform/store/store.cr:21-23]。
+- **任务树登记**：每个分身一行 tasks，`kind="fork_child"`，`parent_id = owner_task_id = 父任务 id`——直接复用现成 `TaskRow(id,parent_id,kind,status,phase,restart_count,owner_task_id)` 字段，不加列 [来源: 仓库:src/platform/store/store.cr:23-25]。
 
 ### 1.4 fork 返回回执
 
@@ -78,7 +78,7 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 | 级 | 名称 | 判定 | 工具映射 |
 |---|---|---|---|
 | L0 | 只读 | 无任何外部状态改变 | `memory.search` / `session.read` 类 [来源: 仓库:src/tools/executor.cr:122-129 现有 4 工具中只读两个] |
-| L1 | 文件写 | 改本地文件系统 | 文件类 effectful 工具（replay=effectful 口径 [来源: 仓库:src/orchestration/dsl/dsl.cr:150-151]） |
+| L1 | 文件写 | 改本地文件系统 | 文件类 effectful 工具（replay=effectful 口径 [来源: 仓库:src/orchestration/dsl/dsl.cr:154-155]） |
 | L2 | 网络写 | 向外部系统发出不可撤回请求 | `message.send` 类（已带幂等键 [来源: 仓库:src/platform/cli/gateway.cr:178-180]）及未来 HTTP 类 |
 | L3 | 不可逆 | 删除、支付、发布、发送后不可撤回的破坏性操作 | risk:high 类；hardline 地板之上（§7） |
 
@@ -105,7 +105,7 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 `any` 模式首个成员成功终态即 settle expectation 并触发 L1 回写（首个成功者结论）。残余分身三步处置：[推演]
 
 1. **尽力取消**：向残余分身发协作式取消——复用已落地的 busy-interrupt-redirect 控制通道与协作式取消语义（[busy-interrupt-redirect.md](busy-interrupt-redirect.md)，PR #31 已合，issue #28 已关），**本文不重设计 interrupt**。分身处于安全点（未开始/未进 effectful 段）→ 任务置 `cancelled`。
-2. **已写副作用不丢弃**：残余分身已发生的 L1/L2 副作用清单仍并入回写（副作用是事实）；结论不并入主上下文，全量 transcript 按分身会话键照常落盘（L2 不变，[来源: 仓库:src/platform/store/store.cr:372-380]）。
+2. **已写副作用不丢弃**：残余分身已发生的 L1/L2 副作用清单仍并入回写（副作用是事实）；结论不并入主上下文，全量 transcript 按分身会话键照常落盘（L2 不变，[来源: 仓库:src/platform/store/store.cr:387-395]）。
 3. **越过取消点者**：正在执行 L3 不可逆动作的分身不中断（原子性要求 §2.2），等待终态；其结果登记为「迟到成员」——副作用照列、结论仅落 L2。
 4. 失败不算「先到」：`any` 只认成功终态；全部成员失败 + deadline 到期 → `expired`，全部失败明细回写。
 
@@ -117,8 +117,8 @@ Join = 三层回写，避免「全量 transcript 上下文爆炸」与「纯摘�
 
 | 层 | 内容 | 落点 |
 |---|---|---|
-| **L1 主上下文** | 结构化回写消息：结论 + 关键决策点 + 副作用清单 + 成员终态数组 | `append_transcript(parent_session, "agent", 回写JSON)` ——父会话下一 turn 的 transcripts 窗口自动带入 [来源: 仓库:src/platform/store/store.cr:372-380；窗口读取 :390-401] |
-| **L2 全量落盘** | 分身完整 transcript | 分身会话键在执行期间已 SQLite+JSONL 双写，**无需二次搬运**——回写消息中引用分身会话键与行数范围即可 [来源: 仓库:src/platform/store/store.cr:372-380] |
+| **L1 主上下文** | 结构化回写消息：结论 + 关键决策点 + 副作用清单 + 成员终态数组 | `append_transcript(parent_session, "agent", 回写JSON)` ——父会话下一 turn 的 transcripts 窗口自动带入 [来源: 仓库:src/platform/store/store.cr:387-395；窗口读取 :406-417] |
+| **L2 全量落盘** | 分身完整 transcript | 分身会话键在执行期间已 SQLite+JSONL 双写，**无需二次搬运**——回写消息中引用分身会话键与行数范围即可 [来源: 仓库:src/platform/store/store.cr:387-395] |
 | **L3 可检索索引** | 回写消息内含成员（task_id、会话键、终态、行数范围）三元组 | 供 `session.read` 与管理面回放检索 |
 
 L1 回写消息 JSON 草案：[推演]
@@ -135,7 +135,7 @@ L1 回写消息 JSON 草案：[推演]
 }
 ```
 
-回写幂等：以 memo 键 `join:<fork_id>:written` 先写后发（first-write-wins 先例 [来源: 仓库:src/platform/store/store.cr:352-364]），崩溃重放不重复回写。
+回写幂等：以 memo 键 `join:<fork_id>:written` 先写后发（first-write-wins 先例 [来源: 仓库:src/platform/store/store.cr:369-383]），崩溃重放不重复回写。
 
 ---
 
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS expectations (
 CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 ```
 
-- 列风格、`REFERENCES tasks(id)`、索引写法全部循现有 SCHEMA 先例 [来源: 仓库:src/platform/store/store.cr:30-144]。
+- 列风格、`REFERENCES tasks(id)`、索引写法全部循现有 SCHEMA 先例 [来源: 仓库:src/platform/store/store.cr:32-148]。
 - **不复用 tasks kind 扩展**（Q2 裁断）：expectation 是「多成员汇聚点」，生命周期独立于任何单成员任务；塞进 tasks 会把 mode/deadline/members 塞进 payload 字符串、丧失可查询性与调度恢复能力。
 - 成员终态**不在本表冗余**：tasks.status 是权威，判定器读 tasks 聚合（单一事实源，[推演]）。
 
@@ -187,7 +187,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 | 能力 | 默认档 | 依据 |
 |---|---|---|
-| transcripts 窗口读取 | 有（快照已注入，运行期仅限读自己分身会话） | [来源: 仓库:src/platform/store/store.cr:390-401] |
+| transcripts 窗口读取 | 有（快照已注入，运行期仅限读自己分身会话） | [来源: 仓库:src/platform/store/store.cr:406-417] |
 | `memory.search` | 有（只读检索） | [来源: 仓库:src/tools/executor.cr:122-129] |
 | `memory.save` | **无**（记忆库是共享写状态） | — |
 | `message.send` | **无**（L2 网络写） | [来源: 仓库:src/platform/cli/gateway.cr:178-180] |
@@ -201,13 +201,13 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 ### 5.2 生效能力 = fork 显式声明 ∩ 父 `tools.allow`
 
 - 声明 `tools=["memory.search","file.write"]` → 生效集 = 该列表 ∩ 父 agent `tools.allow`。
-- 父 `tools.allow=["*"]`（现状全局口径 [来源: 仓库:src/platform/config/schema.cr:94-97]）→ 视为全允许，生效集 = 声明全集。
+- 父 `tools.allow=["*"]`（现状全局口径 [来源: 仓库:src/platform/config/schema.cr:104-107]）→ 视为全允许，生效集 = 声明全集。
 - 声明中不在父白名单的工具**静默剔除并在回执中列明**（可观测，不静默失败）。[推演]
 - L3 不可逆工具无论声明与否均叠加 §7 审批链（声明≠免审批）。
 
 ### 5.3 secrets 不随分身
 
-- 现状 `AgentConfig.api_key` 明文过渡 [来源: 仓库:src/platform/config/schema.cr:83]；fork 快照**不含**任何凭据字段；分身 provider 调用走 `Providers::Pool.for_agent` 取共享实例——分身持有的是 provider 句柄而非凭据 [来源: 仓库:src/providers/pool.cr:12-25]。[推演]：句柄封装使分身无凭据直读路径。
+- 现状 `AgentConfig.api_key` 明文过渡 [来源: 仓库:src/platform/config/schema.cr:92]；fork 快照**不含**任何凭据字段；分身 provider 调用走 `Providers::Pool.for_agent` 取共享实例——分身持有的是 provider 句柄而非凭据 [来源: 仓库:src/providers/pool.cr:12-25]。[推演]：句柄封装使分身无凭据直读路径。
 - api_key 明文过渡收敛（迁 keyring）列入 M4.2 工作包（Q6 裁断：不留 M4.4）——排期文档承载。
 
 ---
@@ -272,7 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 | 超时 | `expired`；已完成成员照常回写（partial）；未完成成员尽力取消（§2.2 超时列） |
 | 部分取消 | any 模式残余处置（§2.3）；父显式取消走 §2.2 取消列 |
 | 父崩溃恢复 | expectation 持久 → 重启扫描 open/ settling 续判；回写幂等（§3 memo 键）；分身任务循 owner_task_id 找回先例 [来源: 仓库:src/agents/subagent.cr:31-38] |
-| 分身崩溃循环 | 分身任务同受 restartLimit 防护 [来源: 仓库:src/platform/store/store.cr:19] |
+| 分身崩溃循环 | 分身任务同受 restartLimit 防护 [来源: 仓库:src/platform/store/store.cr:21] |
 
 ---
 
@@ -292,15 +292,15 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 | gateway 生产装配无 orchestration 组件 | src/platform/cli/gateway.cr:40-65（工部复核） |
 | agent_turn 一次性 complete、无工具循环 | src/platform/cli/gateway.cr:212-223（工部复核） |
 | 入队键硬编码 "main" 与处理键不一致 | src/platform/cli/gateway.cr:260 vs :171（工部复核） |
-| TaskRow 树字段 | src/platform/store/store.cr:21-23（工部复核） |
-| SCHEMA 现有 7 表 | src/platform/store/store.cr:30-144（工部复核） |
-| transcript 双写/读取挂点 | src/platform/store/store.cr:372-380 / :390-401（工部复核） |
+| TaskRow 树字段 | src/platform/store/store.cr:23-25（工部复核） |
+| SCHEMA 现有 11 表 | src/platform/store/store.cr:32-148（工部复核） |
+| transcript 双写/读取挂点 | src/platform/store/store.cr:387-395 / :406-417（工部复核） |
 | subagent 键先例 (agent_id,"internal","subagent",key) | src/agents/subagent.cr:44,56（工部复核） |
 | approvals 规则链 + hardline 含 "fork bomb" | src/orchestration/approvals/approvals.cr:50-87 / :33-38（工部复核） |
-| DSL KNOWN_TOOLS 白名单 | src/orchestration/dsl/dsl.cr:113（工部复核） |
+| DSL KNOWN_TOOLS 白名单 | src/orchestration/dsl/dsl.cr:115（工部复核） |
 | 调度四条门禁先例 | docs/design/proposals/session-input-scheduling.md:215（工部复核） |
 | skills 注入挂点 | src/agents/skills/skills.cr:43-83（翰林核实） |
-| tools.allow 全局口径 / api_key 明文过渡 | src/platform/config/schema.cr:94-97 / :83（翰林核实） |
+| tools.allow 全局口径 / api_key 明文过渡 | src/platform/config/schema.cr:104-107 / :92（翰林核实） |
 | HttpProvider 纯消息接口 / provider 实例池 | src/providers/providers.cr:58-88 / src/providers/pool.cr:12-25（翰林核实） |
 | Tool/ToolContext 现无子任务句柄 | src/tools/registry.cr:44-59（翰林核实） |
 | collaboration max_hops 防环先例 | src/orchestration/collaboration/collaboration.cr:83-104（翰林核实） |

@@ -63,12 +63,12 @@
 
 ```text
  1. 触发        DSL workflow action（tool: fork）或 IPC/HTTP 显式命令
- 2. 快照组装    store.transcripts(parent_session).last(window)     [store.cr:390-401]
+ 2. 快照组装    store.transcripts(parent_session).last(window)     [store.cr:406-417]
                + system prompt（父 persona）+ skills 注入            [skills.cr:43-83]
                （不含 secrets，semantics §5.3）
  3. 登记        fork_id 生成（fork:<uuid 短码>）
                每分身一行 tasks：kind="fork_child"，
-               parent_id=owner_task_id=父任务 id                    [store.cr:21-23]
+               parent_id=owner_task_id=父任务 id                    [store.cr:23-25]
                expectations 行插入（mode/deadline/members）           [semantics §4.1 DDL]
  4. 分身键      Agents.session_key(父agent_id, "internal", "fork", fork_id)
                五段键 = agent:<父>:internal:fork:<fork_id>           [Q1；subagent.cr:44 先例]
@@ -83,10 +83,10 @@
  7. 终态        complete_task / fail_task 落库 → JoinWriter 成员终态钩子
  8. 判定        expectation 判定器读 tasks.status 聚合，按 mode 判 settle
                [all/any/allSettled；any 残余处置 semantics §2.3]
- 9. 分层回写    L1 join.report 进父会话 append_transcript              [store.cr:372-380]
+ 9. 分层回写    L1 join.report 进父会话 append_transcript              [store.cr:387-395]
                L2 分身全量 transcript 已在分身会话键下双写，无需搬运
                L3 成员索引（task_id/会话键/行数范围）随 L1 消息
-               幂等：memo 键 join:<fork_id>:written                    [store.cr:352-364 先例]
+               幂等：memo 键 join:<fork_id>:written                    [store.cr:369-383 先例]
 10. 父续行      父会话下一 turn 的 transcripts 窗口自动带入 join.report
 ```
 
@@ -95,7 +95,7 @@
 ### 2.1 Q1/Q2 裁断落位摘要
 
 - **键**：五段结构不动，channel_type 新增枚举 `"fork"`——影响三处（Pool 分片、transcripts 键、调度 admit），因沿 subagent "internal"/"subagent" 先例同构，均为「新枚举值」级改动，无迁移 [来源: analysis.md §3.1；仓库:src/agents/subagent.cr:44（工部复核）]。
-- **表**：expectations 为 store 新增表（SCHEMA 数组追加一条 DDL [来源: 仓库:src/platform/store/store.cr:30-144]）；成员终态以 tasks.status 为单一事实源，expectations 不冗余成员态。
+- **表**：expectations 为 store 新增表（SCHEMA 数组追加一条 DDL [来源: 仓库:src/platform/store/store.cr:32-148]）；成员终态以 tasks.status 为单一事实源，expectations 不冗余成员态。
 
 ---
 
@@ -129,7 +129,7 @@ initialize 现状链 …
 |---|---|---|
 | **Pool**（per-session FIFO） | 数据结构承接 + 装配改造 | 数据结构层直接承接（分身=新 session 键分片 [来源: 仓库:src/agents/pool.cr:40-92；gateway.cr:243 Pool.new(8,16)（工部复核）]）；#9 落地后调度权威上移、Pool 改「跨会话 worker/并发限制」角色 [来源: 仓库:docs/design/proposals/session-input-scheduling.md:195]——fork 分身入队走调度 admit，Pool 不另设旁路 |
 | **调度（issue #9）** | 正交 + 接口迁就 | 正交（steer 首版不开启 [:210]）；fork 迁就：ForkEnvelope 新输入类型（无 sender/peer），M4.1 开工条件 = #9 WP1/WP2 已合或 admission/envelope 接口冻结（PR #32 已定型 policy/envelope/Store 单事务 admission）；依赖列排期 E 节，不并卡 |
-| **webhook DSL** | 扩展 | `KNOWN_TOOLS` 白名单加 `fork`/`join`（现为 message.send/memory.search/memory.save/session.read/subagent.ask [来源: 仓库:src/orchestration/dsl/dsl.cr:113（工部复核）]）；fork action 校验：count/mode/deadline 必填、tools 声明引用存在、fork/join 需 workflow 声明 [推演]；join 作为 DSL 动作 = 显式登记 expectation（§2 步骤 3 的 DSL 入口） |
+| **webhook DSL** | 扩展 | `KNOWN_TOOLS` 白名单加 `fork`/`join`（现为 message.send/memory.search/memory.save/session.read/subagent.ask [来源: 仓库:src/orchestration/dsl/dsl.cr:115（工部复核）]）；fork action 校验：count/mode/deadline 必填、tools 声明引用存在、fork/join 需 workflow 声明 [推演]；join 作为 DSL 动作 = 显式登记 expectation（§2 步骤 3 的 DSL 入口） |
 | **approvals** | M4.2 接线 | Center 完备（超时/无人值守 deny、hardline 含 "fork bomb" [来源: 仓库:src/orchestration/approvals/approvals.cr:33-38,50-87（工部复核）]）；生产装配为零、IPC 无 approve/deny 命令 [来源: 仓库:src/admin/ipc/server.cr:187-215] → M4.2-WP3 装配+命令补齐（semantics §7） |
 | **collaboration**（message_agent） | 正交 | fire-and-forget+署名+max_hops=4 防环 [来源: 仓库:src/orchestration/collaboration/collaboration.cr:37-56,83-104]；「找别的 agent」走 collaboration，「分自己」走 fork——两条正交通道并存，互不替代 |
 | **subagent** | 对照保留（非替代） | 派员工 vs 影分身取舍：subagent = 独立 prompt + 受限工具 + 不看父历史 + 末条汇报（「派员工」，design.md §8.2 [来源: 仓库:docs/design/design.md:490-491]）；fork = 父快照 + 衰减工具 + 全过程回写（「分自己」）。**保留 subagent** 用于异人格/隔离子任务；fork 用于同人格并行。两机制共用 internal 段键先例与 Semaphore 并发闸（subagent.cr:16,44 先例）[推演] |

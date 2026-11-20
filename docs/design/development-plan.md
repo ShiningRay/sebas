@@ -306,7 +306,7 @@
 
 **M4.1-WP2 expectations 表 + mode 判定器 + 任务树登记**（2–3 pd）
 - 目标：join 落库面（store 新增表，Q2：不复用 tasks kind 扩展）。
-- 范围：expectations DDL（fork_id/parent_task_id/mode all|any|allSettled/deadline/members/回写状态机，详 semantics 文档 §4.1）；mode 判定器（all 等全部不短路、any 首个成功、allSettled 失败也计完成）；分身任务树 kind="fork_child" 复用 TaskRow.parent_id/owner_task_id [来源: 仓库:src/platform/store/store.cr:21-23,30-144]。
+- 范围：expectations DDL（fork_id/parent_task_id/mode all|any|allSettled/deadline/members/回写状态机，详 semantics 文档 §4.1）；mode 判定器（all 等全部不短路、any 首个成功、allSettled 失败也计完成）；分身任务树 kind="fork_child" 复用 TaskRow.parent_id/owner_task_id [来源: 仓库:src/platform/store/store.cr:23-25,30-144]。
 - 交付物：store 表 + 判定器 + 崩溃恢复扫描 spec。
 - 依赖：M4.1-WP1。
 - 验收：三 mode 判定 spec 全过；强杀后 open/settling expectation 续判且不重复回写（memo 幂等）。
@@ -314,7 +314,7 @@
 
 **M4.1-WP3 ForkManager 快照组装 + 分身执行体**（2–3 pd）
 - 目标：fork 原语可执行（快照→分身任务→turn）。
-- 范围：ForkManager（输入契约 = 任务描述/快照范围/能力声明/角色/join 模式/deadline）；快照 = transcripts 窗口 + system prompt + skills 注入 [来源: 仓库:src/platform/store/store.cr:390-401；src/agents/skills/skills.cr:43-83]；分身 turn 走 HttpProvider 纯消息接口 [来源: 仓库:src/providers/providers.cr:58-88]；ToolContext 扩展子任务句柄 [来源: 仓库:src/tools/registry.cr:44-59 现无]；分身并发信号量默认 3（循 subagent.cr:16 先例）。
+- 范围：ForkManager（输入契约 = 任务描述/快照范围/能力声明/角色/join 模式/deadline）；快照 = transcripts 窗口 + system prompt + skills 注入 [来源: 仓库:src/platform/store/store.cr:406-417；src/agents/skills/skills.cr:43-83]；分身 turn 走 HttpProvider 纯消息接口 [来源: 仓库:src/providers/providers.cr:58-88]；ToolContext 扩展子任务句柄 [来源: 仓库:src/tools/registry.cr:44-59 现无]；分身并发信号量默认 3（循 subagent.cr:16 先例）。
 - 交付物：ForkManager + 分身执行体 spec。
 - 依赖：M4.1-WP2；E.5（ForkEnvelope 派发路径：无渠道入站消息、无 sender/peer）。
 - 验收：N=1/N=3 fork 快照内容断言（窗口行数正确、不含 secrets）；超并发闸排队不失控。
@@ -322,7 +322,7 @@
 
 **M4.1-WP4 JoinWriter 分层回写 + 异常时机语义**（1.5–2.5 pd）
 - 目标：join.report 三层回写与四时机语义落地。
-- 范围：L1 结论+关键决策点+副作用清单进父会话 append_transcript [来源: 仓库:src/platform/store/store.cr:372-380]；L2 引用分身会话键+行数范围（全量已双写无需搬运）；四时机（正常/超时/失败/取消）中 M4.1 生效列按默认只读档结构先行；deadline 到期 expired + partial 回写；memo 幂等键 join:<fork_id>:written。
+- 范围：L1 结论+关键决策点+副作用清单进父会话 append_transcript [来源: 仓库:src/platform/store/store.cr:387-395]；L2 引用分身会话键+行数范围（全量已双写无需搬运）；四时机（正常/超时/失败/取消）中 M4.1 生效列按默认只读档结构先行；deadline 到期 expired + partial 回写；memo 幂等键 join:<fork_id>:written。
 - 交付物：JoinWriter + 四时机 spec。
 - 依赖：M4.1-WP3。
 - 验收：正常完成回写父会话可见；超时 partial 标注；重放不重复回写。
@@ -330,7 +330,7 @@
 
 **M4.1-WP5 DSL/IPC/HTTP 触发面 + e2e**（1–2 pd）
 - 目标：用户显式 + DSL 声明两条触发路打通（Q3：不动生产 agent_turn）。
-- 范围：KNOWN_TOOLS 加 fork/join [来源: 仓库:src/orchestration/dsl/dsl.cr:113]；DSL 校验（count/mode/deadline 必填）+ 示例 workflow；IPC/HTTP fork/join 命令；fork→分身→join 回写全链 e2e。
+- 范围：KNOWN_TOOLS 加 fork/join [来源: 仓库:src/orchestration/dsl/dsl.cr:115]；DSL 校验（count/mode/deadline 必填）+ 示例 workflow；IPC/HTTP fork/join 命令；fork→分身→join 回写全链 e2e。
 - 交付物：触发面 + e2e spec + 示例 DSL。
 - 依赖：M4.1-WP4。
 - 验收：DSL 声明 3 分身→各自终态→按 mode 回写父会话（一级 Fork + 只读分身最小闭环，提案 M1 门槛）；调度四条门禁绿（B.3 M4 口径注）。
@@ -338,7 +338,7 @@
 
 **M4.2-WP1 能力衰减机制**（1.5–2.5 pd）
 - 目标：生效能力 = fork 显式声明 ∩ 父 tools.allow；未声明用默认只读档（Q6）。
-- 范围：衰减执行面（声明交集 + 白名单外剔除并在回执列明）；默认只读档工具集（无任何写副作用工具、不携带 secrets，semantics 文档 §5.1 表）；tools.allow=["*"] 现状口径下声明全集生效 [来源: 仓库:src/platform/config/schema.cr:94-97]。
+- 范围：衰减执行面（声明交集 + 白名单外剔除并在回执列明）；默认只读档工具集（无任何写副作用工具、不携带 secrets，semantics 文档 §5.1 表）；tools.allow=["*"] 现状口径下声明全集生效 [来源: 仓库:src/platform/config/schema.cr:104-107]。
 - 交付物：衰减面 + 档位 spec。
 - 依赖：M4.1 门禁。
 - 验收：未声明分身无任何写工具；声明∩白名单交集生效；白名单外声明被拒且回执列明。
@@ -362,7 +362,7 @@
 
 **M4.2-WP4 secrets 收敛**（1–2 pd）
 - 目标：凭据出明文；分身不携带 secrets（Q6：不留 M4.4）。
-- 范围：AgentConfig.api_key 明文过渡迁 keys/ 模块（M1-WP7 keyring 承接）[来源: 仓库:src/platform/config/schema.cr:83]；分身执行面无凭据直读路径（provider 实例句柄封装 [来源: 仓库:src/providers/pool.cr:12-25]）；日志脱敏复查。
+- 范围：AgentConfig.api_key 明文过渡迁 keys/ 模块（M1-WP7 keyring 承接）[来源: 仓库:src/platform/config/schema.cr:92]；分身执行面无凭据直读路径（provider 实例句柄封装 [来源: 仓库:src/providers/pool.cr:12-25]）；日志脱敏复查。
 - 交付物：迁移命令 + 无明文断言 spec。
 - 依赖：M4.2-WP1。
 - 验收：配置树无明文凭据；分身运行期日志 grep 不到 secret；迁移幂等可重跑。
@@ -394,7 +394,7 @@
 
 **M4.4-WP1 注册双轨统一**（2–3 pd）
 - 目标：AgentRegistry 目录/SOUL.md 与 Config::AgentConfig YAML 双轨打通（轴②前置）。
-- 范围：persona/persona_file 引用校验、session/skills 字段补齐 [来源: 仓库:src/agents/agents.cr:49-57；src/platform/config/schema.cr:78-88]；模板落位定夺（SOUL.md vs SKILL.md，M4.4-WP2 前置决策）。
+- 范围：persona/persona_file 引用校验、session/skills 字段补齐 [来源: 仓库:src/agents/agents.cr:49-57；src/platform/config/schema.cr:87-97]；模板落位定夺（SOUL.md vs SKILL.md，M4.4-WP2 前置决策）。
 - 交付物：双轨校验 + 统一读取面 spec。
 - 依赖：M4.3 门禁。
 - 验收：同一 agent 定义两轨一致可互查；悬空引用报错可读；存量 agent 目录只读兼容不强制迁移。[推演]
