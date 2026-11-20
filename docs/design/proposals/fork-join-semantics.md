@@ -78,7 +78,7 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 | 级 | 名称 | 判定 | 工具映射 |
 |---|---|---|---|
 | L0 | 只读 | 无任何外部状态改变 | `memory.search` / `session.read` 类 [来源: 仓库:src/tools/executor.cr:122-129 现有 4 工具中只读两个] |
-| L1 | 文件写 | 改本地文件系统 | 文件类 effectful 工具（replay=effectful 口径 [来源: 仓库:src/orchestration/dsl/dsl.cr:160-166]） |
+| L1 | 文件写 | 改本地文件系统 | 文件类 effectful 工具（replay=effectful 口径 [来源: 仓库:src/orchestration/dsl/dsl.cr:154-155]） |
 | L2 | 网络写 | 向外部系统发出不可撤回请求 | `message.send` 类（已带幂等键 [来源: 仓库:src/platform/cli/gateway.cr:178-180]）及未来 HTTP 类 |
 | L3 | 不可逆 | 删除、支付、发布、发送后不可撤回的破坏性操作 | risk:high 类；hardline 地板之上（§7） |
 
