@@ -117,7 +117,7 @@ Join = 三层回写，避免「全量 transcript 上下文爆炸」与「纯摘�
 
 | 层 | 内容 | 落点 |
 |---|---|---|
-| **L1 主上下文** | 结构化回写消息：结论 + 关键决策点 + 副作用清单 + 成员终态数组 | `append_transcript(parent_session, "agent", 回写JSON)` ——父会话下一 turn 的 transcripts 窗口自动带入 [来源: 仓库:src/platform/store/store.cr:387-395；窗口读取 :390-401] |
+| **L1 主上下文** | 结构化回写消息：结论 + 关键决策点 + 副作用清单 + 成员终态数组 | `append_transcript(parent_session, "agent", 回写JSON)` ——父会话下一 turn 的 transcripts 窗口自动带入 [来源: 仓库:src/platform/store/store.cr:387-395；窗口读取 :406-417] |
 | **L2 全量落盘** | 分身完整 transcript | 分身会话键在执行期间已 SQLite+JSONL 双写，**无需二次搬运**——回写消息中引用分身会话键与行数范围即可 [来源: 仓库:src/platform/store/store.cr:387-395] |
 | **L3 可检索索引** | 回写消息内含成员（task_id、会话键、终态、行数范围）三元组 | 供 `session.read` 与管理面回放检索 |
 
@@ -272,7 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 | 超时 | `expired`；已完成成员照常回写（partial）；未完成成员尽力取消（§2.2 超时列） |
 | 部分取消 | any 模式残余处置（§2.3）；父显式取消走 §2.2 取消列 |
 | 父崩溃恢复 | expectation 持久 → 重启扫描 open/ settling 续判；回写幂等（§3 memo 键）；分身任务循 owner_task_id 找回先例 [来源: 仓库:src/agents/subagent.cr:31-38] |
-| 分身崩溃循环 | 分身任务同受 restartLimit 防护 [来源: 仓库:src/platform/store/store.cr:19] |
+| 分身崩溃循环 | 分身任务同受 restartLimit 防护 [来源: 仓库:src/platform/store/store.cr:21] |
 
 ---
 
@@ -293,14 +293,14 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 | agent_turn 一次性 complete、无工具循环 | src/platform/cli/gateway.cr:212-223（工部复核） |
 | 入队键硬编码 "main" 与处理键不一致 | src/platform/cli/gateway.cr:260 vs :171（工部复核） |
 | TaskRow 树字段 | src/platform/store/store.cr:23-25（工部复核） |
-| SCHEMA 现有 7 表 | src/platform/store/store.cr:32-148（工部复核） |
-| transcript 双写/读取挂点 | src/platform/store/store.cr:387-395 / :390-401（工部复核） |
+| SCHEMA 现有 11 表 | src/platform/store/store.cr:32-148（工部复核） |
+| transcript 双写/读取挂点 | src/platform/store/store.cr:387-395 / :406-417（工部复核） |
 | subagent 键先例 (agent_id,"internal","subagent",key) | src/agents/subagent.cr:44,56（工部复核） |
 | approvals 规则链 + hardline 含 "fork bomb" | src/orchestration/approvals/approvals.cr:50-87 / :33-38（工部复核） |
 | DSL KNOWN_TOOLS 白名单 | src/orchestration/dsl/dsl.cr:115（工部复核） |
 | 调度四条门禁先例 | docs/design/proposals/session-input-scheduling.md:215（工部复核） |
 | skills 注入挂点 | src/agents/skills/skills.cr:43-83（翰林核实） |
-| tools.allow 全局口径 / api_key 明文过渡 | src/platform/config/schema.cr:104-107 / :83（翰林核实） |
+| tools.allow 全局口径 / api_key 明文过渡 | src/platform/config/schema.cr:104-107 / :92（翰林核实） |
 | HttpProvider 纯消息接口 / provider 实例池 | src/providers/providers.cr:58-88 / src/providers/pool.cr:12-25（翰林核实） |
 | Tool/ToolContext 现无子任务句柄 | src/tools/registry.cr:44-59（翰林核实） |
 | collaboration max_hops 防环先例 | src/orchestration/collaboration/collaboration.cr:83-104（翰林核实） |

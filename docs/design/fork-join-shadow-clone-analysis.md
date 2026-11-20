@@ -126,7 +126,7 @@
 - 需新建：**能力衰减声明机制**——现状 `tools.allow=["*"]` 是全局白名单（`schema.cr:104-107`），无 per-agent 衰减字段；衰减=父 agent 工具白名单交集或 fork 声明，需首辅定口径（§6 Q6）。
 - 需新建：**secrets 注入策略**——现状 `AgentConfig.api_key` 明文过渡（`schema.cr:92`）；分身默认不应携带 secrets，需按 agent 注入+衰减矩阵。
 - 需修改：审批接线——`Approvals::Center` 已完备（超时/无人值守 deny、hardline 已含 "fork bomb" 模式，`approvals.cr:33-97`），但**生产装配为零**且 IPC 无 approve/deny 命令（`ipc/server.cr:187-215`）；分身不可逆操作审批可复用此 Center。
-- 冲突处理可复用：lease 家族（`store.cr:223-253`）、restartLimit=5（`:19`）、发信幂等键三明治（`executor.cr:29-72`）。
+- 冲突处理可复用：lease 家族（`store.cr:223-253`）、restartLimit=5（`:21`）、发信幂等键三明治（`executor.cr:29-72`）。
 
 ### M3 对话流内自然 Fork
 
