@@ -190,6 +190,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test the docs checker itself
+        run: python3 tools/test_check_docs.py
+
       - name: Check docs links, anchors and size
         run: python3 tools/check_docs.py
 

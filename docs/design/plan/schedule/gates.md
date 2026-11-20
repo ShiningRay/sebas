@@ -7,16 +7,16 @@
 每期 M-gate 须**全部**满足（缺一不过）：
 
 1. 该期全部 WP 验收标准逐条有可复现证据（命令输出/spec 通过记录）。
-2. design.md §14 该期验收条目逐条勾稽（本文 A 节各 WP 已逐条映射，验收时按勾稽表核对）。
-3. 质量三命令：`crystal spec` 0 fail、`./bin/ameba` 无警告、`make release` 成功 [来源: 仓库:CLAUDE.md]。
-4. docs 同步：实现行为与 design.md/本文档一致，偏差处回写设计文档（CLAUDE.md 规矩 1）。
+2. design.md §14 该期验收条目逐条勾稽（[WBS 各包](../wbs/README.md) 已逐条映射，验收时按勾稽表核对）。
+3. 质量三命令：`crystal spec` 0 fail、`./bin/ameba` 无警告、`make release` 成功 [来源: 仓库:CONTRIBUTING.md 质量门禁节]。
+4. docs 同步：实现行为与 design.md/本文档一致，偏差处回写设计文档（[CONTRIBUTING.md](../../../../CONTRIBUTING.md) 的 Design-first changes 节）。
 5. 风险复核：该期新增风险/未验证项进入 §15.1 口径记录（回写 design.md）。
 
 阶段门禁 Go/No-Go 判据：M0 若强杀恢复不达标 → No-Go 返工 WP3/WP8；M1 若双账号串扰 → No-Go 返工 WP1（不接受「演示绕过」）；M3 若 mrb.cr 复核不可用**或 Windows 新 mruby.exe 链接环境 blocker 未消项**（恢复路径见 [review/m3-plugin-feasibility.md](../../review/m3-plugin-feasibility.md)）→ WP4~WP6 降级为技术预研 Go，降级证据 = 可行性报告与本机链接失败复现记录，产品化验收延至 blocker 消项后重跑（见 M3-WP4 风险）。[推演]
 
-**M4 期门禁口径（Q7 裁断，2026-11-20 追加）**：M4.0–M4.4 各期 M-gate 沿用上述五项框架（§14 勾稽/docs 同步/质量命令/风险复核照旧），第 3 条质量命令改为「调度四条」全绿：`make format-check` + `crystal spec` + `make lint` + `make release` [来源: 仓库:docs/design/proposals/session-input-scheduling.md:215 调度提案先例]；纯文档包（M4.0）以「评审通过」（用户）替代命令门禁。M4 期 Go/No-Go 判据：M4.1 若 fork e2e 不达（分身未跑/回写丢/键漂移）→ No-Go 返工 WP2/WP3；M4.2 若 L3 审批拦截 fail-open → No-Go 返工 WP3（不接受「仅 hardline 拦截」降格）；M4.4 若回收 GC 无人工确认 → No-Go 返工 WP3。上文三命令口径（:473）及其 CLAUDE.md 失效引用在 M4.0-WP2 一并修正。[推演]
+**M4 期门禁口径（Q7 裁断，2026-11-20 追加）**：M4.0–M4.4 各期 M-gate 沿用上述五项框架（§14 勾稽/docs 同步/质量命令/风险复核照旧），第 3 条质量命令改为「调度四条」全绿：`make format-check` + `crystal spec` + `make lint` + `make release` [来源: 仓库:docs/design/proposals/session-input-scheduling.md:215 调度提案先例]；纯文档包（M4.0）以「评审通过」（用户）替代命令门禁。M4 期 Go/No-Go 判据：M4.1 若 fork e2e 不达（分身未跑/回写丢/键漂移）→ No-Go 返工 WP2/WP3；M4.2 若 L3 审批拦截 fail-open → No-Go 返工 WP3（不接受「仅 hardline 拦截」降格）；M4.4 若回收 GC 无人工确认 → No-Go 返工 WP3。上文第 3 条的三命令口径及其 CLAUDE.md 失效引用在 M4.0-WP2 一并修正（改指 `CONTRIBUTING.md` 质量门禁节与「调度四条」）。[推演]
 
-**M5–M7 期门禁口径（2026-11-20 追加）**：三期各期 M-gate 沿用五项框架，第 3 条质量命令统一为「调度四条」全绿：`make format-check` + `crystal spec` + `make lint` + `make release`（M4 已确立，M5–M7 沿用以保持口径一致）；**纯文档包以「评审通过」替代命令门禁，但仅限下列三个**：M5.0-WP1（领域对象/状态机文档）、M6.0-WP1（适配器契约文档）、M7.0-WP1（投影/撤销批次契约文档）。**M5.0-WP2 不属纯文档包**——它同时交付 `src/platform/time_semantics.cr` 与 `spec/platform/time_semantics_spec.cr`，其 spec 全绿是 M5.1 的开工闸，同时参与 M5.0 期门禁的第 3 条。**期门禁新增两条硬约束**：
+**M5–M7 期门禁口径（2026-11-20 追加）**：三期各期 M-gate 沿用五项框架，第 3 条质量命令统一为「调度四条」全绿：`make format-check` + `crystal spec` + `make lint` + `make release`（M4 已确立，M5–M7 沿用以保持口径一致）；**纯文档包以「评审通过」替代命令门禁，但仅限下列三个**：M5.0-WP1（领域对象/状态机文档）、M6.0-WP1（适配器契约文档）、M7.0-WP1（投影/撤销批次契约文档）。**M5.0-WP2 不属纯文档包**——它同时交付 `src/platform/time_semantics.cr` 与 `spec/platform/time_semantics_spec.cr`，其 spec 全绿是 M5.1 的开工闸，同时参与 M5.0 期门禁的第 3 条；**因此 spec 未绿时 M5.0 判 No-Go、M5.1 亦不得开工**，两者不会出现一过一不过（统一口径见 M5.0-WP2 验收条的说明）。**期门禁新增两条硬约束**：
 
 6. **未实测不计入验收**：M6.4 涉及的 provider 若无真机 round-trip 证据，只能计「引擎/回放就绪」，产品面须标「实验/未验证」，并记入 design.md §15.1 口径；未实测越界当已测即 No-Go。**M7.1 同理但账户不同**：M6 用 E.1#9 的**只读**账户，M7 用 E.1#11 的**写权限**账户（专职 Sebas 日历 + 写 scope + 可清理撤销验证日历，明确不复用 E.1#9），两者不可互相顶替；E.1#11 未就绪时 M7.1-WP1 只交「写路径 + 幂等 spec（假 provider 回放）」，M7 门禁列未验证项、**不发 v0.5.0**（口径详 M7.0-WP1 与 M7.1-WP1 的「写权限账户依赖」段）。
 7. **非目标拒绝口径**：任何包若引入提案 §8 所列非目标（全功能日历、默认全量双向、自动重排多人会议、以红点代替处理、把送达当完成），验收直接 No-Go，不接受「先实现再收敛」。

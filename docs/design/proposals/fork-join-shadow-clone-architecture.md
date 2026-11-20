@@ -132,7 +132,7 @@ initialize 现状链 …
 | **webhook DSL** | 扩展 | `KNOWN_TOOLS` 白名单加 `fork`/`join`（现为 message.send/memory.search/memory.save/session.read/subagent.ask [来源: 仓库:src/orchestration/dsl/dsl.cr:115（工部复核）]）；fork action 校验：count/mode/deadline 必填、tools 声明引用存在、fork/join 需 workflow 声明 [推演]；join 作为 DSL 动作 = 显式登记 expectation（§2 步骤 3 的 DSL 入口） |
 | **approvals** | M4.2 接线 | Center 完备（超时/无人值守 deny、hardline 含 "fork bomb" [来源: 仓库:src/orchestration/approvals/approvals.cr:33-38,50-87（工部复核）]）；生产装配为零、IPC 无 approve/deny 命令 [来源: 仓库:src/admin/ipc/server.cr:187-215] → M4.2-WP3 装配+命令补齐（semantics §7） |
 | **collaboration**（message_agent） | 正交 | fire-and-forget+署名+max_hops=4 防环 [来源: 仓库:src/orchestration/collaboration/collaboration.cr:37-56,83-104]；「找别的 agent」走 collaboration，「分自己」走 fork——两条正交通道并存，互不替代 |
-| **subagent** | 对照保留（非替代） | 派员工 vs 影分身取舍：subagent = 独立 prompt + 受限工具 + 不看父历史 + 末条汇报（「派员工」，design.md §8.2 [来源: 仓库:docs/design/design.md:490-491]）；fork = 父快照 + 衰减工具 + 全过程回写（「分自己」）。**保留 subagent** 用于异人格/隔离子任务；fork 用于同人格并行。两机制共用 internal 段键先例与 Semaphore 并发闸（subagent.cr:16,44 先例）[推演] |
+| **subagent** | 对照保留（非替代） | 派员工 vs 影分身取舍：subagent = 独立 prompt + 受限工具 + 不看父历史 + 末条汇报（「派员工」，design.md §8.2 [来源: design.md §8.2]）；fork = 父快照 + 衰减工具 + 全过程回写（「分自己」）。**保留 subagent** 用于异人格/隔离子任务；fork 用于同人格并行。两机制共用 internal 段键先例与 Semaphore 并发闸（subagent.cr:16,44 先例）[推演] |
 | **busy-interrupt-redirect（#28 已合）** | 复用取消语义 | 控制通道/协作式取消/InterruptReceipt 引用不重设计（semantics §8.1）；PR #31 已合，引用远端 main 路径 [busy-interrupt-redirect.md](busy-interrupt-redirect.md) |
 
 ---
@@ -145,7 +145,7 @@ initialize 现状链 …
 | 9 | `sessions` 元数据表 | M4.4 | 会话生命周期治理（轴①重） | 草案：`session_key PK / agent_id / kind(user\|fork\|subagent\|anonymous) / fork_id? / status(active\|dormant\|archived) / last_active_at / created_at / archived_path?` [推演] | 对 transcripts 按 session_key 聚合的元数据面；不外键 transcripts（历史行允许先于本表存在，回填口径 M4.4 定） |
 | — | 调度四表（session_inputs/session_batches/session_batch_members/session_steers） | #9 在途 | 用户输入 queue/debounce/steer | — | **正交并列**：四表管「渠道入站输入归并」，expectations 管「fork 分身汇聚」，互不外键；fork 不入四表（分身非渠道输入，ForkEnvelope 为第五种派发路径）[推演] |
 
-sessions 表落位依赖：IPC 现仅 sessions.list/read 只读 transcripts [来源: 仓库:src/admin/ipc/server.cr:187-215]；compaction（design.md:341-342）未实现 [来源: analysis.md §1.2]——休眠/归档不绑 compaction，独立先行（M4.4 裁断：不等、不绑）。[推演]
+sessions 表落位依赖：IPC 现仅 sessions.list/read 只读 transcripts [来源: 仓库:src/admin/ipc/server.cr:187-215]；compaction（design.md §6.1）未实现 [来源: analysis.md §1.2]——休眠/归档不绑 compaction，独立先行（M4.4 裁断：不等、不绑）。[推演]
 
 ---
 
@@ -154,7 +154,7 @@ sessions 表落位依赖：IPC 现仅 sessions.list/read 只读 transcripts [来
 - 本文与 [fork-join-semantics.md](fork-join-semantics.md) 经用户评审定稿后，按仓内既有文档流（research → proposals → **design.md 契约吸收** → development-plan 承接 → review 证据；插件 §12 与调度两例均为提案经 PR 合入后吸收进 design.md 的先例 [来源: .tmp-cabinet/tongzheng-conventions.md §四]）：
   - fork/join 契约吸收进 **design.md §8（协作扩展：fork/join 节）**；
   - 路线图延伸 **design.md §14 至 M4**（现行仅到 M3 [来源: analysis.md §1.2]）；
-  - 吸收回写 + development-plan.md:17 失效引用修正（CLAUDE.md 不存在，改指 development-plan.md B.3 + Makefile + .github/workflows/ci.yml 现行权威 [来源: analysis.md §5]）列 **M4.0-WP2**。
+  - 吸收回写 + plan/00-baseline.md 第 0 节的失效引用修正（CLAUDE.md 不存在，改指 CONTRIBUTING.md 质量门禁节 + Makefile + .github/workflows/ci.yml 现行权威 [来源: analysis.md §5]）列 **M4.0-WP2**。
 - 吸收动作为「文档工作包」，走 PR 评审（Q7 纯文档包门禁 = 评审通过）；本轮只交三文档，不做 git 操作（用户仅授权本地文档写作）。
 
 ---

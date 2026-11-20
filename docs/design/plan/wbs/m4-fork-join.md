@@ -16,11 +16,11 @@
 
 **M4.0-WP2 定稿吸收回写 + 失效引用修正**（1–1.5 pd）
 - 目标：按既有提案→design.md 契约吸收流落定 fork/join。
-- 范围：design.md §8 协作扩展（fork/join 节：键/表/矩阵/衰减摘要）+ §14 路线图延至 M4 [来源: design.md §14 现仅到 M3]；本文 :17 的 CLAUDE.md 失效引用修正（该文件仓内不存在，改指本文 B 节 + Makefile + .github/workflows/ci.yml 现行权威 [来源: fork-join-shadow-clone-analysis.md:158]）；本文 M4 段同步勾稽。
-- 交付物：design.md 修订（§8/§14）+ 本文 :17 修正。
+- 范围：§8 协作扩展（fork/join 节：键/表/矩阵/衰减摘要）落 [spec/08-multi-agent.md](../../spec/08-multi-agent.md) + §14 路线图延至 M4 落 [spec/14-roadmap.md](../../spec/14-roadmap.md) [来源: design.md §14 现仅到 M3]；[plan/00-baseline.md](../00-baseline.md) 第 0 节「质量门禁惯例」行的失效引用修正（原文引 CLAUDE.md，该文件仓内不存在；改指 CONTRIBUTING.md 质量门禁节 + Makefile + .github/workflows/ci.yml 现行权威 [来源: fork-join-shadow-clone-analysis.md:158]）；本文 M4 段同步勾稽。
+- 交付物：`spec/08-multi-agent.md`（§8）与 `spec/14-roadmap.md`（§14）修订 + `plan/00-baseline.md` 第 0 节修正。
 - 依赖：M4.0-WP1 定稿。
-- 验收：design.md §14 含 M4 期验收条目；:17 不再指向不存在文件；docs 与两提案无口径冲突。
-- 风险：改 design.md 既有章节须走 PR 评审（用户授权后执行；本轮只写三文档不动 design.md）。
+- 验收：`spec/14-roadmap.md` 含 M4 期验收条目；第 0 节不再指向不存在文件；docs 与两提案无口径冲突。
+- 风险：改 spec/ 既有章节须走 PR 评审（用户授权后执行；本轮只写三文档不动 spec/）。
 
 **M4.1-WP1 生产装配补齐 + 入队键修复**（1.5–2.5 pd）
 - 目标：orchestration/agents 组件进生产链路，消除全线装配欠账（Q4：全线前置，首包）。

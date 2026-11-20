@@ -174,7 +174,7 @@ sebas plugin uninstall remote-memory --purge
 |---|---|---|---|
 | 消息 | `message.received` | observe | 渠道验真、鉴权、去重并解析完成后、进入路由前；只读，失败不阻断接收，不是原始传输包审计或修改入口 |
 | 消息 | `message.sending` | gate + transform | 实际渠道投递前，可 `allow/modify/deny` 文本与附件元数据；不得替换账号、收件人或绕过 hardline |
-| 消息 | `message.sent` | observe | 渠道返回投递结果后，含 `success/error/message_id`；不保证用户已读，不在此盲目重发 |
+| 消息 | `message.sent` | observe | 渠道返回投递结果后，含 `status/error/message_id/error_code`；不保证用户已读，不在此盲目重发 |
 | Agent | `agent.turn.before` | gate | Agent turn 开始、LLM 请求前，可允许或拒绝整个 turn；宿主保留原始 prompt 与 scope |
 | Agent | `agent.turn.after` | observe | turn 完成（含成功、失败、中断）后，带结果状态和耗时；不得再次启动隐式 turn |
 | LLM | `llm.request.before` | gate + transform | Provider 每次请求前，可拒绝、追加受控 context 或修改允许的 request 字段；model/provider/凭据/endpoint 由宿主固定 |
@@ -199,7 +199,7 @@ sebas plugin uninstall remote-memory --purge
 **统一执行规则**：
 
 - `on_hook` 的 handler 块参数是该 hook 的 **payload 对象（唯一业务参数）**——如 `memory.remember.before` 的 payload 含 `entry`；各 hook 的 payload 字段由本目录『宿主注入点与契约』列与 manifest 声明约定，runner 按此契约实现；`$config`/`$context`/`$idempotency_key` 经注入变量提供，不占用块参数。
-- **payload 键与类型契约**：表中列出字段的行，其字段即该 hook payload 的必需键，值类型限于 §12.2 JSON-like 原语（string/int/bool/enum/null/数组），宿主不得臆加未列字段，manifest 与宿主实现必须使用同一键名与类型。完整示例——`tool.call.after` payload：`tool_id: string`、`request_id: string`、`session_key: string`、`status: success|error|exception`、`duration_ms: int`、`result_summary: string`（受限文本，不含敏感原文）；`message.sent`：`status: success|error`、`message_id: string|null`、`error_code: string|null`；`memory.remember.after`：`memory_id: string`、`kind: string`、`tags: string[]`；`task.start`：`run_id: string`、`workflow_id: string`；`task.end`：`task_id: string`、`status: string`、`error: object|null`。其余 hook 在 WP5 实现时按本规则定稿。
+- **payload 键与类型契约**：表中列出字段的行，其字段即该 hook payload 的必需键，值类型限于 §12.2 JSON-like 原语（string/int/bool/enum/null/数组/哈希），宿主不得臆加未列字段，manifest 与宿主实现必须使用同一键名与类型。哈希值按 JSON-like 递归规则校验：键为 string，值为本表所列原语之一，嵌套深度与总大小受 §12.2 的 NDJSON 上限约束；需要结构化的字段（当前只有 `task.end.error`）按此校验，不得传入 Crystal/Ruby 对象。完整示例——`tool.call.after` payload：`tool_id: string`、`request_id: string`、`session_key: string`、`status: success|error|exception`、`duration_ms: int`、`result_summary: string`（受限文本，不含敏感原文）；`message.sent`：`status: success|error`、`message_id: string|null`、`error_code: string|null`；`memory.remember.after`：`memory_id: string`、`kind: string`、`tags: string[]`；`task.start`：`run_id: string`、`workflow_id: string`；`task.end`：`task_id: string`、`status: string`、`error: object|null`（结构化错误，键集由宿主在 WP5 定稿，出现时至少含 `code: string`，可含 `message: string`）。其余 hook 在 WP5 实现时按本规则定稿。
 - manifest `hooks` 与脚本 `on_hook(name)` 注册集合必须一致，宿主按 §12.2 的索引只调用订阅者；同插件重复注册拒绝，不同插件按 priority（数值大者优先）再按插件 ID/注册序稳定排序。
 - `gate + transform` 同步按序执行，每个处理器接收上一个已校验结果；任一 deny 停止后续处理器。`observe` 按注册快照执行、忽略返回值，可并发但不得阻塞主流程；观察副作用不保证持久化或严格全序。
 - 所有插件调用遵守独立进程、schema/大小限制和 watchdog。gate/transform 的异常、超时、非法结果默认 **deny**；observe 的异常、超时记录脱敏日志并跳过。宿主 hardline 不可被返回结果覆盖。

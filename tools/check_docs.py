@@ -24,8 +24,12 @@ import sys
 LINK_RE = re.compile(r"(?<!\!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 SKIP_SCHEME = re.compile(r"^(https?:|mailto:|tel:|ftp:|data:|#)")
 # 行号锚：design.md:L749 / design.md:749 / design.md:921-928 / design.md L846
+#
+# `L` 前缀只对「冒号分隔」形式可省：`design.md:473` 与 `design.md L473` 都是行号引用，
+# 两种都得拦。但「空白分隔且无 L」不能拦——`design.md 16 章`（plan/coverage.md 里就有）
+# 是章节数量，不是行号。因此空白分支加了 `(?=L\d)` 前瞻。
 LINE_ANCHOR = re.compile(
-    r"(design\.md|development-plan\.md)\s*(?::|：|\s)\s*(L\d+(?:\s*[-–~]\s*\d+)?)"
+    r"(design\.md|development-plan\.md)(?:\s*(?::|：)\s*|\s+(?=L\d))(L?\d+(?:\s*[-–~]\s*\d+)?)"
 )
 
 # 历史核验报告记录的是「当时那一版文件的行号」，属不可改写的存档证据，

@@ -19,7 +19,7 @@
 | M5 承诺与提醒闭环 | v0.3.0 | 22–36 pd | 15 | [plan/wbs/m5-commitments.md](plan/wbs/m5-commitments.md) |
 | M6 外部日历只读镜像 | v0.4.0 | 20–34 pd | 9 | [plan/wbs/m6-calendar-mirror.md](plan/wbs/m6-calendar-mirror.md) |
 | M7 受控投影与撤销审计 | v0.5.0 | 6–10 pd | 4 | [plan/wbs/m7-projection.md](plan/wbs/m7-projection.md) |
-| **合计 M0–M7** | — | **139.5–223 pd** | **75** | 28–45 周（含缓冲 W1–W47） |
+| **合计 M0–M7** | — | **139.5–223 pd** | **76** | 28–45 周（含缓冲 W1–W47） |
 
 ## 章节索引
 

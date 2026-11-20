@@ -6,7 +6,7 @@
 
 > 依据：[proposals/commitments-calendar-integration.md](../../proposals/commitments-calendar-integration.md) §1–§5、§8–§9（提案已随 PR #61 合入 main）。本节只做工作包、依赖、估时与验收；**不新造设计决策**——语义有变更回写提案与 design.md，不在本计划内定。
 > 期定位：把 cron 从「用户产品层」降到「唤醒基础设施层」（提案 §5），新增 Commitment/Checkpoint/Reminder/NotificationDelivery 领域对象与持久 WakeSchedule/Occurrence/Run 链路。**本期不含任何外部日历/TODO 接入**（M6/M7 承接），也不做 tombstone 式 UI。
-> 期门禁：调度四条全绿（`make format-check` + `crystal spec` + `make lint` + `make release`）。**M5.0 例外且需精确表述**：M5.0-WP1 是纯文档包（以评审通过替代命令门禁）；M5.0-WP2 不是纯文档包——它同时交付纯函数时间语义模块与 spec，因此 **M5.0 期门禁 = 文档评审通过 + 调度四条在该模块上全绿**，而 WP2 的 spec 全绿同时充当 **M5.1 开工闸**（两闸分离，口径见 B.3「期内子门禁是开工闸」与 M5.0-WP2 验收）。
+> 期门禁：调度四条全绿（`make format-check` + `crystal spec` + `make lint` + `make release`）。**M5.0 例外且需精确表述**：M5.0-WP1 是纯文档包（以评审通过替代命令门禁）；M5.0-WP2 不是纯文档包——它同时交付纯函数时间语义模块与 spec，因此 **M5.0 期门禁 = 文档评审通过 + 调度四条在该模块上全绿**。WP2 的 spec 全绿同时是 **M5.1 开工闸**：两张闸在「spec 绿」上重合，spec 未绿则 M5.0 No-Go 且 M5.1 不得开工，不存在一过一不过（判定以 M5.0-WP2 验收为准，另见 B.3「期内子门禁是开工闸」）。
 
 **M5.0-WP1 领域对象、状态机与不变式定稿**（1–1.5 pd）
 - 目标：把提案 §3.2 生命周期、§4.1 十对象、§3.3 提醒纪律收敛为实现契约。
@@ -18,11 +18,14 @@
 
 **M5.0-WP2 时间语义、表结构与迁移契约定稿**（1–1.5 pd）
 - 目标：把提案 §4.2 时间/重复语义与 §5.3 职责分离落成 DDL 草案与迁移方案。
-- 范围：四类时间表示（UTC instant / 原墙钟+IANA / 全天 `DATE` / floating）的比较与排序规则；`RRULE/RDATE/EXDATE` 原文保留口径与 Occurrence 生成边界；DST 缺口与重复时刻的期望结果表；首版表结构草案与索引；迁移序号方案（`PRAGMA user_version` + 有序迁移）；design.md §14 追加 M5–M7 行（与 M4.0-WP2 #40 同行编辑，**串行：#40 先落**，避免同文件冲突）[来源: design.md §14 现仅 M0–M3]。
-- 交付物：语义文档 §时间/§DDL 草案 + design.md §14 修订 + **纯函数时间语义模块 `src/platform/time_semantics.cr`（比较/排序/缺口与重复解析，无 IO）+ `spec/platform/time_semantics_spec.cr`**（最小实现，估时内已含单测）。
+- 范围：四类时间表示（UTC instant / 原墙钟+IANA / 全天 `DATE` / floating）的比较与排序规则；`RRULE/RDATE/EXDATE` 原文保留口径与 Occurrence 生成边界；DST 缺口与重复时刻的期望结果表；首版表结构草案与索引；迁移序号方案（`PRAGMA user_version` + 有序迁移）；[spec/14-roadmap.md](../../spec/14-roadmap.md)（§14）追加 M5–M7 行（与 M4.0-WP2 #40 同行编辑，**串行：#40 先落**，避免同文件冲突）[来源: design.md §14 现仅 M0–M3]。
+- 交付物：语义文档 §时间/§DDL 草案 + `spec/14-roadmap.md`（§14）修订 + **纯函数时间语义模块 `src/platform/time_semantics.cr`（比较/排序/缺口与重复解析，无 IO）+ `spec/platform/time_semantics_spec.cr`**（最小实现，估时内已含单测）。
 - 依赖：M5.0-WP1。
-- 验收：**两套判定分开，勿混**——ⓐ**M5.0 期门禁（纯文档包）= 评审通过**，只核文档与 §14 修订，不因下面的 spec 未绿而判本期 No-Go；ⓑ**M5.1 开工闸 = `spec/platform/time_semantics_spec.cr` 全绿**（三类边界用例各给确定期望值，不接受文档描述式验收）：①春季缺口（`America/New_York` 2026-03-08 02:30 不存在）→ 拒绝该本地时刻并返回「需用户选择」错误码；②秋季重复（同日 2026-11-01 01:30 出现两次：先 EDT `−04:00`、后 EST `−05:00`）→ 取**第一次，即 UTC 偏移较大者 `−04:00`**（对应较早的 UTC 时刻），并在对象上标注 `ambiguous_local_time`；判定式写成「比较两候选的 UTC 时刻，取较早者」，不得写成「偏移较小者」——`−05:00` 数值更小但对应第二次；③全天跨时区（`Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 读取）→ 仍为同一 `DATE`，不发生日期漂移。另：表草案覆盖 M5.1 全部仓储字段，无悬空外键。
-- 说明：模块与 spec 由本包交付（不另设包、不外推到 M5.1），因此「M5.0 评审通过」与「M5.1 可开工」是两道闸；若 spec 未绿，M5.0 文档可照常评为通过，但 M5.1 不得开工——这是 B.3「期内子门禁是开工闸」规则在本期的一次具体应用。[推演]
+- 验收：**一条规则：spec 未绿则 M5.0 判 No-Go，M5.1 亦不得开工**——本包交付模块与 spec，两者都在 M5.0 期门禁范围内，不存在「文档通过但模块可不过」的形态：
+  - ⓐ**M5.0 期门禁 = 文档评审通过（M5.0-WP1 语义文档 + 本包 §时间/§DDL 草案 + §14 修订）** 且 **调度四条（`make format-check` + `crystal spec` + `make lint` + `make release`）在 `src/platform/time_semantics.cr` 上全绿**，其中 `spec/platform/time_semantics_spec.cr` 全绿是硬条件，不由文档描述替代。
+  - ⓑ**M5.1 开工闸 = `spec/platform/time_semantics_spec.cr` 全绿**。两闸在「spec 绿」这一项上重合，分离之处只在 M5.0 还须文档评审通过；因此 spec 未绿时两张闸**同时不成立**（M5.0 No-Go，M5.1 不得开工），不会出现一张过一张不过。
+  - 三类边界用例各给确定期望值，不接受文档描述式验收：①春季缺口（`America/New_York` 2026-03-08 02:30 不存在）→ 拒绝该本地时刻并返回「需用户选择」错误码；②秋季重复（同日 2026-11-01 01:30 出现两次：先 EDT `−04:00`、后 EST `−05:00`）→ 取**第一次，即 UTC 偏移较大者 `−04:00`**（对应较早的 UTC 时刻），并在对象上标注 `ambiguous_local_time`；判定式写成「比较两候选的 UTC 时刻，取较早者」，不得写成「偏移较小者」——`−05:00` 数值更小但对应第二次；③全天跨时区（`Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 读取）→ 仍为同一 `DATE`，不发生日期漂移。另：表草案覆盖 M5.1 全部仓储字段，无悬空外键。
+- 说明：模块与 spec 由本包交付（不另设包、不外推到 M5.1）。**口径统一以本包验收为准**，B.3「M5–M7 期门禁口径」与 M5 期门禁头的表述与之冲突时按本条读。[推演]
 - 风险：时区规则依赖 tzdata 更新——首版以「显式拒绝无法表示的本地时刻并要求用户选择」替代自动猜测。[推演]
 
 **M5.1-WP1 store schema 版本化与增量迁移**（1–2 pd）
@@ -117,7 +120,7 @@
 
 **M5.3-WP4 文档、CHANGELOG 与端到端**（1 pd）
 - 目标：行为与文档一致（B.3 第 4 条）。
-- 范围：design.md §6（会话/时间上下文）与 §14 回写；CHANGELOG `Unreleased` → `0.3.0`；README 使用说明；e2e 一条主线（创建→唤醒→静默→提醒→完成→关闭未来唤醒）。
+- 范围：`spec/06-session-memory.md`（§6，会话/时间上下文）与 `spec/14-roadmap.md`（§14）回写；CHANGELOG `Unreleased` → `0.3.0`；README 使用说明；e2e 一条主线（创建→唤醒→静默→提醒→完成→关闭未来唤醒）。
 - 交付物：文档修订 + e2e spec。
 - 依赖：M5.3-WP1~WP3。
 - 验收：e2e 全绿；文档与实现零口径差（逐条回对提案 §9 首闭环 1/2/4/5 条）。

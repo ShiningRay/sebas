@@ -55,7 +55,7 @@ fork 调用（DSL action / IPC / HTTP 显式命令，M4.1；对话流内自然�
 
 ### 1.3 分身键与任务树（Q1 裁断）
 
-- **session_key 五段结构不动** [来源: 仓库:docs/design/design.md:103]：`agent:<agent_id>:<account_id>:<channel_type>:<peer>`。
+- **session_key 五段结构不动** [来源: design.md §3.3]：`agent:<agent_id>:<account_id>:<channel_type>:<peer>`。
 - fork 分身五段取值：**agent 段 = 父 agent_id**（分身以父人格运行）；**account 段 = `"internal"`**；**channel_type 段新增枚举值 `"fork"`**；**peer 段 = fork_id**。即 `agent:<父agent_id>:internal:fork:<fork_id>`。
 - 先例对齐：subagent 已用 `(agent_id, "internal", "subagent", subtask_key)` 四参数先例 [来源: 仓库:src/agents/subagent.cr:44,56]——fork 与之同构，仅 channel_type 枚举值不同，Pool 分片、transcripts 键、调度 admit 三处无需新机制 [来源: analysis.md §3.1]。
 - fork_id 格式：`fork:<uuid4 短码>`（[推演]：循 subagent `task_id="sub:#{subtask_key}"` 可读前缀先例 [来源: 仓库:src/agents/subagent.cr:33]）。
