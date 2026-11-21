@@ -64,6 +64,9 @@ module SebasAgents
       # 被引用评论必须包含与本块一致的登记字段。
       # 空正文（离线快照未提供）时放行作者校验结果，交由调用方按证据缺口处理；
       # 提供了正文却对不上，一律判未授权。
+      #
+      # untested 必须比对：它是门禁实际执行的字段，若允许 issue 正文单方面改成 []，
+      # 就等于「有写权限者可以声明已全部实测」，绕过合并前自检。
       def registration_matches?(block, body)
         return true if body.nil?
 
@@ -75,7 +78,8 @@ module SebasAgents
 
         %w[subject status].all? { |key| ref_block[key].to_s == block[key].to_s } &&
           ref_block["gate_status"].to_s == block["gate_status"].to_s &&
-          ref_block["evidence_path"].to_s == block["evidence_path"].to_s
+          ref_block["evidence_path"].to_s == block["evidence_path"].to_s &&
+          Array(ref_block["untested"]).map(&:to_s).sort == Array(block["untested"]).map(&:to_s).sort
       end
 
       def evaluate_issue(block, number, snapshot)

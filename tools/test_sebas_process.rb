@@ -463,6 +463,35 @@ class SelectionTest < Minitest::Test
     assert_equal "invalid_plan", select(data).action
   end
 
+  # CR：issue 正文把 untested 改成 [] 不能绕过门禁——必须与登记评论一致。
+  def test_evidence_untested_mismatch_is_invalid
+    registered = evidence(subject: "issue:9", untested: ["真机 round-trip"])
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        # issue 正文宣称无未实测项
+        issue(9, body: evidence(subject: "issue:9", untested: []),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered}
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_evidence_untested_match_passes
+    registered = evidence(subject: "issue:9", untested: ["真机 round-trip"])
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", untested: ["真机 round-trip"]),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered}
+    )
+    # 登记与正文一致，但仍有未实测项 → 依赖不满足（blocked，而非 invalid）。
+    assert_equal "blocked", select(data).action
+  end
+
   def test_external_not_ready_blocks
     data = snapshot(
       issues: [issue(1, body: automation(depends_on: ["external:11"], external: ["11"]), blocked_by: [])],
@@ -728,6 +757,17 @@ class ReviewerTest < Minitest::Test
     fixes = {"must_fix-2" => {"passed" => true, "commit" => "aaa"}}
     final = SebasAgents::Reviewer.final_verification(report, fixes)
     # 第 1 项按显式 id 命中；第 2 项的位置键 must_fix-2 被占用，不得复用 → 仍算未修复。
+    assert_equal "打回", final.conclusion
+  end
+
+  # CR：level-only 简写同样不能命中另一条目的显式 id。
+  def test_level_only_key_does_not_shadow_other_item_explicit_id
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "acceptable")
+    report.acceptable("b", id: "g")
+    fixes = {"acceptable" => {"passed" => true, "commit" => "abc", "reason_still_valid" => true}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    # "acceptable" 是第 1 项的显式 id，第 2 项不得再借它过关。
     assert_equal "打回", final.conclusion
   end
 end

@@ -19,7 +19,8 @@ module SebasAgents
     #   - 位置键按 level 内 1-based 序号构造，不由 id 后缀推断（避免 r2-1/r3-1 撞键）；
     #     但位置键本身可能就是**另一条目**的显式 id（如首项 id=must_fix-2），
     #     这种情况下不得复用，否则一条 fix 会同时满足两项；
-    #   - 纯 level 简写只在同 level 恰有一项时生效，否则一项修复会放行多项。
+    #   - 纯 level 简写只在同 level 恰有一项时生效，否则一项修复会放行多项；
+    #     且该键不得是任一条目的显式 id（否则与 exact-id 命中重复计一次）。
     def lookup(fixes, item, position, level_counts, reserved_ids)
       direct = fixes[item.id]
       return direct if direct.is_a?(Hash)
@@ -31,7 +32,10 @@ module SebasAgents
       end
 
       level_key = fixes[item.level]
-      level_key.is_a?(Hash) && level_counts[item.level] == 1 ? level_key : nil
+      return nil unless level_key.is_a?(Hash) && level_counts[item.level] == 1
+      return nil if reserved_ids.include?(item.level)
+
+      level_key
     end
 
     def final_verification(verifier_report, fixes, checker: nil)
