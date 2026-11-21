@@ -97,9 +97,10 @@ def automation_block(spec)
 end
 
 # 先归一化换行再匹配/替换，否则纯 CR 的旧块会漏匹配、被追加成重复块。
+# gsub 删除所有旧块：历史缺陷可能已留下重复块，只删第一个会残留。
 def with_block(body, block)
   normalized = body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
-  stripped = normalized.sub(FENCE, "")
+  stripped = normalized.gsub(FENCE, "")
   "#{stripped.rstrip}\n\n## Automation\n\n#{block}"
 end
 
