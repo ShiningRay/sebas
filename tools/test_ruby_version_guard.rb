@@ -98,21 +98,6 @@ class RubyVersionGuardTest < Minitest::Test
     end
   end
 
-  private
-
-  # 在 <root>/tools/ 下写一份补丁版入口（比较表达式置真），
-  # 让 __dir__ 与真实入口一致。
-  def with_simulated_entry(root:)
-    tools_dir = File.join(root, "tools")
-    script = File.join(tools_dir, "sim_entry.rb")
-    source = File.read(ENTRY, encoding: "UTF-8")
-      .sub("if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(REQUIRED_RUBY)", "if true")
-    File.write(script, source, encoding: "UTF-8")
-    yield script
-  ensure
-    File.delete(script) if script && File.exist?(script)
-  end
-
   def test_runs_on_supported_ruby
     # 用的是「配置的下限」，不是代码绝对下限：pin 提到 3.4 后，
     # 3.2/3.3 会被入口正确拒绝（退出码 2），在这里就该跳过而不是失败。
@@ -122,5 +107,21 @@ class RubyVersionGuardTest < Minitest::Test
     out, err, status = Open3.capture3(RbConfig.ruby, ENTRY, "version", chdir: ROOT)
     assert status.success?, "受支持版本应正常运行：#{err}"
     assert_includes out, "sebas-process"
+  end
+
+  private
+
+  # 在 <root>/tools/ 下写一份补丁版入口（比较表达式置真），
+  # 让 __dir__ 与真实入口一致。注意：private 之后的 test_* 不会被 Minitest 发现，
+  # 所以所有测试方法都必须写在这一行之前。
+  def with_simulated_entry(root:)
+    tools_dir = File.join(root, "tools")
+    script = File.join(tools_dir, "sim_entry.rb")
+    source = File.read(ENTRY, encoding: "UTF-8")
+      .sub("if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(REQUIRED_RUBY)", "if true")
+    File.write(script, source, encoding: "UTF-8")
+    yield script
+  ensure
+    File.delete(script) if script && File.exist?(script)
   end
 end
