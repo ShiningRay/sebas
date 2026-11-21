@@ -17,19 +17,30 @@ gh auth status
 入口会在启动前检查并直接给出升级指引，不会抛出内部错误。
 
 ```sh
-# rbenv（会自动读取 .ruby-version）
-rbenv install && rbenv local
+# rbenv（读取 .ruby-version；装完需 rehash 让 shim 指向新版本）
+rbenv install && rbenv rehash && rbenv local
 
 # mise：默认不读取 .ruby-version，需先启用该支持
 mise settings add --local idiomatic_version_file_enable_tools ruby
 mise install
 
-# asdf
+# asdf：默认 legacy_version_file = no，也要先打开才读 .ruby-version
+asdf settings add legacy_version_file yes   # asdf 0.16+
 asdf install
 ```
 
+装完都要确认当前 shell 已切到新版本，否则 `ruby` 仍指向系统 3.0：
+
+```sh
+ruby -v   # 应为 3.2.x 或更高
+```
+
+若 shell 仍是旧版本，重开终端或重新执行对应管理器的初始化（`eval "$(rbenv init -)"`
+或 `eval "$(mise activate zsh)"`），再检查一次。
+
 用 `mise use ruby@3.2.9` 也能达到同样效果，但它会写 `mise.toml`；仓库选择
-`.ruby-version`，以便 rbenv 用户零配置生效。
+`.ruby-version`，以便 rbenv 用户零配置生效。无论用哪种方式，最后的判据都是
+`ruby -v`，以及入口自身的版本检查。
 
 仓库首次使用时，创建流程标签与维护者名单：
 

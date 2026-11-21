@@ -16,17 +16,18 @@ if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(REQUIRED_RUBY)
     #{RUBY_DESCRIPTION}
 
     修复方式（任选其一）：
-      1. 使用版本管理器（会自动选中仓库根目录 .ruby-version 中的版本）：
-           rbenv install && rbenv local    # rbenv
-           asdf install                    # asdf
+      1. 用版本管理器装好并切换（装完重开终端，或重新激活 shell）：
+           rbenv install && rbenv rehash && rbenv local     # rbenv 读取 .ruby-version
            mise settings add --local idiomatic_version_file_enable_tools ruby
-           mise install                    # mise 默认不读 .ruby-version
+           mise install                                    # mise 默认不读 .ruby-version
+           asdf settings add legacy_version_file yes
+           asdf install                                    # asdf 默认 legacy_version_file=no
       2. 直接用受支持解释器的绝对路径运行（ruby 若仍是系统版本，需先装好新版）：
            /path/to/ruby-3.2/bin/ruby tools/sebas-process ...
          若 ruby 已由 rbenv shim 接管，等价于：
            RBENV_VERSION=$(cat .ruby-version) ruby tools/sebas-process ...
 
-    本命令不使用任何 gem，只需解释器版本正确。
+    装好后用 ruby -v 确认已切换到 3.2 以上。本命令不使用任何 gem。
   MESSAGE
   exit 2
 end
