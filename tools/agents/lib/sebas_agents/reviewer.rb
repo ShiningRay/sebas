@@ -17,13 +17,18 @@ module SebasAgents
     # 三级兜底严格受限：
     #   - 条目 id 精确匹配，永远优先；
     #   - 位置键按 level 内 1-based 序号构造，不由 id 后缀推断（避免 r2-1/r3-1 撞键）；
+    #     但位置键本身可能就是**另一条目**的显式 id（如首项 id=must_fix-2），
+    #     这种情况下不得复用，否则一条 fix 会同时满足两项；
     #   - 纯 level 简写只在同 level 恰有一项时生效，否则一项修复会放行多项。
-    def lookup(fixes, item, position, level_counts)
+    def lookup(fixes, item, position, level_counts, reserved_ids)
       direct = fixes[item.id]
       return direct if direct.is_a?(Hash)
 
-      positional = fixes["#{item.level}-#{position}"]
-      return positional if positional.is_a?(Hash)
+      positional_key = "#{item.level}-#{position}"
+      positional = fixes[positional_key]
+      if positional.is_a?(Hash) && !reserved_ids.include?(positional_key)
+        return positional
+      end
 
       level_key = fixes[item.level]
       level_key.is_a?(Hash) && level_counts[item.level] == 1 ? level_key : nil
@@ -34,13 +39,14 @@ module SebasAgents
       # 不能用共享状态：module_function 下的实例变量会跨调用残留。
       # 注意 tally 带块时按「块的返回值」逐个计数，这里要的是每个 level 的条目数。
       level_counts = verifier_report.items.group_by(&:level).transform_values(&:length)
+      reserved_ids = verifier_report.items.map(&:id)
 
       if verifier_report.blockers.any?
         report.blocker("Verifier 存在未解决阻断项：#{verifier_report.blockers.map(&:message).join("；")}")
       end
 
       verifier_report.must_fix_items.each_with_index do |item, index|
-        fix = lookup(fixes, item, index + 1, level_counts)
+        fix = lookup(fixes, item, index + 1, level_counts, reserved_ids)
         unless fix.is_a?(Hash)
           report.blocker("应修项 #{item.id} 未修复：#{item.message}")
           next
@@ -66,7 +72,7 @@ module SebasAgents
       end
 
       verifier_report.acceptable_items.each_with_index do |item, index|
-        fix = lookup(fixes, item, index + 1, level_counts)
+        fix = lookup(fixes, item, index + 1, level_counts, reserved_ids)
         if fix.is_a?(Hash) && fix["reason_still_valid"] == true
           report.acceptable("可留项 #{item.id} 理由仍成立：#{item.message}")
         elsif fix.is_a?(Hash) && fix["reason_still_valid"] == false

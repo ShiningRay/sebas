@@ -659,4 +659,21 @@ class VerifierRegressionTest < Minitest::Test
     report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
     assert report.pass?, report.items.map(&:message).inspect
   end
+
+  # CR 安全项：--pre 不能只看 status 字段，必须走 trusted? 授权校验。
+  def test_verify_merge_pre_blocks_on_untrusted_evidence_source
+    body = automation + evidence(subject: "issue:39")
+    data = snapshot(
+      issues: [issue(39, body: body, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "random-user"}
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("未由 Maintainer 或受信 bot 登记") },
+      report.items.map(&:message).inspect)
+  end
 end

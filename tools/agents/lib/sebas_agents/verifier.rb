@@ -137,6 +137,10 @@ module SebasAgents
         evidence = Policy::Evidence.from_issue(issue)
         if evidence.nil?
           report.blocker("issue ##{issue_number} 缺 Evidence 块")
+        elsif !Policy::Evidence.trusted?(evidence, snapshot)
+          # 只查 status 字段不够：issue 正文可被任意有写权限者编辑，
+          # 必须与依赖判定同口径校验登记人身份与评论内容。
+          report.blocker("issue ##{issue_number} 的 Evidence 未由 Maintainer 或受信 bot 登记")
         else
           # 合并前不可能有 merged_into_main，只判 accepted + 无未实测。
           unless evidence["status"] == "accepted"

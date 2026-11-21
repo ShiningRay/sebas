@@ -719,6 +719,17 @@ class ReviewerTest < Minitest::Test
     one.must_fix("a")
     assert_equal "有条件通过", SebasAgents::Reviewer.final_verification(one, fixes).conclusion
   end
+
+  # CR：位置键不能命中另一条目的显式 id，否则一条 fix 满足两项。
+  def test_positional_key_does_not_shadow_other_item_explicit_id
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "must_fix-2")   # 显式 id 恰好等于第二项的位置键
+    report.must_fix("b", id: "g")
+    fixes = {"must_fix-2" => {"passed" => true, "commit" => "aaa"}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    # 第 1 项按显式 id 命中；第 2 项的位置键 must_fix-2 被占用，不得复用 → 仍算未修复。
+    assert_equal "打回", final.conclusion
+  end
 end
 
 # #109：叙述式 verdict 与 level 词汇统一由 VERDICTS 收口。

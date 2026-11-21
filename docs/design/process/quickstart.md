@@ -67,9 +67,12 @@ CRYSTAL_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib \
 `vault.cr` 的 `gcm_tag` 会在 release 构建时失败。用同一版本与环境变量跑：
 
 ```sh
+OSSL=/opt/homebrew/opt/openssl@3
 CRYSTAL_LIBRARY_PATH=$OSSL/lib LDFLAGS=-L$OSSL/lib CPPFLAGS=-I$OSSL/include \
   PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- make release
 ```
+
+`OSSL` 必须在这一步重新赋值：上一节的 `mise install` 与绝对路径写法都不保证它留在当前 shell 里。
 
 `make release` 前先确认 spec 全绿；强杀演练 spec 需要 `bin/sebas` 存在才实跑（否则 pending），
 所以 `make release` 之后才能解锁。
