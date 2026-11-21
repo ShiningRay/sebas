@@ -66,14 +66,14 @@ module Sebas
             # 单条自身超批字节预算：明确拒绝（契约 §4.3 字节预算 admission）
             if incoming_bytes > snapshot.max_bytes
               bump("rejected_capacity")
-              Log.warn { "admission rejected: input exceeds batch max_bytes (session=#{@session_key} event=#{env.event_id} bytes=#{incoming_bytes} limit=#{snapshot.max_bytes})" }
+              Log.error { "admission rejected (event dropped): input exceeds batch max_bytes (session=#{@session_key} event=#{env.event_id} bytes=#{incoming_bytes} limit=#{snapshot.max_bytes})" }
               return AdmissionReceipt.new(env.event_id, "", "rejected", nil)
             end
 
             # 会话积压容量（queue.max_pending_batches / queue.max_pending_bytes）
             if load.batches + 1 > snapshot.max_pending_batches || load.bytes + incoming_bytes > snapshot.max_pending_bytes
               bump("rejected_capacity")
-              Log.warn { "admission rejected: session backlog at capacity (session=#{@session_key} event=#{env.event_id} pending_batches=#{load.batches}/#{snapshot.max_pending_batches} pending_bytes=#{load.bytes}/#{snapshot.max_pending_bytes})" }
+              Log.error { "admission rejected (event dropped): session backlog at capacity (session=#{@session_key} event=#{env.event_id} pending_batches=#{load.batches}/#{snapshot.max_pending_batches} pending_bytes=#{load.bytes}/#{snapshot.max_pending_bytes})" }
               return AdmissionReceipt.new(env.event_id, "", "rejected", nil)
             end
 
