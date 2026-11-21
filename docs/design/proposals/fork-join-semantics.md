@@ -104,10 +104,11 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 
 `any` 模式首个成员成功终态即 settle expectation 并触发 L1 回写（首个成功者结论）。残余分身三步处置：[推演]
 
-1. **尽力取消**：向残余分身发协作式取消——复用已落地的 busy-interrupt-redirect 控制通道与协作式取消语义（[busy-interrupt-redirect.md](busy-interrupt-redirect.md)，PR #31 已合，issue #28 已关），**本文不重设计 interrupt**。分身处于安全点（未开始/未进 effectful 段）→ 任务置 `cancelled`。
+1. **尽力取消**：向残余分身发协作式取消——复用已落地的 busy-interrupt-redirect 控制通道与协作式取消语义（[busy-interrupt-redirect.md](busy-interrupt-redirect.md)，PR #31 已合，issue #28 已关），**本文不重设计 interrupt**。分身处于安全点（未开始/未进 effectful 段）→ 任务置 `cancelled`——这是分身任务层新终态（M4.1 落地）：显式取消不参与 restartLimit 恢复，区别于 busy-interrupt 落账用的 turn 终态 `interrupted`（后者属崩溃恢复语义 [来源: 仓库:src/platform/store/store.cr:328-330]）。
 2. **已写副作用不丢弃**：残余分身已发生的 L1/L2 副作用清单仍并入回写（副作用是事实）；结论不并入主上下文，全量 transcript 按分身会话键照常落盘（L2 不变，[来源: 仓库:src/platform/store/store.cr:387-395]）。
 3. **越过取消点者**：正在执行 L3 不可逆动作的分身不中断（原子性要求 §2.2），等待终态；其结果登记为「迟到成员」——副作用照列、结论仅落 L2。
-4. 失败不算「先到」：`any` 只认成功终态；全部成员失败 + deadline 到期 → `expired`，全部失败明细回写。
+
+settle 判定补充（非处置步骤）：失败不算「先到」——`any` 只认成功终态；全部成员失败 + deadline 到期 → `expired`，全部失败明细回写（与 §4.3 any 行同口径）。
 
 ---
 
@@ -128,12 +129,14 @@ L1 回写消息 JSON 草案：[推演]
   "type": "join.report",
   "fork_id": "fork:a1b2c3",
   "mode": "all",
-  "outcome": "settled | partial | failed | expired | cancelled",
+  "outcome": "settled | failed | expired | cancelled",
   "conclusions": [{"member": 1, "conclusion": "…", "decisions": ["…"]}],
   "effects": [{"level": "L1", "target": "path/or/peer", "action": "write|send|…", "status": "done|CONFLICT"}],
-  "members": [{"task_id": "fork:…:1", "session": "agent:…:internal:fork:…", "state": "completed|failed|cancelled|late", "lines": 42}]
+  "members": [{"task_id": "fork:…:1", "session": "agent:…:internal:fork:…", "state": "done|failed|cancelled|late", "lines": 42}]
 }
 ```
+
+枚举口径：`outcome` 与 §4.2 回写状态机终态一一对应——`partial` **不是** outcome 值，超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载（§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）；`members[].state` 中 `done/failed` 即 tasks.status 原值（单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]），`cancelled` 为分身显式取消终态（§2.3 步骤 1），`late` 为 any 残余越过取消点者标注（§2.3 步骤 3）。
 
 回写幂等：以 memo 键 `join:<fork_id>:written` 先写后发（first-write-wins 先例 [来源: 仓库:src/platform/store/store.cr:369-383]），崩溃重放不重复回写。
 
@@ -271,7 +274,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 | 全部失败 | expectation settle(result=failed)；L1 回写全部失败明细（父不盲等） |
 | 超时 | `expired`；已完成成员照常回写（partial）；未完成成员尽力取消（§2.2 超时列） |
 | 部分取消 | any 模式残余处置（§2.3）；父显式取消走 §2.2 取消列 |
-| 父崩溃恢复 | expectation 持久 → 重启扫描 open/ settling 续判；回写幂等（§3 memo 键）；分身任务循 owner_task_id 找回先例 [来源: 仓库:src/agents/subagent.cr:31-38] |
+| 父崩溃恢复 | expectation 持久 → 重启扫描 open/settling 续判；回写幂等（§3 memo 键）；分身任务循 owner_task_id 找回先例 [来源: 仓库:src/agents/subagent.cr:31-38] |
 | 分身崩溃循环 | 分身任务同受 restartLimit 防护 [来源: 仓库:src/platform/store/store.cr:21] |
 
 ---
