@@ -143,10 +143,18 @@ PR 合并、关联 issue `completed`、CI 成功之后，以 `github-actions[bot
 
 | 性质 | 行为 |
 |---|---|
-| 幂等 | issue 已有 Evidence 块时直接跳过，不重复发评论 |
-| fail-closed | PR 未合并 / issue 非 completed / 无唯一 `Fixes #n` 时跳过，零写入 |
-| 原子性 | 评论发出后若回填正文失败，删除该评论再退出 |
-| 不伪造 | `untested` 来自 `tools/evidence_register.rb` 的显式清单；CI 覆盖不到的项必须列入，不得写空数组 |
+| 幂等 | issue 已有**有效** Evidence 时跳过；结构非法则 fail-closed 报错，不假装成功 |
+| fail-closed | PR 未合并 / merge commit 不在 main / issue 非 completed / 无唯一 `Fixes #n` 时跳过，零写入 |
+| CI 证据 | 由 `workflow_run` 携带；手动触发时反查该 merge commit 上成功的 CI run，查不到则拒绝登记 |
+| 原子性 | 评论发出后若回填正文失败，先重读正文核对；仅当正文未引用该评论时才删除 |
+| 不伪造 | `untested` 唯一来源是 issue 正文的「未实测」小节，脚本只做搬运，不自行填充也不掩盖 |
+
+补充两条判定口径：
+
+- **`merged_into_main` 由 git 祖先关系证实**（`git merge-base --is-ancestor <sha> origin/main`），
+  不因 `merged_at` 存在就置 `true`——手动触发可以选择合并进 release 分支的 PR。
+- **`push` 事件必须反查 PR**：合并后 main 上的 CI 里 `pull_requests` 通常为空，
+  脚本用 `head_sha` 走 `commits/{sha}/pulls` 找已合并的那个。
 
 **它自动化的是机械登记，不是验收判断。** 门禁要求的「必须实测」项仍由 Verifier 判定并写入
 `untested`；workflow 只负责在条件满足后把结论落成可机读凭据。里程碑级验收（M-gate、冻结口径、

@@ -6,12 +6,13 @@
 # 登记一条 Evidence 评论并回填 issue 正文的 Evidence 小节。
 #
 # 设计原则：
-#   1. fail-closed：任一前置不满足就跳过，且**不留半截状态**。
-#      评论发出后若后续步骤失败，必须删除该评论再退出。
-#   2. 幂等：已有有效 Evidence 直接跳过，不重复发评论。
-#   3. 不编造未实测项：CI 覆盖不到的验收必须由判定写入 untested，
-#      宁可阻塞也不写 []。
+#   1. fail-closed：任一前置不满足就跳过，且不留半截状态。
+#      仅在确认远端正文未引用该评论时才删除评论，否则保留并报人工修复。
+#   2. 幂等：已有**有效** Evidence 直接跳过；无效块显式报错而非假装成功。
+#   3. 不编造未实测项：untested 的唯一来源是 issue 正文的「未实测」小节，
+#      CI 覆盖不到的验收项必须由人写进卡面，脚本只做搬运。
 #   4. source_ref 必须指回刚发布的评论，否则 registration_matches? 判未授权。
+#   5. merged_into_main 必须由 git 祖先关系证实，不因 merged_at 存在就置 true。
 
 require "json"
 require "open3"
@@ -20,32 +21,36 @@ module EvidenceRegister
   EVIDENCE_FENCE = "json evidence"
   BOT_MARKER = "<!-- evidence-register:bot -->"
 
-  # 测试注入点。生产环境为 nil，走真实 gh CLI。
+  # 测试注入点。生产环境为 nil，走真实 gh / git。
   class << self
-    attr_accessor :runner
+    attr_accessor :runner, :git_runner
   end
-
-  # 该期门禁要求但 CI 覆盖不到的验收项。命中则写入 untested 而不是假装已测。
-  # 目前为空：本仓 CI 已覆盖 spec×3 / ameba / docs / format。
-  # 新增真机验证类要求时在此登记，例：["M7 真机 round-trip"]。
-  UNTESTED_REQUIREMENTS = [].freeze
 
   module_function
 
   def run(env: ENV, out: $stdout)
+    repo = env.fetch("GITHUB_REPOSITORY")
+
     pr_number = resolve_pr(env)
     if pr_number.nil?
-      out.puts "skip: 无法确定 PR 编号"
+      out.puts "skip: 无法从事件确定 PR 编号"
       return 0
     end
 
-    repo = env.fetch("GITHUB_REPOSITORY")
     pr = gh_json("repos/#{repo}/pulls/#{pr_number}")
-
     unless pr["merged_at"]
       out.puts "skip: PR ##{pr_number} 未合并（merged_at 为空）"
       return 0
     end
+
+    merge_commit = pr["merge_commit_sha"].to_s
+    unless merged_into_main?(merge_commit, base_ref: pr["base"] && pr["base"]["ref"], out: out)
+      out.puts "skip: merge commit #{merge_commit[0, 8]} 不在 main 上"
+      return 0
+    end
+
+    checks_url = resolve_checks_url(env, pr_number, out: out)
+    return 1 if checks_url == :failed
 
     issue_number = closing_issue(pr)
     if issue_number.nil?
@@ -59,80 +64,177 @@ module EvidenceRegister
       return 0
     end
 
-    if existing_evidence(issue["body"])
-      out.puts "skip: issue ##{issue_number} 已有 Evidence 块（幂等）"
+    case existing_evidence(issue["body"], subject: "issue:#{issue_number}")
+    when :valid
+      out.puts "skip: issue ##{issue_number} 已有有效 Evidence（幂等）"
       return 0
+    when :invalid
+      warn "::error::issue ##{issue_number} 的现有 Evidence 块结构非法，需人工修复后再登记"
+      return 1
     end
 
-    # 发布评论：以 workflow 的 GITHUB_TOKEN 身份，即 github-actions[bot]。
-    # 先用占位正文发，拿到 URL 后再 PATCH 成含真 source_ref 的版本；
-    # 任何后续步骤失败都必须删掉这条评论，否则会留下孤儿评论
-    # （下次运行虽会因「无 Evidence 块」重跑，但 issue 上会堆出多条空评论）。
-    comment_body = render_comment_placeholder(issue_number)
-    comment = gh_json("repos/#{repo}/issues/#{issue_number}/comments",
-      method: "POST", body: {"body" => comment_body})
-    comment_url = comment["html_url"]
-    out.puts "posted comment: #{comment_url}"
-
-    begin
-      # 用真实评论 URL 重写正文（source_ref 必须指回它）。
-      block = evidence_block(
-        issue_number: issue_number,
-        pr_number: pr_number,
-        merge_commit: pr["merge_commit_sha"],
-        checks: env["RUN_URL"],
-        untested: UNTESTED_REQUIREMENTS,
-        source_ref: comment_url
-      )
-      gh_json("repos/#{repo}/issues/comments/#{comment["id"]}",
-        method: "PATCH", body: {"body" => render_comment(block)})
-
-      # 回填 issue 正文的 Evidence 小节。
-      updated = upsert_evidence_section(issue["body"], block)
-      gh_json("repos/#{repo}/issues/#{issue_number}",
-        method: "PATCH", body: {"body" => updated})
-    rescue StandardError
-      # 回滚：删掉刚发的评论，恢复「无任何写入」的状态。
-      begin
-        gh_json("repos/#{repo}/issues/comments/#{comment["id"]}", method: "DELETE")
-        out.puts "rollback: 已删除评论 #{comment["id"]}"
-      rescue StandardError => cleanup_error
-        warn "::error::回滚失败，issue ##{issue_number} 残留评论 #{comment_url}（#{cleanup_error.message}）"
-      end
-      raise
-    end
-
-    out.puts "issue ##{issue_number} Evidence 已登记"
+    register(repo: repo, issue: issue, issue_number: issue_number, pr_number: pr_number,
+      merge_commit: merge_commit, checks_url: checks_url, out: out)
     0
   rescue StandardError => e
+    # 顶层兜底：workflow 依靠退出码判定成败，异常不得逃逸成未捕获崩溃。
     warn "::error::Evidence 登记失败：#{e.class}: #{e.message}"
     1
   end
 
+  # --- 登记主流程 ---
+
+  def register(repo:, issue:, issue_number:, pr_number:, merge_commit:, checks_url:, out:)
+    untested = declared_untested(issue["body"])
+    comment = post_placeholder(repo, issue_number, out)
+    comment_url = comment["html_url"]
+    comment_id = comment["id"]
+
+    begin
+      block = evidence_block(
+        issue_number: issue_number,
+        pr_number: pr_number,
+        merge_commit: merge_commit,
+        checks: checks_url,
+        untested: untested,
+        source_ref: comment_url
+      )
+      gh_json("repos/#{repo}/issues/comments/#{comment_id}",
+        method: "PATCH", body: {"body" => render_comment(block)})
+
+      # 重新读取正文再写入：缩小覆盖并发编辑的窗口。
+      fresh = gh_json("repos/#{repo}/issues/#{issue_number}")
+      updated = upsert_evidence_section(fresh["body"], block)
+      gh_json("repos/#{repo}/issues/#{issue_number}",
+        method: "PATCH", body: {"body" => updated})
+    rescue StandardError
+      reconcile_rollback(repo, issue_number, comment_id, comment_url, out)
+      raise
+    end
+
+    out.puts "issue ##{issue_number} Evidence 已登记（untested=#{untested.inspect}）"
+  end
+
+  # 回滚前先核对：远端正文是否仍引用该评论。
+  # 若正文已写入但 PATCH 报错（服务端可能已生效），删评论会留下悬空 source_ref。
+  def reconcile_rollback(repo, issue_number, comment_id, comment_url, out)
+    body = gh_json("repos/#{repo}/issues/#{issue_number}")["body"].to_s
+    if body.include?(comment_url)
+      warn "::error::issue ##{issue_number} 已引用评论 #{comment_url}，不删除；需人工核对正文块"
+      return
+    end
+
+    gh_json("repos/#{repo}/issues/comments/#{comment_id}", method: "DELETE")
+    out.puts "rollback: 已删除评论 #{comment_id}"
+  rescue StandardError => e
+    warn "::error::回滚失败，残留评论 #{comment_url}（#{e.message}）"
+  end
+
+  def post_placeholder(repo, issue_number, out)
+    comment = gh_json("repos/#{repo}/issues/#{issue_number}/comments",
+      method: "POST", body: {"body" => render_comment_placeholder(issue_number)})
+    out.puts "posted comment: #{comment["html_url"]}"
+    comment
+  end
+
+  # --- 事件 → PR ---
+
+  # workflow_run 有两种来源：
+  #   pull_request：CI 在 PR 上跑，pull_requests[0] 给出编号（此时 PR 尚未合并）。
+  #   push：合并后 main 上的 CI，pull_requests[] 通常为空，
+  #         必须用 head_sha 反查「已合并且包含该 commit 的 PR」。
   def resolve_pr(env)
     if env["EVENT_NAME"] == "workflow_dispatch"
-      value = env["INPUT_PR"].to_s
-      return nil if value.strip.empty?
+      value = env["INPUT_PR"].to_s.strip
+      return nil if value.empty?
 
-      Integer(value, 10)
-    else
-      value = env["RUN_PR"].to_s
-      return nil if value.strip.empty? || value == "null"
+      number = Integer(value, 10)
+      # 归一化：拒绝 099 这类非规范写法，避免并发组不一致导致重复登记。
+      return nil unless number.to_s == value
 
-      Integer(value, 10)
+      return number
     end
+
+    if (value = env["RUN_PR"].to_s.strip) != "" && value != "null"
+      return Integer(value, 10)
+    end
+
+    head_sha = env["RUN_HEAD_SHA"].to_s.strip
+    return nil if head_sha.empty?
+
+    pr = pr_for_commit(env.fetch("GITHUB_REPOSITORY"), head_sha)
+    pr && pr["number"]
   rescue ArgumentError
     nil
   end
 
-  # 从 PR 正文的 Fixes/Closes #n 取唯一关联 issue。
-  def closing_issue(pr)
-    body = pr["body"].to_s
-    numbers = body.scan(/\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+#(\d+)/i).flatten.map(&:to_i).uniq
-    numbers.length == 1 ? numbers.first : nil
+  def pr_for_commit(repo, sha)
+    candidates = gh_json("repos/#{repo}/commits/#{sha}/pulls")
+    Array(candidates).find { |pr| pr["merged_at"] }
+  rescue StandardError
+    nil
   end
 
-  def existing_evidence(body)
+  # --- CI 证据 ---
+
+  # 手动触发时 RUN_URL 为空，必须自己确认 CI 成功，
+  # 否则会写出 checks 为空字符串的 accepted 证据。
+  def resolve_checks_url(env, pr_number, out:)
+    url = env["RUN_URL"].to_s.strip
+    return url unless url.empty?
+
+    repo = env.fetch("GITHUB_REPOSITORY")
+    pr = gh_json("repos/#{repo}/pulls/#{pr_number}")
+    sha = pr["merge_commit_sha"].to_s
+    runs = gh_json("repos/#{repo}/actions/runs?head_sha=#{sha}&per_page=20")
+    success = Array(runs["workflow_runs"]).find { |r| r["name"] == "CI" && r["conclusion"] == "success" }
+    unless success
+      out.puts "fail: PR ##{pr_number} 找不到成功的 CI run，拒绝登记"
+      return :failed
+    end
+    success["html_url"]
+  rescue StandardError
+    out.puts "fail: 查询 CI run 失败，拒绝登记"
+    :failed
+  end
+
+  # --- main 祖先校验 ---
+
+  # merged_at 只说明 PR 被合并，不说明合到了 main。
+  # 手动触发可以选择合并进 release 分支的 PR，那种提交不能宣称 merged_into_main。
+  def merged_into_main?(sha, base_ref: nil, out: $stdout)
+    return false if sha.to_s.empty?
+    return false if base_ref && base_ref != "main"
+
+    run_git("merge-base", "--is-ancestor", sha, "origin/main")
+  rescue StandardError
+    out.puts "warn: 无法校验 #{sha[0, 8]} 是否为 main 祖先，按未合入处理"
+    false
+  end
+
+  def run_git(*args)
+    return git_runner.call(*args) if git_runner
+
+    _out, _err, status = Open3.capture3("git", *args)
+    status.success?
+  end
+
+  # --- 幂等判定 ---
+
+  # :absent / :valid / :invalid
+  def existing_evidence(body, subject:)
+    block = parse_block(body)
+    return :absent if block.nil?
+
+    valid = block["schema"] == 1 &&
+      block["subject"].to_s == subject &&
+      !block["status"].to_s.empty? &&
+      !block["source"].to_s.empty? &&
+      !block["source_ref"].to_s.empty?
+    valid ? :valid : :invalid
+  end
+
+  def parse_block(body)
     text = body.to_s
     return nil unless text.include?(EVIDENCE_FENCE)
 
@@ -143,6 +245,21 @@ module EvidenceRegister
   rescue JSON::ParserError
     nil
   end
+
+  # --- untested 唯一来源 ---
+
+  # 从 issue 正文的「未实测」小节搬运待验证项。
+  # 为空表示该卡没有额外要求，交由 CI 覆盖；脚本不自行发明，也不掩盖。
+  def declared_untested(body)
+    match = body.to_s.match(/^#+\s*未实测\s*$(.*?)(?=^#+\s+\S|\z)/m)
+    return [] unless match
+
+    match[1].lines.map { |line| line.sub(/\A[-*]\s*/, "").strip }
+      .reject(&:empty?)
+      .reject { |line| line.match?(/\A(无|none|n\/a)\z/i) }
+  end
+
+  # --- 证据块 ---
 
   def evidence_block(issue_number:, pr_number:, merge_commit:, checks:, untested:, source_ref:)
     {
@@ -162,7 +279,12 @@ module EvidenceRegister
     }
   end
 
-  # 占位正文：先发评论拿到 URL，再 PATCH 成含真 source_ref 的版本。
+  def closing_issue(pr)
+    body = pr["body"].to_s
+    numbers = body.scan(/\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\s+#(\d+)/i).flatten.map(&:to_i).uniq
+    numbers.length == 1 ? numbers.first : nil
+  end
+
   def render_comment_placeholder(issue_number)
     "#{BOT_MARKER}\n\n## Evidence 登记（issue:#{issue_number}）\n\n_生成中…_\n"
   end
@@ -181,14 +303,13 @@ module EvidenceRegister
     MD
   end
 
-  # 替换已有的 Evidence 小节；没有则追加。
+  # 替换已有的 Evidence 小节；没有则追加。保留其余小节原样。
   def upsert_evidence_section(body, block)
     text = body.to_s.dup
     fence = "```#{EVIDENCE_FENCE}\n#{JSON.pretty_generate(block)}\n```\n"
     section = "## Evidence\n\n#{fence}"
 
     if text =~ /^##\s+Evidence\s*$/m
-      # 已有小节：整体替换到下一个二级标题为止。
       text.sub!(/^##\s+Evidence\s*$.*?(?=^##\s+\S|\z)/m, section)
       text
     else
@@ -196,7 +317,6 @@ module EvidenceRegister
     end
   end
 
-  # gh 调用统一入口。测试可替换 @runner 注入假实现，避免 monkey-patch 污染。
   def gh_json(path, method: "GET", body: nil)
     return runner.call(path, method: method, body: body) if runner
 

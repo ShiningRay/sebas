@@ -15,19 +15,46 @@ class EvidenceRegisterTest < Minitest::Test
     ).merge(overrides.transform_keys(&:to_s))
   end
 
-  # --- 幂等 ---
+  # --- 幂等判定（区分有效 / 非法 / 缺失）---
 
-  def test_existing_evidence_is_detected
+  def test_existing_valid_evidence
     body = "## 目标\nx\n\n## Evidence\n\n```json evidence\n#{JSON.generate(block)}\n```\n"
-    refute_nil ER.existing_evidence(body)
+    assert_equal :valid, ER.existing_evidence(body, subject: "issue:42")
   end
 
-  def test_missing_evidence_is_nil
-    assert_nil ER.existing_evidence("## 目标\nx\n")
+  def test_existing_invalid_evidence_is_reported_not_skipped
+    # 只有 subject，缺 status/source/source_ref —— 策略层会拒绝这种块。
+    body = "```json evidence\n{\"subject\":\"issue:42\"}\n```"
+    assert_equal :invalid, ER.existing_evidence(body, subject: "issue:42")
   end
 
-  def test_malformed_evidence_is_nil
-    assert_nil ER.existing_evidence("```json evidence\n{not json}\n```")
+  # 每条必填字段缺失都必须判 invalid，不能只看 schema 与 subject。
+  def test_existing_evidence_missing_each_required_field_is_invalid
+    {status: "", source: "", source_ref: ""}.each do |field, blank|
+      b = block.merge(field.to_s => blank)
+      body = "```json evidence\n#{JSON.generate(b)}\n```"
+      assert_equal :invalid, ER.existing_evidence(body, subject: "issue:42"),
+        "缺 #{field} 时必须判 invalid"
+    end
+  end
+
+  def test_existing_evidence_with_wrong_schema_is_invalid
+    b = block.merge("schema" => 2)
+    body = "```json evidence\n#{JSON.generate(b)}\n```"
+    assert_equal :invalid, ER.existing_evidence(body, subject: "issue:42")
+  end
+
+  def test_existing_evidence_with_wrong_subject_is_invalid
+    body = "```json evidence\n#{JSON.generate(block)}\n```"
+    assert_equal :invalid, ER.existing_evidence(body, subject: "issue:99")
+  end
+
+  def test_missing_evidence_is_absent
+    assert_equal :absent, ER.existing_evidence("## 目标\nx\n", subject: "issue:42")
+  end
+
+  def test_malformed_evidence_is_absent
+    assert_equal :absent, ER.existing_evidence("```json evidence\n{not json}\n```", subject: "issue:42")
   end
 
   # --- issue 关联解析 ---
@@ -55,7 +82,6 @@ class EvidenceRegisterTest < Minitest::Test
     updated = ER.upsert_evidence_section("## 目标\n\nx\n", block)
     assert_includes updated, "## Evidence"
     assert_includes updated, "```json evidence"
-    # 原有内容不能丢
     assert_includes updated, "## 目标"
   end
 
@@ -73,7 +99,14 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal once, twice
   end
 
-  # --- 证据块形状必须与 Policy::Evidence 的契约一致 ---
+  def test_upsert_preserves_other_sections_verbatim
+    original = "## 目标\n\n重要内容\n\n## 验收\n\n关键标准\n"
+    updated = ER.upsert_evidence_section(original, block)
+    assert_includes updated, "重要内容"
+    assert_includes updated, "关键标准"
+  end
+
+  # --- 证据块契约 ---
 
   def test_block_matches_policy_contract
     b = block
@@ -87,24 +120,28 @@ class EvidenceRegisterTest < Minitest::Test
     assert_nil b["gate_status"]
   end
 
-  # 契约要求：登记的评论正文必须包含同一份 evidence 块，
-  # 否则 Policy::Evidence.registration_matches? 会拒绝。
   def test_comment_body_carries_parseable_block
     b = block
-    parsed = ER.existing_evidence(ER.render_comment(b))
+    parsed = ER.parse_block(ER.render_comment(b))
     refute_nil parsed
     assert_equal b["subject"], parsed["subject"]
     assert_equal b["status"], parsed["status"]
     assert_equal b["source_ref"], parsed["source_ref"]
   end
 
-  def test_untested_is_not_hardcoded_empty
-    # 若将来加入真机验证要求，untested 必须能承载它们。
-    b = ER.evidence_block(
-      issue_number: 1, pr_number: 2, merge_commit: "x", checks: "u",
-      untested: ["真机 round-trip"], source_ref: "r"
-    )
-    assert_equal ["真机 round-trip"], b["untested"]
+  # --- untested 唯一来源：卡面「未实测」小节 ---
+
+  def test_declared_untested_reads_section
+    body = "## 目标\nx\n\n## 未实测\n\n- M7 真机 round-trip\n- 第二项\n\n## 验收\ny\n"
+    assert_equal ["M7 真机 round-trip", "第二项"], ER.declared_untested(body)
+  end
+
+  def test_declared_untested_absent_section_is_empty
+    assert_equal [], ER.declared_untested("## 目标\nx\n")
+  end
+
+  def test_declared_untested_explicit_none_is_empty
+    assert_equal [], ER.declared_untested("## 未实测\n\n无\n")
   end
 
   # --- PR 解析 ---
@@ -113,19 +150,103 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal 5, ER.resolve_pr({"EVENT_NAME" => "workflow_dispatch", "INPUT_PR" => "5"})
   end
 
-  def test_resolve_pr_from_workflow_run
+  def test_resolve_pr_rejects_noncanonical_dispatch_input
+    # 099 与 99 会落到不同并发组，必须拒绝非规范写法。
+    assert_nil ER.resolve_pr({"EVENT_NAME" => "workflow_dispatch", "INPUT_PR" => "099"})
+  end
+
+  def test_resolve_pr_from_workflow_run_pr
     assert_equal 6, ER.resolve_pr({"EVENT_NAME" => "workflow_run", "RUN_PR" => "6"})
   end
 
-  def test_resolve_pr_rejects_null_run_pr
-    assert_nil ER.resolve_pr({"EVENT_NAME" => "workflow_run", "RUN_PR" => "null"})
+  def test_resolve_pr_falls_back_to_head_sha
+    ER.runner = lambda do |path, method: "GET", body: nil|
+      assert_equal "repos/o/r/commits/abc/pulls", path
+      [{"number" => 9, "merged_at" => "x"}]
+    end
+    number = ER.resolve_pr(
+      "EVENT_NAME" => "workflow_run", "RUN_PR" => "null",
+      "RUN_HEAD_SHA" => "abc", "GITHUB_REPOSITORY" => "o/r"
+    )
+    assert_equal 9, number, "push 事件必须用 head_sha 反查已合并 PR"
+  ensure
+    ER.runner = nil
   end
 
-  def test_resolve_pr_rejects_blank_dispatch
-    assert_nil ER.resolve_pr({"EVENT_NAME" => "workflow_dispatch", "INPUT_PR" => ""})
+  def test_resolve_pr_fallback_ignores_unmerged_candidates
+    ER.runner = ->(_path, method: "GET", body: nil) { [{"number" => 9, "merged_at" => nil}] }
+    assert_nil ER.resolve_pr(
+      "EVENT_NAME" => "workflow_run", "RUN_PR" => "null",
+      "RUN_HEAD_SHA" => "abc", "GITHUB_REPOSITORY" => "o/r"
+    )
+  ensure
+    ER.runner = nil
   end
 
-  # --- 失败回滚：评论发出后下游失败必须删评论 ---
+  def test_resolve_pr_returns_nil_without_any_signal
+    assert_nil ER.resolve_pr({"EVENT_NAME" => "workflow_run", "RUN_PR" => "null", "RUN_HEAD_SHA" => ""})
+  end
+
+  # --- main 祖先校验 ---
+
+  def test_merged_into_main_false_when_base_is_not_main
+    # git_runner 返回 true 也不能放行：base_ref 不是 main 时应在调用 git 前就拒绝。
+    ER.git_runner = ->(*args) { raise "不应调用 git：#{args.inspect}" }
+    assert_equal false, ER.merged_into_main?("abc", base_ref: "release/0.2", out: StringIO.new)
+  ensure
+    ER.git_runner = nil
+  end
+
+  # base_ref 非 main 时必须短路，不能依赖 git 查询的偶然结果。
+  def test_base_ref_not_main_short_circuits_before_git
+    called = []
+    ER.git_runner = ->(*args) { called << args; true }
+    ER.merged_into_main?("abc", base_ref: "release/0.2", out: StringIO.new)
+    assert_empty called, "已知不在 main 分支时不应再查 git"
+  ensure
+    ER.git_runner = nil
+  end
+
+  def test_merged_into_main_consults_git
+    ER.git_runner = ->(*_args) { true }
+    assert_equal true, ER.merged_into_main?("abc", base_ref: "main", out: StringIO.new)
+  ensure
+    ER.git_runner = nil
+  end
+
+  def test_merged_into_main_rejects_when_git_says_no
+    ER.git_runner = ->(*_args) { false }
+    assert_equal false, ER.merged_into_main?("abc", base_ref: "main", out: StringIO.new)
+  ensure
+    ER.git_runner = nil
+  end
+
+  def test_merged_into_main_rejects_empty_sha
+    assert_equal false, ER.merged_into_main?("", out: StringIO.new)
+  end
+
+  # --- 手动触发的 CI 校验 ---
+
+  def test_checks_url_uses_run_url_when_present
+    assert_equal "https://ci/1", ER.resolve_checks_url({"RUN_URL" => "https://ci/1"}, 1, out: StringIO.new)
+  end
+
+  def test_checks_url_fails_without_successful_run
+    ER.runner = lambda do |path, method: "GET", body: nil|
+      case path
+      when %r{/pulls/} then {"merge_commit_sha" => "abc"}
+      when %r{/actions/runs} then {"workflow_runs" => [{"name" => "CI", "conclusion" => "failure"}]}
+      else raise "unexpected #{path}"
+      end
+    end
+    out = StringIO.new
+    assert_equal :failed, ER.resolve_checks_url({"GITHUB_REPOSITORY" => "o/r", "RUN_URL" => ""}, 1, out: out)
+    assert_includes out.string, "拒绝登记"
+  ensure
+    ER.runner = nil
+  end
+
+  # --- 失败回滚 ---
 
   class FakeGh
     attr_reader :calls
@@ -145,15 +266,6 @@ class EvidenceRegisterTest < Minitest::Test
     end
   end
 
-  def run_with(fake, env)
-    ER.runner = fake
-    out = StringIO.new
-    code = ER.run(env: env, out: out)
-    [code, fake.calls, out.string]
-  ensure
-    ER.runner = nil
-  end
-
   BASE_ENV = {
     "GITHUB_REPOSITORY" => "o/r",
     "EVENT_NAME" => "workflow_run",
@@ -162,21 +274,64 @@ class EvidenceRegisterTest < Minitest::Test
   }.freeze
 
   BASE_RESPONSES = {
-    "GET repos/o/r/pulls/99" => {"merged_at" => "x", "body" => "Fixes #42", "merge_commit_sha" => "abc"},
+    "GET repos/o/r/pulls/99" => {
+      "merged_at" => "x", "body" => "Fixes #42", "merge_commit_sha" => "abc",
+      "base" => {"ref" => "main"}
+    },
     "GET repos/o/r/issues/42" => {"state" => "closed", "state_reason" => "completed", "body" => ""}
   }.freeze
 
-  def test_rollback_deletes_comment_when_body_update_fails
+  def run_with(fake, env, git_ok: true)
+    ER.runner = fake
+    ER.git_runner = ->(*_args) { git_ok }
+    out = StringIO.new
+    code = ER.run(env: env, out: out)
+    [code, fake.calls, out.string]
+  ensure
+    ER.runner = nil
+    ER.git_runner = nil
+  end
+
+  def test_rollback_deletes_comment_when_body_not_yet_written
     fake = FakeGh.new(BASE_RESPONSES.merge(
       "POST repos/o/r/issues/42/comments" => {"id" => 1, "html_url" => "u"},
-      "PATCH repos/o/r/issues/comments/1" => {}
+      "PATCH repos/o/r/issues/comments/1" => {},
+      "GET repos/o/r/issues/42" => {"state" => "closed", "state_reason" => "completed", "body" => ""}
       # PATCH issues/42 故意缺失 → 失败
     ))
     code, calls, = run_with(fake, BASE_ENV)
 
-    assert_equal 1, code, "失败必须 exit 1"
+    assert_equal 1, code
     assert_includes calls, ["DELETE", "repos/o/r/issues/comments/1"],
-      "必须回滚删除刚发的评论，calls=#{calls.inspect}"
+      "正文未引用时必须删除评论，calls=#{calls.inspect}"
+  end
+
+  def test_no_delete_when_body_already_references_comment
+    # 模拟 PATCH 报错但服务端已写入：正文已含该 URL，不能删评论。
+    fake = FakeGh.new(
+      "GET repos/o/r/pulls/99" => BASE_RESPONSES["GET repos/o/r/pulls/99"],
+      "GET repos/o/r/issues/42" => {
+        "state" => "closed", "state_reason" => "completed",
+        "body" => "see https://github.com/o/r/issues/42#issuecomment-1"
+      },
+      "POST repos/o/r/issues/42/comments" => {"id" => 1, "html_url" => "https://github.com/o/r/issues/42#issuecomment-1"},
+      "PATCH repos/o/r/issues/comments/1" => {}
+      # PATCH issues/42 缺失 → 触发回滚路径
+    )
+    code, calls, = run_with(fake, BASE_ENV)
+
+    assert_equal 1, code
+    refute_includes calls, ["DELETE", "repos/o/r/issues/comments/1"],
+      "正文已引用评论时不得删除，calls=#{calls.inspect}"
+  end
+
+  def test_skips_when_merge_commit_not_in_main
+    fake = FakeGh.new("GET repos/o/r/pulls/99" => BASE_RESPONSES["GET repos/o/r/pulls/99"])
+    code, calls, out = run_with(fake, BASE_ENV, git_ok: false)
+
+    assert_equal 0, code
+    assert_equal [["GET", "repos/o/r/pulls/99"]], calls, "不得产生写入"
+    assert_includes out, "不在 main 上"
   end
 
   def test_no_writes_when_pr_not_merged
@@ -192,13 +347,29 @@ class EvidenceRegisterTest < Minitest::Test
     fake = FakeGh.new(BASE_RESPONSES.merge(
       "GET repos/o/r/issues/42" => {
         "state" => "closed", "state_reason" => "completed",
-        "body" => "```json evidence\n{\"subject\":\"issue:42\"}\n```"
+        "body" => "```json evidence\n#{JSON.generate(ER.evidence_block(
+          issue_number: 42, pr_number: 99, merge_commit: "abc",
+          checks: "c", untested: [], source_ref: "r"
+        ))}\n```"
       }
     ))
     code, calls, out = run_with(fake, BASE_ENV)
 
     assert_equal 0, code
     assert(calls.none? { |m, _| m != "GET" }, "幂等跳过不得产生写入，calls=#{calls.inspect}")
-    assert_includes out, "已有 Evidence"
+    assert_includes out, "已有有效 Evidence"
+  end
+
+  def test_invalid_existing_evidence_exits_nonzero
+    fake = FakeGh.new(BASE_RESPONSES.merge(
+      "GET repos/o/r/issues/42" => {
+        "state" => "closed", "state_reason" => "completed",
+        "body" => "```json evidence\n{\"subject\":\"issue:42\"}\n```"
+      }
+    ))
+    code, calls, = run_with(fake, BASE_ENV)
+
+    assert_equal 1, code, "结构非法的既有证据必须 fail-closed"
+    assert(calls.none? { |m, _| m != "GET" })
   end
 end
