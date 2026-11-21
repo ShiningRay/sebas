@@ -41,7 +41,6 @@ module Sebas
           Gateway.default_provider(agent, nil)
         end
         gateway.run
-        gateway.replay_unfinished
         sleep # 常驻
         0
       rescue ex : Config::ConfigError

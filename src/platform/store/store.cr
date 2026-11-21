@@ -486,6 +486,13 @@ module Sebas
           inserted
         end
 
+        # 去重前置探测（admission 序：先探重再建批，避免 duplicate 路径留孤儿批次；
+        # 竞态仍由 admit_session_input 的 event_id 主键原子守卫兜底）
+        def session_input?(event_id : String) : Bool
+          count = @db.query_one("SELECT COUNT(*) FROM session_inputs WHERE event_id = ?", event_id, as: Int64)
+          count.positive?
+        end
+
         def create_session_batch(batch : ::Sebas::Sessions::Scheduling::Batch) : Nil
           @db.exec(
             "INSERT INTO session_batches (batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason, created_at, sealed_at) " \
@@ -518,6 +525,49 @@ module Sebas
           changed = @db.exec("UPDATE session_inputs SET status = ? WHERE event_id = ? AND status = ?",
             to.to_s, event_id, from.to_s).rows_affected
           changed > 0
+        end
+
+        # 批内成员整体迁移（dispatch/done 面）：以 members 关系批量迁移，返回迁移行数
+        def transition_batch_inputs(batch_id : String, from : ::Sebas::Sessions::Scheduling::InputStatus,
+                                    to : ::Sebas::Sessions::Scheduling::InputStatus) : Int64
+          @db.exec(
+            "UPDATE session_inputs SET status = ? WHERE status = ? AND event_id IN " \
+            "(SELECT event_id FROM session_batch_members WHERE batch_id = ?)",
+            to.to_s, from.to_s, batch_id
+          ).rows_affected
+        end
+
+        # 本会话持久接收序号（契约 §4.2：以本地持久接收序保序，外部时间戳仅元数据）。
+        # 同会话 admission 由 SessionScheduler 互斥串行，MAX+1 无竞态。
+        def next_session_seq(session_key : String) : Int64
+          @db.query_one(
+            "SELECT COALESCE(MAX(received_seq), 0) + 1 FROM session_inputs WHERE session_key = ?",
+            session_key, as: Int64
+          )
+        end
+
+        # 会话待发批次（first_seq 序，head dispatch 用）
+        def pending_batches(session_key : String) : Array(SessionBatchRow)
+          query_batches("status IN ('sealed', 'queued') AND session_key = ?", session_key)
+        end
+
+        # 有界容量负载（契约 §6）：会话未完成批次（collecting/sealed/queued）数与成员字节量。
+        # bytes 用 CAST BLOB 后 LENGTH 保证 UTF-8 字节口径。
+        record PendingLoad, batches : Int64, bytes : Int64
+
+        def pending_load(session_key : String) : PendingLoad
+          batches = @db.query_one(
+            "SELECT COUNT(*) FROM session_batches WHERE session_key = ? AND status IN ('collecting', 'sealed', 'queued')",
+            session_key, as: Int64
+          )
+          bytes = @db.query_one(
+            "SELECT COALESCE(SUM(LENGTH(CAST(i.payload AS BLOB))), 0) FROM session_batch_members m " \
+            "JOIN session_inputs i ON i.event_id = m.event_id " \
+            "JOIN session_batches b ON b.batch_id = m.batch_id " \
+            "WHERE b.session_key = ? AND b.status IN ('collecting', 'sealed', 'queued')",
+            session_key, as: Int64
+          )
+          PendingLoad.new(batches, bytes)
         end
 
         record SessionBatchRow, batch_id : String, session_key : String, status : String,
@@ -553,6 +603,10 @@ module Sebas
 
         def recoverable_batches : Array(SessionBatchRow)
           query_batches("status IN ('sealed', 'queued')")
+        end
+
+        def batches_by_status(status : ::Sebas::Sessions::Scheduling::BatchStatus) : Array(SessionBatchRow)
+          query_batches("status = ?", status.to_s)
         end
 
         private def query_batches(where : String, *params) : Array(SessionBatchRow)
