@@ -248,7 +248,10 @@ module EvidenceRegister
   # :absent / :valid / :invalid
   def existing_evidence(body, subject:)
     text = body.to_s
-    return :absent unless text.include?(EVIDENCE_FENCE)
+    # 必须是真正的 ```json evidence 围栏，不能只看正文里是否出现这几个词。
+    # 否则「Document the json evidence format.」这类叙述会被当成损坏的块，
+    # 导致登记永远失败且重试无效。
+    return :absent unless text.match?(/^```json evidence\s*$/m)
 
     block = parse_block(text)
     # 有 fence 却解析不出来 = 结构损坏，不能当成「没有证据」放行，

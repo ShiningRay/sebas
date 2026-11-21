@@ -62,6 +62,17 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal :invalid, ER.existing_evidence("```json evidence\nno json here\n```", subject: "issue:42")
   end
 
+  # 正文里只是提到这个词，不是真的代码围栏——不能判成损坏块。
+  def test_prose_mention_is_absent_not_invalid
+    body = "## 目标\n\nDocument the json evidence format for contributors.\n"
+    assert_equal :absent, ER.existing_evidence(body, subject: "issue:42")
+  end
+
+  def test_inline_mention_with_backtick_is_absent
+    body = "## 目标\n\n参见 `json evidence` 的写法说明。\n"
+    assert_equal :absent, ER.existing_evidence(body, subject: "issue:42")
+  end
+
   # --- issue 关联解析 ---
 
   def test_closing_issue_parses_fixes
