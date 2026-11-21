@@ -695,6 +695,19 @@ class JsonBlockTest < Minitest::Test
     body = "```json\n{\"kind\":\"tracking\"}\n```\n"
     assert_nil SebasAgents::JsonBlock.one(body, "automation", subject: "issue #1")
   end
+
+  # Windows 客户端写的 issue body 是 CRLF；曾导致所有元数据"看起来不存在"。
+  def test_parses_crlf_body
+    body = "## Automation\r\n\r\n```json automation\r\n{\"schema\":1,\"kind\":\"work_package\"}\r\n```\r\n"
+    parsed = SebasAgents::JsonBlock.one(body, "automation", subject: "issue #1")
+    assert_equal "work_package", parsed["kind"]
+    assert SebasAgents::JsonBlock.present?(body, "automation")
+  end
+
+  def test_parses_mixed_line_endings
+    body = "text\r\n```json automation\n{\"kind\":\"tracking\"}\r\n```\n"
+    assert_equal "tracking", SebasAgents::JsonBlock.one(body, "automation", subject: "issue #1")["kind"]
+  end
 end
 
 class DryRunGuardTest < Minitest::Test

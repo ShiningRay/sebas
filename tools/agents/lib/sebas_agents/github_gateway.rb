@@ -169,18 +169,30 @@ module SebasAgents
     end
 
     def build_issue(raw)
+      body = raw["body"].to_s
       Model::Issue.from_hash(
         "number" => raw.fetch("number"),
         "title" => raw["title"],
         "state" => raw["state"],
         "state_reason" => raw["state_reason"],
-        "body" => raw["body"],
+        "body" => body,
         "labels" => Array(raw["labels"]).map { |label| label["name"] },
         "milestone" => raw.dig("milestone", "number"),
         "assignees" => Array(raw["assignees"]).map { |item| item["login"] },
         "blocked_by" => [],
+        # Automation 必须在此解析：选卡策略读 issue.automation，
+        # 若只留着原始 body，所有工作包都会被判成"缺元数据"。
+        "automation" => parse_automation(body, raw.fetch("number")),
         "url" => raw["html_url"]
       )
+    end
+
+    def parse_automation(body, number)
+      JsonBlock.one(body, "automation", subject: "issue ##{number}")
+    rescue InvalidPlan
+      # 解析失败留给 Dependencies.automation_for 报出具体原因，
+      # 这里不静默伪装成"有元数据"。
+      nil
     end
 
     def fetch_pull_requests
