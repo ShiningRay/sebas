@@ -13,68 +13,25 @@ gh auth status
 
 `tools/sebas-process` 只依赖 Ruby 标准库与 `gh` / `git` CLI，不需要 `bundle install`。
 
-仓库根目录有 `.ruby-version`（当前 `3.2.9`）。macOS 系统自带的 Ruby 是 3.0，低于要求；
-入口会在启动前检查并直接给出升级指引，不会抛出内部错误。
+仓库根目录的 `.ruby-version` 固定了版本（当前 `3.2.9`）。macOS 系统自带 Ruby 3.0，
+低于要求；入口会在加载任何代码前检查，直接给出指引并以退出码 2 拒绝，不会抛出内部错误。
+
+安装方式取决于你用哪个版本管理器，各家的初始化写法见其官方文档。装完只有一条判据：
 
 ```sh
-# rbenv（读取 .ruby-version；装完需 rehash 让 shim 指向新版本）
-rbenv install && rbenv rehash && rbenv local
-
-# mise：默认不读取 .ruby-version，需先启用该支持
-mise settings add --local idiomatic_version_file_enable_tools ruby
-mise install
-
-# asdf：默认 legacy_version_file=no，先改配置再装插件和版本
-# 已有该行就改成 yes，不要反复追加（后用者生效，早期版本以第一个为准）
-sed -i '' 's/^legacy_version_file.*/legacy_version_file = yes/' ~/.asdfrc 2>/dev/null \
-  || echo 'legacy_version_file = yes' >> ~/.asdfrc
-asdf plugin add ruby "https://github.com/asdf-vm/asdf-ruby.git" 2>/dev/null || true
-asdf install ruby 3.2.9 && asdf local ruby 3.2.9
+ruby -v   # 必须 >= 3.2
 ```
 
-装完都要确认当前 shell 已切到新版本，否则 `ruby` 仍指向系统 3.0：
+不满足说明当前 shell 没切过去（shim 不在 PATH，或管理器没读到 `.ruby-version`）。
+不想改 shell 配置时，直接用装好的解释器绝对路径，并在后续命令里复用同一路径：
 
 ```sh
-ruby -v   # 应为 3.2.x 或更高
-which ruby
+"$(rbenv root)/versions/3.2.9/bin/ruby" tools/sebas-process help   # rbenv
+"$HOME/.local/share/mise/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help  # mise 默认位置
+"${ASDF_DATA_DIR:-$HOME/.asdf}/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help  # asdf
 ```
 
-若 shim 不在 `PATH` 上，把管理器目录补进去（写入 shell 配置后重开终端）：
-
-```sh
-# rbenv
-eval "$(rbenv init -)"
-# mise
-eval "$(mise activate zsh)"      # bash 用 bash，fish 用 fish
-# asdf：把 shims 目录加进 PATH
-export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
-```
-
-不改 shell 配置时的确定性做法是绕开 shim，直接用绝对路径。各管理器的默认位置：
-
-```sh
-# rbenv
-"$(rbenv root)/versions/3.2.9/bin/ruby" tools/sebas-process help
-# mise
-"$HOME/.local/share/mise/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help
-# asdf
-"${ASDF_DATA_DIR:-$HOME/.asdf}/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help
-```
-
-不记得装在哪时，用 `rbenv root` / `mise where ruby` / `asdf where ruby` 查目录。
-
-**后续所有 `ruby tools/sebas-process ...` 都要用同一个解释器**：要么先按上面的方式
-修好 `PATH`，让 `ruby` 指向新版本；要么把该绝对路径记进变量复用：
-
-```sh
-RUBY="$HOME/.local/share/mise/installs/ruby/3.2.9/bin/ruby"   # 换成实际路径
-"$RUBY" tools/sebas-process help
-"$RUBY" tools/sebas-process next
-```
-
-用 `mise use ruby@3.2.9` 也能达到同样效果，但它会写 `mise.toml`；仓库选择
-`.ruby-version`，以便 rbenv 用户零配置生效。无论用哪种方式，最后的判据都是
-`ruby -v`，以及入口自身的版本检查。
+`rbenv root`、`mise where ruby`、`asdf where ruby` 可查出实际目录。
 
 仓库首次使用时，创建流程标签与维护者名单：
 
