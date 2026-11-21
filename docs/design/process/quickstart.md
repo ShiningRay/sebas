@@ -7,7 +7,7 @@
 ```sh
 git clone https://github.com/ShiningRay/sebas
 cd sebas
-ruby -v   # >= 3.2（代码使用 Data.define）；rbenv/mise 会读取 .ruby-version
+ruby -v   # >= 3.2（代码使用 Data.define）；rbenv 自动读取 .ruby-version，mise 需显式启用
 gh auth status
 ```
 
@@ -17,11 +17,19 @@ gh auth status
 入口会在启动前检查并直接给出升级指引，不会抛出内部错误。
 
 ```sh
-# rbenv
+# rbenv（会自动读取 .ruby-version）
 rbenv install && rbenv local
-# mise / asdf
+
+# mise：默认不读取 .ruby-version，需先启用该支持
+mise settings add --local idiomatic_version_file_enable_tools ruby
 mise install
+
+# asdf
+asdf install
 ```
+
+用 `mise use ruby@3.2.9` 也能达到同样效果，但它会写 `mise.toml`；仓库选择
+`.ruby-version`，以便 rbenv 用户零配置生效。
 
 仓库首次使用时，创建流程标签与维护者名单：
 
