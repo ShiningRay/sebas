@@ -592,6 +592,49 @@ track: main
     assert_equal 9, action.issue
     assert(action.excluded.any? { |item| item["issue"] == 1 })
   end
+
+  # #114：无 milestone 的工作包卡此前完全隐形，只表现为笼统的「元数据未补齐」。
+  def test_metadata_gaps_lists_work_package_without_milestone
+    data = snapshot(issues: [
+      # 有 plan 标签、有依赖声明，但没挂 milestone、没有 Automation
+      issue(900, body: "## 前置依赖\n\nWP1（#3）。\n", labels: ["plan"], milestone: nil)
+    ])
+    action = select(data)
+    assert_equal "blocked", action.action
+    gap = action.metadata_gaps.find { |item| item["issue"] == 900 }
+    refute_nil gap, "隐形卡必须出现在 metadata_gaps 中"
+    assert_equal ["milestone", "automation"], gap["missing"]
+  end
+
+  def test_metadata_gaps_records_only_missing_milestone_when_automation_present
+    data = snapshot(issues: [
+      issue(901, body: automation(order: [4, 1]), milestone: nil)
+    ])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 901 }
+    refute_nil gap
+    assert_equal ["milestone"], gap["missing"]
+  end
+
+  def test_non_work_package_without_milestone_is_not_a_gap
+    # 普通过 issue（无 plan、无依赖声明、无 Automation）不应污染清单。
+    data = snapshot(issues: [
+      issue(902, body: "只是一条建议\n", milestone: nil)
+    ])
+    action = select(data)
+    assert_empty action.metadata_gaps
+  end
+
+  def test_metadata_gaps_absent_when_claimable_card_exists
+    data = snapshot(issues: [
+      issue(1, body: automation(order: [4, 1]), blocked_by: []),
+      issue(900, body: "## 前置依赖\n\nWP1（#3）。\n", labels: ["plan"], milestone: nil)
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    # 有可认领卡时不返回 blocked，因此不产出 gaps（保持输出精简）。
+    assert_empty action.metadata_gaps
+  end
 end
 
 class VerifierTest < Minitest::Test

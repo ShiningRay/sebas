@@ -237,12 +237,33 @@ module SebasAgents
         ready = evaluated.select { |_issue, result| result.ready? }.map(&:first)
         if ready.empty?
           reason = candidates.empty? ? "active 主线内无可执行工作包（元数据未补齐）" : "候选均被前置阻塞"
-          return action("blocked", observed, reason, milestone: milestone.number, excluded: excluded)
+          return action("blocked", observed, reason, milestone: milestone.number,
+            excluded: excluded, metadata_gaps: metadata_gaps(milestone, snapshot))
         end
 
         chosen = ready.min_by { |issue| issue.automation["order"] }
         action("claim_issue", observed, "active 主线内无前置阻塞的可执行工作包中计划顺序最小",
           milestone: milestone.number, issue: chosen.number, excluded: excluded)
+      end
+
+      # 隐形卡：看起来是工作包（有 plan 标签或依赖声明），但挂不到 active milestone 上。
+      # 这类卡不会进入上面的候选集，因此只会表现为笼统的「元数据未补齐」——
+      # 没有这张清单，Maintainer 无从知道该补哪几张。
+      def metadata_gaps(milestone, snapshot)
+        snapshot.issues.select do |issue|
+          issue.open? && issue.milestone.nil? && work_package_like?(issue)
+        end.map do |issue|
+          missing = ["milestone"]
+          missing << "automation" if issue.automation.nil?
+          {"issue" => issue.number, "missing" => missing}
+        end
+      end
+
+      def work_package_like?(issue)
+        return true if issue.label?("plan")
+        return true if issue.automation
+
+        !Dependencies.prose_dependencies(issue.body).to_a.empty?
       end
 
       def exclusion_reason(issue)
@@ -253,9 +274,10 @@ module SebasAgents
         nil
       end
 
-      def action(name, observed, reason, milestone: nil, issue: nil, excluded: [])
+      def action(name, observed, reason, milestone: nil, issue: nil, excluded: [], metadata_gaps: [])
         Model::Action.new(action: name, milestone: milestone, issue: issue,
-          reason: reason, observed_main: observed, excluded: excluded)
+          reason: reason, observed_main: observed, excluded: excluded,
+          metadata_gaps: metadata_gaps)
       end
 
       def invalid(observed, reason)
