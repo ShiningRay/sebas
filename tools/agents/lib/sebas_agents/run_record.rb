@@ -9,7 +9,7 @@ module SebasAgents
   class RunRecord
     DEFAULT_PATH = File.join(".sebas-agent", "run.json")
     SCHEMA = 1
-    FIELDS = %w[issue branch worktree pr base_sha phase attempts].freeze
+    FIELDS = %w[issue branch worktree pr base_sha phase attempts label_written].freeze
 
     attr_reader :path
 

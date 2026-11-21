@@ -143,6 +143,8 @@ module SebasAgents
         "reasons" => result.reasons
       }
       if options[:apply] && result.ready?
+        # 快照决定校验对象；写入必须落在同一仓库，否则会认领一张没校验过的卡。
+        repo = claim_write_repo(snap, options)
         record = RunRecord.new(path: options[:record])
         payload["run_record"] = record.save({
           "issue" => issue.number,
@@ -152,22 +154,50 @@ module SebasAgents
         })
 
         # 标签不是分布式事务：写后必须回读，只有回读确认才算 claimed。
-        repo = options[:repo] || default_repo
+        # 任何一步出错都要落 aborted，不能让记录停在 claiming。
         gateway = GithubGateway.new(runner(options), repo: repo)
-        gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
-        if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
-          payload["run_record"] = RunRecord.new(path: options[:record])
-            .save(payload["run_record"].merge("phase" => "claimed"))
+        written = false
+        begin
+          gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+          written = true
+          confirmed = gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+        rescue CommandError => e
+          payload["reasons"] = ["认领写入失败：#{e.message}"]
+          confirmed = false
+        end
+
+        if confirmed
+          payload["run_record"] = record.save(payload["run_record"].merge("phase" => "claimed"))
           payload["claim"] = "claimed"
         else
-          RunRecord.new(path: options[:record]).save(payload["run_record"].merge("phase" => "aborted"))
+          # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有标签。
+          payload["run_record"] = record.save(
+            payload["run_record"].merge("phase" => "aborted", "label_written" => written)
+          )
           payload["ok"] = false
           payload["claim"] = "claim_aborted"
-          payload["reasons"] = ["写入 #{Model::IN_PROGRESS_LABEL} 后回读未确认，按 claim_aborted 处理"]
+          payload["reasons"] ||= []
+          payload["reasons"] << if written
+            "写入 #{Model::IN_PROGRESS_LABEL} 后回读未确认；远端状态未知，恢复前需人工核对"
+          else
+            "写入 #{Model::IN_PROGRESS_LABEL} 失败，未产生远端变更"
+          end
         end
       end
       Output.emit(payload, out: @out)
       payload["ok"] ? EXIT_OK : EXIT_REFUSED
+    end
+
+    # 认领目标仓库必须与校验所用快照一致；否则会写入另一仓库。
+    def claim_write_repo(snap, options)
+      if snap.repo.to_s.empty?
+        raise UsageError, "快照缺 repo 字段，无法确定写入仓库"
+      end
+      if options[:repo] && options[:repo] != snap.repo
+        raise UsageError, "--repo #{options[:repo]} 与快照仓库 #{snap.repo} 不一致"
+      end
+
+      snap.repo
     end
 
     # 认领前的完整校验：卡片状态、标签、kind，再算依赖。
