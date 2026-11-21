@@ -34,7 +34,8 @@ PLAN = {
   40 => {kind: "work_package", order: [4, 0, 2], depends_on: [39]},
 
   # M4.1 开工条件：调度 #9 的 WP1/WP2 已合（#3 已 closed，#4 待做）
-  41 => {kind: "work_package", order: [4, 1, 1], depends_on: [4]},
+  # 另含 M4.0 末卡 #40：期门禁由「下期首卡依赖上期末卡」表达。
+  41 => {kind: "work_package", order: [4, 1, 1], depends_on: [4, 40]},
   42 => {kind: "work_package", order: [4, 1, 2], depends_on: [41]},
   43 => {kind: "work_package", order: [4, 1, 3], depends_on: [42]},
   44 => {kind: "work_package", order: [4, 1, 4], depends_on: [43]},
@@ -95,8 +96,10 @@ def automation_block(spec)
   "```json automation\n#{JSON.pretty_generate(payload)}\n```\n"
 end
 
+# 先归一化换行再匹配/替换，否则纯 CR 的旧块会漏匹配、被追加成重复块。
 def with_block(body, block)
-  stripped = body.to_s.sub(FENCE, "")
+  normalized = body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
+  stripped = normalized.sub(FENCE, "")
   "#{stripped.rstrip}\n\n## Automation\n\n#{block}"
 end
 
