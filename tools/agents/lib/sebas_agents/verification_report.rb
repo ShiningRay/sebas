@@ -97,10 +97,22 @@ module SebasAgents
     private
 
     def add(level, message, evidence, id: nil)
-      fallback = "#{level}-#{@items.count { |item| item.level == level } + 1}"
-      @items << Item.new(id: id.to_s.empty? ? fallback : id.to_s, level: level,
-        message: message, evidence: evidence)
+      chosen = id.to_s
+      if !chosen.empty? && @items.any? { |item| item.id == chosen }
+        # 显式 id 重复会让一条 fix 同时匹配多个条目，必须拒绝而不是静默覆盖。
+        raise ArgumentError, "Verifier 报告条目 id 重复：#{chosen}"
+      end
+      @items << Item.new(id: chosen.empty? ? unused_fallback_id(level) : chosen,
+        level: level, message: message, evidence: evidence)
       nil
+    end
+
+    # 生成不与任何既有 id 冲突的 fallback id（level-N，N 递增取首个空闲值）。
+    def unused_fallback_id(level)
+      taken = @items.map(&:id)
+      n = @items.count { |item| item.level == level } + 1
+      n += 1 while taken.include?("#{level}-#{n}")
+      "#{level}-#{n}"
     end
   end
 end

@@ -302,7 +302,9 @@ module SebasAgents
           return EXIT_REFUSED
         end
         record = RunRecord.new(path: options[:record])
-        record.save(record.load.merge("phase" => "released")) if record.load
+        current = record.load
+        # 只更新属于本 issue 的记录：传错 --record 时不能把别张卡的记录改脏。
+        record.save(current.merge("phase" => "released")) if current && current["issue"].to_i == issue.number
       end
 
       payload["ok"] = true

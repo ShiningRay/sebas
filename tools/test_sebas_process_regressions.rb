@@ -552,11 +552,13 @@ class VerifierRegressionTest < Minitest::Test
   end
 
   # #107：合并前模式不能因为「未合并 / 未关闭」而必然失败。
+  # 但仍须满足可提前判定的条件：Evidence accepted + thread 清空 + CI 全绿。
   def test_verify_merge_pre_passes_when_ci_green
+    body = automation + evidence(subject: "issue:39")
     data = snapshot(
-      issues: [issue(39, body: automation, state: "OPEN")],
+      issues: [issue(39, body: body, state: "OPEN")],
       pull_requests: [{
-        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
         "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
       }]
     )
@@ -600,5 +602,61 @@ class VerifierRegressionTest < Minitest::Test
     report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
     refute report.pass?
     assert(report.blockers.any? { |b| b.message.include?("已关闭") }, report.items.map(&:message).inspect)
+  end
+
+  # #107 核心：合并前自检必须覆盖 Evidence 与 review thread。
+  def test_verify_merge_pre_blocks_without_evidence
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("缺 Evidence") }, report.items.map(&:message).inspect)
+  end
+
+  def test_verify_merge_pre_blocks_with_unresolved_threads
+    body = automation + evidence(subject: "issue:39")
+    data = snapshot(
+      issues: [issue(39, body: body, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "review_threads" => [{"id" => "t1", "is_resolved" => false}],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("未解决 review thread") }, report.items.map(&:message).inspect)
+  end
+
+  def test_verify_merge_pre_blocks_on_untested_items
+    body = automation + evidence(subject: "issue:39", untested: ["真机 round-trip"])
+    data = snapshot(
+      issues: [issue(39, body: body, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("未实测") }, report.items.map(&:message).inspect)
+  end
+
+  def test_verify_merge_pre_passes_with_evidence_and_clean_threads
+    body = automation + evidence(subject: "issue:39")
+    data = snapshot(
+      issues: [issue(39, body: body, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    assert report.pass?, report.items.map(&:message).inspect
   end
 end

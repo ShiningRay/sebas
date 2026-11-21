@@ -19,6 +19,7 @@ module SebasAgents
       @blocked_cache = {}
       @thread_cache = {}
       @author_cache = {}
+      @body_cache = {}
     end
 
     # 认领/暂停所需的写操作：只碰标签，不碰 issue 内容。
@@ -57,7 +58,8 @@ module SebasAgents
         source_authors: resolve_authors(blocks),
         gates: discovered["gates"].merge(gate_records),
         externals: discovered["externals"].merge(external_records),
-        trusted_bots: trusted_bots
+        trusted_bots: trusted_bots,
+        source_bodies: resolve_bodies(blocks)
       )
     end
 
@@ -154,6 +156,32 @@ module SebasAgents
       end
     end
 
+    # 被引用评论的正文。用于把授权绑定到「登记内容」而不只是「评论作者」：
+    # 只证明 bot/maintainer 写过某条评论，不能证明该评论登记了当前结论。
+    def resolve_bodies(blocks)
+      blocks.each_with_object({}) do |block, memo|
+        ref = block["source_ref"].to_s
+        next if ref.empty? || memo.key?(ref)
+
+        memo[ref] = ref_body(ref)
+      end
+    end
+
+    def ref_body(ref)
+      @body_cache[ref] ||= begin
+        if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
+            (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
+          fetch_body("repos/#{@repo}/issues/comments/#{match[2]}")
+        elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
+          fetch_body("repos/#{@repo}/pulls/comments/#{match[2]}")
+        elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
+          fetch_body("repos/#{@repo}/pulls/#{match[1]}/reviews/#{match[2]}")
+        else
+          raise CommandError.new("无法识别的 source_ref：#{ref}", command: ["gh", "api"])
+        end
+      end
+    end
+
     def ref_author(ref)
       @author_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
@@ -173,6 +201,11 @@ module SebasAgents
 
     def fetch_login(path)
       @runner.json!("gh", "api", path).dig("user", "login")
+    end
+
+    def fetch_body(path)
+      raw = @runner.json!("gh", "api", path)
+      raw["body"].to_s
     end
 
     def attach_blocked_by(issues)

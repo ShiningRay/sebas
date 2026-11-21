@@ -106,6 +106,10 @@ track: main
 
 两段位互相隔离：bot 身份不能以 `source="maintainer"` 登记；未列入 `trusted_bots` 的 bot 以 `source="workflow"` 登记一律 `invalid`（fail-closed）。
 
+**授权绑定的是评论内容，不只是作者。** `source_ref` 指向的评论正文必须本身包含 `evidence` 代码块，且其
+`subject`、`status`、`gate_status`、`evidence_path` 与 issue 上的块一致。因此「bot 恰好在这条 issue 下留过
+某条普通评论」不能拿来做登记——作者身份只证明这个人/这个 bot 写过该评论，不证明该评论登记了当前结论。
+
 ```json evidence
 {
   "schema": 1,
@@ -206,10 +210,12 @@ track: main
 
 | 模式 | 命令 | 结构要求 | 用途 |
 |---|---|---|---|
-| 合并前自检 | `verify merge <pr> <issue> --pre` | PR 仍 open、issue 仍 open；校验关联 issue、CI 全绿、无未完成检查 | 合并动作前的门禁 |
+| 合并前自检 | `verify merge <pr> <issue> --pre` | PR 仍 open、issue 仍 open；校验关联 issue、CI 全绿且无未完成检查、Evidence `status=accepted` 且无未实测项、review thread 全部解决 | 合并动作前的门禁 |
 | 合并后核验 | `verify merge <pr> <issue>` | PR 已合并、issue `completed` | 收口时的完整性核验 |
 
 `--pre` **不能**复用合并后口径：后者要求 `merged?` 与 `completed`，合并前必然 blocker。反之，合并后再跑 `--pre` 会因 issue 已关闭而拒绝执行。
+
+`--pre` 之所以要查 Evidence 与 thread，是因为这两项在合并前就已确定，且无法在合并后补救——带着未验收结论合并，事后再核验只能发现错误，不能撤销。
 
 ### 3.7 卡面契约的时效
 

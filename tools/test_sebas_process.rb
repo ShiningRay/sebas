@@ -75,7 +75,7 @@ module SnapshotHelpers
   end
 
   def snapshot(issues:, milestones: nil, pull_requests: [], maintainers: ["ShiningRay"],
-    source_authors: nil, gates: {}, externals: {}, trusted_bots: [])
+    source_authors: nil, gates: {}, externals: {}, trusted_bots: [], source_bodies: {})
     {
       "repo" => "o/r",
       "main_sha" => "deadbeef",
@@ -91,7 +91,8 @@ module SnapshotHelpers
       },
       "gates" => gates,
       "externals" => externals,
-      "trusted_bots" => trusted_bots
+      "trusted_bots" => trusted_bots,
+      "source_bodies" => source_bodies
     }
   end
 
@@ -313,6 +314,28 @@ class SelectionTest < Minitest::Test
     assert_equal "claim_issue", action.action, action.reason
   end
 
+  # CR：括号里带条件说明但仍是依赖，不能被整段剥掉。
+  def test_dependency_paren_with_condition_note_is_kept
+    body = automation(depends_on: [3], prose: "WP1（#3，开工条件已满足）")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # CR：同一行既有依赖又有引用说明时，只剥引用说明。
+  def test_dependency_and_reference_on_same_line
+    body = automation(depends_on: [3], prose: "WP1（#3）完成；另见 #35 开工条件")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
   def test_completed_dependency_without_evidence_blocks
     data = snapshot(issues: [
       issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
@@ -393,6 +416,49 @@ class SelectionTest < Minitest::Test
         issue(9, body: evidence(subject: "issue:9", source: "root"),
           state: "CLOSED", state_reason: "COMPLETED")
       ]
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  # CR 安全项：作者合法但评论正文没有登记本结论时，不能放行。
+  def test_trusted_bot_with_unrelated_comment_body_is_invalid
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => "LGTM, merging soon."},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_trusted_bot_with_matching_evidence_body_unlocks
+    registered = evidence(subject: "issue:9", source: "workflow")
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    assert_equal "claim_issue", select(data).action
+  end
+
+  def test_evidence_body_with_different_subject_is_invalid
+    registered = evidence(subject: "issue:99")
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered}
     )
     assert_equal "invalid_plan", select(data).action
   end
@@ -612,6 +678,46 @@ class ReviewerTest < Minitest::Test
     report.acceptable("b")
     report.must_fix("c")
     assert_equal %w[must_fix-1 acceptable-1 must_fix-2], report.items.map(&:id)
+  end
+
+  # CR：显式 id 与生成的 fallback id 不得碰撞。
+  def test_explicit_id_does_not_collide_with_generated
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a")
+    report.must_fix("b", id: "must_fix-2")
+    report.must_fix("c")
+    assert_equal %w[must_fix-1 must_fix-2 must_fix-3], report.items.map(&:id)
+    assert_equal 3, report.items.map(&:id).uniq.length
+  end
+
+  def test_duplicate_explicit_id_is_rejected
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "g")
+    assert_raises(ArgumentError) { report.must_fix("b", id: "g") }
+  end
+
+  # CR：positional fallback 按 level 内序号，不由 id 后缀推断。
+  def test_positional_fallback_is_not_derived_from_id_suffix
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "r2-1")
+    report.must_fix("b", id: "r3-1")
+    fixes = {"must_fix-1" => {"passed" => true, "commit" => "aaa"}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    # 只有第 1 项被覆盖，第 2 项必须仍算未修复。
+    assert_equal "打回", final.conclusion
+  end
+
+  # CR：level-only 简写只在同 level 唯一时生效。
+  def test_level_only_fix_requires_unique_item
+    two = SebasAgents::VerificationReport.new
+    two.must_fix("a")
+    two.must_fix("b")
+    fixes = {"must_fix" => {"passed" => true, "commit" => "aaa"}}
+    assert_equal "打回", SebasAgents::Reviewer.final_verification(two, fixes).conclusion
+
+    one = SebasAgents::VerificationReport.new
+    one.must_fix("a")
+    assert_equal "有条件通过", SebasAgents::Reviewer.final_verification(one, fixes).conclusion
   end
 end
 

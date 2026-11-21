@@ -63,6 +63,14 @@ CRYSTAL_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib \
   "$(mise where crystal@1.22.3)/bin/crystal" spec
 ```
 
+`make release` 调用 PATH 上的 `crystal`，**不继承**上面 `mise exec` 的版本选择。若 PATH 上不是 1.22 或更新版本，
+`vault.cr` 的 `gcm_tag` 会在 release 构建时失败。用同一版本与环境变量跑：
+
+```sh
+CRYSTAL_LIBRARY_PATH=$OSSL/lib LDFLAGS=-L$OSSL/lib CPPFLAGS=-I$OSSL/include \
+  PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- make release
+```
+
 `make release` 前先确认 spec 全绿；强杀演练 spec 需要 `bin/sebas` 存在才实跑（否则 pending），
 所以 `make release` 之后才能解锁。
 

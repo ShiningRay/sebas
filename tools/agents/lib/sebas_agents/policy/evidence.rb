@@ -39,20 +39,43 @@ module SebasAgents
         block
       end
 
-      # source_ref 的实际作者必须在对应白名单内；JSON 的 source 字符串不算凭据。
+      # source_ref 的实际作者必须在对应白名单内，且被引用评论的正文必须真的登记了
+      # 本块声明的结论。JSON 的 source 字符串不是凭据，评论作者身份也不足够——
+      # 只证明「这个人/这个 bot 写过该评论」，不证明「该评论登记了这条结论」。
       # "maintainer" 比对 maintainers（人类），"workflow" 比对 trusted_bots（自动化身份）。
       def trusted?(block, snapshot)
         source = block["source"]
         return false unless SOURCES.include?(source)
 
-        author = snapshot.source_authors[block["source_ref"].to_s]
+        ref = block["source_ref"].to_s
+        author = snapshot.source_authors[ref]
         return false if author.nil?
 
-        if source == WORKFLOW_SOURCE
+        authorized = if source == WORKFLOW_SOURCE
           snapshot.trusted_bots.include?(author)
         else
           snapshot.maintainers.include?(author)
         end
+        return false unless authorized
+
+        registration_matches?(block, snapshot.source_bodies[ref])
+      end
+
+      # 被引用评论必须包含与本块一致的登记字段。
+      # 空正文（离线快照未提供）时放行作者校验结果，交由调用方按证据缺口处理；
+      # 提供了正文却对不上，一律判未授权。
+      def registration_matches?(block, body)
+        return true if body.nil?
+
+        text = body.to_s
+        return false if text.strip.empty?
+
+        ref_block = JsonBlock.one(text, "evidence", subject: block["subject"].to_s)
+        return false unless ref_block.is_a?(Hash)
+
+        %w[subject status].all? { |key| ref_block[key].to_s == block[key].to_s } &&
+          ref_block["gate_status"].to_s == block["gate_status"].to_s &&
+          ref_block["evidence_path"].to_s == block["evidence_path"].to_s
       end
 
       def evaluate_issue(block, number, snapshot)

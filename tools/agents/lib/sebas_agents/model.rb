@@ -144,7 +144,7 @@ module SebasAgents
     # trusted_bots 为 .github/agents.yml 授权的 bot 身份（如 "github-actions[bot]"），
     # 供 Evidence 的 workflow 登记路径校验；人类 Maintainer 仍走 maintainers。
     Snapshot = Data.define(:repo, :main_sha, :milestones, :issues, :pull_requests, :maintainers,
-      :source_authors, :gates, :externals, :trusted_bots) do
+      :source_authors, :gates, :externals, :trusted_bots, :source_bodies) do
       def self.from_hash(hash)
         new(
           repo: hash.fetch("repo", ""),
@@ -156,7 +156,9 @@ module SebasAgents
           source_authors: hash["source_authors"] || {},
           gates: hash["gates"] || {},
           externals: hash["externals"] || {},
-          trusted_bots: Array(hash["trusted_bots"]).map(&:to_s)
+          trusted_bots: Array(hash["trusted_bots"]).map(&:to_s),
+          # source_ref → 被引用评论正文。用于校验「登记内容」而非仅「作者身份」。
+          source_bodies: hash["source_bodies"] || {}
         )
       end
 

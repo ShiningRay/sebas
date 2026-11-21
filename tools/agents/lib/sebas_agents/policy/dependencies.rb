@@ -76,8 +76,13 @@ module SebasAgents
       # 返回数组（可为空）表示存在依赖节，空数组即声明「无前置」。
       #
       # 只认依赖句里的编号：卡面还会写「见 #35 开工条件」这类引用说明，
-      # 全局扫 #N 会把说明误判成依赖。因此逐行处理，跳过括号内补充与「见/参见」行。
+      # 全局扫 #N 会把说明误判成依赖。因此逐行处理，且只剥掉「引用说明」本身——
+      # 不能整行跳过，否则同一行里的真实依赖（如「WP1（#3）完成；另见 #35」）会丢失。
       DEPENDENCY_HEADING = /^#+\s*(前置依赖|依赖)\s*$/
+      # 括号内以引用词开头的补充说明，例如「（见 #35 开工条件）」。
+      REFERENCE_PAREN = /[（(]\s*(?:见|参见|详见)[^）)]*[）)]/
+      # 行内引用短语，例如「另见 #35 开工条件」「参见 #7」。
+      REFERENCE_INLINE = /(?:另?见|参见|详见)\s*#\d+[^；;。\n]*/
 
       def prose_dependencies(body)
         # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码；
@@ -100,11 +105,8 @@ module SebasAgents
           stripped = line.strip
           next if stripped.empty?
 
-          # 去掉承载「引用说明」的括号，例如「（见 #35 开工条件）」；
-          # 承载依赖的括号要保留，例如「WP1（#3）」。
-          main = stripped.gsub(/[（(][^）)]*(见|参见|详见|开工条件)[^）)]*[）)]/, "")
-          next if main.match?(/(见|参见|详见)\s*#\d/)
-
+          # 只剥引用说明，保留承载真实依赖的括号（如「WP1（#3，开工条件已满足）」）。
+          main = stripped.gsub(REFERENCE_PAREN, "").gsub(REFERENCE_INLINE, "")
           numbers.concat(main.scan(/#(\d+)/).flatten.map(&:to_i))
         end
         numbers.uniq.sort
