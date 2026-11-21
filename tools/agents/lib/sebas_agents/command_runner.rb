@@ -37,10 +37,30 @@ module SebasAgents
 
       options = {chdir: chdir}
       options[:stdin_data] = stdin if stdin
-      stdout, stderr, status = Open3.capture3(*argv, **options)
-      Result.new(stdout: stdout, stderr: stderr, status: status)
+      with_retry do
+        stdout, stderr, status = Open3.capture3(*argv, **options)
+        Result.new(stdout: stdout, stderr: stderr, status: status)
+      end
     rescue Errno::ENOENT => e
       raise CommandError.new("命令不存在：#{argv.first}（#{e.message}）", command: argv)
+    end
+
+    # 网络瞬断（EOF / 502 / 503 / timeout）重试一次；鉴权与 404 不重试。
+    RETRYABLE = /EOF|502|503|timed out|timeout/i
+    def with_retry
+      attempts = 0
+      begin
+        attempts += 1
+        result = yield
+        raise CommandError.new(result.stderr.strip) if !result.success? && result.stderr.match?(RETRYABLE)
+
+        result
+      rescue CommandError
+        raise if attempts >= 2
+
+        sleep(1 + attempts)
+        retry
+      end
     end
 
     def run!(*argv, chdir: Dir.pwd)
