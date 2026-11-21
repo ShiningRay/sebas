@@ -24,10 +24,11 @@ module SebasAgents
           return invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突")
         end
 
-        # aborted 表示认领未被确认：必须在任何恢复分支之前对账，
-        # 否则会被暂停恢复 / 在途 PR 分支绕过。
-        if claimed && record && record["phase"] == "aborted"
-          return reconcile_aborted(claimed, record, observed)
+        # aborted 表示认领未被确认：必须在任何恢复分支之前对账。
+        # 不依赖 claimed——暂停恢复与在途 PR 分支可能在无远端标签时触发。
+        if record && record["phase"] == "aborted"
+          target = claimed || (record["issue"] && snapshot.issue(record["issue"].to_i))
+          return reconcile_aborted(target, record, observed)
         end
 
         # §3.2：needs:human 且已有 agent:resume → 恢复。未建 PR 的暂停会释放认领，
@@ -139,19 +140,21 @@ module SebasAgents
       # aborted 必须显式对账，而不是直接续跑。
       # 远端有标签 → 需要人工确认这次写入属于本认领；
       # 远端无标签 → 结论是锁不存在，需重新认领。
-      def reconcile_aborted(issue, record, observed)
+      # target 可能为 nil（记录里的 issue 不在快照内），此时也要拒绝继续。
+      def reconcile_aborted(target, record, observed)
+        number = target&.number || record["issue"]
         written = record["label_written"]
         if written == true
           return action("invalid_plan", observed,
-            "## #{issue.number} 的认领处于 aborted 且可能已写标签（label_written=true）：" \
-            "远端存在 #{Model::IN_PROGRESS_LABEL}，需 Maintainer 核对后清除该记录再重新认领",
-            issue: issue.number, milestone: issue.milestone)
+            "## #{number} 的认领处于 aborted 且可能已写标签（label_written=true）：" \
+            "需 Maintainer 核对远端是否有 #{Model::IN_PROGRESS_LABEL}，确认后清除记录再重新认领",
+            issue: number, milestone: target&.milestone)
         end
 
         action("invalid_plan", observed,
-          "## #{issue.number} 的认领处于 aborted（label_written=#{written.inspect}）：" \
+          "## #{number} 的认领处于 aborted（label_written=#{written.inspect}）：" \
           "先删除本地运行记录，再用 claim 重新认领，不得直接续跑",
-          issue: issue.number, milestone: issue.milestone)
+          issue: number, milestone: target&.milestone)
       end
 
       def resume_paused(issue, record, observed)
@@ -165,12 +168,6 @@ module SebasAgents
 
         if record["issue"] && record["issue"].to_i != issue.number
           return invalid(observed, "本地记录 issue #{record["issue"].inspect} 与认领 ##{issue.number} 不符")
-        end
-
-        # aborted 表示认领未被确认（写失败或回读失败）。在核对远端状态前
-        # 不能当作已认领继续开工，否则就是在未确认的锁上动手。
-        if record["phase"] == "aborted"
-          return reconcile_aborted(issue, record, observed)
         end
 
         reason = if record["phase"] == "claiming"
