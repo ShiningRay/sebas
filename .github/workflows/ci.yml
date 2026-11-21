@@ -179,8 +179,9 @@ jobs:
         run: make lint
 
   # 文档自检：死链、失效行号锚、单文件体量。不依赖 changes——纯文档改动恰恰是
-  # 它唯一要拦的场景，走 skip 就成了空门。脚本只用 Ruby 标准库，版本由上面的
-  # setup-ruby 步骤显式安装（镜像自带版本低于 .ruby-version 的要求）。
+  # 它唯一要拦的场景，走 skip 就成了空门。脚本只用 Ruby 标准库。
+  # 镜像默认 ruby 可能低于 .ruby-version 的要求；镜像预装了多个 Ruby（如 3.4.12），
+  # 直接从工具缓存切换，不引入第三方 action（本仓库 Actions 有白名单 + 强制 SHA 钉版）。
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -191,21 +192,42 @@ jobs:
         with:
           persist-credentials: false
 
-      # ubuntu-latest 镜像自带的 Ruby 停在大版本落后位置（当前 3.2.3），
-      # 低于 .ruby-version 的要求。显式装同一个版本，让 CI 与本地判据一致。
-      # 这里不是自托管 Windows runner，不受 setup-ruby 的 Windows 版本探测问题影响。
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
-        with:
-          ruby-version: "3.4.13"
-
-      - name: Show Ruby version
-        run: ruby -v
-
-      - name: Verify the pinned version matches the installed Ruby
+      # .ruby-version 里的补丁版可能比镜像预装的更新（如 3.4.13 vs 3.4.12）。
+      # 同一 minor 内功能等价，选镜像里满足下限的最高版本即可，不联网装解释器。
+      - name: Select preinstalled Ruby
+        shell: bash
         run: |
-          ruby -e 'want = File.read(".ruby-version").strip
-                   abort "已装 #{RUBY_VERSION}，但 .ruby-version 要求 #{want}" unless RUBY_VERSION == want'
+          want="$(cat .ruby-version)"
+          want_minor="$(echo "$want" | cut -d. -f1-2)"
+          # 版本 a >= 下限 b 时 sort -V -C 退出 0
+          ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+
+          best=""
+          for dir in /opt/hostedtoolcache/Ruby/*/x64; do
+            [ -x "$dir/bin/ruby" ] || continue
+            version="$("$dir/bin/ruby" -e 'print RUBY_VERSION')"
+            ge "$version" "$want_minor" || continue
+            if [ -z "$best" ] || ge "$version" "$best_version"; then
+              best="$dir"; best_version="$version"
+            fi
+          done
+
+          if [ -z "$best" ]; then
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want）"
+            ls /opt/hostedtoolcache/Ruby/ || true
+            exit 1
+          fi
+          echo "$best/bin" >> "$GITHUB_PATH"
+          echo "selected Ruby $best_version from $best"
+
+      - name: Verify Ruby meets the pin
+        shell: bash
+        run: |
+          want="$(cat .ruby-version)"; want_minor="$(echo "$want" | cut -d. -f1-2)"
+          have="$(ruby -e 'print RUBY_VERSION')"
+          printf '%s\n%s\n' "$want_minor" "$have" | sort -V -C \
+            || { echo "::error::已装 Ruby $have，低于 .ruby-version 要求的 $want_minor"; exit 1; }
+          echo "Ruby $have ok（pin $want）"
 
       - name: Test the docs checker itself
         run: ruby tools/test_check_docs.rb
