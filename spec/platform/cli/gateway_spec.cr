@@ -225,7 +225,8 @@ module Sebas
         "evt-noadmit-2", "email", "test-acc", "dave@example.com", "route me"
       ))
       gateway.run
-      wait_for { gateway.store.session_input?("evt-noadmit-2") }.should be_true
+      # 等 routed 事件走完整个批次生命周期（intent done ⇒ send 已落），时序确定
+      wait_for { gateway.store.intent_status("evt-noadmit-2") == "done" }.should be_true
       gateway.shutdown
       store = Platform::Store::Store.new(Path[dir, "sebas.db"])
       store.session_input?("evt-noadmit-1").should be_false # 未占队列：无 admission 记录
