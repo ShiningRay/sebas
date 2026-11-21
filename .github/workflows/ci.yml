@@ -179,7 +179,8 @@ jobs:
         run: make lint
 
   # 文档自检：死链、失效行号锚、单文件体量。不依赖 changes——纯文档改动恰恰是
-  # 它唯一要拦的场景，走 skip 就成了空门。脚本只用 Ruby 标准库，ubuntu-latest 自带 ruby。
+  # 它唯一要拦的场景，走 skip 就成了空门。脚本只用 Ruby 标准库，版本由上面的
+  # setup-ruby 步骤显式安装（镜像自带版本低于 .ruby-version 的要求）。
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -190,8 +191,21 @@ jobs:
         with:
           persist-credentials: false
 
+      # ubuntu-latest 镜像自带的 Ruby 停在大版本落后位置（当前 3.2.3），
+      # 低于 .ruby-version 的要求。显式装同一个版本，让 CI 与本地判据一致。
+      # 这里不是自托管 Windows runner，不受 setup-ruby 的 Windows 版本探测问题影响。
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1.343.0
+        with:
+          ruby-version: "3.4.13"
+
       - name: Show Ruby version
         run: ruby -v
+
+      - name: Verify the pinned version matches the installed Ruby
+        run: |
+          ruby -e 'want = File.read(".ruby-version").strip
+                   abort "已装 #{RUBY_VERSION}，但 .ruby-version 要求 #{want}" unless RUBY_VERSION == want'
 
       - name: Test the docs checker itself
         run: ruby tools/test_check_docs.rb
