@@ -655,17 +655,65 @@ class CliTest < Minitest::Test
     end
   end
 
-  def test_claim_apply_writes_record
+  # --apply 需要真实标签写入与回读；此处只验证 dry-run 不落盘，
+  # 以及写授权机制本身（见 DryRunGuardTest）。
+  def test_claim_apply_claims_only_with_verified_label
     data = snapshot(issues: [issue(1, body: automation)])
     Dir.mktmpdir do |dir|
       path = File.join(dir, "snapshot.json")
       record = File.join(dir, "run.json")
       File.write(path, JSON.generate(data), encoding: "UTF-8")
-      status, = run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply"])
-      assert_equal 0, status
+      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply",
+        "--repo", "invalid/does-not-exist-zzz"])
+      # 仓库不可达时不得声称 claimed
+      assert_includes [1, 2], status
+      payload = JSON.parse(out)
+      refute_equal "claimed", payload["claim"]
+    end
+  end
+
+  # 快照仓库与 --repo 不一致时必须拒绝写入，否则会认领到没校验过的仓库。
+  def test_claim_rejects_repo_mismatch
+    data = snapshot(issues: [issue(1, body: automation)])
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      record = File.join(dir, "run.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply",
+        "--repo", "other/repo"])
+      assert_equal 2, status
+      assert_equal "usage_error", JSON.parse(out)["error"]["code"]
+      refute File.exist?(record), "拒绝时不得留下运行记录"
+    end
+  end
+
+  # 写入失败也要落 aborted，不能让记录停在 claiming。
+  def test_claim_write_failure_records_aborted
+    data = snapshot(issues: [issue(1, body: automation)])
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      record = File.join(dir, "run.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+
+      # 用假 runner：写标签抛错，其余按成功返回。
+      fake = Class.new(SebasAgents::CommandRunner) do
+        def run!(*argv, chdir: Dir.pwd)
+          raise SebasAgents::CommandError.new("boom", command: argv) if argv.include?("--add-label")
+
+          ""
+        end
+      end
+
+      cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+      cli.define_singleton_method(:runner) { |_options| fake.new(dry_run: false) }
+      out = StringIO.new
+      cli.instance_variable_set(:@out, out)
+      status = cli.run(["claim", "1", "--snapshot", path, "--record", record, "--apply"])
+      assert_equal 1, status
       saved = JSON.parse(File.read(record, encoding: "UTF-8"))
-      assert_equal 1, saved["issue"]
-      assert_equal "claiming", saved["phase"]
+      assert_equal "aborted", saved["phase"], "写入失败必须落 aborted"
+      assert_equal false, saved["label_written"]
+      refute JSON.parse(out.string)["ok"]
     end
   end
 
@@ -788,6 +836,37 @@ class DryRunGuardTest < Minitest::Test
   def test_apply_mode_allows_writes
     runner = SebasAgents::CommandRunner.new(dry_run: false)
     refute runner.dry_run?
+  end
+
+  # 断言子进程真的被调用，而不是只看 calls 记录（记录在拦截前就写了）。
+  def test_write_authorization_is_scoped
+    add = ["gh", "issue", "edit", "39", "--repo", "o/r", "--add-label", "agent:in-progress"]
+    merge = ["gh", "pr", "merge", "5"]
+    executed = []
+
+    Open3.singleton_class.alias_method(:__orig_capture3, :capture3)
+    Open3.define_singleton_method(:capture3) do |*argv, **_opts|
+      executed << argv
+      ["", "", Struct.new(:success?).new(true)]
+    end
+
+    begin
+      runner = SebasAgents::CommandRunner.new(dry_run: true)
+      runner.capture(*add)
+      runner.capture(*merge)
+      assert_empty executed, "dry-run 不得真正执行写命令"
+
+      runner.with_write(:add_label) { runner.capture(*add) }
+      assert_equal [add], executed, "授权后 add-label 必须真实执行"
+
+      runner.with_write(:add_label) { runner.capture(*merge) }
+      assert_empty executed.select { |c| c.include?("merge") }, "授权 add-label 不应放行 merge"
+
+      runner.capture(*add)
+      assert_equal 1, executed.count { |c| c.include?("--add-label") }, "离开授权后恢复拦截"
+    ensure
+      Open3.singleton_class.alias_method(:capture3, :__orig_capture3)
+    end
   end
 
   # 重试耗尽后，错误必须带 command 与 stderr，否则上游无法定位。

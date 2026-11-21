@@ -59,7 +59,7 @@ track: main
 
 硬依赖以 WP 的「依赖」字段为权威。由该字段生成或逐条核对 Automation，再与 GitHub 原生 `blocked_by` 核对 issue 编号部分；三者不一致即 `invalid_plan`。B.1 DAG 图只用于排期展示，不作为另一套独立真值。首版只做一致性检查，不自动改依赖关系。
 
-建议增加少量流程标签：
+建议增加少量流程标签（`ruby tools/setup_process_labels.rb --apply` 一次创建）：
 
 | 标签 | 含义 |
 |---|---|
@@ -69,6 +69,10 @@ track: main
 | `metadata:invalid` | 元数据缺失或矛盾，禁止自动开工 |
 
 普通 assignee 只表示责任人，不能充当 Agent 认领锁。
+
+认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地运行记录
+（`phase=claiming`），再写 `agent:in-progress`，回读确认后才转为 `claimed`；
+回读失败则记录 `claim_aborted`，不启动 Harness。
 
 ### 2.3 前置完成的标准
 

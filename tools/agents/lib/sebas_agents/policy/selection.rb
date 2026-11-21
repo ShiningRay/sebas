@@ -24,6 +24,13 @@ module SebasAgents
           return invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突")
         end
 
+        # aborted 表示认领未被确认：必须在任何恢复分支之前对账。
+        # 不依赖 claimed——暂停恢复与在途 PR 分支可能在无远端标签时触发。
+        if record && record["phase"] == "aborted"
+          target = claimed || (record["issue"] && snapshot.issue(record["issue"].to_i))
+          return reconcile_aborted(target, record, observed)
+        end
+
         # §3.2：needs:human 且已有 agent:resume → 恢复。未建 PR 的暂停会释放认领，
         # 因此这里必须是「有 needs:human + agent:resume」，而不是要求仍有 in-progress。
         paused_resume = snapshot.issues.find do |issue|
@@ -130,6 +137,26 @@ module SebasAgents
       end
 
       # 同时带 needs:human 与 agent:resume：先核验解决说明，再同一动作移除两标签。
+      # aborted 必须显式对账，而不是直接续跑。
+      # 远端有标签 → 需要人工确认这次写入属于本认领；
+      # 远端无标签 → 结论是锁不存在，需重新认领。
+      # target 可能为 nil（记录里的 issue 不在快照内），此时也要拒绝继续。
+      def reconcile_aborted(target, record, observed)
+        number = target&.number || record["issue"]
+        written = record["label_written"]
+        if written == true
+          return action("invalid_plan", observed,
+            "## #{number} 的认领处于 aborted 且可能已写标签（label_written=true）：" \
+            "需 Maintainer 核对远端是否有 #{Model::IN_PROGRESS_LABEL}，确认后清除记录再重新认领",
+            issue: number, milestone: target&.milestone)
+        end
+
+        action("invalid_plan", observed,
+          "## #{number} 的认领处于 aborted（label_written=#{written.inspect}）：" \
+          "先删除本地运行记录，再用 claim 重新认领，不得直接续跑",
+          issue: number, milestone: target&.milestone)
+      end
+
       def resume_paused(issue, record, observed)
         action("resume_issue", observed,
           "暂停卡 ##{issue.number} 已获 agent:resume；核验 Maintainer 解决说明后移除暂停标签并恢复原归属",

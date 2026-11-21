@@ -215,6 +215,83 @@ class CliRobustnessTest < Minitest::Test
     end
   end
 
+  # aborted 记录不得直接续跑，必须先对账；且必须在暂停/PR 分支之前拦截。
+  def test_aborted_record_does_not_resume
+    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    %w[true false].each do |written|
+      record = {"issue" => 1, "phase" => "aborted", "label_written" => written == "true"}
+      action = select(data, record: record)
+      assert_equal "invalid_plan", action.action, "aborted(label_written=#{written}) 不得续跑"
+      assert_includes action.reason, "aborted"
+    end
+  end
+
+  # 带暂停标签的 aborted 记录也不能被 resume_paused 放行。
+  def test_aborted_record_with_pause_labels_is_rejected
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: %w[agent:in-progress needs:human agent:resume])
+    ])
+    record = {"issue" => 1, "phase" => "aborted", "label_written" => false}
+    action = select(data, record: record)
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "aborted"
+  end
+
+  # 带在途 PR 的 aborted 记录同样不能被 PR 分支放行。
+  def test_aborted_record_with_open_pr_is_rejected
+    pr = {
+      "number" => 9, "state" => "OPEN", "merge_state_status" => "BEHIND",
+      "checks" => [], "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, labels: ["agent:in-progress"])],
+      pull_requests: [pr]
+    )
+    record = {"issue" => 1, "phase" => "aborted", "pr" => 9, "label_written" => true}
+    assert_equal "invalid_plan", select(data, record: record).action
+  end
+
+  def test_claimed_record_with_pause_labels_resumes
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: %w[agent:in-progress needs:human agent:resume])
+    ])
+    action = select(data, record: {"issue" => 1, "phase" => "claimed"})
+    assert_equal "resume_issue", action.action
+  end
+
+  # 远端无 agent:in-progress 时，aborted 仍必须在暂停/PR 分支之前被拒。
+  def test_aborted_without_remote_claim_and_pause_labels_is_rejected
+    data = snapshot(issues: [issue(1, body: automation, labels: %w[needs:human agent:resume])])
+    record = {"issue" => 1, "phase" => "aborted", "label_written" => true}
+    action = select(data, record: record)
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "aborted"
+  end
+
+  def test_aborted_without_remote_claim_and_open_pr_is_rejected
+    pr = {
+      "number" => 9, "state" => "OPEN", "merge_state_status" => "BEHIND",
+      "checks" => [], "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(issues: [issue(1, body: automation)], pull_requests: [pr])
+    record = {"issue" => 1, "phase" => "aborted", "pr" => 9, "label_written" => true}
+    assert_equal "invalid_plan", select(data, record: record).action
+  end
+
+  # 记录里的 issue 已不在快照内时也要拒绝，不能因 target 为空而崩溃。
+  def test_aborted_with_missing_issue_still_rejected
+    data = snapshot(issues: [issue(2, body: automation)])
+    record = {"issue" => 99, "phase" => "aborted", "label_written" => false}
+    action = select(data, record: record)
+    assert_equal "invalid_plan", action.action
+    assert_equal 99, action.issue
+  end
+
+  def test_claimed_record_still_resumes
+    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    assert_equal "resume_issue", select(data, record: {"issue" => 1, "phase" => "claimed"}).action
+  end
+
   # 应修 12：needs_model 是「判断步骤」而非「判定值」，两者必须可区分但不能混用
   def test_needs_model_steps_are_not_decisions
     data = snapshot(issues: [issue(1, body: "bug 描述")])

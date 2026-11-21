@@ -13,6 +13,15 @@ gh auth status
 
 `tools/sebas-process` 只依赖 Ruby 标准库与 `gh` / `git` CLI，不需要 `bundle install`。
 
+仓库首次使用时，创建流程标签与维护者名单：
+
+```sh
+ruby tools/setup_process_labels.rb          # 先看缺哪些
+ruby tools/setup_process_labels.rb --apply   # 实际创建
+```
+
+`.github/agents.yml` 已提交，列出可校验 Evidence 的 Maintainer。
+
 ## 2. 一条命令拿到角色提示词
 
 最快的路径是[一句话开工速查表](oneline.md)：每个角色一行，复制粘贴即可。
@@ -70,7 +79,7 @@ ruby tools/sebas-process roles verifier --prompt-only > /tmp/verifier.md
 ```sh
 ruby tools/sebas-process next                 # 输出单一动作
 ruby tools/sebas-process claim 39 --dry-run   # 校验是否可认领
-ruby tools/sebas-process claim 39 --apply     # 写本地运行记录（phase=claiming）
+ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + 远端标签并回读
 ruby tools/sebas-process resume 39            # 续跑本机已认领卡
 ruby tools/sebas-process verify merge 95 39   # 合并前核对
 ```
