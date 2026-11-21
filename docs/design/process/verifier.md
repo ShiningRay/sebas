@@ -2,7 +2,6 @@
 
 > 角色性质：**AI**（独立上下文的只读 agent），无任何写权限。
 > 核心原则：**委派非免责，须实证；禁一切写操作。**
-> 核心原则：**委派非免责，须实证；禁一切写操作。**
 
 ## 职责范围
 
@@ -80,100 +79,44 @@ Verifier必须在**与实现者不同的上下文**中运行。
 不能用Implementer的记忆、不能用Implementer的假设、不能"信任"Implementer的自验报告。
 一切从零开始，自己跑命令、自己读代码、自己对账。
 
-## 伪代码：设计文档核验
+## 可执行实现：设计文档核验
 
-```pseudo
-function verify_design_docs(docs, baseline):
-  report = VerificationReport()
+Verifier 的只读实现在 `tools/agents/lib/sebas_agents/verifier.rb`：
 
-  # 1. 裁断落实
-  for decision in baseline.decisions:
-    location = find_in_docs(docs, decision)
-    if location:
-      report.ok("裁断 #{decision.id} 落位于 #{location}")
-    else:
-      report.blocker("裁断 #{decision.id} 未落位")
-
-  # 2. 锚点实证（抽样）
-  anchors = extract_code_anchors(docs)  # 如 store.cr:406-417
-  for anchor in anchors.sample(30):
-    actual = read_source(anchor.file, anchor.lines)
-    claimed = anchor.claimed_content
-    if actual == claimed:
-      report.ok("锚点 #{anchor} 一致")
-    else:
-      report.must_fix("锚点 #{anchor} 偏差：声称 #{claimed}，实际 #{actual}")
-
-  # 3. 算术闭合
-  totals = extract_estimates(docs)
-  for group in totals:
-    if group.sum != group.claimed_total:
-      report.must_fix("算术不闭合：#{group.name} 加总 #{group.sum} ≠ 声称 #{group.claimed_total}")
-
-  # 4. 图-字段一致
-  dag_edges = parse_dag(docs.schedule)
-  wp_deps = parse_wp_dependencies(docs.wbs)
-  for wp in wp_deps:
-    if dag_edges[wp] != wp.dependencies:
-      report.must_fix("图-字段不一致：#{wp.id} DAG=#{dag_edges[wp]} 字段=#{wp.dependencies}")
-
-  # 5. 边界干净
-  changed = git_diff_names()
-  if changed != expected_changed_files:
-    report.must_fix("意外文件变更：#{changed - expected_changed_files}")
-
-  return report
+```sh
+ruby tools/sebas-process verify docs docs/design/process/*.md
+ruby tools/sebas-process verify anchors anchors.json
+ruby tools/sebas-process verify merge <pr> <issue>
 ```
 
-## 伪代码：issue 批量抽验
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
 
-```pseudo
-function verify_issues_batch(parent_ids, expected_children_map):
-  report = VerificationReport()
-
-  # 父子关系对账
-  for parent_id in parent_ids:
-    actual_children = gh_api("repos/.../issues/#{parent_id}/sub_issues")
-    expected = expected_children_map[parent_id]
-    if actual_children.map(.number).sort == expected.sort:
-      report.ok("父卡 ##{parent_id} 子卡关系一致（#{expected.size} 张）")
-    else:
-      report.must_fix("父卡 ##{parent_id} 子卡不符")
-
-  # 全量清单：与预期批次对账（不用仓库级编号连续性——closed issue 和 PR 也占编号）
-  # 只检查批次内的 issue：缺失（预期有但没有）和多余（批次标记匹配但不在预期中）。
-  # 批次成员通过 plan 标签 + milestone 归属识别，不依赖 baseline_issue_numbers。
-  batch_issues = gh_issue_list(state="all", label="plan", milestone=target_milestone)
-  batch_numbers = batch_issues.map(.number)
-  expected_numbers = expected_children_map.values.flatten + parent_ids
-  missing = expected_numbers - batch_numbers
-  extra = batch_numbers - expected_numbers
-  if missing.any?:
-    report.must_fix("批次缺失 issue：#{missing}")
-  if extra.any?:
-    report.must_fix("批次外多余 issue（同 milestone 但不在预期清单中）：#{extra}")
-
-  # 既有卡零扰动
-  baseline_issues = load_baseline_issues()
-  for issue in baseline_issues:
-    current = gh_issue_view(issue.number)
-    if current != issue:
-      report.must_fix("既有卡 ##{issue.number} 被意外修改")
-
-  # 子卡抽样
-  sample = all_children.sample(9)
-  for issue in sample:
-    body = gh_issue_view(issue.number).body
-    anchors = extract_anchors(body)
-    for anchor in anchors:
-      if !verify_anchor(anchor):
-        report.must_fix("##{issue.number} 锚点 #{anchor} 失效")
-
-    if !body.contains("依赖"):
-      report.must_fix("##{issue.number} 缺依赖行")
-
-  return report
+report = SebasAgents::Verifier.verify_docs(paths, root: Dir.pwd)
+report.blockers.map(&:message)     # 阻断
+report.must_fix_items.map(&:message) # 应修
+report.conclusion                  # "通过" / "打回" / "有条件通过"
 ```
+
+结论只来自实际跑出的命令输出；跑不了写 `unverified`，不编证据。
+
+## 可执行实现：issue 批量抽验
+
+```sh
+ruby tools/sebas-process verify merge <pr> <issue>   # 合并状态与 issue 关闭口径
+```
+
+批量结构对账（父子关系、批次齐全、既有卡零扰动）由只读 `gh` 查询组合完成：
+
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
+
+gateway = SebasAgents::GithubGateway.new(runner, repo: "ShiningRay/sebas")
+snapshot = gateway.snapshot
+SebasAgents::Verifier.verify_merge(pr_number, issue_number, snapshot)
+```
+
+每条结论锚到实际 API 返回；查不到的写“未实测”。
 
 ## 与其他角色的交互
 

@@ -6,7 +6,7 @@ BIN = bin/sebas
 export TMP := $(shell cygpath -w /tmp 2>/dev/null || echo /tmp)
 export TEMP := $(TMP)
 
-.PHONY: build spec lint lint-build release format format-check drill clean check docs-check
+.PHONY: build spec lint lint-build release format format-check drill clean check docs-check agents-check
 
 build:
 	@mkdir -p $(dir $(BIN))
@@ -15,9 +15,16 @@ build:
 spec:
 	crystal spec
 
-# 文档自检：死链、失效行号锚、单文件体量。只用 python 标准库。
+# 文档自检：死链、失效行号锚、单文件体量。只用 Ruby 标准库。
 docs-check:
-	python3 tools/check_docs.py
+	ruby tools/check_docs.rb
+
+# Agent 流程工具：策略层单测 + 文档示例与实现一致性。均不访问网络。
+agents-check:
+	ruby tools/test_sebas_process.rb
+	ruby tools/test_sebas_process_regressions.rb
+	ruby tools/test_docs_examples.rb
+	ruby tools/test_oneline_sheet.rb
 
 # ameba 是 development dependency；未构建时先构建，再运行
 lint: lint-build

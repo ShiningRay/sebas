@@ -22,7 +22,7 @@ shards install
 crystal spec                          # 0 failures
 crystal tool format --check           # 不许手改格式
 crystal build -o bin/ameba lib/ameba/bin/ameba.cr && ./bin/ameba   # 0 issues
-python tools/check_docs.py            # FAIL=0（WARN 可接受，仅限 docs/design/review/ 存档）
+ruby tools/check_docs.rb            # FAIL=0（WARN 可接受，仅限 docs/design/review/ 存档）
 ```
 
 CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + release build + docs-check。
@@ -58,7 +58,7 @@ docs/
     review/            # 历史门禁/验收存档（行号锚保留，行版口径）
   examples/            # 示例插件与配置
 tools/
-  check_docs.py        # 文档质量门禁
+  check_docs.rb        # 文档质量门禁
 .github/
   workflows/           # ci.yml / release.yml / auto-release.yml / mruby-sandbox.yml / dependency-check.yml
   actions/setup/       # composite setup action
@@ -69,12 +69,13 @@ scripts/
 ## 代码约定
 
 - 源码注释与设计文档用中文；对外文档（README / CONTRIBUTING / issue 模板）英文优先带中文要点。
+- 新流程参考实现与自动化脚本使用 Ruby/Shell；不新增 Python 脚本。
 - 目录按 `docs/design/design.md` 的章节分层，新增模块须回写对应章节。
 - 用 `crystal tool format` 格式化，不手改。
 - 平台相关代码用 `{% if flag?(:windows) %}` 等宏 flag 隔离，三平台都能编译。
   Windows-only FFI 独立文件。
 - spec 用 `Dir.tempdir`，不依赖 `$TEMP` 等平台特定环境变量。
-- 引用文档用 `§节号` 或文件路径，不用行号（`tools/check_docs.py` 拦截行号锚）。
+- 引用文档用 `§节号` 或文件路径，不用行号（`tools/check_docs.rb` 拦截行号锚）。
 - 单文件不超 400 行，超过告警。
 
 ## 分支与 PR
@@ -91,7 +92,7 @@ scripts/
 - milestone 编码：title 带 `M<N>` 前缀，description 首两行 `order:` + `track:`（main/parallel）。
 - active milestone 判定：按 order 排序后第一个 `open_issues > 0` 且 `track=main` 的。
 - 任何时刻只有 1 个 active 主线 milestone，并行轨上限 2 条。
-- 开工三闸：在 active milestone 内 / DAG 前置全关 / 外部依赖就绪。
+- 开工三闸：在 active milestone 内 / WP「依赖」字段的前置已有完成证据 / 外部依赖就绪。DAG 图仅用于排期展示。
 
 ## Issue 处理
 
@@ -132,6 +133,9 @@ scripts/
 | Release Manager | AI | 发版执行与产物校验 |
 
 详细职责与工作逻辑见 `docs/design/process/<role>.md`。
+
+**直接起角色 Agent**：`ruby tools/sebas-process roles <role>` 输出该角色的规格路径、可执行命令和可粘贴提示词；
+默认 dry-run，`--apply` 才写。见 `docs/design/process/quickstart.md`。
 
 ## 安全红线
 

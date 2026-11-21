@@ -3,6 +3,42 @@
 > 角色性质：**AI**（ZCode agent / DimAgent），有代码写权限。
 > Implementer 是所有工作包的实际执行者，负责从分支创建到 PR 合并的全流程。
 
+## 开工前必读
+
+本文只写职责与边界，不重复选卡算法。三件事各有唯一权威来源：
+
+| 你要知道的事 | 唯一权威 | 入口命令 |
+|---|---|---|
+| 现在该做哪张卡、依赖是否满足、证据是否有效 | [implementer-loop.md](implementer-loop.md) | `ruby tools/sebas-process next` |
+| 命令参数、退出码、各角色最小命令 | [quickstart.md](quickstart.md) | — |
+| 仓库级红线与质量门禁 | [AGENTS.md](../../../AGENTS.md) | — |
+
+因此开工会话的第一步固定是：
+
+```sh
+ruby tools/sebas-process next
+```
+
+它返回 `ok` 与一个 `action`，只按该 action 行事。完整枚举：
+
+| action | 含义 | 你要做的 |
+|---|---|---|
+| `claim_issue` | 认领新卡 | `claim <issue> --dry-run` → `--apply`，再启动 Harness |
+| `resume_issue` | 续做已认领、尚无 PR 的卡 | 沿用本地记录里的 worktree |
+| `resume_pr` | 自己的在途 PR 需要推进 | 修 review / CI / BEHIND，或核验后合并 |
+| `wait` | 等 CI 或 review | 不做新卡，等下次运行 |
+| `blocked` | 无就绪卡 | 停，把 `excluded` 原因报告 Maintainer |
+| `needs_human` | 需要人决策 | 停，报告 Maintainer |
+| `invalid_plan` | 元数据/依赖冲突 | 停，报告 Maintainer，不改数据 |
+| `handoff_release` | 工作卡已清 | 停，交发版流程 |
+| `idle` | 全部收口 | 停 |
+
+`invalid_plan` / `needs_human` / `blocked` 三种必须立即停并回报，不要自己改选。
+JSON 字段与判定算法见 [implementer-loop.md](implementer-loop.md) §2–§4。
+
+`next` 返回 `claim_issue` 时再走 `claim <issue> --dry-run` → `--apply`，
+然后按下文流程实现。**不要用 issue 编号、标题或 DAG 图自行推断顺序。**
+
 ## 职责范围
 
 ### 1. 工作包实现
@@ -10,13 +46,15 @@
 接收 Maintainer 下达的工作包（issue），完成从分支创建到 PR 合并的全流程：
 
 ```
-读 issue 的「目标 / 契约来源 / 验收」三节
-  → 确认三道开工闸（active milestone / DAG 前置 / 外部依赖）
+ruby tools/sebas-process next              # 确定唯一动作，别自己挑
+  → claim <issue> --dry-run → --apply     # 原子认领，写本地运行记录
+  → 读 issue 的「目标 / 契约来源 / 验收」三节
   → 从 main 拉分支 feat/… 或 fix/… 或 docs/…
   → 实现，跑本地三门禁（crystal spec / format --check / ameba）
   → 提 PR，body 写 "Fixes #<issue号>"
   → 处理 CodeRabbit review：逐条修 → reply → resolve
   → 循环直到 unresolved=0 且 mergeStateStatus=CLEAN
+  → Verifier 核验 + Reviewer 终验 + Evidence 回填（缺一不合并）
   → squash 合并
   → 回 issue 填「证据」节
 ```
@@ -58,8 +96,8 @@ gh pr update-branch  # 或 gh api 调 update-branch
 
 ### 串行原则
 
-Implementer 同时只处理一个 PR。单工作树 + 合并互斥，避免交叉污染。
-用户在同一目录并行开发时，Implementer 必须用独立 worktree。
+Implementer 同时只处理一个 PR、一个活动写入 worktree，合并互斥以避免交叉污染。
+人工暂停可保留非活动 worktree；用户在同一目录并行开发时，Implementer 必须用独立 worktree。
 
 ### 推送前必查
 
@@ -91,7 +129,6 @@ git log --oneline HEAD..origin/<branch>  # 远端是否有别人的新提交
 ## 验收标准自查
 
 PR 合并前，Implementer 自查 issue 的「验收」节每一条是否都有证据：
-
 - spec 通过数（CI run 链接）*
 - ameba 0 issues（CI run 链接）*
 - format 绿（CI run 链接）*
@@ -103,82 +140,46 @@ CI 的 changes job 会跳过这些步骤，以 docs-check 和 review 意见清�
 
 缺任一条 → 不合并，先补证据。
 
-## 伪代码：完整工作包执行
+## 合并前置（缺一不可）
 
-```pseudo
-function execute_work_package(issue):
-  # 开工闸
-  assert issue.milestone == active_milestone()
-  assert all_dependencies_closed(issue)
-  assert external_deps_ready(issue)
-
-  branch = create_branch("feat/#{issue.number}-#{slug(issue.title)}")
-  worktree = create_worktree(branch)  # 独立工作树
-
-  # 实现
-  implement(issue, worktree)
-  run_local_gates(worktree)  # spec + format + ameba
-
-  # 提 PR
-  pr = create_pr(branch, body="Fixes ##{issue.number}\n\n#{summary}")
-
-  # 修复循环（repair_round 只计实际修复，CI 等待不消耗轮次）
-  repair_round = 0
-  consecutive_stall = 0
-  for iteration in 1..30:  # 外层迭代上限防死循环
-    if pr.mergeStateStatus == "CLEAN" && get_unresolved_review_threads(pr).empty?:
-      break
-
-    if repair_round >= 5:
-      consult_fresh_agent(pr)  # 会诊
-      break
-
-    if pr.mergeStateStatus == "BEHIND":
-      gh_pr_update_branch(pr)
-      wait_for_ci(pr)
-      continue  # 不计 repair_round
-
-    threads = get_unresolved_review_threads(pr)
-    ci_failures = get_ci_failures(pr)
-    ci_pending = get_ci_pending(pr)
-
-    if threads.empty? && ci_failures.empty?:
-      if ci_pending.any?:
-        wait_for_ci(pr)  # CI 还在跑，等完再重新评估，不计 repair_round
-        continue
-      else:
-        break
-
-    # 有实际修复工作，计入 repair_round
-    repair_round += 1
-
-    for thread in threads:
-      fix_or_reply(thread, worktree)
-      resolve_thread(thread)
-
-    for failure in ci_failures:
-      root_cause = read_log_before_first_error(failure)
-      fix(root_cause, worktree)
-
-    run_local_gates(worktree)
-    git_fetch_and_check_remote(branch)
-    push(worktree, branch)
-    wait_for_ci(pr)
-
-    if no_progress_this_round(repair_round):
-      consecutive_stall += 1
-    else:
-      consecutive_stall = 0
-
-    if consecutive_stall >= 2:
-      consult_fresh_agent(pr)  # 会诊
-      break
-
-  # 合并
-  if pr.mergeStateStatus == "CLEAN" && get_unresolved_review_threads(pr).empty?:
-    squash_merge(pr)
-    verify_merged(pr)  # 远程复核 state=MERGED
-    fill_issue_evidence(issue, pr)
-  else:
-    escalate_to_maintainer(issue, pr, reason)
+```sh
+ruby tools/sebas-process verify merge <pr> <issue>   # 退出码 0 才继续
 ```
+
+必须同时满足：
+
+1. `verify merge` 返回 `ok: true` 且退出码 0（PR 已合并状态与 issue 关闭口径一致）。
+2. Verifier 核验结论无 `blocker` / `must_fix`。
+3. Reviewer 终验结论为 `通过`（`有条件通过` 需 Maintainer 裁决，Implementer 不得自行合并）。
+4. issue 的 `Evidence` 块由 Maintainer 登记且状态为 `accepted`。
+5. `mergeStateStatus=CLEAN` 且未解决 review thread 为 0。
+
+Implementer **不能自己验收**：Verifier 与 Reviewer 必须是独立上下文。
+`gh pr merge` 是写操作，没有 dry-run；执行前先用 `verify merge` 和一次 `next` 确认状态。
+
+## 可执行实现：完整工作包执行
+
+实现位于 `tools/agents/lib/sebas_agents/`，入口为 `tools/sebas-process`。
+下文所有 Ruby 代码块都是仓库内真实文件，可直接 `require` 或跑测试，不是伪代码。
+
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
+
+# 只读选卡：输出单一动作，不写任何东西。
+action = SebasAgents::Policy::Selection.select_action(snapshot, record: run_record)
+# => #<data SebasAgents::Model::Action action="claim_issue", ...>
+
+# 认领前再核一次依赖，避免快照过期。
+evaluation = SebasAgents::Policy::Dependencies.evaluate(issue, snapshot)
+evaluation.ready? # => true / false
+```
+
+执行器入口（写操作集中于此，默认 dry-run）：
+
+```sh
+ruby tools/sebas-process next
+ruby tools/sebas-process claim <issue> --apply
+```
+
+完整要求的命令序列见 [quickstart.md](quickstart.md) 与
+[implementer-loop.md](implementer-loop.md) §3.4。

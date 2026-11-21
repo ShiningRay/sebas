@@ -179,7 +179,7 @@ jobs:
         run: make lint
 
   # 文档自检：死链、失效行号锚、单文件体量。不依赖 changes——纯文档改动恰恰是
-  # 它唯一要拦的场景，走 skip 就成了空门。脚本只用标准库，ubuntu-latest 自带 python3。
+  # 它唯一要拦的场景，走 skip 就成了空门。脚本只用 Ruby 标准库，ubuntu-latest 自带 ruby。
   docs:
     name: docs
     runs-on: ubuntu-latest
@@ -190,11 +190,27 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Show Ruby version
+        run: ruby -v
+
       - name: Test the docs checker itself
-        run: python3 tools/test_check_docs.py
+        run: ruby tools/test_check_docs.rb
 
       - name: Check docs links, anchors and size
-        run: python3 tools/check_docs.py
+        run: ruby tools/check_docs.rb
+
+      - name: Test agent process tools
+        run: |
+          ruby tools/test_sebas_process.rb
+          ruby tools/test_sebas_process_regressions.rb
+          ruby tools/test_docs_examples.rb
+          ruby tools/test_oneline_sheet.rb
+
+      - name: Smoke test agent CLI
+        run: |
+          ruby tools/sebas-process version
+          ruby tools/sebas-process roles --one-line
+          ruby tools/sebas-process help
 
   # 三平台 release 构建成本最高，只在 main 与手动触发时跑；PR 由 spec 覆盖
   # 编译正确性。下面的 if 保证 PR 不会进入这里，因此 macOS 直接走 self-hosted。

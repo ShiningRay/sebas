@@ -69,11 +69,14 @@
 
 `review/` 下的报告是**存档证据**，其中出现的行号是当时那一版文件的行号，检索时按「行版」口径读，不再回改。
 
-## 开发流程 `process/`（8 篇）
+## 开发流程 `process/`（11 篇）
 
 | 文件 | 主题 |
 |---|---|
 | [process/README.md](process/README.md) | 流程索引与核心原则 |
+| [process/oneline.md](process/oneline.md) | 一句话开工速查表：每个角色一行，直接粘进 Harness |
+| [process/quickstart.md](process/quickstart.md) | 克隆后用 `tools/sebas-process` 起各角色 Agent |
+| [process/implementer-loop.md](process/implementer-loop.md) | 单 Implementer 选卡、续跑与收口契约 |
 | [process/development-workflow.md](process/development-workflow.md) | 开发工作流总纲：分支模型、里程碑、issue、验收、发版 |
 | [process/maintainer.md](process/maintainer.md) | Maintainer（人）：决策与裁决 |
 | [process/implementer.md](process/implementer.md) | Implementer（AI）：实现与交付 |
@@ -90,6 +93,6 @@
 
 ## 维护约定
 
-- **引用一律用 `§锚` 或具体文件路径**，不用行号；`tools/check_docs.py` 会在 CI 拦截行号锚与死链。
+- **引用一律用 `§锚` 或具体文件路径**，不用行号；`tools/check_docs.rb` 会在 CI 拦截行号锚与死链。
 - 新增设计内容写进 `spec/` 对应章并在 `spec/README.md` 登记；新增计划内容写进 `plan/` 对应节并在 [plan/README.md](plan/README.md) 登记。
-- 单文件超过 400 行时 `check_docs.py` 会告警，提示拆分。
+- 单文件超过 400 行时 `check_docs.rb` 会告警，提示拆分。

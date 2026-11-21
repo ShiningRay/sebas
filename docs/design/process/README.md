@@ -10,6 +10,9 @@
 | 文件 | 内容 |
 |---|---|
 | [development-workflow.md](development-workflow.md) | 分支模型、里程碑排期、issue 生命周期、验收体系、发版流程、角色总览 |
+| [oneline.md](oneline.md) | 一句话开工速查表：每个角色一行，直接粘进 Harness |
+| [quickstart.md](quickstart.md) | 克隆仓库后如何用 `tools/sebas-process` 在 5 分钟内启动各角色 Agent |
+| [implementer-loop.md](implementer-loop.md) | 单 Implementer 的选卡、续跑与收口契约（可执行实现见 `tools/sebas-process`） |
 
 ## Agent 角色
 

@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# sebas-process：执行 docs/design/process 角色流程的确定性入口。
+# 默认 dry-run；--apply 才写。详见 ruby tools/sebas-process help。
+require_relative "agents/lib/sebas_agents"
+
+exit SebasAgents::CLI.new.run(ARGV)

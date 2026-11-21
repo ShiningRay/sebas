@@ -1,0 +1,433 @@
+# frozen_string_literal: true
+
+# 对应 2026-11-21 只读复核列出的缺陷，逐条固化为回归用例。
+# 每条都曾在真实命令上复现过，不是推测。
+require "minitest/autorun"
+require "json"
+require "stringio"
+require "tmpdir"
+require "fileutils"
+require_relative "agents/lib/sebas_agents"
+require_relative "test_sebas_process"
+
+class CliRobustnessTest < Minitest::Test
+  include SnapshotHelpers
+
+  def run_cli(argv)
+    out = StringIO.new
+    err = StringIO.new
+    status = SebasAgents::CLI.new(out: out, err: err).run(argv)
+    [status, out.string, err.string]
+  end
+
+  def with_snapshot(data)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      yield path, dir
+    end
+  end
+
+  # 阻断 1
+  def test_version_exits_zero
+    status, out, = run_cli(["version"])
+    assert_equal 0, status
+    assert_equal "sebas-process", JSON.parse(out)["name"]
+  end
+
+  # 阻断 2
+  def test_docs_check_command_runs
+    status, out, = run_cli(%w[docs-check])
+    assert_includes [0, 1], status
+    assert_includes out, "Markdown"
+  end
+
+  # 阻断 3：git 输出带尾换行会拼出非法 revision。
+  # 不依赖仓库真实 tag：直接验证 Release.plan 的纯逻辑 + CLI 的 strip 行为。
+  def test_release_plan_strips_git_output
+    planner = SebasAgents::Release.plan(latest_tag: "v0.1.0", subjects: ["fix(a): b"])
+    assert_equal "patch", planner["action"]
+    assert_equal "0.1.1", planner["next_version"]
+  end
+
+  def test_release_plan_rejects_unstripped_tag
+    # 防御：若调用方忘了 strip，必须明确报错而不是拼出 "v0.1.0\n..HEAD"
+    assert_raises(SebasAgents::UsageError) do
+      SebasAgents::Release.plan(latest_tag: "v0.1.0\n", subjects: ["fix(a): b"])
+    end
+  end
+
+  def test_release_plan_without_tag_is_usage_error
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        system("git", "init", "-q", out: File::NULL, err: File::NULL)
+        status, out, = run_cli(%w[release plan])
+        assert_equal 2, status
+        assert_equal "command_failed", JSON.parse(out)["error"]["code"]
+      end
+    end
+  end
+
+  # 阻断 7 / 应修 20：空快照不能变成 idle
+  def test_empty_snapshot_is_rejected
+    with_snapshot({}) do |path, dir|
+      status, out, = run_cli(["next", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+      assert_equal "invalid_plan", JSON.parse(out)["error"]["code"]
+    end
+  end
+
+  def test_snapshot_without_main_sha_is_rejected
+    data = snapshot(issues: []).merge("main_sha" => "")
+    with_snapshot(data) do |path, dir|
+      status, out, = run_cli(["next", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+      assert_includes out, "main_sha"
+    end
+  end
+
+  # 阻断 16：异常必须是可解析 JSON + 退出码 2
+  def test_missing_snapshot_file_is_json_error
+    status, out, = run_cli(["next", "--snapshot", "/definitely/not/here.json"])
+    assert_equal 2, status
+    assert_equal "usage_error", JSON.parse(out)["error"]["code"]
+  end
+
+  def test_non_numeric_issue_is_json_error
+    status, out, = run_cli(%w[claim abc])
+    assert_equal 2, status
+    assert_equal "usage_error", JSON.parse(out)["error"]["code"]
+    refute_includes out, "backtrace"
+  end
+
+  def test_malformed_anchors_json_is_json_error
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "a.json")
+      File.write(path, "{not json", encoding: "UTF-8")
+      status, out, = run_cli(["verify", "anchors", path])
+      assert_equal 2, status
+      assert_equal "usage_error", JSON.parse(out)["error"]["code"]
+    end
+  end
+
+  def test_missing_verifier_report_is_json_error
+    status, out, = run_cli(["review", "/nope/report.json", "--fixes", "/nope/fixes.json"])
+    assert_equal 2, status
+    assert_equal "usage_error", JSON.parse(out)["error"]["code"]
+  end
+
+  # 阻断 11：claim 必须拒绝不该开工的卡
+  def test_claim_rejects_closed_issue
+    data = snapshot(issues: [issue(1, body: automation, state: "CLOSED", state_reason: "COMPLETED")])
+    with_snapshot(data) do |path, dir|
+      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+      refute JSON.parse(out)["ok"]
+    end
+  end
+
+  def test_claim_rejects_needs_human
+    data = snapshot(issues: [issue(1, body: automation, labels: ["needs:human"])])
+    with_snapshot(data) do |path, dir|
+      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+      assert_includes out, "needs:human"
+    end
+  end
+
+  def test_claim_rejects_tracking_kind
+    data = snapshot(issues: [issue(1, body: automation(kind: "tracking"))])
+    with_snapshot(data) do |path, dir|
+      status, _out, = run_cli(["claim", "1", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+    end
+  end
+
+  def test_claim_rejects_card_with_open_pr
+    pr = {"number" => 9, "state" => "OPEN", "closing_issues" => [1], "checks" => [], "review_threads" => []}
+    data = snapshot(issues: [issue(1, body: automation)], pull_requests: [pr])
+    with_snapshot(data) do |path, dir|
+      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+      assert_includes out, "PR"
+    end
+  end
+
+  def test_claim_refuses_when_another_card_is_in_progress
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: ["agent:in-progress"]),
+      issue(2, body: automation(order: [4, 2]))
+    ])
+    with_snapshot(data) do |path, dir|
+      status, out, = run_cli(["claim", "2", "--snapshot", path, "--record", File.join(dir, "r.json")])
+      assert_equal 1, status
+      assert_includes out, "活动认领"
+    end
+  end
+
+  # 阻断 12：resume 必须核对远端认领
+  def test_resume_requires_remote_claim
+    data = snapshot(issues: [issue(1, body: automation)])
+    with_snapshot(data) do |path, dir|
+      record = File.join(dir, "run.json")
+      File.write(record, JSON.generate({"schema" => 1, "issue" => 1, "phase" => "claimed"}), encoding: "UTF-8")
+      status, out, = run_cli(["resume", "1", "--snapshot", path, "--record", record, "--apply"])
+      assert_equal 1, status
+      assert_includes out, "agent:in-progress"
+      saved = JSON.parse(File.read(record, encoding: "UTF-8"))
+      assert_equal "claimed", saved["phase"], "被拒绝时不得改 phase"
+    end
+  end
+
+  # 阻断 13：未知 level 不得静默丢弃
+  def test_review_rejects_unknown_level
+    Dir.mktmpdir do |dir|
+      report = File.join(dir, "verification.json")
+      fixes = File.join(dir, "fixes.json")
+      File.write(report, JSON.generate({"items" => [{"level" => "must-fix", "message" => "x"}]}), encoding: "UTF-8")
+      File.write(fixes, "{}", encoding: "UTF-8")
+      status, out, = run_cli(["review", report, "--fixes", fixes])
+      assert_equal 2, status
+      assert_includes out, "must-fix"
+    end
+  end
+
+  # 阻断 14：可留项必须有复核结论
+  def test_review_requires_acceptable_recheck
+    Dir.mktmpdir do |dir|
+      report = File.join(dir, "verification.json")
+      fixes = File.join(dir, "fixes.json")
+      File.write(report, JSON.generate({"items" => [{"level" => "acceptable", "message" => "可留"}]}), encoding: "UTF-8")
+      File.write(fixes, "{}", encoding: "UTF-8")
+      status, out, = run_cli(["review", report, "--fixes", fixes])
+      assert_equal 1, status
+      assert_includes JSON.parse(out)["conclusion"], "打回"
+    end
+  end
+
+  # --help 不得有副作用
+  def test_help_does_not_write_run_record
+    data = snapshot(issues: [issue(1, body: automation)])
+    with_snapshot(data) do |path, dir|
+      record = File.join(dir, "run.json")
+      run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply", "--help"])
+      refute File.exist?(record), "--help 不得产生副作用"
+    end
+  end
+
+  # 应修 12：needs_model 是「判断步骤」而非「判定值」，两者必须可区分但不能混用
+  def test_needs_model_steps_are_not_decisions
+    data = snapshot(issues: [issue(1, body: "bug 描述")])
+    snap = SebasAgents::Model::Snapshot.from_hash(data)
+    plan = SebasAgents::Triager.plan(snap.issue(1), snap)
+
+    steps = plan["needs_model"]
+    assert_includes steps, "duplicate"
+    assert_includes steps, "reproduce"
+    # 判断步骤里凡是「本身就是判定值」的，必须被接受
+    (steps & SebasAgents::Triager::DECISIONS).each do |decision|
+      with_snapshot(data) do |path, _dir|
+        verdict = File.join(Dir.mktmpdir, "verdict.json")
+        File.write(verdict, JSON.generate({"decision" => decision, "body" => "x"}), encoding: "UTF-8")
+        status, out, = run_cli(["triage", "1", "--snapshot", path, "--verdict", verdict])
+        refute_equal 2, status, "#{decision} 不应触发用法错误"
+        refute_includes out, "未知 triage 判定"
+      ensure
+        FileUtils.rm_f(verdict) if defined?(verdict)
+      end
+    end
+  end
+
+  def test_unknown_verdict_is_rejected
+    data = snapshot(issues: [issue(1, body: "bug 描述")])
+    with_snapshot(data) do |path, _dir|
+      verdict = File.join(Dir.mktmpdir, "verdict.json")
+      File.write(verdict, JSON.generate({"decision" => "reproduce"}), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "1", "--snapshot", path, "--verdict", verdict])
+      assert_equal 2, status
+      assert_includes out, "未知 triage 判定"
+    ensure
+      FileUtils.rm_f(verdict) if defined?(verdict)
+    end
+  end
+end
+
+class PolicyRegressionTest < Minitest::Test
+  include SnapshotHelpers
+
+  # 阻断 8：暂停恢复不应依赖 in-progress 标签
+  def test_resume_paused_card_without_claim_label
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: %w[needs:human agent:resume]),
+      issue(2, body: automation(order: [4, 2]))
+    ])
+    action = select(data)
+    assert_equal "resume_issue", action.action
+    assert_equal 1, action.issue
+  end
+
+  # 阻断 9：needs:human + CLEAN PR 不得推进合并
+  def test_needs_human_with_clean_pr_waits
+    pr = {
+      "number" => 9, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}],
+      "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, labels: %w[needs:human agent:in-progress])],
+      pull_requests: [pr]
+    )
+    action = select(data, record: {"issue" => 1, "pr" => 9})
+    assert_equal "needs_human", action.action
+    refute_includes action.reason, "squash"
+  end
+
+  # 未建 PR 的暂停也必须报 needs_human，不能去开别的卡
+  def test_paused_card_without_claim_blocks_new_work
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: ["needs:human"]),
+      issue(2, body: automation(order: [4, 2]))
+    ])
+    action = select(data)
+    assert_equal "needs_human", action.action
+    assert_equal 1, action.issue
+  end
+
+  # 阻断 10：已有 open PR 的卡不得重复认领
+  def test_card_with_open_pr_is_excluded_from_selection
+    pr = {"number" => 9, "state" => "OPEN", "closing_issues" => [1], "checks" => [], "review_threads" => []}
+    data = snapshot(issues: [
+      issue(1, body: automation(order: [4, 1])),
+      issue(2, body: automation(order: [4, 2]))
+    ], pull_requests: [pr])
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 2, action.issue
+    assert(action.excluded.any? { |item| item["issue"] == 1 })
+  end
+
+  # 应修 3：非法 milestone state
+  def test_invalid_milestone_state_is_rejected
+    data = snapshot(issues: [], milestones: [
+      {"number" => 2, "title" => "M", "state" => "paused", "open_issues" => 1, "description" => "order: 4\ntrack: main\n"}
+    ])
+    error = assert_raises(SebasAgents::InvalidPlan) { select(data) }
+    assert_includes error.message, "state"
+  end
+
+  # 应修 5：order "4" 与 "04" 重复
+  def test_order_with_leading_zero_is_duplicate
+    data = snapshot(issues: [], milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 1),
+      {"number" => 3, "title" => "M", "state" => "open", "open_issues" => 1, "description" => "order: 04\ntrack: main\n"}
+    ])
+    error = assert_raises(SebasAgents::InvalidPlan) { select(data) }
+    assert_includes error.message, "重复"
+  end
+
+  # 应修 6：open_issues 缓存为 0 但仍有 open 卡
+  def test_stale_open_issues_does_not_cause_handoff
+    data = snapshot(
+      issues: [issue(1, body: automation)],
+      milestones: [milestone(number: 2, order: "4", track: "main", open_issues: 0)]
+    )
+    action = select(data)
+    assert_equal "claim_issue", action.action
+  end
+
+  # 应修 4：milestone 类型归一化
+  def test_string_milestone_matches
+    data = snapshot(
+      issues: [issue(1, body: automation).merge("milestone" => "2")],
+      milestones: [milestone(number: 2, order: "4", track: "main", open_issues: 1)]
+    )
+    assert_equal "claim_issue", select(data).action
+  end
+end
+
+class GatewayRegressionTest < Minitest::Test
+  # 阻断 6：GraphQL 出错不得当成无 thread
+  def test_graphql_error_is_not_empty_threads
+    runner = SebasAgents::CommandRunner.new(dry_run: false)
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    runner.define_singleton_method(:json!) { |*_args| {"errors" => [{"message" => "boom"}]} }
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_review_threads, 5) }
+    assert_includes error.message, "reviewThreads"
+  end
+
+  def test_graphql_null_data_is_not_empty_threads
+    runner = SebasAgents::CommandRunner.new(dry_run: false)
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    runner.define_singleton_method(:json!) { |*_args| {"data" => {"repository" => nil}} }
+    assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_review_threads, 5) }
+  end
+
+  # 阻断 7：分页返回错误体不得变成空列表
+  def test_pagination_error_body_raises
+    runner = SebasAgents::CommandRunner.new(dry_run: false)
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    runner.define_singleton_method(:json!) { |*_args| {"message" => "Bad credentials"} }
+    assert_raises(SebasAgents::CommandError) { gateway.send(:paginate, "repos/o/r/issues") }
+  end
+
+  # 应修 1：StatusContext PENDING 不得判绿
+  def test_pending_status_context_is_not_green
+    runner = SebasAgents::CommandRunner.new(dry_run: false)
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    checks = gateway.send(:normalize_checks, [{"context" => "ci", "state" => "PENDING"}])
+    pr = SebasAgents::Model::PullRequest.from_hash("number" => 1, "checks" => checks)
+    refute pr.checks_green?
+  end
+end
+
+class VerifierRegressionTest < Minitest::Test
+  include SnapshotHelpers
+
+  # 阻断 15：锚点越界
+  def test_anchor_line_out_of_range_is_blocker
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "src"))
+      File.write(File.join(dir, "src", "x.cr"), "line1\n", encoding: "UTF-8")
+      report = SebasAgents::Verifier.verify_code_anchors(
+        [{"file" => "src/x.cr", "line" => 999, "content" => "line1"}], root: dir
+      )
+      refute report.pass?
+      assert_equal 1, report.blockers.length
+    end
+  end
+
+  def test_anchor_line_zero_is_blocker
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "src"))
+      File.write(File.join(dir, "src", "x.cr"), "line1\n", encoding: "UTF-8")
+      report = SebasAgents::Verifier.verify_code_anchors(
+        [{"file" => "src/x.cr", "line" => 0, "content" => "line1"}], root: dir
+      )
+      refute report.pass?
+    end
+  end
+
+  def test_anchor_without_content_is_blocker
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "src"))
+      File.write(File.join(dir, "src", "x.cr"), "line1\n", encoding: "UTF-8")
+      report = SebasAgents::Verifier.verify_code_anchors(
+        [{"file" => "src/x.cr", "line" => 1}], root: dir
+      )
+      refute report.pass?
+    end
+  end
+
+  # 应修 2：失败检查必须阻断
+  def test_verify_merge_blocks_on_failing_checks
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{
+        "number" => 10, "state" => "MERGED", "closing_issues" => [39],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "FAILURE"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data))
+    refute report.pass?
+  end
+end
