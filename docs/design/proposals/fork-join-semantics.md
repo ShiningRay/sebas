@@ -132,11 +132,11 @@ L1 回写消息 JSON 草案：[推演]
   "outcome": "settled | failed | expired | cancelled",
   "conclusions": [{"member": 1, "conclusion": "…", "decisions": ["…"]}],
   "effects": [{"level": "L1", "target": "path/or/peer", "action": "write|send|…", "status": "done|CONFLICT"}],
-  "members": [{"task_id": "fork:…:1", "session": "agent:…:internal:fork:…", "state": "done|failed|cancelled|late", "lines": 42}]
+  "members": [{"task_id": "fork:…:1", "session": "agent:…:internal:fork:…", "state": "done|failed|cancelled|running", "late": false, "lines": 42}]
 }
 ```
 
-枚举口径：`outcome` 的 `settled/cancelled/expired` 与 §4.2 回写状态机终态同名对应，`failed` 为折叠态——expectation 状态机仍落 `settled`、判定失败由 `result` 字段承载（§4.3 all 行；§9.2 全部失败行 settle(result=failed)）；`partial` **不是** outcome 值，超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载（§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）；`members[].state` 中 `done/failed` 即 tasks.status 原值（单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]），`cancelled` 为分身显式取消终态（§2.3 步骤 1），`late` 为 any 残余越过取消点者标注（§2.3 步骤 3）。
+枚举口径：`outcome` 的 `settled/cancelled/expired` 与 §4.2 回写状态机终态同名对应，`failed` 为折叠态——expectation 状态机仍落 `settled`、判定失败由 `result` 字段承载（§4.3 all 行；§9.2 全部失败行 settle(result=failed)）；`partial` **不是** outcome 值，超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载（§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）；`members[].state` 中 `done/failed` 即 tasks.status 原值（单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]），`cancelled` 为分身显式取消终态（§2.3 步骤 1），`running` 为回写时刻仍未达终态的成员（超时/过期场景尽力取消未及者，§9.2 超时行）——其最终终态以 tasks.status 为准，循 owner_task_id 找回（§9.2 父崩溃恢复行）；迟到与终态正交记录：`late` 布尔标注 any 残余越过取消点者（§2.3 步骤 3），成员终态仍由 `state` 如实承载，不互斥。
 
 回写幂等：以 memo 键 `join:<fork_id>:written` 先写后发（first-write-wins 先例 [来源: 仓库:src/platform/store/store.cr:369-383]），崩溃重放不重复回写。
 
@@ -271,7 +271,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 | 场景 | 语义 |
 |---|---|
 | 单分身失败 | `fail_task` 落库；不中断其他成员；`all` 下整体 outcome=failed（成功成员结论仍供父）；`allSettled` 下计入 settled_count |
-| 全部失败 | expectation settle(result=failed)；L1 回写全部失败明细（父不盲等） |
+| 全部失败 | `all`：expectation settle(result=failed)，L1 回写全部失败明细（父不盲等）；`allSettled`：正常 settle——失败计入 settled_count，整体仍 settled（§4.3）；`any`：不提前 settle——等 deadline 到期 → `expired`，全部失败明细回写（§4.3 any 行、§2.3 settle 判定补充） |
 | 超时 | `expired`；已完成成员照常回写（partial）；未完成成员尽力取消（§2.2 超时列） |
 | 部分取消 | any 模式残余处置（§2.3）；父显式取消走 §2.2 取消列 |
 | 父崩溃恢复 | expectation 持久 → 重启扫描 open/settling 续判；回写幂等（§3 memo 键）；分身任务循 owner_task_id 找回先例 [来源: 仓库:src/agents/subagent.cr:31-38] |
