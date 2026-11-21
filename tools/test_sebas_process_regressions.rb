@@ -42,12 +42,30 @@ class CliRobustnessTest < Minitest::Test
     assert_includes out, "Markdown"
   end
 
-  # 阻断 3
-  def test_release_plan_parses_git_output
-    status, out, = run_cli(%w[release plan])
-    assert_equal 0, status
-    payload = JSON.parse(out)
-    refute_nil payload["action"]
+  # 阻断 3：git 输出带尾换行会拼出非法 revision。
+  # 不依赖仓库真实 tag：直接验证 Release.plan 的纯逻辑 + CLI 的 strip 行为。
+  def test_release_plan_strips_git_output
+    planner = SebasAgents::Release.plan(latest_tag: "v0.1.0", subjects: ["fix(a): b"])
+    assert_equal "patch", planner["action"]
+    assert_equal "0.1.1", planner["next_version"]
+  end
+
+  def test_release_plan_rejects_unstripped_tag
+    # 防御：若调用方忘了 strip，必须明确报错而不是拼出 "v0.1.0\n..HEAD"
+    assert_raises(SebasAgents::UsageError) do
+      SebasAgents::Release.plan(latest_tag: "v0.1.0\n", subjects: ["fix(a): b"])
+    end
+  end
+
+  def test_release_plan_without_tag_is_usage_error
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        system("git", "init", "-q", out: File::NULL, err: File::NULL)
+        status, out, = run_cli(%w[release plan])
+        assert_equal 2, status
+        assert_equal "command_failed", JSON.parse(out)["error"]["code"]
+      end
+    end
   end
 
   # 阻断 7 / 应修 20：空快照不能变成 idle
