@@ -85,6 +85,13 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal :valid, ER.existing_evidence(body, subject: "issue:42")
   end
 
+  # 多个块：下游 JsonBlock.one 会拒绝，这里必须同口径判 invalid 而非取第一块跳过。
+  def test_duplicate_blocks_are_invalid
+    one_block = "```json evidence\n#{JSON.generate(block)}\n```"
+    body = "## 目标\nx\n\n#{one_block}\n\n#{one_block}\n"
+    assert_equal :invalid, ER.existing_evidence(body, subject: "issue:42")
+  end
+
   # --- issue 关联解析 ---
 
   def test_closing_issue_parses_fixes

@@ -256,6 +256,10 @@ module EvidenceRegister
     # 导致登记永远失败且重试无效。
     return :absent unless text.match?(/^```json evidence\s*$/m)
 
+    # 下游 JsonBlock.one 对同一 kind 的多块会拒绝，这里必须同口径：
+    # 只取第一块会漏掉冲突，导致「跳过」后下游仍报错且无法自愈。
+    return :invalid if text.scan(/^```json evidence\s*$/).length > 1
+
     block = parse_block(text)
     # 有 fence 却解析不出来 = 结构损坏，不能当成「没有证据」放行，
     # 否则会追加第二个块，或者把损坏块留在原地。
