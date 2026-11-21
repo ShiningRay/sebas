@@ -10,6 +10,11 @@ version: 2
 
 language: zh-CN
 
+# tone_instructions 会进入实际审阅提示；YAML 注释不会。
+tone_instructions: |
+  本仓库的约定优先于通用最佳实践。遇到与仓库约定冲突的建议时不要提。
+  同一类问题的多个实例请合并成一条意见，不要分散成多条。
+
 reviews:
   # chill：只报值得改的，不做无差别挑刺。
   profile: chill
@@ -22,6 +27,9 @@ reviews:
     enabled: true
     # 每推一个新 commit 重新审。仓库流程依赖这一点来收敛 review thread。
     auto_incremental_review: true
+    # 默认值是 5：达到阈值后自动暂停，与「push 后等再扫」的流程冲突。
+    # 0 表示不自动暂停。
+    auto_pause_after_reviewed_commits: 0
     drafts: false
 
   path_filters:
@@ -91,7 +99,7 @@ reviews:
         2. 加密参数（IV、tag、算法）不得弱化。
         3. 任何「为了调试方便」而绕过加密的改动应指出。
 
-  # 同类问题的多个实例合并成一条意见，避免多轮重复。
+  # 同类问题的多个实例合并成一条意见，避免多轮重复（由 tone_instructions 承载）。
   pre_merge_checks:
     title:
       mode: warning
