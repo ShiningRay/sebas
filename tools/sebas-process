@@ -3,6 +3,30 @@
 
 # sebas-process：执行 docs/design/process 角色流程的确定性入口。
 # 默认 dry-run；--apply 才写。详见 ruby tools/sebas-process help。
+
+# 代码依赖 Ruby 3.2+ 的 Data.define。低版本下直接报可执行的修复指引，
+# 而不是让调用方看到 uninitialized constant Data 这种内部错误。
+require "rubygems"
+
+REQUIRED_RUBY = "3.2"
+
+if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(REQUIRED_RUBY)
+  warn <<~MESSAGE
+    sebas-process 需要 Ruby >= #{REQUIRED_RUBY}（当前 #{RUBY_VERSION}）。
+    #{RUBY_DESCRIPTION}
+
+    修复方式（任选其一）：
+      1. 使用版本管理器会自动读取仓库根目录的 .ruby-version：
+           rbenv install && rbenv local    # rbenv
+           mise install                    # mise / asdf
+      2. 直接指定可执行文件：
+           RBENV_VERSION=$(cat .ruby-version) ruby tools/sebas-process ...
+
+    本命令不使用任何 gem，只需解释器版本正确。
+  MESSAGE
+  exit 2
+end
+
 require_relative "agents/lib/sebas_agents"
 
 exit SebasAgents::CLI.new.run(ARGV)

@@ -7,11 +7,21 @@
 ```sh
 git clone https://github.com/ShiningRay/sebas
 cd sebas
-ruby -v   # >= 3.2；只用标准库
+ruby -v   # >= 3.2（代码使用 Data.define）；rbenv/mise 会读取 .ruby-version
 gh auth status
 ```
 
 `tools/sebas-process` 只依赖 Ruby 标准库与 `gh` / `git` CLI，不需要 `bundle install`。
+
+仓库根目录有 `.ruby-version`（当前 `3.2.9`）。macOS 系统自带的 Ruby 是 3.0，低于要求；
+入口会在启动前检查并直接给出升级指引，不会抛出内部错误。
+
+```sh
+# rbenv
+rbenv install && rbenv local
+# mise / asdf
+mise install
+```
 
 仓库首次使用时，创建流程标签与维护者名单：
 
