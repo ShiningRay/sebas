@@ -104,6 +104,13 @@ module EvidenceRegister
 
       # 重新读取正文再写入：缩小覆盖并发编辑的窗口。
       fresh = gh_json("repos/#{repo}/issues/#{issue_number}")
+      fresh_untested = declared_untested(fresh["body"])
+      unless fresh_untested == untested
+        # 首读到写入之间有人改了「未实测」小节：此时登记会把新增项漏掉，
+        # 且评论与正文块会一致（都缺），下游无从发现。必须中止。
+        raise "issue ##{issue_number} 的「未实测」声明在登记期间发生变化：" \
+          "#{untested.inspect} → #{fresh_untested.inspect}；请重跑"
+      end
       updated = upsert_evidence_section(fresh["body"], block)
       gh_json("repos/#{repo}/issues/#{issue_number}",
         method: "PATCH", body: {"body" => updated})
@@ -179,13 +186,30 @@ module EvidenceRegister
 
   # 手动触发时 RUN_URL 为空，必须自己确认 CI 成功，
   # 否则会写出 checks 为空字符串的 accepted 证据。
+  #
+  # workflow_run 路径也要校验 user  commit 与 merge_commit 一致：
+  # PR head 上的 CI 可能在 PR 合并后才完成，此时它有成功的 run，
+  # 但它测的不是合入后的提交，不能拿它的 URL 当合并结果的证据。
   def resolve_checks_url(env, pr_number, out:)
     url = env["RUN_URL"].to_s.strip
-    return url unless url.empty?
+    run_sha = env["RUN_HEAD_SHA"].to_s.strip
+    request_sha = env["REQUEST_SHA"].to_s.strip
+
+    unless url.empty?
+      # 没有触发提交信息时无法做一致性比对，保持原有信任（workflow_run 必然带 head_sha）。
+      return url if run_sha.empty?
+
+      repo = env.fetch("GITHUB_REPOSITORY")
+      expected = request_sha.empty? ? gh_json("repos/#{repo}/pulls/#{pr_number}")["merge_commit_sha"].to_s : request_sha
+      if run_sha != expected
+        out.puts "fail: 触发 CI 的 commit #{run_sha[0, 8]} 与 merge commit #{expected[0, 8]} 不一致，拒绝登记"
+        return :failed
+      end
+      return url
+    end
 
     repo = env.fetch("GITHUB_REPOSITORY")
-    pr = gh_json("repos/#{repo}/pulls/#{pr_number}")
-    sha = pr["merge_commit_sha"].to_s
+    sha = gh_json("repos/#{repo}/pulls/#{pr_number}")["merge_commit_sha"].to_s
     runs = gh_json("repos/#{repo}/actions/runs?head_sha=#{sha}&per_page=20")
     success = Array(runs["workflow_runs"]).find { |r| r["name"] == "CI" && r["conclusion"] == "success" }
     unless success
@@ -223,8 +247,13 @@ module EvidenceRegister
 
   # :absent / :valid / :invalid
   def existing_evidence(body, subject:)
-    block = parse_block(body)
-    return :absent if block.nil?
+    text = body.to_s
+    return :absent unless text.include?(EVIDENCE_FENCE)
+
+    block = parse_block(text)
+    # 有 fence 却解析不出来 = 结构损坏，不能当成「没有证据」放行，
+    # 否则会追加第二个块，或者把损坏块留在原地。
+    return :invalid if block.nil?
 
     valid = block["schema"] == 1 &&
       block["subject"].to_s == subject &&

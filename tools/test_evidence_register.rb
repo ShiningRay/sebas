@@ -53,8 +53,13 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal :absent, ER.existing_evidence("## 目标\nx\n", subject: "issue:42")
   end
 
-  def test_malformed_evidence_is_absent
-    assert_equal :absent, ER.existing_evidence("```json evidence\n{not json}\n```", subject: "issue:42")
+  def test_malformed_evidence_is_invalid_not_absent
+    # 有 fence 但 JSON 损坏：不能当成「没有证据」放行，否则会追加第二个块。
+    assert_equal :invalid, ER.existing_evidence("```json evidence\n{not json}\n```", subject: "issue:42")
+  end
+
+  def test_fence_without_block_is_invalid
+    assert_equal :invalid, ER.existing_evidence("```json evidence\nno json here\n```", subject: "issue:42")
   end
 
   # --- issue 关联解析 ---
@@ -231,6 +236,36 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal "https://ci/1", ER.resolve_checks_url({"RUN_URL" => "https://ci/1"}, 1, out: StringIO.new)
   end
 
+  # 触发 CI 的提交与合并提交不一致时，不能拿该 CI 的 URL 当合并结果证据。
+  def test_checks_url_fails_when_run_sha_differs_from_merge_commit
+    ER.runner = lambda do |path, method: "GET", body: nil|
+      raise "unexpected #{path}" unless path =~ %r{/pulls/}
+
+      {"merge_commit_sha" => "merge111"}
+    end
+    out = StringIO.new
+    result = ER.resolve_checks_url(
+      {"GITHUB_REPOSITORY" => "o/r", "RUN_URL" => "https://ci/pr-head",
+       "RUN_HEAD_SHA" => "prhead222"},
+      1, out: out
+    )
+    assert_equal :failed, result
+    assert_includes out.string, "不一致"
+  ensure
+    ER.runner = nil
+  end
+
+  def test_checks_url_accepts_when_run_sha_matches_merge_commit
+    ER.runner = ->(_path, method: "GET", body: nil) { {"merge_commit_sha" => "same"} }
+    url = ER.resolve_checks_url(
+      {"GITHUB_REPOSITORY" => "o/r", "RUN_URL" => "https://ci/x", "RUN_HEAD_SHA" => "same"},
+      1, out: StringIO.new
+    )
+    assert_equal "https://ci/x", url
+  ensure
+    ER.runner = nil
+  end
+
   def test_checks_url_fails_without_successful_run
     ER.runner = lambda do |path, method: "GET", body: nil|
       case path
@@ -259,7 +294,7 @@ class EvidenceRegisterTest < Minitest::Test
     def call(path, method:, body: nil)
       @calls << [method, path]
       key = "#{method} #{path}"
-      value = @responses[key]
+      value = @responses.respond_to?(:call) ? @responses.call(key, @calls) : @responses[key]
       raise "gh api #{method} #{path} 失败" if value.nil? && method != "DELETE"
 
       value
@@ -371,5 +406,59 @@ class EvidenceRegisterTest < Minitest::Test
 
     assert_equal 1, code, "结构非法的既有证据必须 fail-closed"
     assert(calls.none? { |m, _| m != "GET" })
+  end
+
+  def test_malformed_existing_block_exits_nonzero_without_writes
+    fake = FakeGh.new(BASE_RESPONSES.merge(
+      "GET repos/o/r/issues/42" => {
+        "state" => "closed", "state_reason" => "completed",
+        "body" => "```json evidence\n{not json}\n```"
+      }
+    ))
+    code, calls, = run_with(fake, BASE_ENV)
+
+    assert_equal 1, code, "损坏的块不能被当成缺失而追加第二份"
+    assert(calls.none? { |m, _| m != "GET" }, "不得写入，calls=#{calls.inspect}")
+  end
+
+  # 首读到写入之间「未实测」小节被改动时，登记会漏掉新增项，必须中止。
+  def test_aborts_when_untested_declarations_change_mid_flight
+    issue_reads = 0
+    fake = FakeGh.new(lambda do |key, _calls|
+      case key
+      when "GET repos/o/r/pulls/99" then BASE_RESPONSES["GET repos/o/r/pulls/99"]
+      when "GET repos/o/r/issues/42"
+        issue_reads += 1
+        # 两次读取都带「未实测」小节，但内容不同——这才是真正的「期间被改」。
+        body = if issue_reads == 1
+          "## 目标\nx\n\n## 未实测\n\n- 原有的要求\n"
+        else
+          "## 目标\nx\n\n## 未实测\n\n- 原有的要求\n- 期间新增的要求\n"
+        end
+        {"state" => "closed", "state_reason" => "completed", "body" => body}
+      when "POST repos/o/r/issues/42/comments" then {"id" => 1, "html_url" => "https://gh/c/1"}
+      when "PATCH repos/o/r/issues/comments/1" then {}
+      end
+    end)
+
+    code, calls, = run_with(fake, BASE_ENV)
+    assert_equal 1, code, "声明变化必须中止登记"
+    # 未写入正文：PATCH issues/42 不应出现。
+    refute(calls.any? { |m, p| m == "PATCH" && p.end_with?("/issues/42") },
+      "不得写入正文，calls=#{calls.inspect}")
+  end
+
+  def test_does_not_abort_when_declarations_unchanged
+    fake = FakeGh.new(BASE_RESPONSES.merge(
+      "GET repos/o/r/issues/42" => {
+        "state" => "closed", "state_reason" => "completed",
+        "body" => "## 目标\nx\n\n## 未实测\n\n- 稳定的要求\n"
+      },
+      "POST repos/o/r/issues/42/comments" => {"id" => 1, "html_url" => "https://gh/c/1"},
+      "PATCH repos/o/r/issues/comments/1" => {},
+      "PATCH repos/o/r/issues/42" => {}
+    ))
+    code, = run_with(fake, BASE_ENV)
+    assert_equal 0, code, "声明未变时应正常登记"
   end
 end
