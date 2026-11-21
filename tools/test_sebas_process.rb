@@ -789,6 +789,30 @@ class DryRunGuardTest < Minitest::Test
     runner = SebasAgents::CommandRunner.new(dry_run: false)
     refute runner.dry_run?
   end
+
+  # 重试耗尽后，错误必须带 command 与 stderr，否则上游无法定位。
+  def test_retry_exhaustion_keeps_command_context
+    runner = SebasAgents::CommandRunner.new(dry_run: false)
+    calls = 0
+    runner.define_singleton_method(:with_retry) do |&block|
+      block.call
+    end
+    runner.singleton_class.send(:remove_method, :with_retry)
+    runner.define_singleton_method(:with_retry) do
+      calls += 1
+      SebasAgents::CommandRunner::Result.new(stdout: "", stderr: "unexpected EOF\n",
+        status: Struct.new(:success?).new(false))
+    end
+    assert_raises(SebasAgents::CommandError) { runner.run!("gh", "api", "x") }
+    error = begin
+      runner.run!("gh", "api", "x")
+    rescue SebasAgents::CommandError => e
+      e
+    end
+    assert_equal ["gh", "api", "x"], error.command
+    assert_includes error.stderr.to_s, "EOF"
+    assert_includes error.message, "gh api x"
+  end
 end
 
 
