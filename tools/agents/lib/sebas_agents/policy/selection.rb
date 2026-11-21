@@ -279,9 +279,27 @@ module SebasAgents
         return true if issue.label?("plan")
         return true if issue.automation
 
-        text = issue.body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
-        match = text.match(/^#+\s*(前置依赖|依赖)\s*$(.*?)(?=^#+\s+\S|\z)/m)
-        !match.nil? && match[2].match?(/#\d+/)
+        section = dependency_section(issue.body)
+        !section.nil? && section.match?(/#\d+/)
+      end
+
+      # 取「前置依赖」/「依赖」节的正文。
+      # 节结束于**同级或更高级**标题：依赖节下常有 "### 内部依赖" 这类子标题，
+      # 若在任意 # 处截断会漏掉其后的内容。
+      def dependency_section(body)
+        text = body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
+        lines = text.lines
+        start = lines.index { |line| line.match?(/^#+\s*(前置依赖|依赖)\s*$/) }
+        return nil unless start
+
+        level = lines[start][/\A#+/].length
+        collected = []
+        lines[(start + 1)..].to_a.each do |line|
+          break if (heading = line[/\A#+/]) && heading.length <= level
+
+          collected << line
+        end
+        collected.join
       end
 
       def exclusion_reason(issue)

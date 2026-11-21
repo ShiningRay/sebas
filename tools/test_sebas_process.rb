@@ -673,6 +673,24 @@ track: main
     assert_empty action.metadata_gaps.select { |g| g["issue"] == 906 }
   end
 
+  # CR：依赖节下的子标题不能提前截断节内容。
+  def test_nested_heading_inside_dependency_section
+    body = "## 前置依赖\n### 内部依赖\n依赖 #3\n"
+    data = snapshot(issues: [issue(907, body: body, milestone: nil)])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 907 }
+    refute_nil gap, "子标题之后的内容仍属依赖节"
+    assert_equal ["milestone", "automation"], gap["missing"]
+  end
+
+  def test_sibling_heading_ends_dependency_section
+    # 同级标题（## 验收）应结束依赖节；其后的 #3 不算依赖信号。
+    body = "## 前置依赖\n\n无\n\n## 验收\n\n参见 #3 的说明\n"
+    data = snapshot(issues: [issue(908, body: body, milestone: nil)])
+    action = select(data)
+    assert_empty action.metadata_gaps.select { |g| g["issue"] == 908 }
+  end
+
   def test_metadata_gaps_absent_when_claimable_card_exists
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1]), blocked_by: []),
