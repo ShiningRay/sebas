@@ -306,7 +306,9 @@ module Sebas
             Log.warn { "audit: inbound dropped without matching binding (channel=#{event.channel_type} account=#{event.account_id} peer=#{event.peer} event=#{event.event_id})" }
             return
           end
-          agent = Config::CURRENT.get.agents[agent_name]?
+          # admission 决策取 @config（apply_config 热换的权威快照）：agent 与
+          # gateway.session 同源，避免 CURRENT 未随热更新时策略与 agent 定义分叉
+          agent = @config.agents[agent_name]?
           unless agent
             Log.error { "audit: binding targets unknown agent #{agent_name} (event=#{event.event_id})" }
             return
