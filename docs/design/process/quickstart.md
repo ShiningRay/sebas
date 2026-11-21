@@ -7,28 +7,28 @@
 ```sh
 git clone https://github.com/ShiningRay/sebas
 cd sebas
-ruby -v   # >= 3.2（代码使用 Data.define）；rbenv 自动读取 .ruby-version，mise 需显式启用
+ruby -v   # >= 3.4（.ruby-version 固定 3.4.13）；rbenv 自动读取，mise 需显式启用
 gh auth status
 ```
 
 `tools/sebas-process` 只依赖 Ruby 标准库与 `gh` / `git` CLI，不需要 `bundle install`。
 
-仓库根目录的 `.ruby-version` 固定了版本（当前 `3.2.9`）。macOS 系统自带 Ruby 3.0，
-低于要求；入口会在加载任何代码前检查，直接给出指引并以退出码 2 拒绝，不会抛出内部错误。
+仓库根目录的 `.ruby-version` 固定了版本（当前 `3.4.13`，3.x 的最新稳定版）。macOS 系统自带
+Ruby 3.0，低于要求；入口会在加载任何代码前检查，直接给出指引并以退出码 2 拒绝，不会抛出内部错误。
 
 安装方式取决于你用哪个版本管理器，各家的初始化写法见其官方文档。装完只有一条判据：
 
 ```sh
-ruby -v   # 必须 >= 3.2
+ruby -v   # 必须 >= 3.4
 ```
 
 不满足说明当前 shell 没切过去（shim 不在 PATH，或管理器没读到 `.ruby-version`）。
 不想改 shell 配置时，直接用装好的解释器绝对路径，并在后续命令里复用同一路径：
 
 ```sh
-"$(rbenv root)/versions/3.2.9/bin/ruby" tools/sebas-process help   # rbenv
-"$HOME/.local/share/mise/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help  # mise 默认位置
-"${ASDF_DATA_DIR:-$HOME/.asdf}/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help  # asdf
+"$(rbenv root)/versions/3.4.13/bin/ruby" tools/sebas-process help   # rbenv
+"$HOME/.local/share/mise/installs/ruby/3.4.13/bin/ruby" tools/sebas-process help  # mise 默认位置
+"${ASDF_DATA_DIR:-$HOME/.asdf}/installs/ruby/3.4.13/bin/ruby" tools/sebas-process help  # asdf
 ```
 
 `rbenv root`、`mise where ruby`、`asdf where ruby` 可查出实际目录。

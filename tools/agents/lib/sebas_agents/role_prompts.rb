@@ -173,7 +173,7 @@ module SebasAgents
         "`blocked` / `needs_human` / `invalid_plan` / `handoff_release` / `idle` 一律停止并回报。",
         "",
         "## 可执行入口",
-        "Ruby >= 3.2（仓库根 `.ruby-version` 已固定；macOS 自带 3.0 不满足），只用标准库 + `gh` / `git` CLI，无需 `bundle install`。",
+        "Ruby >= 3.4（仓库根 `.ruby-version` 固定 3.4.13；macOS 自带 3.0 不满足，入口会 fail-fast），只用标准库 + `gh` / `git` CLI，无需 `bundle install`。",
         *COMMANDS.fetch(role).map { |command| "- `#{command}`" },
         "",
         "## 输出契约",
