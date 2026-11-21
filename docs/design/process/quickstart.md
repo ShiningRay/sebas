@@ -24,10 +24,12 @@ rbenv install && rbenv rehash && rbenv local
 mise settings add --local idiomatic_version_file_enable_tools ruby
 mise install
 
-# asdf：默认 legacy_version_file=no，同样要先打开才读 .ruby-version。
-# 写 ~/.asdfrc（各版本通用；`asdf settings` 子命令并非所有版本都有）：
-echo 'legacy_version_file = yes' >> ~/.asdfrc
-asdf install
+# asdf：默认 legacy_version_file=no，先改配置再装插件和版本
+# 已有该行就改成 yes，不要反复追加（后用者生效，早期版本以第一个为准）
+sed -i '' 's/^legacy_version_file.*/legacy_version_file = yes/' ~/.asdfrc 2>/dev/null \
+  || echo 'legacy_version_file = yes' >> ~/.asdfrc
+asdf plugin add ruby "https://github.com/asdf-vm/asdf-ruby.git" 2>/dev/null || true
+asdf install ruby 3.2.9 && asdf local ruby 3.2.9
 ```
 
 装完都要确认当前 shell 已切到新版本，否则 `ruby` 仍指向系统 3.0：
@@ -37,14 +39,37 @@ ruby -v   # 应为 3.2.x 或更高
 which ruby
 ```
 
-若 shell 仍是旧版本，说明管理器的 shim 不在 `PATH` 上：重开终端，或在 shell 配置里
-执行一次初始化（`eval "$(rbenv init -)"` / `eval "$(mise activate zsh)"` /
-`. "$(asdf which asdf 2>/dev/null)"` 对应发行版的初始化片段），再检查。
-
-不改 shell 配置时的确定性做法是绕开 shim，直接用绝对路径：
+若 shim 不在 `PATH` 上，把管理器目录补进去（写入 shell 配置后重开终端）：
 
 ```sh
+# rbenv
+eval "$(rbenv init -)"
+# mise
+eval "$(mise activate zsh)"      # bash 用 bash，fish 用 fish
+# asdf：把 shims 目录加进 PATH
+export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
+```
+
+不改 shell 配置时的确定性做法是绕开 shim，直接用绝对路径。各管理器的默认位置：
+
+```sh
+# rbenv
 "$(rbenv root)/versions/3.2.9/bin/ruby" tools/sebas-process help
+# mise
+"$HOME/.local/share/mise/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help
+# asdf
+"${ASDF_DATA_DIR:-$HOME/.asdf}/installs/ruby/3.2.9/bin/ruby" tools/sebas-process help
+```
+
+不记得装在哪时，用 `rbenv root` / `mise where ruby` / `asdf where ruby` 查目录。
+
+**后续所有 `ruby tools/sebas-process ...` 都要用同一个解释器**：要么先按上面的方式
+修好 `PATH`，让 `ruby` 指向新版本；要么把该绝对路径记进变量复用：
+
+```sh
+RUBY="$HOME/.local/share/mise/installs/ruby/3.2.9/bin/ruby"   # 换成实际路径
+"$RUBY" tools/sebas-process help
+"$RUBY" tools/sebas-process next
 ```
 
 用 `mise use ruby@3.2.9` 也能达到同样效果，但它会写 `mise.toml`；仓库选择
