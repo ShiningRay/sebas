@@ -24,6 +24,12 @@ module SebasAgents
           return invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突")
         end
 
+        # aborted 表示认领未被确认：必须在任何恢复分支之前对账，
+        # 否则会被暂停恢复 / 在途 PR 分支绕过。
+        if claimed && record && record["phase"] == "aborted"
+          return reconcile_aborted(claimed, record, observed)
+        end
+
         # §3.2：needs:human 且已有 agent:resume → 恢复。未建 PR 的暂停会释放认领，
         # 因此这里必须是「有 needs:human + agent:resume」，而不是要求仍有 in-progress。
         paused_resume = snapshot.issues.find do |issue|

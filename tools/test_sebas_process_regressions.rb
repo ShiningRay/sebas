@@ -215,7 +215,7 @@ class CliRobustnessTest < Minitest::Test
     end
   end
 
-  # aborted 记录不得直接续跑，必须先对账。
+  # aborted 记录不得直接续跑，必须先对账；且必须在暂停/PR 分支之前拦截。
   def test_aborted_record_does_not_resume
     data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
     %w[true false].each do |written|
@@ -224,6 +224,39 @@ class CliRobustnessTest < Minitest::Test
       assert_equal "invalid_plan", action.action, "aborted(label_written=#{written}) 不得续跑"
       assert_includes action.reason, "aborted"
     end
+  end
+
+  # 带暂停标签的 aborted 记录也不能被 resume_paused 放行。
+  def test_aborted_record_with_pause_labels_is_rejected
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: %w[agent:in-progress needs:human agent:resume])
+    ])
+    record = {"issue" => 1, "phase" => "aborted", "label_written" => false}
+    action = select(data, record: record)
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "aborted"
+  end
+
+  # 带在途 PR 的 aborted 记录同样不能被 PR 分支放行。
+  def test_aborted_record_with_open_pr_is_rejected
+    pr = {
+      "number" => 9, "state" => "OPEN", "merge_state_status" => "BEHIND",
+      "checks" => [], "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, labels: ["agent:in-progress"])],
+      pull_requests: [pr]
+    )
+    record = {"issue" => 1, "phase" => "aborted", "pr" => 9, "label_written" => true}
+    assert_equal "invalid_plan", select(data, record: record).action
+  end
+
+  def test_claimed_record_with_pause_labels_resumes
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: %w[agent:in-progress needs:human agent:resume])
+    ])
+    action = select(data, record: {"issue" => 1, "phase" => "claimed"})
+    assert_equal "resume_issue", action.action
   end
 
   def test_claimed_record_still_resumes
