@@ -23,15 +23,25 @@ module SebasAgents
     def initialize(dry_run: true)
       @dry_run = dry_run
       @calls = []
+      @allowed_write = nil
     end
 
     def dry_run?
       @dry_run
     end
 
+    # 显式授权一个写意图（例如认领标签）。仅影响下一次 capture，
+    # 避免"放开 dry_run 就等于全局可写"。
+    def with_write(intent)
+      @allowed_write = intent
+      yield
+    ensure
+      @allowed_write = nil
+    end
+
     def capture(*argv, chdir: Dir.pwd, stdin: nil)
       @calls << argv
-      if @dry_run && !read_only?(argv)
+      if @dry_run && !read_only?(argv) && !allowed_write?(argv)
         return Result.new(stdout: "", stderr: "", status: FakeStatus.new(true))
       end
 
@@ -92,6 +102,19 @@ module SebasAgents
       return read_only_gh?(argv) if argv.first == "gh"
 
       false
+    end
+
+    # 只放行与授权意图完全匹配的单一命令形态，其余写命令仍被拦截。
+    ALLOWED_WRITES = {
+      add_label: /\Agh\s+issue\s+edit\s+\d+\s+--repo\s+\S+\s+--add-label\s+\S+\z/,
+      remove_label: /\Agh\s+issue\s+edit\s+\d+\s+--repo\s+\S+\s+--remove-label\s+\S+\z/
+    }.freeze
+
+    def allowed_write?(argv)
+      return false if @allowed_write.nil?
+
+      pattern = ALLOWED_WRITES[@allowed_write]
+      !pattern.nil? && pattern.match?(argv.join(" "))
     end
 
     def read_only_git?(argv)

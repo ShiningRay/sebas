@@ -655,17 +655,20 @@ class CliTest < Minitest::Test
     end
   end
 
-  def test_claim_apply_writes_record
+  # --apply 需要真实标签写入与回读；此处只验证 dry-run 不落盘，
+  # 以及写授权机制本身（见 DryRunGuardTest）。
+  def test_claim_apply_claims_only_with_verified_label
     data = snapshot(issues: [issue(1, body: automation)])
     Dir.mktmpdir do |dir|
       path = File.join(dir, "snapshot.json")
       record = File.join(dir, "run.json")
       File.write(path, JSON.generate(data), encoding: "UTF-8")
-      status, = run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply"])
-      assert_equal 0, status
-      saved = JSON.parse(File.read(record, encoding: "UTF-8"))
-      assert_equal 1, saved["issue"]
-      assert_equal "claiming", saved["phase"]
+      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply",
+        "--repo", "invalid/does-not-exist-zzz"])
+      # 仓库不可达时不得声称 claimed
+      assert_includes [1, 2], status
+      payload = JSON.parse(out)
+      refute_equal "claimed", payload["claim"]
     end
   end
 
@@ -788,6 +791,24 @@ class DryRunGuardTest < Minitest::Test
   def test_apply_mode_allows_writes
     runner = SebasAgents::CommandRunner.new(dry_run: false)
     refute runner.dry_run?
+  end
+
+  # 写授权只放行与意图匹配的单一命令，其余写命令仍被拦截。
+  def test_write_authorization_is_scoped
+    runner = SebasAgents::CommandRunner.new(dry_run: true)
+    add = ["gh", "issue", "edit", "39", "--repo", "o/r", "--add-label", "agent:in-progress"]
+    merge = ["gh", "pr", "merge", "5"]
+
+    assert_equal "", runner.capture(*add).stdout, "未授权时 add-label 必须被拦"
+    assert_equal "", runner.capture(*merge).stdout, "merge 必须被拦"
+
+    runner.with_write(:add_label) { runner.capture(*add) }
+    assert runner.calls.any? { |call| call.include?("--add-label") }
+
+    runner.with_write(:add_label) do
+      assert_equal "", runner.capture(*merge).stdout, "授权 add-label 不应放行 merge"
+    end
+    assert_equal "", runner.capture(*add).stdout, "离开授权作用域后恢复拦截"
   end
 
   # 重试耗尽后，错误必须带 command 与 stderr，否则上游无法定位。

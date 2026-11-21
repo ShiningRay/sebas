@@ -150,9 +150,24 @@ module SebasAgents
           "phase" => "claiming",
           "attempts" => 0
         })
+
+        # 标签不是分布式事务：写后必须回读，只有回读确认才算 claimed。
+        repo = options[:repo] || default_repo
+        gateway = GithubGateway.new(runner(options), repo: repo)
+        gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+        if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+          payload["run_record"] = RunRecord.new(path: options[:record])
+            .save(payload["run_record"].merge("phase" => "claimed"))
+          payload["claim"] = "claimed"
+        else
+          RunRecord.new(path: options[:record]).save(payload["run_record"].merge("phase" => "aborted"))
+          payload["ok"] = false
+          payload["claim"] = "claim_aborted"
+          payload["reasons"] = ["写入 #{Model::IN_PROGRESS_LABEL} 后回读未确认，按 claim_aborted 处理"]
+        end
       end
       Output.emit(payload, out: @out)
-      result.ready? ? EXIT_OK : EXIT_REFUSED
+      payload["ok"] ? EXIT_OK : EXIT_REFUSED
     end
 
     # 认领前的完整校验：卡片状态、标签、kind，再算依赖。
