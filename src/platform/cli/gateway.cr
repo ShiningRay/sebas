@@ -165,18 +165,29 @@ module Sebas
           @store.close
         end
 
-        # 处理一条入站消息（效应三明治 + 幂等三件套；spec 可直接调用）
-        def process_message(message : Bus::InboundMessage, replay : Bool = false) : Nil
+        # 处理一条入站消息（效应三明治 + 幂等三件套；spec 可直接调用）。
+        # admitted_session：批次派发路径传入 admission 时确定的会话键——路由不再
+        # 重解析（binding 热换不改在途批次归属），turn 在被调度的会话下执行。
+        def process_message(message : Bus::InboundMessage, replay : Bool = false, admitted_session : String? = nil) : Nil
           # 重放（崩溃恢复）跳过 intent 排重：已存在 intent 继续 dispatch（send 幂等键防重复投递）
           return unless replay || @store.record_intent(message.event_id, "message", message.to_json)
           @store.finish_intent(message.event_id, "dispatched")
 
-          # Binding 路由（M1-WP1）：most-specific 解析；无匹配 fail-closed 丢弃+审计
-          agent_name = Routing::Table.resolve(@rules, message.channel_type, message.account_id, message.peer)
-          unless agent_name
-            Log.warn { "audit: inbound dropped without matching binding (channel=#{message.channel_type} account=#{message.account_id} peer=#{message.peer} event=#{message.event_id})" }
-            @store.finish_intent(message.event_id, "failed")
-            return
+          if admitted_session
+            # 调度派发路径：agent_id 取自五段键 agent 段（Agents.session_key 格式），
+            # 会话与序列化归属即 admission 时的路由结果
+            agent_name = admitted_session.split(":")[1]? || ""
+            session_key = admitted_session
+          else
+            # Binding 路由（M1-WP1）：most-specific 解析；无匹配 fail-closed 丢弃+审计
+            resolved = Routing::Table.resolve(@rules, message.channel_type, message.account_id, message.peer)
+            unless resolved
+              Log.warn { "audit: inbound dropped without matching binding (channel=#{message.channel_type} account=#{message.account_id} peer=#{message.peer} event=#{message.event_id})" }
+              @store.finish_intent(message.event_id, "failed")
+              return
+            end
+            agent_name = resolved
+            session_key = Agents.session_key(agent_name, message.account_id, message.channel_type, message.peer)
           end
           agent = Config::CURRENT.get.agents[agent_name]?
           unless agent
@@ -184,7 +195,6 @@ module Sebas
             @store.finish_intent(message.event_id, "failed")
             return
           end
-          session_key = Agents.session_key(agent_name, message.account_id, message.channel_type, message.peer)
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
@@ -265,6 +275,8 @@ module Sebas
         # 池内执行：payload 为批次派发 JSON（{batch_id, session_key}）。成员 turn 逐条
         # 执行（queue 模式单成员），全部落库后按 intent 终态收敛批次并派发下一批。
         # 派发权威在 scheduler（每会话同时在途 ≤1），本方法只做执行与完成回调。
+        # turn 在 admission 时确定的会话下执行（admitted_session 传入，不重解析路由）：
+        # binding 热换不影响在途批次的会话归属，保序与序列化按 admitted session 成立。
         private def run_batch_job(job : Agents::Job) : Nil
           data = JSON.parse(job.payload)
           batch_id = data["batch_id"].as_s
@@ -274,7 +286,7 @@ module Sebas
             Log.error { "dispatch references missing batch #{batch_id} (session=#{session_key})" }
           else
             @store.batch_inputs(batch_id).each do |input|
-              process_message(message_from_payload(input.payload))
+              process_message(message_from_payload(input.payload), admitted_session: session_key)
               failed << input.event_id if @store.intent_status(input.event_id) != "done"
             end
           end
@@ -337,7 +349,13 @@ module Sebas
               break if event.nil?
               case event
               when Bus::InboundMessage
-                schedule_input(event)
+                begin
+                  schedule_input(event)
+                rescue ex
+                  # 单事件 admission 异常（瞬时 SQLite 故障等）不得停摆总线消费：
+                  # fail-closed 丢弃并留错（契约 §6），后续事件继续处理
+                  Log.error(exception: ex) { "admission failed, event dropped fail-closed (event=#{event.event_id})" }
+                end
               when Bus::AccountEvent
                 @ipc.tap.publish(Admin::IPC.event_line("account.#{event.kind}", {
                   "account_id" => JSON::Any.new(event.account_id),

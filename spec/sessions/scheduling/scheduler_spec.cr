@@ -133,15 +133,101 @@ module Sebas
       store.close
     end
 
-    it "records member failure and transitions the batch to failed" do
+    it "records member failure and transitions the batch to failed (successful members done)" do
       store = tmp_store("fail")
       registry = Sessions::Scheduling::Registry.new(store)
       registry.dispatch_handler = ->(_s : String, _p : String) { }
       session = "agent:main:acc:email:alice"
-      receipt = registry.admit(test_env(session, "evt-f", "x"))
-      registry.batch_done(session, receipt.batch_id, ["evt-f"])
-      batch_status(store, receipt.batch_id).should eq("failed")
-      first_input_status(store, receipt.batch_id).should eq("failed")
+      # 构造双成员批次（WP3 debounce 的形态）：A 失败、B 成功 → 批次 failed、B done
+      seq = store.next_session_seq(session)
+      batch = Sessions::Scheduling::Batch.new(
+        ::Sebas::Sessions::Scheduling.batch_id_for(session, seq), session,
+        Sessions::Scheduling::BatchStatus::Collecting, test_snapshot, seq, seq,
+        ::Time.utc.to_rfc3339, nil, nil)
+      env_a = test_env(session, "evt-fa", "a")
+      env_b = test_env(session, "evt-fb", "b")
+      store.admit_new_batch(batch, env_a, 0)
+      store.admit_session_input(env_b, batch, 1)
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Collecting,
+        Sessions::Scheduling::BatchStatus::Sealed)
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Sealed,
+        Sessions::Scheduling::BatchStatus::Queued)
+      # 走真实派发路径（@running_batch 归 scheduler 所有），成员随派发置 dispatched
+      registry.recover_dispatch
+      batch_status(store, batch.batch_id).should eq("running")
+
+      registry.batch_done(session, batch.batch_id, ["evt-fa"])
+      batch_status(store, batch.batch_id).should eq("failed")
+      statuses = store.batch_inputs(batch.batch_id).map(&.status)
+      statuses.should eq(["failed", "done"]) # B 不残留 dispatched
+      store.close
+    end
+
+    it "rejects stale completion callbacks without touching member states (atomic settle)" do
+      store = tmp_store("stale2")
+      registry = Sessions::Scheduling::Registry.new(store)
+      registry.dispatch_handler = ->(_s : String, _p : String) { }
+      session = "agent:main:acc:email:alice"
+      receipt = registry.admit(test_env(session, "evt-k", "x"))
+      # 模拟恢复改判：running → failed（成员未动）
+      store.transition_session_batch(receipt.batch_id,
+        Sessions::Scheduling::BatchStatus::Running, Sessions::Scheduling::BatchStatus::Failed)
+      registry.batch_done(session, receipt.batch_id)                         # 陈旧回调：成员不得被标 done
+      store.batch_inputs(receipt.batch_id)[0].status.should eq("dispatched") # 未被污染
+      # 会话已空闲：后续 admission 可派发
+      second = registry.admit(test_env(session, "evt-k2", "y"))
+      second.status.should eq("accepted")
+      store.close
+    end
+
+    it "re-queues the batch when the dispatch handoff fails (keeps it retryable)" do
+      store = tmp_store("handoff")
+      attempts = 0
+      registry = Sessions::Scheduling::Registry.new(store)
+      registry.dispatch_handler = ->(_s : String, _p : String) {
+        attempts += 1
+        raise "pool closed" if attempts == 1 # 首次交接失败
+      }
+      session = "agent:main:acc:email:alice"
+      receipt = registry.admit(test_env(session, "evt-h", "x"))
+      # 交接失败：批次回退 queued、在途标记已清
+      store.pending_batches(session).map(&.batch_id).should eq([receipt.batch_id])
+      # 下一次 kick 成功派发（批次仍可重试）
+      registry.scheduler?(session).try(&.dispatch_if_idle)
+      batch_status(store, receipt.batch_id).should eq("running")
+      attempts.should eq(2)
+      store.close
+    end
+
+    it "stops dispatching new batches after shutdown (pending stays for startup recovery)" do
+      store = tmp_store("stop")
+      order = [] of String
+      registry = Sessions::Scheduling::Registry.new(store)
+      registry.dispatch_handler = ->(_s : String, payload : String) { order << JSON.parse(payload)["batch_id"].as_s }
+      session = "agent:main:acc:email:alice"
+      r1 = registry.admit(test_env(session, "evt-p1", "a"))
+      r2 = registry.admit(test_env(session, "evt-p2", "b"))
+      scheduler = registry.scheduler?(session)
+      scheduler.should_not be_nil
+      scheduler.try(&.shutdown)
+      registry.batch_done(session, r1.batch_id) # 在途批正常收敛……
+      batch_status(store, r1.batch_id).should eq("done")
+      order.size.should eq(1)                                                 # ……但下一批不再派发
+      store.pending_batches(session).map(&.batch_id).should eq([r2.batch_id]) # B 留给启动恢复
+      store.close
+    end
+
+    it "returns duplicate before capacity rejection for a retry of a queued event" do
+      store = tmp_store("dupcap")
+      snapshot = test_snapshot(max_pending_batches: 1_i64)
+      registry = Sessions::Scheduling::Registry.new(store)
+      registry.dispatch_handler = ->(_s : String, _p : String) { }
+      session = "agent:main:acc:email:alice"
+      registry.admit(test_env(session, "evt-d1", "x", snapshot)).status.should eq("accepted")
+      registry.admit(test_env(session, "evt-d2", "y", snapshot)).status.should eq("accepted") # backlog 满
+      # 重投已排队事件：duplicate（不占容量），而非 rejected
+      registry.admit(test_env(session, "evt-d2", "y", snapshot)).status.should eq("duplicate")
+      registry.scheduler?(session).try(&.metrics["rejected_capacity"]).should eq(0)
       store.close
     end
 
@@ -169,6 +255,7 @@ module Sebas
       store = tmp_store("collecting")
       session = "agent:main:acc:email:alice"
       batch = make_batch(store, session, 1, Sessions::Scheduling::BatchStatus::Collecting)
+      store.admit_session_input(test_env(session, "evt-c", "x"), batch, 0) # 有成员：正常封存入队
       Sessions::Scheduling::Recovery.recover_stale(store)
       row = store.session_batch(batch.batch_id)
       row.should_not be_nil
@@ -177,11 +264,13 @@ module Sebas
       store.close
     end
 
-    it "fail-closes running batches and keeps done batches untouched" do
+    it "fail-closes running batches whose turn may have started (intent dispatched)" do
       store = tmp_store("running")
       session = "agent:main:acc:email:alice"
       batch = make_batch(store, session, 1, Sessions::Scheduling::BatchStatus::Collecting)
       store.admit_session_input(test_env(session, "evt-r", "x"), batch, 0)
+      store.record_intent("evt-r", "message", "{}")
+      store.finish_intent("evt-r", "dispatched") # turn 可能已启动：副作用不可证
       # 推进到 running（模拟强杀前的在途批次）
       store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Collecting, Sessions::Scheduling::BatchStatus::Sealed)
       store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Sealed, Sessions::Scheduling::BatchStatus::Queued)
@@ -192,6 +281,56 @@ module Sebas
       batch_status(store, batch.batch_id).should eq("failed")
       first_input_status(store, batch.batch_id).should eq("failed")
       batch_status(store, done.batch_id).should eq("done") # 已完成不重跑
+      store.close
+    end
+
+    it "settles running batches whose work completed (intent done, callback lost)" do
+      store = tmp_store("settled")
+      session = "agent:main:acc:email:alice"
+      batch = make_batch(store, session, 1, Sessions::Scheduling::BatchStatus::Collecting)
+      store.admit_session_input(test_env(session, "evt-sd", "x"), batch, 0)
+      store.record_intent("evt-sd", "message", "{}")
+      store.finish_intent("evt-sd", "done") # turn 已完成，回调丢失
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Collecting, Sessions::Scheduling::BatchStatus::Sealed)
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Sealed, Sessions::Scheduling::BatchStatus::Queued)
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Queued, Sessions::Scheduling::BatchStatus::Running)
+
+      Sessions::Scheduling::Recovery.recover_stale(store)
+      batch_status(store, batch.batch_id).should eq("done") # 不重跑
+      first_input_status(store, batch.batch_id).should eq("done")
+      store.close
+    end
+
+    it "requeues running batches whose turn never started (no intent)" do
+      store = tmp_store("requeue")
+      session = "agent:main:acc:email:alice"
+      batch = make_batch(store, session, 1, Sessions::Scheduling::BatchStatus::Collecting)
+      store.admit_session_input(test_env(session, "evt-rq", "x"), batch, 0)
+      # 不录 intent：process_message 未及启动（intent 落库先于 turn）→ 消息不丢
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Collecting, Sessions::Scheduling::BatchStatus::Sealed)
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Sealed, Sessions::Scheduling::BatchStatus::Queued)
+      store.transition_session_batch(batch.batch_id, Sessions::Scheduling::BatchStatus::Queued, Sessions::Scheduling::BatchStatus::Running)
+
+      Sessions::Scheduling::Recovery.recover_stale(store)
+      batch_status(store, batch.batch_id).should eq("queued") # 回退重派
+      first_input_status(store, batch.batch_id).should eq("batched")
+      # 重派一次成功（可继续走完批次生命周期）
+      dispatched = [] of String
+      registry = Sessions::Scheduling::Registry.new(store)
+      registry.dispatch_handler = ->(_s : String, payload : String) { dispatched << payload }
+      registry.recover_dispatch
+      dispatched.size.should eq(1)
+      store.close
+    end
+
+    it "fail-closes empty orphan batches instead of dispatching them" do
+      store = tmp_store("empty")
+      session = "agent:main:acc:email:alice"
+      batch = make_batch(store, session, 1, Sessions::Scheduling::BatchStatus::Collecting) # 无成员输入的孤儿批
+
+      Sessions::Scheduling::Recovery.recover_stale(store)
+      batch_status(store, batch.batch_id).should eq("failed")
+      store.pending_batches(session).should be_empty
       store.close
     end
 
