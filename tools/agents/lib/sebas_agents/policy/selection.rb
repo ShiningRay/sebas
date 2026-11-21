@@ -246,24 +246,42 @@ module SebasAgents
           milestone: milestone.number, issue: chosen.number, excluded: excluded)
       end
 
-      # 隐形卡：看起来是工作包（有 plan 标签或依赖声明），但挂不到 active milestone 上。
-      # 这类卡不会进入上面的候选集，因此只会表现为笼统的「元数据未补齐」——
-      # 没有这张清单，Maintainer 无从知道该补哪几张。
+      # 隐形卡：看起来是工作包，但元数据不全导致选择器无从调度。
+      # 两类都要列出，否则 Maintainer 只知道「有缺口」却不知道是哪几张：
+      #   1. 挂了 active milestone，但缺 Automation 块 —— 只会进 excluded，
+      #      而 excluded 的 reason 混在大量「前置阻塞」里，难以眼检。
+      #   2. 没挂任何 milestone —— 连 excluded 都进不去，完全隐形。
       def metadata_gaps(milestone, snapshot)
-        snapshot.issues.select do |issue|
-          issue.open? && issue.milestone.nil? && work_package_like?(issue)
-        end.map do |issue|
-          missing = ["milestone"]
+        snapshot.issues.select { |issue| issue.open? }.filter_map do |issue|
+          next unless work_package_like?(issue)
+
+          missing = []
+          if issue.milestone.nil?
+            missing << "milestone"
+          elsif issue.milestone != milestone.number
+            # 属于别的 milestone 或并行轨：不归本 active 主线调度，不算缺口。
+            next
+          end
           missing << "automation" if issue.automation.nil?
+          next if missing.empty?
+
           {"issue" => issue.number, "missing" => missing}
         end
       end
 
+      # 「看起来是工作包」的判据（任一成立）：
+      #   1. 有 plan 标签；
+      #   2. 有 Automation 块（但可能有其它字段问题）；
+      #   3. 正文依赖节里出现任何 #N 引用——包括「另见 #35」这类引用说明。
+      # 第 3 条刻意不复用 prose_dependencies：那个解析器会剥掉引用说明以得到
+      # 「真正的前置」，而这里只关心「作者是否按工作包格式写了依赖节」。
       def work_package_like?(issue)
         return true if issue.label?("plan")
         return true if issue.automation
 
-        !Dependencies.prose_dependencies(issue.body).to_a.empty?
+        text = issue.body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
+        match = text.match(/^#+\s*(前置依赖|依赖)\s*$(.*?)(?=^#+\s+\S|\z)/m)
+        !match.nil? && match[2].match?(/#\d+/)
       end
 
       def exclusion_reason(issue)

@@ -625,6 +625,54 @@ track: main
     assert_empty action.metadata_gaps
   end
 
+  # CR：挂在 active milestone 内但缺 Automation 的卡，也要进 metadata_gaps——
+  # 它的 excluded 条目会淹没在「前置阻塞」里，单靠 reason 难以定位。
+  def test_metadata_gaps_lists_milestoned_card_without_automation
+    data = snapshot(issues: [
+      issue(903, body: "## 前置依赖\n\nWP1（#3）。\n", blocked_by: [3])
+    ])
+    action = select(data)
+    assert_equal "blocked", action.action
+    assert(action.excluded.any? { |e| e["issue"] == 903 }, "仍应出现在 excluded")
+    gap = action.metadata_gaps.find { |item| item["issue"] == 903 }
+    refute_nil gap, "缺 Automation 的 milestone 卡必须进 gaps"
+    assert_equal ["automation"], gap["missing"]
+  end
+
+  def test_milestoned_tracking_card_is_not_a_gap
+    # tracking 卡（有 Automation、kind=tracking）不缺任何元数据，只是不参与调度。
+    data = snapshot(issues: [
+      issue(904, body: automation(kind: "tracking", order: [4, 0]), blocked_by: [])
+    ])
+    action = select(data)
+    assert_empty action.metadata_gaps.select { |g| g["issue"] == 904 }
+  end
+
+  # CR：依赖节里只有引用说明（「另见 #35」）也算工作包信号。
+  def test_reference_only_dependency_section_counts_as_work_package
+    body = "## 前置依赖\n\n另见 #35 开工条件。\n"
+    data = snapshot(issues: [
+      issue(905, body: body, milestone: nil)
+    ])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 905 }
+    refute_nil gap, "引用说明也应视为依赖节信号"
+    assert_equal ["milestone", "automation"], gap["missing"]
+  end
+
+  def test_card_in_other_milestone_is_not_a_gap
+    # 挂到别的 milestone 的卡不归本 active 主线调度，不能算缺口。
+    data = snapshot(
+      issues: [issue(906, body: "## 前置依赖\n\nWP1（#3）。\n", milestone: 1)],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 1),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+      ]
+    )
+    action = select(data)
+    assert_empty action.metadata_gaps.select { |g| g["issue"] == 906 }
+  end
+
   def test_metadata_gaps_absent_when_claimable_card_exists
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1]), blocked_by: []),
