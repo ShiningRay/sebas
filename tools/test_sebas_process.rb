@@ -691,6 +691,15 @@ track: main
     assert_empty action.metadata_gaps.select { |g| g["issue"] == 908 }
   end
 
+  # CR：`#3` 是 issue 引用，不是一级标题；不能被当成节结束。
+  def test_issue_reference_at_line_start_is_not_a_heading
+    body = "## 前置依赖\n#3\n"
+    data = snapshot(issues: [issue(909, body: body, milestone: nil)])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 909 }
+    refute_nil gap, "行首 #3 是引用而非标题，依赖节不应在此结束"
+  end
+
   def test_metadata_gaps_absent_when_claimable_card_exists
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1]), blocked_by: []),

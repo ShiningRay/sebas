@@ -286,6 +286,11 @@ module SebasAgents
       # 取「前置依赖」/「依赖」节的正文。
       # 节结束于**同级或更高级**标题：依赖节下常有 "### 内部依赖" 这类子标题，
       # 若在任意 # 处截断会漏掉其后的内容。
+      #
+      # 判定标题必须要求 `#` 后跟空白：`#3` 是 issue 引用，不是标题，
+      # 否则「## 前置依赖 / #3」这条依赖会被当成标题而丢失。
+      HEADING = /\A(#+)\s+\S/
+
       def dependency_section(body)
         text = body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
         lines = text.lines
@@ -295,7 +300,10 @@ module SebasAgents
         level = lines[start][/\A#+/].length
         collected = []
         lines[(start + 1)..].to_a.each do |line|
-          break if (heading = line[/\A#+/]) && heading.length <= level
+          # 用捕获组取 # 串，不能直接用 match 结果（那是整段 "## 文本"）。
+          if (m = line.match(HEADING)) && m[1].length <= level
+            break
+          end
 
           collected << line
         end
