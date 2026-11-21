@@ -75,102 +75,36 @@
 <研判正文：结论 + 证据 + 建议动作>
 ```
 
-## 伪代码：完整研判流程
+## 可执行实现：完整研判流程
 
-```pseudo
-function triage_issue(issue):
-  # 0. 计划类跳过
-  if issue.labels.contains("plan"):
-    if issue.assignees.empty?:
-      gh_issue_edit(issue, add_assignee="ShiningRay")
-    return  # 不写评论不加 type 不判定
+Triager 的确定性部分在 `tools/agents/lib/sebas_agents/triager.rb`：
 
-  # 1. 查重
-  duplicates = search_similar_issues(issue)
-  if duplicates.any?:
-    comment(issue, status="duplicate", refs=duplicates)
-    close_issue(issue, reason="not planned")
-    return
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
 
-  # 2. 已修复 / 设计如此
-  if already_fixed(issue):
-    comment(issue, status="fixed", evidence=fix_commit)
-    close_issue(issue)
-    return
-
-  if by_design(issue):
-    comment(issue, status="by-design", evidence=design_doc_ref)
-    close_issue(issue)
-    return
-
-  # 3. 按性质研判
-  if issue.is_bug_report:
-    result = reproduce(issue)  # 真跑一遍
-    if result.reproduced:
-      set_type(issue, "Bug")
-      add_label(issue, "bug")
-      add_assignee(issue, "ShiningRay")
-      severity = assess_severity(issue)
-      if severity == "critical":
-        suggest_milestone(issue, "hotfix")
-      else:
-        suggest_milestone(issue, active_milestone())
-      comment(issue, status="bug-confirmed", evidence=result.output)
-    elsif result.cannot_reproduce:
-      add_label(issue, "question")
-      comment(issue, status="needs-info", questions=what_info_needed(issue))
-    elsif result.environment_blocked:
-      comment(issue, status="escalate", reason="环境跑不起来")
-      notify_feishu(issue)
-  else:
-    # feature request
-    evaluation = evaluate_feature(issue)
-    if evaluation.worth_doing:
-      set_type(issue, "Feature")
-      add_label(issue, "enhancement")
-      add_assignee(issue, "ShiningRay")
-      comment(issue, status="accepted", rationale=evaluation.rationale)
-      # 排期裁决留给Maintainer
-    else:
-      add_label(issue, "invalid")
-      comment(issue, status="rejected", what_to_add=evaluation.missing)
-
-  # 4. 回读校验
-  verify_comment_posted(issue)
-  verify_type_set(issue)
-  verify_assignee_correct(issue)
+plan = SebasAgents::Triager.plan(issue, snapshot)
+plan["decision"]    # plan-card / needs-model-verdict / 判定值
+plan["actions"]     # [{action: "add_label", name: "bug"}, ...]
+plan["needs_model"] # 需要模型判断的项；不猜
 ```
 
-## 伪代码：active milestone 判定
+判定由模型给出，工具只负责把它翻译成确定的元数据动作：
 
-```pseudo
-function active_milestone():
-  milestones = gh_api("repos/.../milestones", state="open")
+```sh
+ruby tools/sebas-process triage 42
+```
 
-  # 从 description 提取 order 和 track 元数据
-  for ms in milestones:
-    desc_lines = ms.description.split("\n")
-    ms.order = null
-    ms.track = null
-    for line in desc_lines:
-      if line.starts_with("order: "):
-        ms.order = line.sub("order: ", "").strip().rstrip("x").to_i()
-      if line.starts_with("track: "):
-        ms.track = line.sub("track: ", "").strip()
-    # title 前缀兜底（如 "M4 · v0.2.0 ..."）
-    if ms.order == null:
-      match = ms.title.match(/^M(\d+)x?/)
-      if match:
-        ms.order = match[1].to_i()
+## 可执行实现：active milestone 判定
 
-  sorted = milestones.sort_by(.order)
+唯一实现为 `tools/agents/lib/sebas_agents/policy/milestones.rb`；Triager 不另写排序或 title 兜底：
 
-  # 找第一个 open_issues > 0 的主线 milestone
-  for ms in sorted:
-    if ms.track == "main" && ms.open_issues > 0:
-      return ms
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
 
-  return null  # 所有主线 milestone 已收官
+milestones = SebasAgents::Policy::Milestones.normalize(snapshot.milestones)
+state, active = SebasAgents::Policy::Milestones.active(milestones)
+# state: :select / :handoff_release / :idle
+active&.number # => 2
 ```
 
 ## 基础设施
@@ -178,7 +112,7 @@ function active_milestone():
 Triager通过两条路径触发：
 
 1. **webhook**：issue 创建/编辑时实时触发（`github-issues` 路由）
-2. **cron**：每日 05:00 全量扫描（`github-issue-reconcile.py`）
+2. **cron**：每日 05:00 全量扫描（当前外部脚本为 `github-issue-reconcile.py`；按仓库运维约定迁移为 `github-issue-reconcile.rb`，迁移前旧脚本仍为事实源）。
 
 两条路径共享同一份 `scope.json` 配置和同一份研判规则。
 `skip_labels: ["plan"]` 控制计划类跳过，`plan_assign_to: "ShiningRay"` 控制自动补指派。

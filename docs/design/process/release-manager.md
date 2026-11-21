@@ -96,88 +96,37 @@ docker run --rm -v $PWD:/assets ubuntu:24.04 \
   → 确认 main 上该问题也已消失
 ```
 
-## 伪代码：auto-release 核心逻辑
+## 可执行实现：auto-release 核心逻辑
 
-```pseudo
-function auto_release():
-  # 只响应 main 上的 push
-  assert github.ref == "refs/heads/main"
+发版判定在 `tools/agents/lib/sebas_agents/release.rb`，只做纯计算：
 
-  # 取最近 tag
-  latest_tag = git_describe_tags_abbrev0()
-  current_version = parse_semver(latest_tag)  # 如 0.1.0
-
-  # 检测变更类型
-  commits = git_log("#{latest_tag}..HEAD", oneline=true)
-  has_fix = commits.any? { |c| c =~ /^fix(\(|:)/ }
-  has_feat = commits.any? { |c| c =~ /^feat(\(|:)/ }
-
-  if has_feat:
-    log("检测到 feat 类变更，跳过 patch 发版（属于 minor 轨）")
-    if has_fix:
-      log("警告：fix 被 feat 阻塞，紧急修复请走 hotfix 通道")
-    return
-
-  if !has_fix:
-    log("无 fix 类变更，不发版")
-    return
-
-  # 版本号递增
-  new_version = bump_patch(current_version)  # 0.1.0 → 0.1.1
-
-  # 护栏
-  assert new_version > current_version  # 严格递增
-  git_fetch_tags()
-  assert !tag_exists("v#{new_version}")  # tag 未占用
-
-  # 改版本号两处
-  update_file("shard.yml", "version: #{new_version}")
-  update_file("src/version.cr", "VERSION = \"#{new_version}\"")
-  assert grep("shard.yml", new_version) && grep("src/version.cr", new_version)
-
-  # CHANGELOG 转正
-  promote_unreleased("CHANGELOG.md", new_version, today())
-
-  # 提交 + tag + push
-  git_commit("chore(release): v#{new_version} [skip ci]")
-  git_tag_annotated("v#{new_version}", "v#{new_version}")
-  git_push("main", "v#{new_version}")
-
-  log("已推送 tag v#{new_version}，release.yml 将自动构建")
-
-  # 等 release.yml 跑完
-  wait_for_workflow("release.yml", ref="v#{new_version}")
-
-  # 产物校验
-  verify_release_assets(new_version)
-
-  log("v#{new_version} 发版完成")
+```sh
+ruby tools/sebas-process release plan
 ```
 
-## 伪代码：产物校验
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
 
-```pseudo
-function verify_release_assets(version):
-  dir = "/tmp/sebas-v#{version}"
-  gh_release_download("v#{version}", dir=dir)
-
-  # sha256 校验
-  for sidecar in glob("#{dir}/*.sha256"):
-    result = run("cd #{dir} && sha256sum -c #{sidecar}")
-    if result.exit_code != 0:
-      raise "sha256 校验失败：#{sidecar}"
-
-  # Linux 裸容器冒烟
-  result = docker_run(
-    image="ubuntu:24.04",
-    volume="#{dir}:/assets",
-    command="cd /assets && tar xzf sebas-linux-x86_64.tar.gz && ./sebas-linux-x86_64/sebas version"
-  )
-  if result.stdout.strip() != "sebas #{version}":
-    raise "裸容器冒烟失败：期望 'sebas #{version}'，得到 '#{result.stdout}'"
-
-  log("产物校验通过：sha256 全过 + 裸容器可运行")
+plan = SebasAgents::Release.plan(latest_tag: "v0.1.0", subjects: subjects)
+plan["action"]       # "patch" / "skip" / "noop"
+plan["next_version"] # "0.1.1"
 ```
+
+改版本号、打 tag、推送等副作用仍由 `auto-release.yml` 执行，工具不代写 main。
+
+## 可执行实现：产物校验
+
+```sh
+ruby tools/sebas-process release verify v0.1.1 --root /tmp/sebas-v0.1.1
+```
+
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
+
+problems = SebasAgents::Release.verify_assets(dir, "0.1.1", expected: smoke_output)
+```
+
+校验 `*.sha256` 与裸容器冒烟输出 `sebas X.Y.Z`；任一项失败即非零退出。
 
 ## 与其他角色的交互
 

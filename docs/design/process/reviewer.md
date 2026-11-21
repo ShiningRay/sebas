@@ -2,7 +2,6 @@
 
 > 角色性质：**AI**（独立上下文的只读 agent），无任何写权限。
 > 与 Verifier 的关系：Verifier 做初核，Reviewer 做终验。两者都是只读、独立上下文。
-> 与Verifier的关系：Verifier做初核，Reviewer做终验。两者都是只读、独立上下文。
 
 ## 职责范围
 
@@ -60,53 +59,28 @@ Reviewer不带Verifier的记忆。它拿到的是：
 网络受阻跑不了就写"未实测"，不编证据。
 `9c09f82a` 的范本："三通道五试网络受阻未实测，裁定有条件确认"。
 
-## 伪代码：终验复核
+## 可执行实现：终验复核
 
-```pseudo
-function final_verification(verifier_report, fix_commits):
-  report = FinalReport()
+Reviewer 的实现在 `tools/agents/lib/sebas_agents/reviewer.rb`：
 
-  # 1. 应修项收口
-  for item in verifier_report.must_fix_items:
-    fix = find_fix_commit(item, fix_commits)
-    if !fix:
-      report.blocker("应修项 #{item.id} 未修复")
-      continue
-
-    # 独立重验（不信任Implementer自验）
-    result = independently_verify(item, fix)
-    if result.passed:
-      report.ok("应修项 #{item.id} 已收口")
-    else:
-      report.blocker("应修项 #{item.id} 修复不完整：#{result.reason}")
-
-  # 2. 阻断项确认
-  if verifier_report.blockers.any?:
-    report.blocker("存在未解决的阻断项")
-
-  # 3. 可留项复核
-  for item in verifier_report.acceptable_items:
-    if !reason_still_valid(item):
-      report.must_fix("可留项 #{item.id} 的理由已不成立")
-
-  # 4. 未实测项
-  for item in verifier_report.unverified_items:
-    if item.indirect_evidence.present?:
-      report.conditional("未实测项 #{item.id}：有条件确认（#{item.indirect_evidence}）")
-    else:
-      report.blocker("未实测项 #{item.id}：无间接证据，不能确认")
-
-  # 5. 终验结论
-  if report.blockers.empty? && report.must_fix_items.empty?:
-    if report.conditionals.any?:
-      report.conclusion = "有条件通过"
-    else:
-      report.conclusion = "通过"
-  else:
-    report.conclusion = "打回"
-
-  return report
+```sh
+ruby tools/sebas-process review verification.json --fixes fixes.json
 ```
+
+`verification.json` 为 Verifier 输出，`fixes.json` 形如：
+
+```json
+{"must_fix-1": {"commit": "abc1234", "passed": true}}
+```
+
+```ruby
+require_relative "tools/agents/lib/sebas_agents"
+
+report = SebasAgents::Reviewer.final_verification(verifier_report, fixes, checker: nil)
+report.conclusion # "通过" / "有条件通过" / "打回"
+```
+
+未提供独立复跑 `checker` 时，自报修复只能得到“有条件通过”，最终裁决交 Maintainer。
 
 ## 实战先例
 

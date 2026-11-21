@@ -30,7 +30,7 @@
 
 ### 4. 文档质量门禁
 
-- `tools/check_docs.py` 三查：死链 FAIL、失效行号锚 FAIL、单文件超 400 行 WARN
+- `tools/check_docs.rb` 三查：死链 FAIL、失效行号锚 FAIL、单文件超 400 行 WARN
 - FAIL > 0 退出码 1，CI 拦截
 - `docs/design/review/` 下的存档行号记 WARN 不记 FAIL（行版口径）
 
@@ -68,77 +68,32 @@ PR 模板里有对应 checklist 项："Design docs updated when architecture, co
 - 仅存安全的用途/位置指针
 - 查询词也不得带秘密
 
-## 伪代码：PR 内的文档同步（合并前完成）
+## 可执行实现：PR 内的文档同步（合并前完成）
 
-```pseudo
-function sync_docs_in_pr(pr):
-  git_checkout_pr_head(pr)  # 切到 PR 分支并确认 HEAD = pr.head，失败则中止
-  # 在 PR 被 approve 之前执行，确保文档变更与代码变更在同一个 PR 里被 review 和 CI 检查
-  changes = git_diff_files(pr.base, pr.head)
-
-  # 检测需要文档同步的变更
-  needs_doc_update = false
-  for file in changes:
-    if file.matches("src/orchestration/**") || file.matches("src/config/**"):
-      needs_doc_update = true
-      break
-    if file.matches("src/**/dsl/**"):
-      needs_doc_update = true
-      break
-
-  if needs_doc_update:
-    # 找对应的 spec 章节
-    affected_chapters = map_files_to_chapters(changes)
-    for chapter in affected_chapters:
-      spec_file = "docs/design/spec/#{chapter.file}"
-      if needs_update(spec_file, changes):
-        update_spec(spec_file, changes)
-        git_add(spec_file)
-        git_commit("docs(spec): sync #{chapter.file} with implementation changes")
-        git_push(pr.branch)
-        log("已同步并推送 #{spec_file} 到 PR 分支")
-
-  # CHANGELOG：PR 负责写入，不做事后补充
-  # 每个 PR 必须在 [Unreleased] 段落写入自己的变更行（PR 模板 checklist 要求）。
-  # Scribe 的职责是检查该条目是否存在，而不是事后追加——避免重复条目和时序竞争。
-  if pr.has_user_visible_changes:
-    if !changelog_has_entry_for(pr):
-      request_changes(pr, "CHANGELOG.md 的 [Unreleased] 段落缺少本 PR 的条目，请补充后重新提交")
-
-  # 文档质量检查（PR 内的 CI docs-check 会再次验证）
-  result = run("python tools/check_docs.py")
-  if result.fail_count > 0:
-    raise "文档质量门禁未过：#{result.failures}"
+```sh
+ruby tools/sebas-process docs-check      # 复用 tools/check_docs.rb
 ```
 
-## 伪代码：记忆库存储
+文档同步的 Git 操作仍在独立 PR worktree 中手工完成；门禁部分已可直接调用：
 
-```pseudo
-function store_memory(content, title, importance):
-  # 1. 判重
-  candidates = rsrs_recall(title, titles=true)
-  for candidate in candidates:
-    full = rsrs_show(candidate.id)
-    if same_topic(full, content):
-      # 改 > 并 > 挂 > 存
-      if should_update(full, content):
-        rsrs_update(candidate.id, content=merged_content, title=new_title)
-        return candidate.id
-      elsif should_attach(full, content):
-        return rsrs_remember(content, title=title, parent=candidate.id,
-                            importance=importance)
+```ruby
+require_relative "tools/check_docs"
 
-  # 2. 定挂点（important 必须）
-  if importance == "important":
-    parent = find_parent_in_tree(content)
-    if !parent:
-      parent = nearest_category_root(content)
-    return rsrs_remember(content, title=title, parent=parent.id,
-                        importance=importance)
-  else:
-    # trivial 日记免挂点
-    return rsrs_remember(content, title=title, importance="trivial")
+status = CheckDocs.run(["--root", "docs"], repo_root: Dir.pwd)
+raise "文档质量门禁未过" unless status.zero?
 ```
+
+## 可执行实现：记忆库存储
+
+记忆读写仍由 `rsrs` 承担；Scribe 的入口只输出该走哪条路径（改 / 并 / 挂 / 存），不代替判重：
+
+```sh
+ruby tools/sebas-process roles scribe   # 拿到角色指令与命令清单
+rsrs recall "<项目名+核心词>" --titles --json
+rsrs remember "<正文>" --title "<标题>" --parent <挂点id>
+```
+
+判级与挂点规则见 `rsrs prompt` 全文；工具不自动写入记忆库。
 
 ## 与其他角色的交互
 

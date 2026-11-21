@@ -1,0 +1,4 @@
+# Maintainer 名单：sebas-process 用它校验 Evidence 的登记人身份。
+# 只有这里列出的人（或他们明确授权的 workflow 身份）写的 evidence 才算数。
+maintainers:
+  - ShiningRay
