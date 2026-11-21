@@ -136,7 +136,7 @@ L1 回写消息 JSON 草案：[推演]
 }
 ```
 
-枚举口径：`outcome` 与 §4.2 回写状态机终态一一对应——`partial` **不是** outcome 值，超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载（§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）；`members[].state` 中 `done/failed` 即 tasks.status 原值（单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]），`cancelled` 为分身显式取消终态（§2.3 步骤 1），`late` 为 any 残余越过取消点者标注（§2.3 步骤 3）。
+枚举口径：`outcome` 的 `settled/cancelled/expired` 与 §4.2 回写状态机终态同名对应，`failed` 为折叠态——expectation 状态机仍落 `settled`、判定失败由 `result` 字段承载（§4.3 all 行；§9.2 全部失败行 settle(result=failed)）；`partial` **不是** outcome 值，超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载（§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）；`members[].state` 中 `done/failed` 即 tasks.status 原值（单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]），`cancelled` 为分身显式取消终态（§2.3 步骤 1），`late` 为 any 残余越过取消点者标注（§2.3 步骤 3）。
 
 回写幂等：以 memo 键 `join:<fork_id>:written` 先写后发（first-write-wins 先例 [来源: 仓库:src/platform/store/store.cr:369-383]），崩溃重放不重复回写。
 
