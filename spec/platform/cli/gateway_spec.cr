@@ -165,6 +165,65 @@ module Sebas
       gateway.shutdown
     end
 
+    it "schedules two same-session messages in FIFO order through the scheduler chain (调度 WP2)" do
+      smtp = FakeSmtpServer.new
+      smtp.serve
+      dir = gateway_tmp_dir("scheduling")
+      config = gw_test_config
+      gateway = Platform::CLI::Gateway.new(config, dir) do |agent, _key|
+        Providers::FakeProvider.new(agent.model, ["reply A", "reply B"])
+      end
+      gateway.channels.register(Channels::Email::EmailChannelAdapter.new(
+        gw_smtp_account, gateway.bus, smtp_host: "127.0.0.1", smtp_port: smtp.port, smtp_tls: "none"
+      ))
+      gateway.bus.publish(Platform::Bus::InboundMessage.new("evt-sch-1", "email", "test-acc", "carol@example.com", "first"))
+      gateway.bus.publish(Platform::Bus::InboundMessage.new("evt-sch-2", "email", "test-acc", "carol@example.com", "second"))
+      gateway.run
+      ok = wait_for do
+        gateway.store.intent_status("evt-sch-1") == "done" &&
+          gateway.store.intent_status("evt-sch-2") == "done"
+      end
+      gateway.shutdown
+      ok.should be_true
+
+      store = Platform::Store::Store.new(dir / "sebas.db")
+      # 同会话严格保序：先到先答（session-input-scheduling.md §2 queue 语义）
+      transcripts = store.transcripts("agent:main:test-acc:email:carol@example.com")
+      transcripts.map(&.role).should eq(["user", "agent", "user", "agent"])
+      transcripts[0].content.should eq("first")
+      transcripts[1].content.should eq("reply A")
+      transcripts[2].content.should eq("second")
+      transcripts[3].content.should eq("reply B")
+      # 批次落库：两批 done、成员 done（持久调度权威）
+      done_batches = store.batches_by_status(Sessions::Scheduling::BatchStatus::Done)
+      done_batches.size.should eq(2)
+      done_batches.each do |batch|
+        store.batch_inputs(batch.batch_id).map(&.status).should eq(["done"])
+      end
+      smtp.mails.size.should eq(2)
+      store.close
+      smtp.close
+    end
+
+    it "drops unroutable inbound before admission without occupying the queue (§4.2 fail-closed)" do
+      dir = gateway_tmp_dir("noadmit")
+      config = gw_test_config
+      gateway = Platform::CLI::Gateway.new(config, dir) do |agent, _key|
+        Providers::FakeProvider.new(agent.model, ["never"])
+      end
+      gateway.run
+      gateway.bus.publish(Platform::Bus::InboundMessage.new(
+        "evt-noadmit-1", "email", "unknown-acc", "x@y.z", "hi"
+      ))
+      sleep 100.milliseconds # bus consumer 完成投递尝试
+      gateway.shutdown
+      store = Platform::Store::Store.new(Path[dir, "sebas.db"])
+      store.batches_by_status(Sessions::Scheduling::BatchStatus::Done).size.should eq(0)
+      store.collecting_batches.size.should eq(0)
+      store.session_input?("evt-noadmit-1").should be_false # 未占队列：无 admission 记录
+      store.close
+    end
+
     it "survives a real process kill and resumes from checkpoint (taskkill /F / SIGKILL 口径)" do
       exe =
         {% if flag?(:windows) %}
