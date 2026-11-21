@@ -180,7 +180,16 @@ module SebasAgents
     end
 
     # 选卡结果。action 取值见 docs/design/process/implementer-loop.md §4。
-    Action = Data.define(:action, :milestone, :issue, :reason, :observed_main, :excluded) do
+    # metadata_gaps 列出「看起来是工作包却挂不到 active milestone」的卡，
+    # 用于避免它们只表现为笼统的「元数据未补齐」。
+    Action = Data.define(:action, :milestone, :issue, :reason, :observed_main, :excluded,
+      :metadata_gaps) do
+      def self.from_h(hash)
+        new(action: hash["action"], milestone: hash["milestone"], issue: hash["issue"],
+          reason: hash["reason"], observed_main: hash["observed_main"],
+          excluded: hash["excluded"] || [], metadata_gaps: hash["metadata_gaps"] || [])
+      end
+
       def to_h
         {
           "action" => action,
@@ -188,7 +197,8 @@ module SebasAgents
           "issue" => issue,
           "reason" => reason,
           "observed_main" => observed_main,
-          "excluded" => excluded
+          "excluded" => excluded,
+          "metadata_gaps" => metadata_gaps
         }.compact
       end
     end

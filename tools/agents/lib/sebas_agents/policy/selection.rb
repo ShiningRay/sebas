@@ -237,12 +237,77 @@ module SebasAgents
         ready = evaluated.select { |_issue, result| result.ready? }.map(&:first)
         if ready.empty?
           reason = candidates.empty? ? "active 主线内无可执行工作包（元数据未补齐）" : "候选均被前置阻塞"
-          return action("blocked", observed, reason, milestone: milestone.number, excluded: excluded)
+          return action("blocked", observed, reason, milestone: milestone.number,
+            excluded: excluded, metadata_gaps: metadata_gaps(milestone, snapshot))
         end
 
         chosen = ready.min_by { |issue| issue.automation["order"] }
         action("claim_issue", observed, "active 主线内无前置阻塞的可执行工作包中计划顺序最小",
           milestone: milestone.number, issue: chosen.number, excluded: excluded)
+      end
+
+      # 隐形卡：看起来是工作包，但元数据不全导致选择器无从调度。
+      # 两类都要列出，否则 Maintainer 只知道「有缺口」却不知道是哪几张：
+      #   1. 挂了 active milestone，但缺 Automation 块 —— 只会进 excluded，
+      #      而 excluded 的 reason 混在大量「前置阻塞」里，难以眼检。
+      #   2. 没挂任何 milestone —— 连 excluded 都进不去，完全隐形。
+      def metadata_gaps(milestone, snapshot)
+        snapshot.issues.select { |issue| issue.open? }.filter_map do |issue|
+          next unless work_package_like?(issue)
+
+          missing = []
+          if issue.milestone.nil?
+            missing << "milestone"
+          elsif issue.milestone != milestone.number
+            # 属于别的 milestone 或并行轨：不归本 active 主线调度，不算缺口。
+            next
+          end
+          missing << "automation" if issue.automation.nil?
+          next if missing.empty?
+
+          {"issue" => issue.number, "missing" => missing}
+        end
+      end
+
+      # 「看起来是工作包」的判据（任一成立）：
+      #   1. 有 plan 标签；
+      #   2. 有 Automation 块（但可能有其它字段问题）；
+      #   3. 正文依赖节里出现任何 #N 引用——包括「另见 #35」这类引用说明。
+      # 第 3 条刻意不复用 prose_dependencies：那个解析器会剥掉引用说明以得到
+      # 「真正的前置」，而这里只关心「作者是否按工作包格式写了依赖节」。
+      def work_package_like?(issue)
+        return true if issue.label?("plan")
+        return true if issue.automation
+
+        section = dependency_section(issue.body)
+        !section.nil? && section.match?(/#\d+/)
+      end
+
+      # 取「前置依赖」/「依赖」节的正文。
+      # 节结束于**同级或更高级**标题：依赖节下常有 "### 内部依赖" 这类子标题，
+      # 若在任意 # 处截断会漏掉其后的内容。
+      #
+      # 判定标题必须要求 `#` 后跟空白：`#3` 是 issue 引用，不是标题，
+      # 否则「## 前置依赖 / #3」这条依赖会被当成标题而丢失。
+      HEADING = /\A(#+)\s+\S/
+
+      def dependency_section(body)
+        text = body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
+        lines = text.lines
+        start = lines.index { |line| line.match?(/^#+\s*(前置依赖|依赖)\s*$/) }
+        return nil unless start
+
+        level = lines[start][/\A#+/].length
+        collected = []
+        lines[(start + 1)..].to_a.each do |line|
+          # 用捕获组取 # 串，不能直接用 match 结果（那是整段 "## 文本"）。
+          if (m = line.match(HEADING)) && m[1].length <= level
+            break
+          end
+
+          collected << line
+        end
+        collected.join
       end
 
       def exclusion_reason(issue)
@@ -253,9 +318,10 @@ module SebasAgents
         nil
       end
 
-      def action(name, observed, reason, milestone: nil, issue: nil, excluded: [])
+      def action(name, observed, reason, milestone: nil, issue: nil, excluded: [], metadata_gaps: [])
         Model::Action.new(action: name, milestone: milestone, issue: issue,
-          reason: reason, observed_main: observed, excluded: excluded)
+          reason: reason, observed_main: observed, excluded: excluded,
+          metadata_gaps: metadata_gaps)
       end
 
       def invalid(observed, reason)

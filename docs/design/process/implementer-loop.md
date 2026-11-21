@@ -162,6 +162,18 @@ PR 合并、关联 issue `completed`、CI 成功之后，以 `github-actions[bot
 
 ## 3. 每次运行的完整流程
 
+### 3.0 元数据缺口必须可见
+
+选择器只看 active milestone 内的 issue。一张**有工作包特征但没有 milestone** 的卡（`plan` 标签、有依赖声明、或有 Automation 块）不会进入候选集，只会表现为笼统的「元数据未补齐」——Maintainer 无从知道要补哪几张。
+
+因此 `blocked` 输出带 `metadata_gaps` 字段：
+
+```json
+{"issue": 19, "missing": ["milestone", "automation"]}
+```
+
+判定「工作包特征」的三条任一成立即可：`plan` 标签、存在 Automation 块、正文依赖节含 `#N`。普通 issue（如功能建议）不计入，避免清单被噪音污染。
+
 ### 3.1 刷新并对账
 
 先读取远端，再决定动作：
@@ -256,7 +268,7 @@ PR 合并、关联 issue `completed`、CI 成功之后，以 `github-actions[bot
 | `resume_pr` | 修复或推进自己的在途 PR | 按需 |
 | `claim_issue` | 认领一张新的就绪卡 | 认领成功后启动 |
 | `wait` | 等 CI、review 或其他正常异步事件 | 否 |
-| `blocked` | 当前没有就绪卡；列出前置与依赖原因 | 否 |
+| `blocked` | 当前没有就绪卡；列出前置与依赖原因，并在 `metadata_gaps` 列出挂不到 active milestone 的工作包 | 否 |
 | `needs_human` | 需要 Maintainer 决策或外部输入 | 否 |
 | `invalid_plan` | 元数据、依赖或状态冲突 | 否 |
 | `handoff_release` | 工作包已清，进入门禁/发版收口 | 否 |
