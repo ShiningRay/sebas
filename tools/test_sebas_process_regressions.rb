@@ -660,6 +660,22 @@ class VerifierRegressionTest < Minitest::Test
     assert report.pass?, report.items.map(&:message).inspect
   end
 
+  # CR：checks 为空说明快照没取到 CI 结果，不能当成「没有失败 = 全绿」放行。
+  def test_verify_merge_pre_blocks_when_no_checks_recorded
+    body = automation + evidence(subject: "issue:39")
+    data = snapshot(
+      issues: [issue(39, body: body, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
+        "checks" => []
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?, "空 checks 必须阻断"
+    assert(report.blockers.any? { |b| b.message.include?("没有任何 CI 检查记录") },
+      report.items.map(&:message).inspect)
+  end
+
   # CR 安全项：--pre 不能只看 status 字段，必须走 trusted? 授权校验。
   def test_verify_merge_pre_blocks_on_untrusted_evidence_source
     body = automation + evidence(subject: "issue:39")
