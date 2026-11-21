@@ -12,13 +12,17 @@ require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
 require "../../providers/fake_provider"
+require "../../sessions/scheduling/scheduler"
+require "../../sessions/scheduling/recovery"
 require "../../tools/executor"
 require "../../admin/ipc/server"
 require "../../log"
 
 # Gateway（M0-WP8 装配）：单常驻进程组装全链路——
-# config → store(recover!) → bus → 渠道适配器 → agent 池 → 工具执行器 → IPC 管理面。
+# config → store(recover!) → 调度恢复 → bus → 渠道适配器 → 调度权威 → agent 池 → 工具执行器 → IPC 管理面。
 # 消息处理 = 效应三明治：intent 落库 → task+checkpoint → provider turn → 发信（幂等键）→ 落库。
+# 调度链路（WP2）：Adapter → Router（admission 前解析）→ Scheduler.admit（SQLite 事务成功才接受）
+# → queue seal → SessionWorker dispatch → 完成回调收敛批次（session-input-scheduling.md §7）。
 module Sebas
   module Platform
     module CLI
@@ -36,6 +40,11 @@ module Sebas
         getter supervisor : Supervisor::Supervisor
         getter reload_manager : Config::ReloadManager?
         getter http : Admin::HTTP::Server
+        getter scheduling : Sessions::Scheduling::Registry
+
+        # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
+        # pool handler ↔ scheduling registry 的循环引用
+        @batch_job_handler : Proc(Agents::Job, Nil)? = nil
 
         def initialize(@config : Config::Config, data_dir : String | Path, config_path : String = "",
                        &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
@@ -48,6 +57,9 @@ module Sebas
           @executor = Tools::Executor.new(Tools.default_registry(@channels), @channels)
           @rules = build_rules(config)
           @pool = build_pool
+          @scheduling = Sessions::Scheduling::Registry.new(@store)
+          scheduling.dispatch_handler = ->(session_key : String, payload : String) { @pool.enqueue(session_key, payload) }
+          @batch_job_handler = ->(job : Agents::Job) { run_batch_job(job) }
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
@@ -61,6 +73,7 @@ module Sebas
             http_cfg.try(&.auth) || "token", ENV["SEBAS_HTTP_TOKEN"]?,
             &->trigger_reload)
           @store.recover!
+          Sessions::Scheduling::Recovery.recover_stale(@store)
           spawn_adapters
         end
 
@@ -91,6 +104,8 @@ module Sebas
           @ipc.listen
           @http.listen
           @supervisor.start_all
+          replay_unfinished           # 崩溃恢复重放先于调度启动（同会话不出现双 turn）
+          scheduling.recover_dispatch # 持久待发批次重派（§5.2：sealed/queued 重新入队）
           consume_bus
           if @config_path.empty?
             Log.info { "gateway running (data_dir=#{@data_dir}; config reload disabled: no config path)" }
@@ -143,24 +158,36 @@ module Sebas
           @reload_manager.try(&.stop_watching)
           @http.close
           @supervisor.stop_all
+          scheduling.shutdown # 停止派发；collecting 批保守封存（§5.2 shutdown 口径）
           @pool.shutdown
           @bus.close
           @ipc.close
           @store.close
         end
 
-        # 处理一条入站消息（效应三明治 + 幂等三件套；spec 可直接调用）
-        def process_message(message : Bus::InboundMessage, replay : Bool = false) : Nil
+        # 处理一条入站消息（效应三明治 + 幂等三件套；spec 可直接调用）。
+        # admitted_session：批次派发路径传入 admission 时确定的会话键——路由不再
+        # 重解析（binding 热换不改在途批次归属），turn 在被调度的会话下执行。
+        def process_message(message : Bus::InboundMessage, replay : Bool = false, admitted_session : String? = nil) : Nil
           # 重放（崩溃恢复）跳过 intent 排重：已存在 intent 继续 dispatch（send 幂等键防重复投递）
           return unless replay || @store.record_intent(message.event_id, "message", message.to_json)
           @store.finish_intent(message.event_id, "dispatched")
 
-          # Binding 路由（M1-WP1）：most-specific 解析；无匹配 fail-closed 丢弃+审计
-          agent_name = Routing::Table.resolve(@rules, message.channel_type, message.account_id, message.peer)
-          unless agent_name
-            Log.warn { "audit: inbound dropped without matching binding (channel=#{message.channel_type} account=#{message.account_id} peer=#{message.peer} event=#{message.event_id})" }
-            @store.finish_intent(message.event_id, "failed")
-            return
+          if admitted_session
+            # 调度派发路径：agent_id 取自五段键 agent 段（Agents.session_key 格式），
+            # 会话与序列化归属即 admission 时的路由结果
+            agent_name = admitted_session.split(":")[1]? || ""
+            session_key = admitted_session
+          else
+            # Binding 路由（M1-WP1）：most-specific 解析；无匹配 fail-closed 丢弃+审计
+            resolved = Routing::Table.resolve(@rules, message.channel_type, message.account_id, message.peer)
+            unless resolved
+              Log.warn { "audit: inbound dropped without matching binding (channel=#{message.channel_type} account=#{message.account_id} peer=#{message.peer} event=#{message.event_id})" }
+              @store.finish_intent(message.event_id, "failed")
+              return
+            end
+            agent_name = resolved
+            session_key = Agents.session_key(agent_name, message.account_id, message.channel_type, message.peer)
           end
           agent = Config::CURRENT.get.agents[agent_name]?
           unless agent
@@ -168,7 +195,6 @@ module Sebas
             @store.finish_intent(message.event_id, "failed")
             return
           end
-          session_key = Agents.session_key(agent_name, message.account_id, message.channel_type, message.peer)
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
@@ -241,12 +267,78 @@ module Sebas
 
         private def build_pool : Agents::Pool
           Agents::Pool.new(8, 16) do |job|
-            # 池内执行：payload 为 InboundMessage JSON
-            data = JSON.parse(job.payload)
-            process_message(Bus::InboundMessage.new(
-              data["event_id"].as_s, data["channel_type"].as_s,
-              data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
-            ))
+            handler = @batch_job_handler
+            handler.call(job) unless handler.nil? # 装配完成前无 job 进入（dispatch 未接线）
+          end
+        end
+
+        # 池内执行：payload 为批次派发 JSON（{batch_id, session_key}）。成员 turn 逐条
+        # 执行（queue 模式单成员），全部落库后按 intent 终态收敛批次并派发下一批。
+        # 派发权威在 scheduler（每会话同时在途 ≤1），本方法只做执行与完成回调。
+        # turn 在 admission 时确定的会话下执行（admitted_session 传入，不重解析路由）：
+        # binding 热换不影响在途批次的会话归属，保序与序列化按 admitted session 成立。
+        private def run_batch_job(job : Agents::Job) : Nil
+          data = JSON.parse(job.payload)
+          batch_id = data["batch_id"].as_s
+          session_key = data["session_key"].as_s
+          failed = [] of String
+          if @store.session_batch(batch_id).nil?
+            Log.error { "dispatch references missing batch #{batch_id} (session=#{session_key})" }
+          else
+            @store.batch_inputs(batch_id).each do |input|
+              process_message(message_from_payload(input.payload), admitted_session: session_key)
+              failed << input.event_id if @store.intent_status(input.event_id) != "done"
+            end
+          end
+          scheduling.batch_done(session_key, batch_id, failed)
+        rescue ex : JSON::ParseException
+          Log.error(exception: ex) { "batch job payload unparsable (payload=#{job.payload[0, 120]})" }
+        rescue ex : ::Exception
+          # 执行体崩溃不炸 worker：批次 fail-closed 改判 failed（成员 intent 保持
+          # dispatched，重启重放兜底），调度继续推进
+          Log.error(exception: ex) { "batch job crashed (payload=#{job.payload[0, 120]})" }
+          parsed = JSON.parse(job.payload)
+          scheduling.batch_crashed(parsed["session_key"].as_s, parsed["batch_id"].as_s)
+        end
+
+        private def message_from_payload(payload : String) : Bus::InboundMessage
+          data = JSON.parse(payload)
+          Bus::InboundMessage.new(
+            data["event_id"].as_s, data["channel_type"].as_s,
+            data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
+          )
+        end
+
+        # admission 前置解析（契约 §4.2：Router 在 admission 前完成 agent/session 解析；
+        # 无 binding 仍 fail-closed 丢弃并审计，不能先占队列）→ Scheduler.admit，
+        # SQLite 事务成功才接受；重复投递幂等；容量超限拒绝并计数。
+        private def schedule_input(event : Bus::InboundMessage) : Nil
+          agent_name = Routing::Table.resolve(@rules, event.channel_type, event.account_id, event.peer)
+          unless agent_name
+            Log.warn { "audit: inbound dropped without matching binding (channel=#{event.channel_type} account=#{event.account_id} peer=#{event.peer} event=#{event.event_id})" }
+            return
+          end
+          # admission 决策取 @config（apply_config 热换的权威快照）：agent 与
+          # gateway.session 同源，避免 CURRENT 未随热更新时策略与 agent 定义分叉
+          agent = @config.agents[agent_name]?
+          unless agent
+            Log.error { "audit: binding targets unknown agent #{agent_name} (event=#{event.event_id})" }
+            return
+          end
+          session_key = Agents.session_key(agent_name, event.account_id, event.channel_type, event.peer)
+          snapshot = Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
+          env = Sessions::Scheduling::InputEnvelope.new(
+            event.event_id, session_key, event.channel_type, event.peer, 0,
+            ::Time.utc.to_rfc3339, nil, event.to_json, snapshot
+          )
+          receipt = scheduling.admit(env)
+          case receipt.status
+          when "accepted"
+            Log.info { "admitted (session=#{session_key} event=#{event.event_id} batch=#{receipt.batch_id} position=#{receipt.queue_position})" }
+          when "duplicate"
+            Log.debug { "duplicate admission (session=#{session_key} event=#{event.event_id})" }
+          else
+            Log.warn { "admission rejected (session=#{session_key} event=#{event.event_id})" }
           end
         end
 
@@ -257,8 +349,13 @@ module Sebas
               break if event.nil?
               case event
               when Bus::InboundMessage
-                session_key = Agents.session_key("main", event.account_id, event.channel_type, event.peer)
-                @pool.enqueue(session_key, event.to_json)
+                begin
+                  schedule_input(event)
+                rescue ex
+                  # 单事件 admission 异常（瞬时 SQLite 故障等）不得停摆总线消费：
+                  # fail-closed 丢弃并留错（契约 §6），后续事件继续处理
+                  Log.error(exception: ex) { "admission failed, event dropped fail-closed (event=#{event.event_id})" }
+                end
               when Bus::AccountEvent
                 @ipc.tap.publish(Admin::IPC.event_line("account.#{event.kind}", {
                   "account_id" => JSON::Any.new(event.account_id),
