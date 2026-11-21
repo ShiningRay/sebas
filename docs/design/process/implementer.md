@@ -142,20 +142,43 @@ CI 的 changes job 会跳过这些步骤，以 docs-check 和 review 意见清�
 
 ## 合并前置（缺一不可）
 
+合并前的自检命令是 **`--pre` 模式**（合并后核验见下一节）：
+
 ```sh
-ruby tools/sebas-process verify merge <pr> <issue>   # 退出码 0 才继续
+ruby tools/sebas-process verify merge <pr> <issue> --pre   # 退出码 0 才允许合并
 ```
 
-必须同时满足：
+`--pre` 在合并前就能判定，因此它核验的是：关联 issue 正确、CI 全绿且无未完成检查、
+Evidence `status=accepted` 且无未实测项、review thread 全部解决。必须同时满足：
 
-1. `verify merge` 返回 `ok: true` 且退出码 0（PR 已合并状态与 issue 关闭口径一致）。
+1. `verify merge --pre` 返回 `ok: true` 且退出码 0。
 2. Verifier 核验结论无 `blocker` / `must_fix`。
 3. Reviewer 终验结论为 `通过`（`有条件通过` 需 Maintainer 裁决，Implementer 不得自行合并）。
-4. issue 的 `Evidence` 块由 Maintainer 登记且状态为 `accepted`。
+4. issue 有有效 `Evidence` 块（`source` 为 `maintainer` 或 `workflow`），`status=accepted`。
 5. `mergeStateStatus=CLEAN` 且未解决 review thread 为 0。
 
 Implementer **不能自己验收**：Verifier 与 Reviewer 必须是独立上下文。
-`gh pr merge` 是写操作，没有 dry-run；执行前先用 `verify merge` 和一次 `next` 确认状态。
+`gh pr merge` 是写操作，没有 dry-run；执行前必须先跑上面的 `--pre`。
+
+**不传 `--pre` 的 `verify merge` 是合并后核验**（要求 PR 已合并、issue 已 completed）。
+合并前跑它必然报 `PR 未合并` blocker——那是口径用错，不是门禁失败。
+
+### 非典型合并路径
+
+用 ZCode / 其他自动化 workflow 推进 PR 时，这条门禁同样适用：
+`mergeStateStatus=CLEAN` 只说明 GitHub 侧条件满足，不代表验收证据齐全。
+workflow 在 `gh pr merge` 之前必须调用 `verify merge --pre` 并检查退出码；
+门禁拒绝时不得合并——`缺 Evidence` 或 `Evidence 未授权` 属于机器无法自愈的情形，
+应转为 `needs_human` 而不是重试。
+
+## 合并后核验
+
+合并完成后跑一次不带 `--pre` 的核验，确认 PR 已合并、issue 已 `completed`、
+CI 五绿：
+
+```sh
+ruby tools/sebas-process verify merge <pr> <issue>
+```
 
 ## 可执行实现：完整工作包执行
 

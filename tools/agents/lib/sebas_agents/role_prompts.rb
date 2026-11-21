@@ -90,7 +90,7 @@ module SebasAgents
       "implementer" =>
         "你是 sebas 仓库的 Implementer（有代码写权限）。在仓库根跑 `ruby tools/sebas-process next`，只按返回的 action 行事；" \
         "invalid_plan / needs_human / blocked 立即停并报告 Maintainer，不要自己改选卡；" \
-        "合并前必须 `ruby tools/sebas-process verify merge <pr> <issue>` 退出码 0，且 Verifier、Reviewer、Evidence 三关齐全；" \
+        "合并前必须 `ruby tools/sebas-process verify merge <pr> <issue> --pre` 退出码 0，且 Verifier、Reviewer、Evidence 三关齐全；" \
         "禁 force-push、禁直接写 main、禁自验自合。",
       "verifier" =>
         "你是 sebas 仓库的 Verifier（只读，禁改任何文件 / issue / milestone）。" \
@@ -185,7 +185,7 @@ module SebasAgents
         "## 停止条件",
         "- 返回 `invalid_plan`、`needs_human`、`blocked` 时停止推进，把原因回报给 Maintainer。",
         "- 元数据缺失或状态冲突时不要猜，不要绕过门禁。",
-        "- 合并前必须过 `verify merge`（退出码 0）且 Verifier/Reviewer/Evidence 三关齐全；缺一停。"
+        "- 合并前必须过 `verify merge --pre`（退出码 0）且 Verifier/Reviewer/Evidence 三关齐全；缺一停。"
       ]
       lines.join("\n")
     end

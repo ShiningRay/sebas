@@ -120,6 +120,11 @@ module SebasAgents
         # 合并前自检里，CI 未完成不能算可放行。
         pre ? report.blocker("PR ##{pr_number} 仍有未完成的检查") : report.must_fix("PR ##{pr_number} 仍有未完成的检查")
       end
+      # 「全绿」不能由「没有失败记录」推出：checks 为空说明快照没取到 CI 结果，
+      # 此时放行等于把「没看见」当成「通过」。
+      if pre && pr.checks.empty?
+        report.blocker("PR ##{pr_number} 没有任何 CI 检查记录，无法确认全绿")
+      end
       if expected_head && pr.head_sha != expected_head
         report.must_fix("PR ##{pr_number} head #{pr.head_sha} 与记录的 #{expected_head} 不符")
       end
