@@ -130,6 +130,24 @@ module SebasAgents
       end
 
       # 同时带 needs:human 与 agent:resume：先核验解决说明，再同一动作移除两标签。
+      # aborted 必须显式对账，而不是直接续跑。
+      # 远端有标签 → 需要人工确认这次写入属于本认领；
+      # 远端无标签 → 结论是锁不存在，需重新认领。
+      def reconcile_aborted(issue, record, observed)
+        written = record["label_written"]
+        if written == true
+          return action("invalid_plan", observed,
+            "## #{issue.number} 的认领处于 aborted 且可能已写标签（label_written=true）：" \
+            "远端存在 #{Model::IN_PROGRESS_LABEL}，需 Maintainer 核对后清除该记录再重新认领",
+            issue: issue.number, milestone: issue.milestone)
+        end
+
+        action("invalid_plan", observed,
+          "## #{issue.number} 的认领处于 aborted（label_written=#{written.inspect}）：" \
+          "先删除本地运行记录，再用 claim 重新认领，不得直接续跑",
+          issue: issue.number, milestone: issue.milestone)
+      end
+
       def resume_paused(issue, record, observed)
         action("resume_issue", observed,
           "暂停卡 ##{issue.number} 已获 agent:resume；核验 Maintainer 解决说明后移除暂停标签并恢复原归属",
@@ -141,6 +159,12 @@ module SebasAgents
 
         if record["issue"] && record["issue"].to_i != issue.number
           return invalid(observed, "本地记录 issue #{record["issue"].inspect} 与认领 ##{issue.number} 不符")
+        end
+
+        # aborted 表示认领未被确认（写失败或回读失败）。在核对远端状态前
+        # 不能当作已认领继续开工，否则就是在未确认的锁上动手。
+        if record["phase"] == "aborted"
+          return reconcile_aborted(issue, record, observed)
         end
 
         reason = if record["phase"] == "claiming"

@@ -215,6 +215,22 @@ class CliRobustnessTest < Minitest::Test
     end
   end
 
+  # aborted 记录不得直接续跑，必须先对账。
+  def test_aborted_record_does_not_resume
+    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    %w[true false].each do |written|
+      record = {"issue" => 1, "phase" => "aborted", "label_written" => written == "true"}
+      action = select(data, record: record)
+      assert_equal "invalid_plan", action.action, "aborted(label_written=#{written}) 不得续跑"
+      assert_includes action.reason, "aborted"
+    end
+  end
+
+  def test_claimed_record_still_resumes
+    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    assert_equal "resume_issue", select(data, record: {"issue" => 1, "phase" => "claimed"}).action
+  end
+
   # 应修 12：needs_model 是「判断步骤」而非「判定值」，两者必须可区分但不能混用
   def test_needs_model_steps_are_not_decisions
     data = snapshot(issues: [issue(1, body: "bug 描述")])

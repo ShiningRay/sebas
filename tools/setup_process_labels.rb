@@ -17,37 +17,26 @@ LABELS = [
   ["metadata:invalid", "B60205", "元数据缺失或矛盾，禁止自动开工"]
 ].freeze
 
-# gh label list 有返回上限；分批拉取直到不足一页，避免把已存在的标签误判为缺失。
-PAGE_SIZE = 200
+# gh label 没有 view 子命令，也只有一个 list 命令带数量上限。
+# 直接走 REST 查询单个标签（URL 中冒号需编码）。
+def label_exists?(name)
+  path = "repos/#{REPO}/labels/#{name.gsub(":", "%3A").gsub(" ", "%20")}"
+  _out, err, status = Open3.capture3("gh", "api", path)
+  return true if status.success?
 
-def existing
-  names = []
-  page = 1
-  loop do
-    out, err, status = Open3.capture3("gh", "label", "list", "--repo", REPO,
-      "--limit", PAGE_SIZE.to_s, "--json", "name", "--search", "",
-      "-q", ".[].name")
-    raise "读取标签失败：#{err.strip}" unless status.success?
+  # 404 = 标签不存在；其余错误必须暴露，不能当成"缺失"后盲目创建。
+  raise "查询标签 #{name} 失败：#{err.strip}" unless err.include?("404") || err.include?("Not Found")
 
-    batch = out.lines.map(&:strip).reject(&:empty?)
-    names.concat(batch)
-    break if batch.length < PAGE_SIZE
-
-    page += 1
-    raise "标签分页超过 50 页，疑似查询异常" if page > 50
-  end
-  names.uniq
+  false
 end
 
-# 直接查询单个标签，作为分页之外的兜底确认。
-def label_exists?(name)
-  _out, _err, status = Open3.capture3("gh", "label", "view", name, "--repo", REPO)
-  status.success?
+def existing
+  LABELS.select { |name, _, _| label_exists?(name) }.map(&:first)
 end
 
 apply = ARGV.include?("--apply")
 present = existing
-missing = LABELS.reject { |name, _, _| present.include?(name) || label_exists?(name) }
+missing = LABELS.reject { |name, _, _| present.include?(name) }
 
 if missing.empty?
   puts "全部流程标签已存在（#{LABELS.length} 个）"
