@@ -9,9 +9,15 @@ module SebasAgents
     #   - 缺记录、前置未完成        → blocked（未满足，等条件）
     #   - 结构非法、对象不匹配、
     #     登记人不可信、状态字段错   → invalid（元数据冲突，fail-closed 交 Maintainer）
+    #
+    # 登记人两种来源，均须白名单佐证，JSON 里的 source 字符串本身不是凭据：
+    #   - "maintainer"：source_ref 作者属 .github/agents.yml 的 maintainers（人类）
+    #   - "workflow"  ：source_ref 作者属 .github/agents.yml 的 trusted_bots（自动化身份）
     module Evidence
       SCHEMA = 1
       SOURCE = "maintainer"
+      WORKFLOW_SOURCE = "workflow"
+      SOURCES = [SOURCE, WORKFLOW_SOURCE].freeze
 
       module_function
 
@@ -33,12 +39,47 @@ module SebasAgents
         block
       end
 
-      # source_ref 的实际作者必须在 maintainers 内；JSON 的 source 字符串不算凭据。
+      # source_ref 的实际作者必须在对应白名单内，且被引用评论的正文必须真的登记了
+      # 本块声明的结论。JSON 的 source 字符串不是凭据，评论作者身份也不足够——
+      # 只证明「这个人/这个 bot 写过该评论」，不证明「该评论登记了这条结论」。
+      # "maintainer" 比对 maintainers（人类），"workflow" 比对 trusted_bots（自动化身份）。
       def trusted?(block, snapshot)
-        return false unless block["source"] == SOURCE
+        source = block["source"]
+        return false unless SOURCES.include?(source)
 
-        author = snapshot.source_authors[block["source_ref"].to_s]
-        !author.nil? && snapshot.maintainers.include?(author)
+        ref = block["source_ref"].to_s
+        author = snapshot.source_authors[ref]
+        return false if author.nil?
+
+        authorized = if source == WORKFLOW_SOURCE
+          snapshot.trusted_bots.include?(author)
+        else
+          snapshot.maintainers.include?(author)
+        end
+        return false unless authorized
+
+        registration_matches?(block, snapshot.source_bodies[ref])
+      end
+
+      # 被引用评论必须包含与本块一致的登记字段。
+      # 空正文（离线快照未提供）时放行作者校验结果，交由调用方按证据缺口处理；
+      # 提供了正文却对不上，一律判未授权。
+      #
+      # untested 必须比对：它是门禁实际执行的字段，若允许 issue 正文单方面改成 []，
+      # 就等于「有写权限者可以声明已全部实测」，绕过合并前自检。
+      def registration_matches?(block, body)
+        return true if body.nil?
+
+        text = body.to_s
+        return false if text.strip.empty?
+
+        ref_block = JsonBlock.one(text, "evidence", subject: block["subject"].to_s)
+        return false unless ref_block.is_a?(Hash)
+
+        %w[subject status].all? { |key| ref_block[key].to_s == block[key].to_s } &&
+          ref_block["gate_status"].to_s == block["gate_status"].to_s &&
+          ref_block["evidence_path"].to_s == block["evidence_path"].to_s &&
+          Array(ref_block["untested"]).map(&:to_s).sort == Array(block["untested"]).map(&:to_s).sort
       end
 
       def evaluate_issue(block, number, snapshot)
@@ -114,7 +155,7 @@ module SebasAgents
       end
 
       def unauthorized(subject)
-        invalid(subject, ["#{subject} 的 Evidence 未由 Maintainer 登记"])
+        invalid(subject, ["#{subject} 的 Evidence 未由 Maintainer 或受信 bot 登记"])
       end
     end
   end

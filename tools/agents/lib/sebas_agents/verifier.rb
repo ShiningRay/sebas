@@ -92,20 +92,33 @@ module SebasAgents
     end
 
     # 只读请求的最终校验：PR 状态、关联 issue、CI 与合并 commit。
-    def verify_merge(pr_number, issue_number, snapshot, expected_head: nil)
+    #
+    # 两种模式（#107）：
+    #   pre: false（默认，合并后核验）：要求 PR 已合并、issue 已 completed，
+    #            并核对 merge commit 进入 main。这是收口时的完整性核验。
+    #   pre: true（合并前自检）：合并与关闭在结构上还不可能成立，故跳过这两条，
+    #            只核验可提前判定的项——关联 issue、CI 全绿、无未完成检查、
+    #            Evidence 已 accepted、review thread 全部解决。
+    #            不能整段复用合并后口径：那会让「合并前必须退出码 0」永远失败。
+    def verify_merge(pr_number, issue_number, snapshot, expected_head: nil, pre: false)
       report = VerificationReport.new
       pr = snapshot.pull_request(pr_number)
       unless pr
         report.blocker("PR ##{pr_number} 不在快照内")
         return report
       end
-      report.blocker("PR ##{pr_number} 未合并") unless pr.merged?
+      if pre
+        report.blocker("PR ##{pr_number} 已关闭但未合并") if !pr.open? && !pr.merged?
+      elsif !pr.merged?
+        report.blocker("PR ##{pr_number} 未合并")
+      end
       report.blocker("PR ##{pr_number} 未关联 issue ##{issue_number}") unless pr.closing_issues.include?(issue_number)
       if pr.failing_checks.any?
         report.blocker("PR ##{pr_number} 存在失败检查：#{pr.failing_checks.map { |c| c["name"] }.join("、")}")
       end
       if pr.pending_checks.any?
-        report.must_fix("PR ##{pr_number} 仍有未完成的检查")
+        # 合并前自检里，CI 未完成不能算可放行。
+        pre ? report.blocker("PR ##{pr_number} 仍有未完成的检查") : report.must_fix("PR ##{pr_number} 仍有未完成的检查")
       end
       if expected_head && pr.head_sha != expected_head
         report.must_fix("PR ##{pr_number} head #{pr.head_sha} 与记录的 #{expected_head} 不符")
@@ -114,6 +127,28 @@ module SebasAgents
       issue = snapshot.issue(issue_number)
       if issue.nil?
         report.blocker("issue ##{issue_number} 不在快照内")
+      elsif pre
+        report.blocker("issue ##{issue_number} 已关闭，不能再作为合并前自检对象") unless issue.open?
+
+        # 合并前门禁必须覆盖 Evidence 与 review thread，否则可带着未验收结论合并。
+        if pr.unresolved_threads.any?
+          report.blocker("PR ##{pr_number} 仍有 #{pr.unresolved_threads.length} 条未解决 review thread")
+        end
+        evidence = Policy::Evidence.from_issue(issue)
+        if evidence.nil?
+          report.blocker("issue ##{issue_number} 缺 Evidence 块")
+        elsif !Policy::Evidence.trusted?(evidence, snapshot)
+          # 只查 status 字段不够：issue 正文可被任意有写权限者编辑，
+          # 必须与依赖判定同口径校验登记人身份与评论内容。
+          report.blocker("issue ##{issue_number} 的 Evidence 未由 Maintainer 或受信 bot 登记")
+        else
+          # 合并前不可能有 merged_into_main，只判 accepted + 无未实测。
+          unless evidence["status"] == "accepted"
+            report.blocker("issue ##{issue_number} 的 Evidence status 必须为 accepted")
+          end
+          untested = Array(evidence["untested"])
+          report.blocker("issue ##{issue_number} 仍有未实测必需项：#{untested.join("、")}") unless untested.empty?
+        end
       elsif !issue.completed?
         report.blocker("issue ##{issue_number} 未以 completed 关闭")
       end

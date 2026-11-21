@@ -86,8 +86,14 @@ Verifier 的只读实现在 `tools/agents/lib/sebas_agents/verifier.rb`：
 ```sh
 ruby tools/sebas-process verify docs docs/design/process/*.md
 ruby tools/sebas-process verify anchors anchors.json
-ruby tools/sebas-process verify merge <pr> <issue>
+ruby tools/sebas-process verify merge <pr> <issue>        # 合并后核验：要求已合并 + completed
+ruby tools/sebas-process verify merge <pr> <issue> --pre  # 合并前自检：CI + Evidence + thread
 ```
+
+两种模式不可互换：合并后口径要求 `merged?` 与 `issue completed`，合并前跑必然 blocker；
+`--pre` 反之要求 PR 与 issue 仍 open，合并后跑会被拒绝。`--pre` 额外核验 Evidence
+`status=accepted`、无未实测项、review thread 全部解决。见
+[implementer-loop.md](implementer-loop.md) §3.6。
 
 ```ruby
 require_relative "tools/agents/lib/sebas_agents"

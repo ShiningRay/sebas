@@ -33,6 +33,53 @@ ruby -v   # 必须 >= 3.4
 
 `rbenv root`、`mise where ruby`、`asdf where ruby` 可查出实际目录。
 
+### 1.1 Crystal 工具链（跑 spec / make release 用）
+
+`tools/sebas-process` 只要 Ruby，但跑仓库门禁需要 Crystal。**版本必须 >= 1.22**：
+`src/platform/keys/vault.cr` 用了 `OpenSSL::Cipher#gcm_tag`，该 API 在 1.21 及更早不存在，
+用旧版会报 `undefined method 'gcm_tag'`。
+
+**这个报错极易误导排查**：失败触发面随编译文件集变化——不 `require` keys 的 spec 子集在
+1.21 能过，全量 `crystal spec` 必挂。先查 crystal 版本，再查链接环境。
+
+```sh
+crystal --version   # 必须 >= 1.22
+```
+
+macOS 上 OpenSSL 开发文件不在系统路径，需要把 Homebrew keg 直接交给 Crystal（**不要 `brew install`**，
+与 CI 的 `.github/actions/setup` 口径一致——那里只探测、不安装）：
+
+```sh
+mise install crystal@1.22.3    # 与 CI 跟踪的 latest stable 对齐；勿 brew upgrade
+OSSL=/opt/homebrew/opt/openssl@3
+CRYSTAL_LIBRARY_PATH=$OSSL/lib LDFLAGS=-L$OSSL/lib CPPFLAGS=-I$OSSL/include \
+  PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- crystal spec
+```
+
+不想用 mise 时，直接用解释器绝对路径（`mise where crystal@1.22.3` 可查）：
+
+```sh
+CRYSTAL_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib \
+  "$(mise where crystal@1.22.3)/bin/crystal" spec
+```
+
+`make release` 调用 PATH 上的 `crystal`，**不继承**上面 `mise exec` 的版本选择。若 PATH 上不是 1.22 或更新版本，
+`vault.cr` 的 `gcm_tag` 会在 release 构建时失败。用同一版本与环境变量跑：
+
+```sh
+OSSL=/opt/homebrew/opt/openssl@3
+CRYSTAL_LIBRARY_PATH=$OSSL/lib LDFLAGS=-L$OSSL/lib CPPFLAGS=-I$OSSL/include \
+  PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- make release
+```
+
+`OSSL` 必须在这一步重新赋值：上一节的 `mise install` 与绝对路径写法都不保证它留在当前 shell 里。
+
+`make release` 前先确认 spec 全绿；强杀演练 spec 需要 `bin/sebas` 存在才实跑（否则 pending），
+所以 `make release` 之后才能解锁。
+
+Linux / Windows 按各平台包管理器装 Crystal >= 1.22 与 sqlite3 / openssl / pcre2 开发头，
+不做 Homebrew 那套定位。
+
 仓库首次使用时，创建流程标签与维护者名单：
 
 ```sh
@@ -101,7 +148,8 @@ ruby tools/sebas-process next                 # 输出单一动作
 ruby tools/sebas-process claim 39 --dry-run   # 校验是否可认领
 ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + 远端标签并回读
 ruby tools/sebas-process resume 39            # 续跑本机已认领卡
-ruby tools/sebas-process verify merge 95 39   # 合并前核对
+ruby tools/sebas-process verify merge 95 39 --pre  # 合并前自检（CI + 关联 issue）
+ruby tools/sebas-process unclaim 39 --apply   # 收口后释放认领（要求已合并 + completed）
 ```
 
 `next` 返回 `claim_issue` / `resume_pr` / `wait` / `blocked` / `needs_human` /

@@ -8,11 +8,12 @@ require "fileutils"
 require_relative "agents/lib/sebas_agents"
 
 module SnapshotHelpers
-  def automation(kind: "work_package", order: [1], depends_on: [], external: [])
+  def automation(kind: "work_package", order: [1], depends_on: [], external: [], prose: nil)
+    prose_section = prose ? "\n## 前置依赖\n\n#{prose}\n" : ""
     body = <<~MD
       ## 目标
       测试
-
+      #{prose_section}
       ```json automation
       #{" "}
       MD
@@ -74,7 +75,7 @@ module SnapshotHelpers
   end
 
   def snapshot(issues:, milestones: nil, pull_requests: [], maintainers: ["ShiningRay"],
-    source_authors: nil, gates: {}, externals: {})
+    source_authors: nil, gates: {}, externals: {}, trusted_bots: [], source_bodies: {})
     {
       "repo" => "o/r",
       "main_sha" => "deadbeef",
@@ -89,7 +90,9 @@ module SnapshotHelpers
         "https://github.com/o/r/issues/1#issuecomment-1" => "ShiningRay"
       },
       "gates" => gates,
-      "externals" => externals
+      "externals" => externals,
+      "trusted_bots" => trusted_bots,
+      "source_bodies" => source_bodies
     }
   end
 
@@ -257,6 +260,82 @@ class SelectionTest < Minitest::Test
     assert_equal "blocked", select(data).action
   end
 
+  # #108 问题 2：前置已关闭时，正文依赖字段与 Automation 分叉仍要被检出。
+  def test_prose_dependency_missing_from_automation_is_invalid
+    body = automation(depends_on: [], prose: "WP1（#3）。")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: []),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "invalid_plan", action.action
+    assert(action.reason.include?("正文依赖字段"), action.reason)
+  end
+
+  def test_automation_dependency_missing_from_prose_is_invalid
+    body = automation(depends_on: [3], prose: "无。")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "invalid_plan", action.action
+    assert(action.reason.include?("未出现在正文依赖字段"), action.reason)
+  end
+
+  def test_consistent_prose_and_automation_passes
+    body = automation(depends_on: [3], prose: "WP1（#3）。")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action
+  end
+
+  def test_prose_without_issue_numbers_is_not_checked
+    body = automation(depends_on: [], prose: "M4.0-WP1 定稿。")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [])
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action
+  end
+
+  # 卡面常写「另需外部依赖 E.5（见 #35 开工条件）」这类引用说明，
+  # 其中的 #35 不是依赖，不能被当成 depends_on 缺失。
+  def test_reference_only_issue_number_is_not_a_dependency
+    body = automation(depends_on: [3], prose: "WP1（#3）完成；另需外部依赖 E.5（见 #35 开工条件）")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # CR：括号里带条件说明但仍是依赖，不能被整段剥掉。
+  def test_dependency_paren_with_condition_note_is_kept
+    body = automation(depends_on: [3], prose: "WP1（#3，开工条件已满足）")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # CR：同一行既有依赖又有引用说明时，只剥引用说明。
+  def test_dependency_and_reference_on_same_line
+    body = automation(depends_on: [3], prose: "WP1（#3）完成；另见 #35 开工条件")
+    data = snapshot(issues: [
+      issue(4, body: body, blocked_by: [3]),
+      issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+    ])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
   def test_completed_dependency_without_evidence_blocks
     data = snapshot(issues: [
       issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
@@ -274,6 +353,143 @@ class SelectionTest < Minitest::Test
       source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "random-user"}
     )
     assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_evidence_from_trusted_bot_unlocks
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 1, action.issue
+  end
+
+  def test_evidence_from_bot_not_in_trusted_list_is_invalid
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "evil-bot[bot]"},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_bot_cannot_forge_maintainer_source
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "maintainer"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_workflow_source_without_trusted_bots_is_invalid
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      trusted_bots: []
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_unknown_source_value_is_invalid
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "root"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ]
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  # CR 安全项：作者合法但评论正文没有登记本结论时，不能放行。
+  def test_trusted_bot_with_unrelated_comment_body_is_invalid
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => "LGTM, merging soon."},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_trusted_bot_with_matching_evidence_body_unlocks
+    registered = evidence(subject: "issue:9", source: "workflow")
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", source: "workflow"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_authors: {"https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"},
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered},
+      trusted_bots: ["github-actions[bot]"]
+    )
+    assert_equal "claim_issue", select(data).action
+  end
+
+  def test_evidence_body_with_different_subject_is_invalid
+    registered = evidence(subject: "issue:99")
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9"),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered}
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  # CR：issue 正文把 untested 改成 [] 不能绕过门禁——必须与登记评论一致。
+  def test_evidence_untested_mismatch_is_invalid
+    registered = evidence(subject: "issue:9", untested: ["真机 round-trip"])
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        # issue 正文宣称无未实测项
+        issue(9, body: evidence(subject: "issue:9", untested: []),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered}
+    )
+    assert_equal "invalid_plan", select(data).action
+  end
+
+  def test_evidence_untested_match_passes
+    registered = evidence(subject: "issue:9", untested: ["真机 round-trip"])
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
+        issue(9, body: evidence(subject: "issue:9", untested: ["真机 round-trip"]),
+          state: "CLOSED", state_reason: "COMPLETED")
+      ],
+      source_bodies: {"https://github.com/o/r/issues/1#issuecomment-1" => registered}
+    )
+    # 登记与正文一致，但仍有未实测项 → 依赖不满足（blocked，而非 invalid）。
+    assert_equal "blocked", select(data).action
   end
 
   def test_external_not_ready_blocks
@@ -466,6 +682,115 @@ class ReviewerTest < Minitest::Test
   def test_verifier_blocker_propagates
     report = verification_with([["blocker", "缺文件"]])
     assert_equal "打回", SebasAgents::Reviewer.final_verification(report, {}).conclusion
+  end
+
+  # #109：fixes 用条目自身 id 也要能匹配，不能只认 level 自编号。
+  def test_fixes_keyed_by_item_id_matches
+    report = verification_with([["must_fix", "锚点不符"]])
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("锚点不符", id: "g")
+    fixes = {"g" => {"passed" => true, "commit" => "abc"}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    assert final.pass?
+    assert_equal "有条件通过", final.conclusion
+  end
+
+  def test_item_id_kept_in_report
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("锚点不符", id: "r2-1")
+    assert_equal "r2-1", report.items.first.id
+  end
+
+  def test_auto_id_is_per_level
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a")
+    report.acceptable("b")
+    report.must_fix("c")
+    assert_equal %w[must_fix-1 acceptable-1 must_fix-2], report.items.map(&:id)
+  end
+
+  # CR：显式 id 与生成的 fallback id 不得碰撞。
+  def test_explicit_id_does_not_collide_with_generated
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a")
+    report.must_fix("b", id: "must_fix-2")
+    report.must_fix("c")
+    assert_equal %w[must_fix-1 must_fix-2 must_fix-3], report.items.map(&:id)
+    assert_equal 3, report.items.map(&:id).uniq.length
+  end
+
+  def test_duplicate_explicit_id_is_rejected
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "g")
+    assert_raises(ArgumentError) { report.must_fix("b", id: "g") }
+  end
+
+  # CR：positional fallback 按 level 内序号，不由 id 后缀推断。
+  def test_positional_fallback_is_not_derived_from_id_suffix
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "r2-1")
+    report.must_fix("b", id: "r3-1")
+    fixes = {"must_fix-1" => {"passed" => true, "commit" => "aaa"}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    # 只有第 1 项被覆盖，第 2 项必须仍算未修复。
+    assert_equal "打回", final.conclusion
+  end
+
+  # CR：level-only 简写只在同 level 唯一时生效。
+  def test_level_only_fix_requires_unique_item
+    two = SebasAgents::VerificationReport.new
+    two.must_fix("a")
+    two.must_fix("b")
+    fixes = {"must_fix" => {"passed" => true, "commit" => "aaa"}}
+    assert_equal "打回", SebasAgents::Reviewer.final_verification(two, fixes).conclusion
+
+    one = SebasAgents::VerificationReport.new
+    one.must_fix("a")
+    assert_equal "有条件通过", SebasAgents::Reviewer.final_verification(one, fixes).conclusion
+  end
+
+  # CR：位置键不能命中另一条目的显式 id，否则一条 fix 满足两项。
+  def test_positional_key_does_not_shadow_other_item_explicit_id
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "must_fix-2")   # 显式 id 恰好等于第二项的位置键
+    report.must_fix("b", id: "g")
+    fixes = {"must_fix-2" => {"passed" => true, "commit" => "aaa"}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    # 第 1 项按显式 id 命中；第 2 项的位置键 must_fix-2 被占用，不得复用 → 仍算未修复。
+    assert_equal "打回", final.conclusion
+  end
+
+  # CR：level-only 简写同样不能命中另一条目的显式 id。
+  def test_level_only_key_does_not_shadow_other_item_explicit_id
+    report = SebasAgents::VerificationReport.new
+    report.must_fix("a", id: "acceptable")
+    report.acceptable("b", id: "g")
+    fixes = {"acceptable" => {"passed" => true, "commit" => "abc", "reason_still_valid" => true}}
+    final = SebasAgents::Reviewer.final_verification(report, fixes)
+    # "acceptable" 是第 1 项的显式 id，第 2 项不得再借它过关。
+    assert_equal "打回", final.conclusion
+  end
+end
+
+# #109：叙述式 verdict 与 level 词汇统一由 VERDICTS 收口。
+class VerdictMappingTest < Minitest::Test
+  def test_chinese_verdicts_map_to_levels
+    expected = {
+      "阻断" => "blocker",
+      "应修" => "must_fix",
+      "可留" => "acceptable",
+      "未实测" => "unverified",
+      "通过" => "ok"
+    }
+    expected.each do |verdict, level|
+      assert_equal level, SebasAgents::VerificationReport::VERDICTS.fetch(verdict), "映射 #{verdict}"
+    end
+  end
+
+  def test_english_levels_pass_through
+    %w[blocker must_fix acceptable unverified ok pass].each do |level|
+      refute_nil SebasAgents::VerificationReport::VERDICTS[level], "缺少 #{level}"
+    end
   end
 end
 

@@ -1,4 +1,13 @@
-# Maintainer 名单：sebas-process 用它校验 Evidence 的登记人身份。
-# 只有这里列出的人（或他们明确授权的 workflow 身份）写的 evidence 才算数。
+# Evidence 登记人白名单：sebas-process 用它校验验收证据的实际登记身份。
+# 两个段位分离，不可混用：
+#   maintainers  —— 人类（source="maintainer"），最终裁决权所在
+#   trusted_bots —— 自动化身份（source="workflow"），仅限受信的 workflow 登记
+# JSON 里写 source 字符串本身不是凭据；工具会回查 source_ref 评论的真实作者 login。
 maintainers:
   - ShiningRay
+
+# 允许代写 Evidence 的自动化身份。未列入者一律 invalid（fail-closed）。
+# 注意：授予此权限等于授予「写入验收结论」的能力——
+# 能改本仓库 workflow 的人即可伪造 Evidence，必须与 .github/ 审核红线配套。
+trusted_bots:
+  - github-actions[bot]

@@ -33,6 +33,8 @@ module SebasAgents
         opts.on("--verdict PATH") { |value| options[:verdict] = value }
         opts.on("--apply") { options[:apply] = true }
         opts.on("--dry-run") { options[:apply] = false }
+        # 合并前自检：跳过「已合并 / 已关闭」这两条只有合并后才可能成立的条件。
+        opts.on("--pre") { options[:pre] = true }
         opts.on("--help", "-h") { options[:help] = true }
       end
 
