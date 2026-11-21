@@ -73,6 +73,18 @@ class EvidenceRegisterTest < Minitest::Test
     assert_equal :absent, ER.existing_evidence(body, subject: "issue:42")
   end
 
+  # CR-only 换行：必须与下游 JsonBlock.normalize 同口径识别，
+  # 否则会把已有合法块当缺失，追加后形成重复块且无法自愈。
+  def test_cr_only_line_endings_are_detected
+    body = "## 目标\r\r## Evidence\r\r```json evidence\r#{JSON.generate(block)}\r```\r"
+    assert_equal :valid, ER.existing_evidence(body, subject: "issue:42")
+  end
+
+  def test_crlf_line_endings_are_detected
+    body = "## 目标\r\n\r\n```json evidence\r\n#{JSON.generate(block)}\r\n```\r\n"
+    assert_equal :valid, ER.existing_evidence(body, subject: "issue:42")
+  end
+
   # --- issue 关联解析 ---
 
   def test_closing_issue_parses_fixes

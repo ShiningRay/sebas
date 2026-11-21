@@ -247,7 +247,10 @@ module EvidenceRegister
 
   # :absent / :valid / :invalid
   def existing_evidence(body, subject:)
-    text = body.to_s
+    # 与 Policy::JsonBlock.normalize 同口径：CR-only / CRLF 也视为换行。
+    # 否则 `^```json evidence$` 在多行模式下匹配不到，会把已有的合法块
+    # 当成缺失而追加第二份，下游随即因重复块报错且无法自愈。
+    text = normalize_newlines(body)
     # 必须是真正的 ```json evidence 围栏，不能只看正文里是否出现这几个词。
     # 否则「Document the json evidence format.」这类叙述会被当成损坏的块，
     # 导致登记永远失败且重试无效。
@@ -266,11 +269,12 @@ module EvidenceRegister
     valid ? :valid : :invalid
   end
 
-  def parse_block(body)
-    text = body.to_s
-    return nil unless text.include?(EVIDENCE_FENCE)
+  def normalize_newlines(body)
+    body.to_s.gsub("\r\n", "\n").gsub("\r", "\n")
+  end
 
-    match = text.match(/```json evidence\s*(\{.*?\})\s*```/m)
+  def parse_block(body)
+    match = normalize_newlines(body).match(/```json evidence\s*(\{.*?\})\s*```/m)
     return nil unless match
 
     JSON.parse(match[1])
@@ -283,7 +287,8 @@ module EvidenceRegister
   # 从 issue 正文的「未实测」小节搬运待验证项。
   # 为空表示该卡没有额外要求，交由 CI 覆盖；脚本不自行发明，也不掩盖。
   def declared_untested(body)
-    match = body.to_s.match(/^#+\s*未实测\s*$(.*?)(?=^#+\s+\S|\z)/m)
+    text = normalize_newlines(body)
+    match = text.match(/^#+\s*未实测\s*$(.*?)(?=^#+\s+\S|\z)/m)
     return [] unless match
 
     match[1].lines.map { |line| line.sub(/\A[-*]\s*/, "").strip }
@@ -337,7 +342,7 @@ module EvidenceRegister
 
   # 替换已有的 Evidence 小节；没有则追加。保留其余小节原样。
   def upsert_evidence_section(body, block)
-    text = body.to_s.dup
+    text = normalize_newlines(body).dup
     fence = "```#{EVIDENCE_FENCE}\n#{JSON.pretty_generate(block)}\n```\n"
     section = "## Evidence\n\n#{fence}"
 
