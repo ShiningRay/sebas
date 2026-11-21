@@ -24,8 +24,9 @@ rbenv install && rbenv rehash && rbenv local
 mise settings add --local idiomatic_version_file_enable_tools ruby
 mise install
 
-# asdf：默认 legacy_version_file = no，也要先打开才读 .ruby-version
-asdf settings add legacy_version_file yes   # asdf 0.16+
+# asdf：默认 legacy_version_file=no，同样要先打开才读 .ruby-version。
+# 写 ~/.asdfrc（各版本通用；`asdf settings` 子命令并非所有版本都有）：
+echo 'legacy_version_file = yes' >> ~/.asdfrc
 asdf install
 ```
 
@@ -33,10 +34,18 @@ asdf install
 
 ```sh
 ruby -v   # 应为 3.2.x 或更高
+which ruby
 ```
 
-若 shell 仍是旧版本，重开终端或重新执行对应管理器的初始化（`eval "$(rbenv init -)"`
-或 `eval "$(mise activate zsh)"`），再检查一次。
+若 shell 仍是旧版本，说明管理器的 shim 不在 `PATH` 上：重开终端，或在 shell 配置里
+执行一次初始化（`eval "$(rbenv init -)"` / `eval "$(mise activate zsh)"` /
+`. "$(asdf which asdf 2>/dev/null)"` 对应发行版的初始化片段），再检查。
+
+不改 shell 配置时的确定性做法是绕开 shim，直接用绝对路径：
+
+```sh
+"$(rbenv root)/versions/3.2.9/bin/ruby" tools/sebas-process help
+```
 
 用 `mise use ruby@3.2.9` 也能达到同样效果，但它会写 `mise.toml`；仓库选择
 `.ruby-version`，以便 rbenv 用户零配置生效。无论用哪种方式，最后的判据都是

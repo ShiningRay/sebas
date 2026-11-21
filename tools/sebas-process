@@ -20,10 +20,10 @@ if Gem::Version.new(RUBY_VERSION) < Gem::Version.new(REQUIRED_RUBY)
            rbenv install && rbenv rehash && rbenv local     # rbenv 读取 .ruby-version
            mise settings add --local idiomatic_version_file_enable_tools ruby
            mise install                                    # mise 默认不读 .ruby-version
-           asdf settings add legacy_version_file yes
-           asdf install                                    # asdf 默认 legacy_version_file=no
-      2. 直接用受支持解释器的绝对路径运行（ruby 若仍是系统版本，需先装好新版）：
-           /path/to/ruby-3.2/bin/ruby tools/sebas-process ...
+           echo 'legacy_version_file = yes' >> ~/.asdfrc
+           asdf install                                    # asdf 默认也不读 .ruby-version
+      2. 绕开 shim，直接用受支持解释器的绝对路径运行：
+           "$(rbenv root)/versions/3.2.9/bin/ruby" tools/sebas-process ...
          若 ruby 已由 rbenv shim 接管，等价于：
            RBENV_VERSION=$(cat .ruby-version) ruby tools/sebas-process ...
 
