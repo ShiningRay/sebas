@@ -1,0 +1,114 @@
+# CodeRabbit 配置（#116）
+#
+# 目的：把仓库既有约定注入 review，减少「同类问题分多轮挤牙膏」的噪音。
+# 依据：AGENTS.md（代码约定 / 质量门禁 / 安全红线）、
+#       docs/design/process/implementer-loop.md（验收契约）。
+#
+# 注意：本文件只影响 review 的**提示质量**，不构成门禁。
+# 真正的门禁是 CI 四个必检 + `verify merge --pre`。
+version: 2
+
+language: zh-CN
+
+# tone_instructions 会进入实际审阅提示；YAML 注释不会。
+tone_instructions: |
+  本仓库的约定优先于通用最佳实践。遇到与仓库约定冲突的建议时不要提。
+  同一类问题的多个实例请合并成一条意见，不要分散成多条。
+
+reviews:
+  # chill：只报值得改的，不做无差别挑刺。
+  profile: chill
+
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+
+  auto_review:
+    enabled: true
+    # 每推一个新 commit 重新审。仓库流程依赖这一点来收敛 review thread。
+    auto_incremental_review: true
+    # 默认值是 5：达到阈值后自动暂停，与「push 后等再扫」的流程冲突。
+    # 0 表示不自动暂停。
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+
+  path_filters:
+    # 历史存档：行号锚是预期内的，不该成为噪音来源。
+    - "!docs/design/review/**"
+    - "!docs/design/research/**"
+    # 构建产物与依赖
+    - "!lib/**"
+    - "!bin/**"
+    - "!vendor/**"
+
+  path_instructions:
+    - path: "src/**/*.cr"
+      instructions: |
+        这是 Crystal 项目。请特别关注：
+
+        1. **跨平台**：平台相关代码必须用 `{% if flag?(:windows) %}` 等宏隔离，
+           三平台（ubuntu / macos / windows）都要能编译。缺少隔离的 FFI 或
+           系统调用应指出。
+        2. **格式化**：仓库用 `crystal tool format`，不要建议手改缩进或换行。
+        3. **体量**：单文件超过 400 行应提示拆分（这是仓库硬约定）。
+        4. **事务语义**：涉及 SQLite 写入时，注意「先 ACK 后写库」这类顺序问题；
+           写库失败不得留下已 ACK 的状态。
+        5. **并发**：注意竞态与「同一会话只允许一个活动批次」这类不变式。
+        6. 注释与设计文档用中文。
+
+    - path: "spec/**/*.cr"
+      instructions: |
+        测试约定：
+        1. 临时目录用 `Dir.tempdir`，不要依赖 `$TEMP` 等平台特定环境变量。
+        2. 不要为了凑绿而放宽断言；如需跳过，必须写明原因。
+        3. 涉及强杀/恢复的用例，注意 `bin/sebas` 存在才实跑（否则 pending）。
+
+    - path: "docs/**/*.md"
+      instructions: |
+        文档约定：
+        1. **引用文档用 `§节号` 或文件路径，不要用行号**——`tools/check_docs.rb`
+           会拦截行号锚（`docs/design/review/` 与 `docs/design/research/` 下的
+           历史存档除外）。
+        2. 单文件不超过 400 行；超过应提示拆分并更新索引。
+        3. 中文正文 + 英文代码标识符混排是预期的，不要建议翻译技术名词。
+        4. 断言必须可追溯到源码或实证；「大概」「可能」这类表述应无实据时指出。
+
+    - path: "tools/**/*.rb"
+      instructions: |
+        这是 Agent 流程工具，与角色契约强绑定。请特别关注：
+        1. **fail-closed**：元数据缺失、身份不可信、结构非法时必须拒绝执行，
+           不得静默放行或降级为「跳过」。
+        2. **幂等**：重复运行不得产生重复写入（评论、正文块、标签）。
+        3. **测试**：新增分支应有对应用例；断言要能真正区分行为差异。
+        4. 注释用中文，且解释「为什么」而非复述代码。
+
+    - path: ".github/workflows/**"
+      instructions: |
+        这是安全边界（AGENTS.md 红线）：
+        1. 新增 action 必须 SHA 钉版，且只允许仓库白名单内的 action
+           （`sha_pinning_required=true`）。引入未钉版的第三方 action 是阻断级问题。
+        2. `permissions` 必须最小化：只申请实际需要的 scope。
+        3. 任何放宽 Evidence 授权校验、或让 workflow 能伪造验收结论的改动，
+           按安全缺陷处理。
+        4. 注意 `GITHUB_TOKEN` 触发的 push 不会递归触发 push 型 workflow。
+
+    - path: "src/platform/keys/**"
+      instructions: |
+        这里是凭据保护核心（AES-256-GCM + OS keyring）：
+        1. 绝不把明文密码、token、私钥写入日志、异常信息或测试夹具。
+        2. 加密参数（IV、tag、算法）不得弱化。
+        3. 任何「为了调试方便」而绕过加密的改动应指出。
+
+  # 同类问题的多个实例合并成一条意见，避免多轮重复（由 tone_instructions 承载）。
+  pre_merge_checks:
+    title:
+      mode: warning
+      requirements: |
+        使用 Conventional Commits 格式：`type(scope): subject`，
+        type 取 feat / fix / docs / ci / chore / refactor / test。
+        必要时在结尾标注 `(#issue号)`。
+    description:
+      mode: warning
+
+chat:
+  auto_reply: true

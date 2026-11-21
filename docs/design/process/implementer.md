@@ -75,6 +75,15 @@ while unresolved_threads > 0:
 
 直到 `mergeStateStatus=CLEAN`。
 
+review 的提示质量由仓库根的 [`.coderabbit.yaml`](../../../.coderabbit.yaml) 决定：它把
+Crystal 三平台隔离、单文件 400 行、文档不用行号锚、workflow 的 SHA 钉版红线等约定
+注入对应路径的审阅指令，并过滤历史存档目录以降噪。
+
+因此**遇到与仓库约定冲突的意见**（例如建议改成与 `crystal tool format` 不一致的格式，
+或要求文档使用行号锚），优先判断是配置没覆盖到，而不是逐条反驳——配置漏项应按
+[#116](https://github.com/ShiningRay/sebas/issues/116) 的方式补进 `.coderabbit.yaml`，
+用测试（`tools/test_coderabbit_config.rb`）锁住关键结构。
+
 ### 3. CI 修复
 
 CI 失败时：
