@@ -13,8 +13,9 @@ def test_snapshot(max_pending_batches : Int64 = 32_i64, max_pending_bytes : Int6
 end
 
 def test_env(session_key : String, event_id : String, content : String,
-             snapshot : Sebas::Sessions::Scheduling::PolicySnapshot = test_snapshot) : Sebas::Sessions::Scheduling::InputEnvelope
-  Sebas::Sessions::Scheduling::InputEnvelope.new(event_id, session_key, "email", "alice@example.com", 0,
+             snapshot : Sebas::Sessions::Scheduling::PolicySnapshot = test_snapshot,
+             received_seq : Int64 = 0) : Sebas::Sessions::Scheduling::InputEnvelope
+  Sebas::Sessions::Scheduling::InputEnvelope.new(event_id, session_key, "email", "alice@example.com", received_seq,
     ::Time.utc.to_rfc3339, nil,
     %({"event_id": "#{event_id}", "channel_type": "email", "account_id": "acc", "peer": "alice@example.com", "content": #{content.inspect}}),
     snapshot)
@@ -78,6 +79,28 @@ module Sebas
       second = registry.admit(env)
       second.status.should eq("duplicate")
       store.pending_load("agent:main:acc:email:alice").batches.should eq(0) # running 批不算 pending
+      store.close
+    end
+
+    it "leaves zero residue on the admit_new_batch guard path (DB::Rollback)" do
+      store = tmp_store("guard")
+      session = "agent:main:acc:email:alice"
+      seq = store.next_session_seq(session)
+      batch1 = Sessions::Scheduling::Batch.new(
+        ::Sebas::Sessions::Scheduling.batch_id_for(session, seq), session,
+        Sessions::Scheduling::BatchStatus::Collecting, test_snapshot, seq, seq,
+        ::Time.utc.to_rfc3339, nil, nil)
+      env = test_env(session, "evt-g", "x", received_seq: seq)
+      store.admit_new_batch(batch1, env, 0).should be_true
+      # 同 event_id 再入新批：主键守卫触发 → 事务显式回滚，批次行零残留
+      seq2 = seq + 1
+      batch2 = Sessions::Scheduling::Batch.new(
+        ::Sebas::Sessions::Scheduling.batch_id_for(session, seq2), session,
+        Sessions::Scheduling::BatchStatus::Collecting, test_snapshot, seq2, seq2,
+        ::Time.utc.to_rfc3339, nil, nil)
+      store.admit_new_batch(batch2, env, 0).should be_false
+      store.session_batch(batch2.batch_id).should be_nil # 无孤儿批次行
+      store.next_session_seq(session).should eq(seq2)    # 序号不被毒化占用
       store.close
     end
 

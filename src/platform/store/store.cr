@@ -526,7 +526,9 @@ module Sebas
               env.received_at, env.source_occurred_at, env.payload,
               env.policy_snapshot.to_json, batch.batch_id
             ).rows_affected
-            next unless dup_rows > 0
+            # crystal-db 语义：事务块正常返回即提交，仅异常才回滚——守卫路径必须
+            # raise DB::Rollback 显式回滚（否则批次行残留并毒化该 batch_id 序号）
+            raise ::DB::Rollback.new unless dup_rows > 0
             inserted = true
             connection.exec(
               "INSERT INTO session_batch_members (event_id, batch_id, position) VALUES (?, ?, ?)",
