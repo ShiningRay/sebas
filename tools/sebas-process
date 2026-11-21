@@ -9,14 +9,17 @@
 # 报可执行的修复指引，而不是让调用方看到 uninitialized constant Data 这种内部错误。
 require "rubygems"
 
-VERSION_FILE = File.expand_path(".ruby-version", __dir__)
+# __dir__ 是脚本所在的 tools/，pin 在仓库根。这里用 "../.ruby-version"。
+VERSION_FILE = File.expand_path("../.ruby-version", __dir__)
 
 # .ruby-version 里的完整版本，供版本管理器安装。
+# 文件缺失说明仓库被拷贝缺件，不能静默用兜底值——那会让守卫和 pin 悄悄脱钩。
 PINNED_RUBY =
   if File.exist?(VERSION_FILE)
     File.read(VERSION_FILE, encoding: "UTF-8").strip
   else
-    "3.4.13"
+    warn "sebas-process 找不到 #{VERSION_FILE}（仓库根应有 .ruby-version 固定 Ruby 版本）"
+    exit 2
   end
 
 # 下限用大版本 + 小版本：同分支的补丁版功能等价，不该拒绝 3.4.12。
