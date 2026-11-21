@@ -1,0 +1,82 @@
+name: Evidence register
+
+# 无人干预的 PR 级验收：PR 合并、关联 issue 关闭且 CI 全绿后，
+# 以 github-actions[bot] 身份登记 Evidence，让 sebas-process 的前置判定自动解锁。
+#
+# 为什么需要这一步：`Policy::Evidence.trusted?` 要求 source_ref 指向的评论
+# 由 maintainers 或 trusted_bots 名单内的身份发出。人手登记是当时唯一的合法路径，
+# 结果 next 长期返回 blocked。本 workflow 用 bot 身份走 workflow 段位。
+#
+# 安全边界：
+#   - 只登记「已合并 + issue 已 completed + CI 全绿」的卡；
+#   - untested 不由本 workflow 编造：CI 能覆盖的项才置空，
+#     需要真机验证的项必须由判定逻辑写入，否则宁可跳过并留 needs:human；
+#   - 幂等：已有有效 Evidence 时直接跳过，不重复发评论。
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to register evidence for"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: evidence-register-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  register:
+    name: register evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # workflow_run 只在 CI 成功且有对应 PR 时继续；
+    # 手动触发（workflow_dispatch）不受此限制。
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.pull_requests[0].number != null)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Select preinstalled Ruby
+        shell: bash
+        run: |
+          want="$(cat .ruby-version)"
+          want_minor="$(echo "$want" | cut -d. -f1-2)"
+          ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+          best=""
+          for dir in /opt/hostedtoolcache/Ruby/*/x64; do
+            [ -x "$dir/bin/ruby" ] || continue
+            version="$("$dir/bin/ruby" -e 'print RUBY_VERSION')"
+            ge "$version" "$want_minor" || continue
+            if [ -z "$best" ] || ge "$version" "$best_version"; then
+              best="$dir"; best_version="$version"
+            fi
+          done
+          if [ -z "$best" ]; then
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want）"
+            exit 1
+          fi
+          echo "$best/bin" >> "$GITHUB_PATH"
+
+      - name: Register evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          INPUT_PR: ${{ inputs.pr }}
+        run: ruby tools/evidence_register.rb

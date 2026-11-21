@@ -27,6 +27,7 @@ agents-check:
 	ruby tools/test_oneline_sheet.rb
 	ruby tools/test_backfill_script.rb
 	ruby tools/test_ruby_version_guard.rb
+	ruby tools/test_evidence_register.rb
 
 # ameba 是 development dependency；未构建时先构建，再运行
 lint: lint-build

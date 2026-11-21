@@ -135,6 +135,23 @@ track: main
 - 授予 `trusted_bots` 等于授予「写入验收结论」的能力——因此能改本仓库 workflow 的人即可伪造 Evidence。该白名单的维护必须与 `.github/` 审核红线配套，新增条目属于安全边界变更。
 - `subject` 必须与前置完全匹配；`source_ref` 用于追溯登记人及原始意见。Selector 校验字段和状态，Reviewer/Verifier 按既有角色验证实际证据。缺块、非法 JSON、状态不符、对象不匹配、提交未进入 `main` 或必需项未实测均返回未满足。`needs:human`、`invalid_plan` 等状态不得用一段自然语言评论代替。
 
+### 2.5 自动登记（workflow 段位）
+
+`workflow` 段位的实际承载是 [`.github/workflows/evidence-register.yml`](../../../.github/workflows/evidence-register.yml)：
+PR 合并、关联 issue `completed`、CI 成功之后，以 `github-actions[bot]` 身份发一条
+含 Evidence 块的评论，并把同一块回填进 issue 正文的 `Evidence` 小节。
+
+| 性质 | 行为 |
+|---|---|
+| 幂等 | issue 已有 Evidence 块时直接跳过，不重复发评论 |
+| fail-closed | PR 未合并 / issue 非 completed / 无唯一 `Fixes #n` 时跳过，零写入 |
+| 原子性 | 评论发出后若回填正文失败，删除该评论再退出 |
+| 不伪造 | `untested` 来自 `tools/evidence_register.rb` 的显式清单；CI 覆盖不到的项必须列入，不得写空数组 |
+
+**它自动化的是机械登记，不是验收判断。** 门禁要求的「必须实测」项仍由 Verifier 判定并写入
+`untested`；workflow 只负责在条件满足后把结论落成可机读凭据。里程碑级验收（M-gate、冻结口径、
+发版终审）依旧由人在 PR 级自动化之上裁决。
+
 ## 3. 每次运行的完整流程
 
 ### 3.1 刷新并对账
