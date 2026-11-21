@@ -206,22 +206,33 @@ module Sebas
     end
 
     it "drops unroutable inbound before admission without occupying the queue (§4.2 fail-closed)" do
+      smtp = FakeSmtpServer.new
+      smtp.serve
       dir = gateway_tmp_dir("noadmit")
       config = gw_test_config
       gateway = Platform::CLI::Gateway.new(config, dir) do |agent, _key|
-        Providers::FakeProvider.new(agent.model, ["never"])
+        Providers::FakeProvider.new(agent.model, ["routed reply"])
       end
-      gateway.run
+      gateway.channels.register(Channels::Email::EmailChannelAdapter.new(
+        gw_smtp_account, gateway.bus, smtp_host: "127.0.0.1", smtp_port: smtp.port, smtp_tls: "none"
+      ))
+      # 无 binding 事件在前，可路由事件在后：consumer 单 fiber FIFO——后者被
+      # admission 落库即证明前者已处理完毕（替代无证明的 sleep）
       gateway.bus.publish(Platform::Bus::InboundMessage.new(
         "evt-noadmit-1", "email", "unknown-acc", "x@y.z", "hi"
       ))
-      sleep 100.milliseconds # bus consumer 完成投递尝试
+      gateway.bus.publish(Platform::Bus::InboundMessage.new(
+        "evt-noadmit-2", "email", "test-acc", "dave@example.com", "route me"
+      ))
+      gateway.run
+      wait_for { gateway.store.session_input?("evt-noadmit-2") }.should be_true
       gateway.shutdown
       store = Platform::Store::Store.new(Path[dir, "sebas.db"])
-      store.batches_by_status(Sessions::Scheduling::BatchStatus::Done).size.should eq(0)
-      store.collecting_batches.size.should eq(0)
       store.session_input?("evt-noadmit-1").should be_false # 未占队列：无 admission 记录
+      store.intent_status("evt-noadmit-1").should be_nil    # 也未产生 intent
+      smtp.mails.size.should eq(1)                          # 仅可路由事件获得应答
       store.close
+      smtp.close
     end
 
     it "survives a real process kill and resumes from checkpoint (taskkill /F / SIGKILL 口径)" do

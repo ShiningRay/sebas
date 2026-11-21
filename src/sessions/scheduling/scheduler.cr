@@ -29,6 +29,7 @@ module Sebas
 
         @mutex = Mutex.new
         @running_batch : String? = nil
+        @stopping = false
         @metrics : Hash(String, Int64)
 
         def initialize(@session_key : String, @store : ::Sebas::Platform::Store::Store, @dispatch : DispatchFn)
@@ -46,11 +47,19 @@ module Sebas
 
         # ---- admission（契约 §4.2：事务成功才接受；容量超限明确拒绝并计数）----
         #
-        # 返回回执：accepted（含排队位）/ duplicate（同 event_id 幂等）/
+        # 返回回执：accepted（含排队位）/ duplicate（同 event_id 幂等，不占容量）/
         # rejected（容量超限，可重试——积压下降后重投）。
         def admit(env : InputEnvelope) : AdmissionReceipt
           @mutex.synchronize do
             snapshot = env.policy_snapshot
+
+            # 去重最前置：duplicate 不占容量、不建批（重投已排队事件得 duplicate 而非 rejected）
+            if @store.session_input?(env.event_id)
+              bump("duplicate")
+              Log.debug { "admission duplicate (session=#{@session_key} event=#{env.event_id})" }
+              return AdmissionReceipt.new(env.event_id, "", "duplicate", nil)
+            end
+
             load = @store.pending_load(@session_key)
             incoming_bytes = env.payload.bytesize.to_i64
 
@@ -68,13 +77,6 @@ module Sebas
               return AdmissionReceipt.new(env.event_id, "", "rejected", nil)
             end
 
-            # 去重前置探测：duplicate 不留孤儿批次；竞态由 admit_session_input 主键守卫兜底
-            if @store.session_input?(env.event_id)
-              bump("duplicate")
-              Log.debug { "admission duplicate (session=#{@session_key} event=#{env.event_id})" }
-              return AdmissionReceipt.new(env.event_id, "", "duplicate", nil)
-            end
-
             seq = @store.next_session_seq(@session_key)
             batch = Batch.new(
               batch_id: ::Sebas::Sessions::Scheduling.batch_id_for(@session_key, seq), session_key: @session_key,
@@ -83,10 +85,9 @@ module Sebas
               created_at: ::Time.utc.to_rfc3339, sealed_at: nil, seal_reason: nil
             )
             env = finalize_env(env, seq)
-            @store.create_session_batch(batch)
-            unless @store.admit_session_input(env, batch, 0)
-              # 并发竞态兜底（同 session 已被互斥，理论不可达；fail-closed 清理孤儿批）
-              @store.transition_session_batch(batch.batch_id, BatchStatus::Collecting, BatchStatus::Failed)
+            # 批次行 + 首个输入同一事务：崩溃不留孤儿空批（batch_id 序号不被占用）
+            unless @store.admit_new_batch(batch, env, 0)
+              # 主键守卫兜底（同 session 已互斥，理论不可达）：事务已回滚，零残留
               bump("duplicate")
               Log.debug { "admission duplicate via pk guard (session=#{@session_key} event=#{env.event_id})" }
               return AdmissionReceipt.new(env.event_id, batch.batch_id, "duplicate", nil)
@@ -94,28 +95,36 @@ module Sebas
 
             # queue 模式：每消息独立批次，admit 成功后立即 seal（flush）并入队
             seal_and_queue(batch.batch_id, SealReason::Flush)
-            # 空闲即派发（位次 0）；忙时新批落在队尾，回执带积压位次
-            position = dispatch_locked || load.batches.to_i32
+            # 空闲即派发；回执排队位 = 本批之前的 pending 批数（自身被派发则为 0）
+            dispatched = dispatch_locked
+            position = if dispatched == batch.batch_id
+                         0
+                       elsif dispatched
+                         (load.batches - 1).to_i32 # 本批未派发但队首被他批派发：少一个 pending
+                       else
+                         load.batches.to_i32 # 会话忙：本批排在全部 pending 之后
+                       end
             bump("admitted")
             AdmissionReceipt.new(env.event_id, batch.batch_id, "accepted", position)
           end
         end
 
         # 批次执行完成回调（执行体在成员 turn 全部落库后调用）：
-        # 失败成员按 event_id 精确迁移 failed，其余 done；批次随之 done/failed，
-        # 随后派发下一批。陈旧回调（恢复已改判）直接忽略。
+        # 失败成员按 event_id 精确迁移 failed，其余成员 done（不残留 dispatched）；
+        # 批次随之 done/failed（同一事务，陈旧回调整组回滚）。随后派发下一批。
         def batch_done(batch_id : String, failed_event_ids : Array(String) = [] of String) : Nil
           @mutex.synchronize do
             return unless @running_batch == batch_id
             @running_batch = nil
-            failed_event_ids.each do |event_id|
-              @store.transition_session_input(event_id, InputStatus::Dispatched, InputStatus::Failed)
-            end
-            if failed_event_ids.empty?
-              @store.transition_batch_inputs(batch_id, InputStatus::Dispatched, InputStatus::Done)
-              @store.transition_session_batch(batch_id, BatchStatus::Running, BatchStatus::Done)
-            else
-              @store.transition_session_batch(batch_id, BatchStatus::Running, BatchStatus::Failed)
+            batch_to = failed_event_ids.empty? ? BatchStatus::Done : BatchStatus::Failed
+            moves = if failed_event_ids.empty?
+                      [::Sebas::Platform::Store::Store::MemberMove.new(InputStatus::Dispatched, InputStatus::Done, nil)]
+                    else
+                      [::Sebas::Platform::Store::Store::MemberMove.new(InputStatus::Dispatched, InputStatus::Failed, failed_event_ids),
+                       ::Sebas::Platform::Store::Store::MemberMove.new(InputStatus::Dispatched, InputStatus::Done, nil)]
+                    end
+            unless @store.settle_batch(batch_id, BatchStatus::Running, batch_to, moves)
+              Log.warn { "stale completion callback ignored (session=#{@session_key} batch=#{batch_id})" }
             end
             bump("completed")
             dispatch_locked
@@ -129,7 +138,8 @@ module Sebas
           @mutex.synchronize do
             return unless @running_batch == batch_id
             @running_batch = nil
-            @store.transition_session_batch(batch_id, BatchStatus::Running, BatchStatus::Failed)
+            @store.settle_batch(batch_id, BatchStatus::Running, BatchStatus::Failed,
+              [] of ::Sebas::Platform::Store::Store::MemberMove)
             bump("completed")
             dispatch_locked
           end
@@ -140,10 +150,11 @@ module Sebas
           @mutex.synchronize { dispatch_locked }
         end
 
-        # 停机：不再派发新批；collecting 批保守封存（queue 模式常态无 collecting，
-        # 仅 admission 中途崩溃可能残留）。在途批次交由执行体 drain 收敛。
+        # 停机：置停止旗（在途批收敛后不再派发下一批，pending 批留待启动恢复 §5.2）；
+        # collecting 批保守封存（queue 模式常态无 collecting，仅崩溃残留可能存在）。
         def shutdown : Nil
           @mutex.synchronize do
+            @stopping = true
             @store.collecting_batches(@session_key).each do |row|
               seal_and_queue(row.batch_id, SealReason::Shutdown)
             end
@@ -158,9 +169,10 @@ module Sebas
           @store.transition_session_batch(batch_id, BatchStatus::Sealed, BatchStatus::Queued)
         end
 
-        # 空闲则派发 head：返回位次 0；nil = 会话忙 / 无待发批 / head 竞态改判
-        private def dispatch_locked : Int32?
-          return if @running_batch
+        # 空闲则派发 head：返回被派发批次 id；nil = 会话忙 / 停止中 / 无待发批 /
+        # head 竞态改判 / 派发交接失败（已回退重试态）
+        private def dispatch_locked : String?
+          return if @running_batch || @stopping
           head = @store.pending_batches(@session_key).first?
           return unless head
           batch_id = head.batch_id
@@ -170,8 +182,17 @@ module Sebas
           return unless @store.transition_session_batch(batch_id, BatchStatus::Queued, BatchStatus::Running)
           @running_batch = batch_id
           bump("dispatched")
-          @dispatch.call(@session_key, dispatch_payload(batch_id))
-          0
+          begin
+            @dispatch.call(@session_key, dispatch_payload(batch_id))
+          rescue ex
+            # 交接失败（如 pool 已关）：批次回退 queued 保持可重试，清在途标记
+            Log.error(exception: ex) { "dispatch handoff failed, batch requeued (session=#{@session_key} batch=#{batch_id})" }
+            @running_batch = nil
+            @store.settle_batch(batch_id, BatchStatus::Running, BatchStatus::Queued,
+              [] of ::Sebas::Platform::Store::Store::MemberMove)
+            return
+          end
+          batch_id
         end
 
         private def dispatch_payload(batch_id : String) : String

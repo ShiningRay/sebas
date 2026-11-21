@@ -110,6 +110,7 @@ module Sebas
           )
           SQL
         "CREATE INDEX IF NOT EXISTS idx_session_inputs_batch ON session_inputs(batch_id, received_seq)",
+        "CREATE INDEX IF NOT EXISTS idx_session_inputs_session_seq ON session_inputs(session_key, received_seq)",
         <<-SQL,
           CREATE TABLE IF NOT EXISTS session_batches (
             batch_id        TEXT PRIMARY KEY,
@@ -500,6 +501,94 @@ module Sebas
             batch.batch_id, batch.session_key, batch.status.to_s, batch.policy_snapshot.to_json,
             batch.first_seq, batch.last_seq, batch.seal_reason, batch.created_at, batch.sealed_at
           )
+        end
+
+        # 新批 admission 原子原语（批次行 + 首个输入同事务）：消除「批次行已建、
+        # 输入未落」的崩溃窗口——该窗口会留下孤儿空批并占用 batch_id 序号
+        # （下一条同序号 admit 撞批次主键，admission 永久毒化）。
+        # 返回 false = 输入 event_id 已存在（主键守卫兜底），事务内已回滚。
+        def admit_new_batch(batch : ::Sebas::Sessions::Scheduling::Batch, env : ::Sebas::Sessions::Scheduling::InputEnvelope,
+                            position : Int64) : Bool
+          inserted = false
+          @db.transaction do |tx|
+            connection = tx.connection
+            connection.exec(
+              "INSERT INTO session_batches (batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason, created_at, sealed_at) " \
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              batch.batch_id, batch.session_key, batch.status.to_s, batch.policy_snapshot.to_json,
+              batch.first_seq, batch.last_seq, batch.seal_reason, batch.created_at, batch.sealed_at
+            )
+            dup_rows = connection.exec(
+              "INSERT OR IGNORE INTO session_inputs " \
+              "(event_id, session_key, source, sender, received_seq, received_at, source_occurred_at, payload, policy_snapshot, status, batch_id) " \
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'batched', ?)",
+              env.event_id, env.session_key, env.source, env.sender, env.received_seq,
+              env.received_at, env.source_occurred_at, env.payload,
+              env.policy_snapshot.to_json, batch.batch_id
+            ).rows_affected
+            next unless dup_rows > 0
+            inserted = true
+            connection.exec(
+              "INSERT INTO session_batch_members (event_id, batch_id, position) VALUES (?, ?, ?)",
+              env.event_id, batch.batch_id, position
+            )
+            connection.exec(
+              "UPDATE session_batches SET last_seq = MAX(last_seq, ?) WHERE batch_id = ?",
+              env.received_seq, batch.batch_id
+            )
+          end
+          inserted
+        end
+
+        # 受守卫批次收敛（批次迁移 + 成员输入迁移同一事务）：守卫失败（状态已变）
+        # 整组回滚返回 false——陈旧回调/恢复改判不会留下半收敛状态。
+        # moves 逐条执行：only 为 nil 迁移全部 from 态成员，否则仅迁移列表内 event_id。
+        record MemberMove, from : ::Sebas::Sessions::Scheduling::InputStatus,
+          to : ::Sebas::Sessions::Scheduling::InputStatus, only : Array(String)?
+
+        # 私有哨兵：批次守卫失败时中止事务（DB::Transaction 自动回滚）
+        private class SettleConflict < ::Exception; end
+
+        def settle_batch(batch_id : String, batch_from : ::Sebas::Sessions::Scheduling::BatchStatus,
+                         batch_to : ::Sebas::Sessions::Scheduling::BatchStatus,
+                         moves : Array(MemberMove), seal_reason : String? = nil) : Bool
+          committed = false
+          begin
+            @db.transaction do |tx|
+              connection = tx.connection
+              if seal_reason
+                changed = connection.exec(
+                  "UPDATE session_batches SET status = ?, seal_reason = ?, sealed_at = ? WHERE batch_id = ? AND status = ?",
+                  batch_to.to_s, seal_reason, now, batch_id, batch_from.to_s
+                ).rows_affected
+              else
+                changed = connection.exec(
+                  "UPDATE session_batches SET status = ? WHERE batch_id = ? AND status = ?",
+                  batch_to.to_s, batch_id, batch_from.to_s
+                ).rows_affected
+              end
+              raise SettleConflict.new("batch #{batch_id} not in #{batch_from}") unless changed > 0
+              moves.each do |move|
+                if only = move.only
+                  only.each do |event_id|
+                    connection.exec(
+                      "UPDATE session_inputs SET status = ? WHERE event_id = ? AND status = ?",
+                      move.to.to_s, event_id, move.from.to_s
+                    )
+                  end
+                else
+                  connection.exec(
+                    "UPDATE session_inputs SET status = ? WHERE status = ? AND event_id IN " \
+                    "(SELECT event_id FROM session_batch_members WHERE batch_id = ?)",
+                    move.to.to_s, move.from.to_s, batch_id
+                  )
+                end
+              end
+              committed = true
+            end
+          rescue SettleConflict
+          end
+          committed
         end
 
         # 受守卫的状态迁移：WHERE status = from 保证迁移表由调用方（纯函数）裁决，
