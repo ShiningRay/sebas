@@ -67,11 +67,20 @@ Reviewer 的实现在 `tools/agents/lib/sebas_agents/reviewer.rb`：
 ruby tools/sebas-process review verification.json --fixes fixes.json
 ```
 
-`verification.json` 为 Verifier 输出，`fixes.json` 形如：
+`verification.json` 为 Verifier 输出。报告里 `items[].level` 与中文 `verdict`（通过 / 应修 / 可留 /
+未实测 / 阻断）都认，工具内置映射，不需要人工机械转换；条目自带的 `id` 会被保留。
+
+`fixes.json` 的键两种写法都可匹配，**条目 id 优先**：
 
 ```json
 {"must_fix-1": {"commit": "abc1234", "passed": true}}
 ```
+
+```json
+{"g": {"commit": "abc1234", "passed": true}}
+```
+
+后者用 Verifier 报告里该条目自身的 `id`（如 `g`、`r2-1`）。两条路都找不到才算未修复。
 
 ```ruby
 require_relative "tools/agents/lib/sebas_agents"

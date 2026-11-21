@@ -9,24 +9,42 @@ module SebasAgents
 
     LEVELS = %w[blocker must_fix acceptable unverified].freeze
 
+    # 叙述式 verdict → 结构式 level 的唯一映射表。
+    # Verifier 落盘报告常写中文结论（通过/应修/阻断…），review 工具只认 level；
+    # 两套词汇在此收口，避免每次验收靠人工机械转换。
+    VERDICTS = {
+      "blocker" => "blocker",
+      "阻断" => "blocker",
+      "must_fix" => "must_fix",
+      "应修" => "must_fix",
+      "acceptable" => "acceptable",
+      "可留" => "acceptable",
+      "unverified" => "unverified",
+      "未实测" => "unverified",
+      "未验证" => "unverified",
+      "ok" => "ok",
+      "pass" => "ok",
+      "通过" => "ok"
+    }.freeze
+
     def initialize
       @items = []
     end
 
-    def blocker(message, evidence: nil)
-      add("blocker", message, evidence)
+    def blocker(message, evidence: nil, id: nil)
+      add("blocker", message, evidence, id: id)
     end
 
-    def must_fix(message, evidence: nil)
-      add("must_fix", message, evidence)
+    def must_fix(message, evidence: nil, id: nil)
+      add("must_fix", message, evidence, id: id)
     end
 
-    def acceptable(message, evidence: nil)
-      add("acceptable", message, evidence)
+    def acceptable(message, evidence: nil, id: nil)
+      add("acceptable", message, evidence, id: id)
     end
 
-    def unverified(message, evidence: nil)
-      add("unverified", message, evidence)
+    def unverified(message, evidence: nil, id: nil)
+      add("unverified", message, evidence, id: id)
     end
 
     def ok(_message, evidence: nil)
@@ -78,8 +96,10 @@ module SebasAgents
 
     private
 
-    def add(level, message, evidence)
-      @items << Item.new(id: "#{level}-#{@items.length + 1}", level: level, message: message, evidence: evidence)
+    def add(level, message, evidence, id: nil)
+      fallback = "#{level}-#{@items.count { |item| item.level == level } + 1}"
+      @items << Item.new(id: id.to_s.empty? ? fallback : id.to_s, level: level,
+        message: message, evidence: evidence)
       nil
     end
   end

@@ -97,7 +97,14 @@ track: main
 | 期门禁 | `gate:<名称>` 对应的 `Evidence` 记录 | M-gate 为 `Go`、证据文件已合入、必要终审已完成 |
 | 外部依赖 | `external:<E.1 编号>` 对应的 `Evidence` 记录 | Maintainer 登记 `ready=true`；不把凭据写入证据 |
 
-统一证据结构（`source` 固定为 `maintainer`；该登记可由 Maintainer 亲自完成，或由已有 Maintainer 明确授权的 workflow 代写，API 身份须可核验）：
+统一证据结构（`source` 取 `maintainer` 或 `workflow`；登记人身份必须由 `.github/agents.yml` 对应白名单佐证，JSON 里的字符串本身不算凭据）：
+
+| `source` | 可接受 `source_ref` 作者 | 白名单段位 |
+|---|---|---|
+| `maintainer` | 人类维护者 | `maintainers` |
+| `workflow` | 受信自动化身份（如 `github-actions[bot]`） | `trusted_bots` |
+
+两段位互相隔离：bot 身份不能以 `source="maintainer"` 登记；未列入 `trusted_bots` 的 bot 以 `source="workflow"` 登记一律 `invalid`（fail-closed）。
 
 ```json evidence
 {
@@ -120,7 +127,8 @@ track: main
 - issue 与期门禁的 `status` 必须为 `accepted`、`ready` 必须为 `null`；期门禁另要求 `gate_status="go"` 和已合入的证据文件路径。
 - 外部依赖的 `status` 必须为 `ready`、`ready` 必须为 `true`；登记在 [plan/risks.md](../plan/risks.md) E.1 对应编号的唯一 `evidence` 块中，`subject=external:<编号>`。
 - 期门禁登记在该期门禁 issue 的唯一 Evidence 块中，`subject=gate:<名称>`；`source_ref` 指向 Maintainer 的评论或 review，含已合入 gate 文档的 PR 与 merge commit。
-- 只有 `maintainer` 可登记上述最终状态；普通 Agent 的自报不能直接解锁。Selector 还须验证 `source_ref` 的实际作者或已授权 GitHub App 身份，而不是仅信任 JSON 中的字符串。
+- `maintainer` 与 `workflow` 两段位各自独立校验：`maintainer` 的作者须在 `maintainers`，`workflow` 的作者须在 `trusted_bots`；跨段位冒用（bot 以 `maintainer` 登记）一律 `invalid`。普通 Agent 的自报不能直接解锁；Selector 回查 `source_ref` 的实际作者 login，不信任 JSON 中的字符串。
+- 授予 `trusted_bots` 等于授予「写入验收结论」的能力——因此能改本仓库 workflow 的人即可伪造 Evidence。该白名单的维护必须与 `.github/` 审核红线配套，新增条目属于安全边界变更。
 - `subject` 必须与前置完全匹配；`source_ref` 用于追溯登记人及原始意见。Selector 校验字段和状态，Reviewer/Verifier 按既有角色验证实际证据。缺块、非法 JSON、状态不符、对象不匹配、提交未进入 `main` 或必需项未实测均返回未满足。`needs:human`、`invalid_plan` 等状态不得用一段自然语言评论代替。
 
 ## 3. 每次运行的完整流程
@@ -176,11 +184,36 @@ track: main
 → PR 合入 main 并远端复核
 → issue 关闭且证据回填
 → 确认父卡已随流程同步更新
-→ 删除活动认领
+→ 删除活动认领（`ruby tools/sebas-process unclaim <issue> --apply`）
 → 重新读取 GitHub，重新选卡
 ```
 
+`unclaim` 是确定性的收口动作，不是「手动清锁」：它要求 PR 已合并 **且** issue 以 `completed` 关闭，任一不满足即 `refused`（退出码 1）。因此它不可能被用来绕过依赖判定——前置未真正完成时清不掉锁。
+
 后继是否解锁完全由新快照决定。父卡在所有子卡和门禁完成后按流程收口；版本 milestone 在发版产物验收后关闭。Selector 不越过这个边界直接开始下一版本。
+
+### 3.5 拒判遗留的登记位
+
+验收链（Verifier / Reviewer / 人工 review）拒判某条意见时，若该意见指向**超出本卡范围**的实质问题，PR 评论不能作为唯一留痕：
+
+- 必须在目标 issue 的评论中登记（含 marker 结构与影响面），或写入 `docs/design/plan/risks.md` 的 E 项；
+- 登记内容至少包含：位置、代价、建议三件（对齐 AGENTS.md 勤勉 ⑧）；
+- 「超出范围」不构成免登记理由——拒判只决定本卡不修，不决定问题消失。
+
+### 3.6 verify merge 的两种模式
+
+`verify merge` 有两种口径，混用会得出相反的结论：
+
+| 模式 | 命令 | 结构要求 | 用途 |
+|---|---|---|---|
+| 合并前自检 | `verify merge <pr> <issue> --pre` | PR 仍 open、issue 仍 open；校验关联 issue、CI 全绿、无未完成检查 | 合并动作前的门禁 |
+| 合并后核验 | `verify merge <pr> <issue>` | PR 已合并、issue `completed` | 收口时的完整性核验 |
+
+`--pre` **不能**复用合并后口径：后者要求 `merged?` 与 `completed`，合并前必然 blocker。反之，合并后再跑 `--pre` 会因 issue 已关闭而拒绝执行。
+
+### 3.7 卡面契约的时效
+
+工作包卡创建时，契约声明只引**已合入 main** 的文本路径。引用未合并文档时必须显式标注「待合入，开工前以最新合并版为准」。Scribe 对账周期性扫描 OPEN 卡，回填已过时的契约声明（例如「文档未合入 main」在 PR 合并后即失效）。
 
 ## 4. 输出契约与停止条件
 

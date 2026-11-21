@@ -92,14 +92,25 @@ module SebasAgents
     end
 
     # 只读请求的最终校验：PR 状态、关联 issue、CI 与合并 commit。
-    def verify_merge(pr_number, issue_number, snapshot, expected_head: nil)
+    #
+    # 两种模式（#107）：
+    #   pre: false（默认，合并后核验）：要求 PR 已合并、issue 已 completed，
+    #            并核对 merge commit 进入 main。这是收口时的完整性核验。
+    #   pre: true（合并前自检）：合并与关闭在结构上还不可能成立，故跳过这两条，
+    #            只核验可提前判定的项——关联 issue、CI 全绿、无未完成检查。
+    #            不能整段复用合并后口径：那会让「合并前必须退出码 0」永远失败。
+    def verify_merge(pr_number, issue_number, snapshot, expected_head: nil, pre: false)
       report = VerificationReport.new
       pr = snapshot.pull_request(pr_number)
       unless pr
         report.blocker("PR ##{pr_number} 不在快照内")
         return report
       end
-      report.blocker("PR ##{pr_number} 未合并") unless pr.merged?
+      if pre
+        report.blocker("PR ##{pr_number} 已关闭但未合并") if !pr.open? && !pr.merged?
+      elsif !pr.merged?
+        report.blocker("PR ##{pr_number} 未合并")
+      end
       report.blocker("PR ##{pr_number} 未关联 issue ##{issue_number}") unless pr.closing_issues.include?(issue_number)
       if pr.failing_checks.any?
         report.blocker("PR ##{pr_number} 存在失败检查：#{pr.failing_checks.map { |c| c["name"] }.join("、")}")
@@ -114,6 +125,8 @@ module SebasAgents
       issue = snapshot.issue(issue_number)
       if issue.nil?
         report.blocker("issue ##{issue_number} 不在快照内")
+      elsif pre
+        report.blocker("issue ##{issue_number} 已关闭，不能再作为合并前自检对象") unless issue.open?
       elsif !issue.completed?
         report.blocker("issue ##{issue_number} 未以 completed 关闭")
       end

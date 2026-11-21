@@ -44,6 +44,8 @@ module SebasAgents
       when "next" then run_next(argv.drop(1))
       when "claim" then run_claim(argv.drop(1))
       when "resume" then run_resume(argv.drop(1))
+      when "unclaim" then run_unclaim(argv.drop(1))
+      when "release" then run_release(argv.drop(1))
       when "verify" then run_verify(argv.drop(1))
       when "review" then run_review(argv.drop(1))
       when "triage" then run_triage(argv.drop(1))
@@ -253,6 +255,62 @@ module SebasAgents
       raise UsageError, "#{label} 必须是数字，收到 #{value.inspect}"
     end
 
+    # §3.4 收口动作：PR 已合并 + issue completed 才允许解除认领。
+    # 这是 unclaim 的确定性前置，不满足时 fail-closed，绝不自作主张清锁。
+    def run_unclaim(argv)
+      return help if argv.include?("--help") || argv.include?("-h")
+
+      options, (number,) = Argv.parse(argv, required: ["issue"])
+      target = parse_number(number, "issue")
+      snap = snapshot(options)
+      issue = snap.issue(target)
+      raise UsageError, "issue ##{number} 不在快照内" unless issue
+
+      payload = {
+        "ok" => false,
+        "dry_run" => !options[:apply],
+        "issue" => issue.number,
+        "reasons" => []
+      }
+
+      unless issue.completed?
+        payload["reasons"] << "issue ##{issue.number} 未以 completed 关闭（当前 #{issue.state}/#{issue.state_reason || "-"}）"
+      end
+      merged_pr = snap.pull_requests.find { |pr| pr.closing_issues.include?(issue.number) && pr.merged? }
+      unless merged_pr
+        payload["reasons"] << "issue ##{issue.number} 没有已合并的关联 PR"
+      end
+      unless issue.label?(Model::IN_PROGRESS_LABEL)
+        payload["reasons"] << "issue ##{issue.number} 远端已无 #{Model::IN_PROGRESS_LABEL}，无需释放"
+      end
+
+      if payload["reasons"].any?
+        payload["status"] = "refused"
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      payload["pr"] = merged_pr.number
+      if options[:apply]
+        repo = claim_write_repo(snap, options)
+        gateway = GithubGateway.new(runner(options), repo: repo)
+        gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+        unless gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) == false
+          payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍存在，需人工核对"
+          payload["status"] = "aborted"
+          Output.emit(payload, out: @out)
+          return EXIT_REFUSED
+        end
+        record = RunRecord.new(path: options[:record])
+        record.save(record.load.merge("phase" => "released")) if record.load
+      end
+
+      payload["ok"] = true
+      payload["status"] = "released"
+      Output.emit(payload, out: @out)
+      EXIT_OK
+    end
+
     def run_resume(argv)
       options, (number,) = Argv.parse(argv, required: ["issue"])
       record = record_for(options)
@@ -331,8 +389,9 @@ module SebasAgents
       return help if argv.include?("--help") || argv.include?("-h")
 
       options, (pr, issue) = Argv.parse(argv, required: %w[pr issue])
-      report = Verifier.verify_merge(parse_number(pr, "pr"), parse_number(issue, "issue"), snapshot(options))
-      Output.emit(report.to_h.merge("ok" => report.pass?), out: @out)
+      report = Verifier.verify_merge(parse_number(pr, "pr"), parse_number(issue, "issue"), snapshot(options),
+        pre: options[:pre])
+      Output.emit(report.to_h.merge("ok" => report.pass?, "pre" => options[:pre] ? true : false), out: @out)
       report.pass? ? EXIT_OK : EXIT_REFUSED
     end
 
@@ -369,18 +428,29 @@ module SebasAgents
 
       report = VerificationReport.new
       items.each_with_index do |item, index|
-        level = item.is_a?(Hash) ? item["level"].to_s : ""
-        message = item.is_a?(Hash) ? item["message"].to_s : ""
+        level = ""
+        message = ""
+        evidence = nil
+        item_id = nil
+        if item.is_a?(Hash)
+          raw = item["level"].to_s
+          raw = item["verdict"].to_s if raw.empty?
+          level = VerificationReport::VERDICTS.fetch(raw.strip, "")
+          message = item["message"].to_s
+          evidence = item["evidence"]
+          item_id = item["id"]
+        end
         case level
-        when "blocker" then report.blocker(message, evidence: item["evidence"])
-        when "must_fix" then report.must_fix(message, evidence: item["evidence"])
-        when "acceptable" then report.acceptable(message, evidence: item["evidence"])
-        when "unverified" then report.unverified(message, evidence: item["evidence"])
-        when "ok", "pass" then report.ok(message, evidence: item["evidence"])
+        when "blocker" then report.blocker(message, evidence: evidence, id: item_id)
+        when "must_fix" then report.must_fix(message, evidence: evidence, id: item_id)
+        when "acceptable" then report.acceptable(message, evidence: evidence, id: item_id)
+        when "unverified" then report.unverified(message, evidence: evidence, id: item_id)
+        when "ok" then report.ok(message, evidence: evidence)
         else
           # 未知级别不能被静默丢弃，否则会把「没看懂」当成「通过」。
           raise UsageError,
-            "Verifier 报告第 #{index + 1} 项 level 非法：#{level.inspect}（允许 blocker/must_fix/acceptable/unverified/ok）"
+            "Verifier 报告第 #{index + 1} 项 level 非法：#{item.is_a?(Hash) ? item["level"].inspect : item.inspect}" \
+            "（允许 blocker/must_fix/acceptable/unverified/ok，或中英文对应 verdict）"
         end
       end
       report
@@ -519,11 +589,13 @@ module SebasAgents
           next            读取 GitHub，输出单一动作（默认只读）
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
+          unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed
 
         Verifier（只读）
           verify docs <path...>
           verify anchors <anchors.json>
-          verify merge <pr> <issue>
+          verify merge <pr> <issue>         合并后完整性核验（要求已合并 + issue completed）
+          verify merge <pr> <issue> --pre   合并前自检（跳过合并/关闭两条，只查 CI 与关联）
 
         Reviewer（只读）
           review <verification.json> --fixes <fixes.json>

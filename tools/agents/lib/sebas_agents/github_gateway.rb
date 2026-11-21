@@ -56,7 +56,8 @@ module SebasAgents
         maintainers: maintainers,
         source_authors: resolve_authors(blocks),
         gates: discovered["gates"].merge(gate_records),
-        externals: discovered["externals"].merge(external_records)
+        externals: discovered["externals"].merge(external_records),
+        trusted_bots: trusted_bots
       )
     end
 
@@ -325,6 +326,19 @@ module SebasAgents
         raise CommandError.new(".github/agents.yml 的 maintainers 为空", command: ["read", path]) if list.empty?
 
         list
+      end
+    end
+
+    # 授权可代写 Evidence 的自动化身份（如 "github-actions[bot]"）。
+    # 缺省为空：未显式授权时 workflow 登记一律 invalid，仍是 fail-closed。
+    def trusted_bots
+      @trusted_bots ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return [] unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        Array(data && data["trusted_bots"]).map(&:to_s).reject(&:empty?)
       end
     end
 

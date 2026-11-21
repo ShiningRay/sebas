@@ -50,9 +50,15 @@ module SebasAgents
           milestone: milestone.nil? ? nil : milestone.to_i,
           assignees: names(hash["assignees"]),
           blocked_by: Array(hash["blocked_by"]).map(&:to_i),
-          automation: hash["automation"],
+          # 离线快照只有 body；若不解析，所有工作包都会被判成「缺 Automation 块」。
+          # 与 GithubGateway#build_issue 保持同一解析口径。
+          automation: hash.key?("automation") ? hash["automation"] : parse_automation(hash["body"].to_s, hash.fetch("number").to_i),
           url: hash["url"]
         )
+      end
+
+      def self.parse_automation(body, number)
+        JsonBlock.one(body, "automation", subject: "issue ##{number}")
       end
 
       def self.names(value)
@@ -135,8 +141,10 @@ module SebasAgents
 
     # 快照：GitHub 事实源的不可变副本。source_authors 为 source_ref → 登录名。
     # gates / externals 为 subject → Evidence 块，供依赖判定读取。
+    # trusted_bots 为 .github/agents.yml 授权的 bot 身份（如 "github-actions[bot]"），
+    # 供 Evidence 的 workflow 登记路径校验；人类 Maintainer 仍走 maintainers。
     Snapshot = Data.define(:repo, :main_sha, :milestones, :issues, :pull_requests, :maintainers,
-      :source_authors, :gates, :externals) do
+      :source_authors, :gates, :externals, :trusted_bots) do
       def self.from_hash(hash)
         new(
           repo: hash.fetch("repo", ""),
@@ -147,7 +155,8 @@ module SebasAgents
           maintainers: Array(hash["maintainers"]).map(&:to_s),
           source_authors: hash["source_authors"] || {},
           gates: hash["gates"] || {},
-          externals: hash["externals"] || {}
+          externals: hash["externals"] || {},
+          trusted_bots: Array(hash["trusted_bots"]).map(&:to_s)
         )
       end
 

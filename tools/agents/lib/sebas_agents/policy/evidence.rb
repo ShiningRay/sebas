@@ -9,9 +9,15 @@ module SebasAgents
     #   - 缺记录、前置未完成        → blocked（未满足，等条件）
     #   - 结构非法、对象不匹配、
     #     登记人不可信、状态字段错   → invalid（元数据冲突，fail-closed 交 Maintainer）
+    #
+    # 登记人两种来源，均须白名单佐证，JSON 里的 source 字符串本身不是凭据：
+    #   - "maintainer"：source_ref 作者属 .github/agents.yml 的 maintainers（人类）
+    #   - "workflow"  ：source_ref 作者属 .github/agents.yml 的 trusted_bots（自动化身份）
     module Evidence
       SCHEMA = 1
       SOURCE = "maintainer"
+      WORKFLOW_SOURCE = "workflow"
+      SOURCES = [SOURCE, WORKFLOW_SOURCE].freeze
 
       module_function
 
@@ -33,12 +39,20 @@ module SebasAgents
         block
       end
 
-      # source_ref 的实际作者必须在 maintainers 内；JSON 的 source 字符串不算凭据。
+      # source_ref 的实际作者必须在对应白名单内；JSON 的 source 字符串不算凭据。
+      # "maintainer" 比对 maintainers（人类），"workflow" 比对 trusted_bots（自动化身份）。
       def trusted?(block, snapshot)
-        return false unless block["source"] == SOURCE
+        source = block["source"]
+        return false unless SOURCES.include?(source)
 
         author = snapshot.source_authors[block["source_ref"].to_s]
-        !author.nil? && snapshot.maintainers.include?(author)
+        return false if author.nil?
+
+        if source == WORKFLOW_SOURCE
+          snapshot.trusted_bots.include?(author)
+        else
+          snapshot.maintainers.include?(author)
+        end
       end
 
       def evaluate_issue(block, number, snapshot)
@@ -114,7 +128,7 @@ module SebasAgents
       end
 
       def unauthorized(subject)
-        invalid(subject, ["#{subject} 的 Evidence 未由 Maintainer 登记"])
+        invalid(subject, ["#{subject} 的 Evidence 未由 Maintainer 或受信 bot 登记"])
       end
     end
   end

@@ -327,6 +327,49 @@ class CliRobustnessTest < Minitest::Test
       FileUtils.rm_f(verdict) if defined?(verdict)
     end
   end
+
+  # #108：unclaim 必须 fail-closed，不能凭本地记录擅自清锁。
+  def test_unclaim_refuses_when_issue_open
+    data = snapshot(
+      issues: [issue(4, body: automation, state: "OPEN")],
+      pull_requests: []
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 1, status
+      payload = JSON.parse(out)
+      assert_equal "refused", payload["status"]
+      assert(payload["reasons"].any? { |r| r.include?("未以 completed 关闭") }, payload["reasons"].inspect)
+    end
+  end
+
+  def test_unclaim_refuses_without_merged_pr
+    data = snapshot(
+      issues: [issue(4, body: automation, state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "OPEN", "closing_issues" => [4], "checks" => []}]
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 1, status
+      payload = JSON.parse(out)
+      assert(payload["reasons"].any? { |r| r.include?("没有已合并的关联 PR") }, payload["reasons"].inspect)
+    end
+  end
+
+  def test_unclaim_passes_when_completed_and_merged_dry_run
+    data = snapshot(
+      issues: [issue(4, body: automation, labels: ["agent:in-progress"],
+        state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [4], "checks" => []}]
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert_equal "released", payload["status"]
+      assert_equal true, payload["dry_run"]
+    end
+  end
 end
 
 class PolicyRegressionTest < Minitest::Test
@@ -506,5 +549,56 @@ class VerifierRegressionTest < Minitest::Test
     )
     report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data))
     refute report.pass?
+  end
+
+  # #107：合并前模式不能因为「未合并 / 未关闭」而必然失败。
+  def test_verify_merge_pre_passes_when_ci_green
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    assert report.pass?, report.items.map(&:message).inspect
+  end
+
+  def test_verify_merge_post_blocks_when_not_merged
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data))
+    refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("未合并") })
+  end
+
+  def test_verify_merge_pre_still_blocks_on_failing_ci
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "OPEN")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "FAILURE"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?
+  end
+
+  def test_verify_merge_pre_blocks_when_issue_already_closed
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      }]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("已关闭") }, report.items.map(&:message).inspect)
   end
 end

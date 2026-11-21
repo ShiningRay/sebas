@@ -46,6 +46,17 @@ module SebasAgents
         if expected != issue.blocked_by.sort
           reasons << "##{issue.number} 的 GitHub blocked_by #{issue.blocked_by.sort.inspect} 与 Automation #{expected.inspect} 不一致"
         end
+
+        # 卡面「依赖」字段与 Automation 的三方对账（#108 问题 2）。
+        # 前置已关闭时依赖判定会 vacuous 通过；此处独立比对声明口径，避免分叉被静默放过。
+        # prose 为 nil 表示卡面无依赖节，无从对账；空数组表示明确声明「无前置」。
+        prose = prose_dependencies(issue.body)
+        if prose
+          undeclared = prose - expected
+          reasons << "##{issue.number} 正文依赖字段提到 #{undeclared.inspect}，但 Automation depends_on 未声明" unless undeclared.empty?
+          unmentioned = expected - prose
+          reasons << "##{issue.number} 的 Automation depends_on #{unmentioned.inspect} 未出现在正文依赖字段" unless unmentioned.empty?
+        end
         status = "invalid" unless reasons.empty?
 
         declared.each do |dependency|
@@ -58,6 +69,45 @@ module SebasAgents
         Model::Evaluation.new(status: status, reasons: reasons)
       rescue InvalidPlan => e
         Model::Evaluation.new(status: "invalid", reasons: [e.message])
+      end
+
+      # 从卡面「前置依赖」/「依赖」节抽取显式 #N 依赖引用。
+      # 返回 nil 表示卡面没有依赖节（无从对账，不校验）；
+      # 返回数组（可为空）表示存在依赖节，空数组即声明「无前置」。
+      #
+      # 只认依赖句里的编号：卡面还会写「见 #35 开工条件」这类引用说明，
+      # 全局扫 #N 会把说明误判成依赖。因此逐行处理，跳过括号内补充与「见/参见」行。
+      DEPENDENCY_HEADING = /^#+\s*(前置依赖|依赖)\s*$/
+
+      def prose_dependencies(body)
+        # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码；
+        # 强制按 UTF-8 归一，避免中文正则遇到非 UTF-8 串直接抛 Encoding::CompatibilityError。
+        text = body.to_s.dup.force_encoding(Encoding::UTF_8)
+        text = text.scrub unless text.valid_encoding?
+        lines = text.lines
+        start = lines.index { |line| line.match?(DEPENDENCY_HEADING) }
+        return nil unless start
+
+        section = []
+        lines[(start + 1)..].to_a.each do |line|
+          break if line.match?(/^#+\s+\S/) && !line.match?(DEPENDENCY_HEADING)
+
+          section << line
+        end
+
+        numbers = []
+        section.each do |line|
+          stripped = line.strip
+          next if stripped.empty?
+
+          # 去掉承载「引用说明」的括号，例如「（见 #35 开工条件）」；
+          # 承载依赖的括号要保留，例如「WP1（#3）」。
+          main = stripped.gsub(/[（(][^）)]*(见|参见|详见|开工条件)[^）)]*[）)]/, "")
+          next if main.match?(/(见|参见|详见)\s*#\d/)
+
+          numbers.concat(main.scan(/#(\d+)/).flatten.map(&:to_i))
+        end
+        numbers.uniq.sort
       end
 
       def evaluate_one(dependency, issue, snapshot)
