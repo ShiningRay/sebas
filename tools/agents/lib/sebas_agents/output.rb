@@ -35,6 +35,8 @@ module SebasAgents
         opts.on("--dry-run") { options[:apply] = false }
         # 合并前自检：跳过「已合并 / 已关闭」这两条只有合并后才可能成立的条件。
         opts.on("--pre") { options[:pre] = true }
+        # 终验（#124）：基于核验报告对 must_fix 逐项复跑 checker，产出终验结论。
+        opts.on("--final") { options[:final] = true }
         opts.on("--help", "-h") { options[:help] = true }
       end
 

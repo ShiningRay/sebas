@@ -47,7 +47,6 @@ module SebasAgents
       when "unclaim" then run_unclaim(argv.drop(1))
       when "release" then run_release(argv.drop(1))
       when "verify" then run_verify(argv.drop(1))
-      when "review" then run_review(argv.drop(1))
       when "triage" then run_triage(argv.drop(1))
       when "docs-check" then run_docs_check(argv.drop(1))
       when "release" then run_release(argv.drop(1))
@@ -356,6 +355,7 @@ module SebasAgents
       when "docs" then verify_docs(argv.drop(1))
       when "anchors" then verify_anchors(argv.drop(1))
       when "merge" then verify_merge(argv.drop(1))
+      when /\A\d+\z/ then verify_merge(argv) # #124：`verify <pr> <issue>` 直达 merge 语义
       else
         raise UsageError, "verify 子命令：docs <path...> | anchors <json> | merge <pr> <issue>"
       end
@@ -391,23 +391,27 @@ module SebasAgents
       return help if argv.include?("--help") || argv.include?("-h")
 
       options, (pr, issue) = Argv.parse(argv, required: %w[pr issue])
+      # fail-fast：终验缺 fixes 在访问任何外部资源前就拒绝。
+      if options[:final] && !options[:fixes]
+        raise UsageError, "--final 需要配 --fixes <fixes.json> 提供应修项修复声明"
+      end
+
       report = Verifier.verify_merge(parse_number(pr, "pr"), parse_number(issue, "issue"), snapshot(options),
         pre: options[:pre])
+      report = run_final_verification(report, options) if options[:final]
       Output.emit(report.to_h.merge("ok" => report.pass?, "pre" => options[:pre] ? true : false), out: @out)
       report.pass? ? EXIT_OK : EXIT_REFUSED
     end
 
-    def run_review(argv)
-      return help if argv.include?("--help") || argv.include?("-h")
+    # 终验（#124）：checker 必填且真实复跑——evidence 形如命令的条目逐项重执行，
+    # 无可复跑检查的条目直接打回。自报 passed:true 不再构成「有条件通过」。
+    def run_final_verification(verifier_report, options)
+      raise UsageError, "--final 需要配 --fixes <fixes.json> 提供应修项修复声明" unless options[:fixes]
 
-      options, (path,) = Argv.parse(argv, required: ["verification.json"])
-      raise UsageError, "缺少 --fixes" unless options[:fixes]
-
-      verifier_report = load_report(path)
       fixes = load_fixes(options[:fixes])
-      report = Reviewer.final_verification(verifier_report, fixes)
-      Output.emit(report.to_h.merge("ok" => report.pass?), out: @out)
-      report.pass? ? EXIT_OK : EXIT_REFUSED
+      root = root(options)
+      checker = ->(item, fix) { VerifyChecks.rerun(item, fix, root: root) }
+      Verifier.final_verification(verifier_report, fixes, checker: checker)
     end
 
     def load_fixes(path)
@@ -419,47 +423,6 @@ module SebasAgents
       raise UsageError, "--fixes 不是合法 JSON：#{path}（#{e.message}）"
     rescue Errno::ENOENT
       raise UsageError, "--fixes 文件不存在：#{path}"
-    end
-
-    def load_report(path)
-      data = JSON.parse(File.read(path, encoding: "UTF-8"))
-      raise UsageError, "Verifier 报告必须是 JSON 对象：#{path}" unless data.is_a?(Hash)
-
-      items = data["items"]
-      raise UsageError, "Verifier 报告缺 items 数组：#{path}" unless items.is_a?(Array)
-
-      report = VerificationReport.new
-      items.each_with_index do |item, index|
-        level = ""
-        message = ""
-        evidence = nil
-        item_id = nil
-        if item.is_a?(Hash)
-          raw = item["level"].to_s
-          raw = item["verdict"].to_s if raw.empty?
-          level = VerificationReport::VERDICTS.fetch(raw.strip, "")
-          message = item["message"].to_s
-          evidence = item["evidence"]
-          item_id = item["id"]
-        end
-        case level
-        when "blocker" then report.blocker(message, evidence: evidence, id: item_id)
-        when "must_fix" then report.must_fix(message, evidence: evidence, id: item_id)
-        when "acceptable" then report.acceptable(message, evidence: evidence, id: item_id)
-        when "unverified" then report.unverified(message, evidence: evidence, id: item_id)
-        when "ok" then report.ok(message, evidence: evidence)
-        else
-          # 未知级别不能被静默丢弃，否则会把「没看懂」当成「通过」。
-          raise UsageError,
-            "Verifier 报告第 #{index + 1} 项 level 非法：#{item.is_a?(Hash) ? item["level"].inspect : item.inspect}" \
-            "（允许 blocker/must_fix/acceptable/unverified/ok，或中英文对应 verdict）"
-        end
-      end
-      report
-    rescue JSON::ParserError => e
-      raise UsageError, "Verifier 报告不是合法 JSON：#{path}（#{e.message}）"
-    rescue Errno::ENOENT
-      raise UsageError, "Verifier 报告不存在：#{path}"
     end
 
     def run_triage(argv)
@@ -593,14 +556,13 @@ module SebasAgents
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed
 
-        Verifier（只读）
+        Verifier（只读；核验与终验两阶段）
           verify docs <path...>
           verify anchors <anchors.json>
           verify merge <pr> <issue>         合并后完整性核验（要求已合并 + issue completed）
           verify merge <pr> <issue> --pre   合并前自检（跳过合并/关闭两条，只查 CI 与关联）
-
-        Reviewer（只读）
-          review <verification.json> --fixes <fixes.json>
+          verify merge <pr> <issue> --final --fixes <fixes.json>
+                                            终验：must_fix 逐项复跑 checker（#124，Reviewer 已并入 Verifier）
 
         Triager / Scribe / Release Manager
           triage <issue> [--apply]
@@ -624,8 +586,9 @@ module SebasAgents
           --apply            允许写操作；默认 dry-run
           --dry-run          显式只读（默认即此）
           --root PATH        仓库根或产物目录
-          --json PATH        triage/review 的输入；roles 用 --json 输出结构化
-          --fixes PATH       review 的修复清单
+          --json PATH        triage 的输入；roles 用 --json 输出结构化
+          --fixes PATH       verify --final 的修复清单
+          --final            verify merge 终验开关（需配 --fixes）
 
         退出码：0 允许 / 1 门禁拒绝 / 2 用法或环境错误
       TEXT

@@ -179,30 +179,21 @@ class CliRobustnessTest < Minitest::Test
     end
   end
 
-  # 阻断 13：未知 level 不得静默丢弃
-  def test_review_rejects_unknown_level
-    Dir.mktmpdir do |dir|
-      report = File.join(dir, "verification.json")
-      fixes = File.join(dir, "fixes.json")
-      File.write(report, JSON.generate({"items" => [{"level" => "must-fix", "message" => "x"}]}), encoding: "UTF-8")
-      File.write(fixes, "{}", encoding: "UTF-8")
-      status, out, = run_cli(["review", report, "--fixes", fixes])
-      assert_equal 2, status
-      assert_includes out, "must-fix"
-    end
+  # #124：review 命令并入 verify --final；缺 fixes 在解析阶段 fail-fast（不触网）。
+  def test_final_requires_fixes
+    status, out, = run_cli(["verify", "merge", "1", "1", "--final"])
+    assert_equal 2, status
+    assert_includes out, "--fixes"
   end
 
-  # 阻断 14：可留项必须有复核结论
-  def test_review_requires_acceptable_recheck
-    Dir.mktmpdir do |dir|
-      report = File.join(dir, "verification.json")
-      fixes = File.join(dir, "fixes.json")
-      File.write(report, JSON.generate({"items" => [{"level" => "acceptable", "message" => "可留"}]}), encoding: "UTF-8")
-      File.write(fixes, "{}", encoding: "UTF-8")
-      status, out, = run_cli(["review", report, "--fixes", fixes])
-      assert_equal 1, status
-      assert_includes JSON.parse(out)["conclusion"], "打回"
-    end
+  # 阻断 14：可留项必须有复核结论（#124 后由 --final 的 checker 阶段承载）。
+  # 归一层「未知 level 不静默丢弃」由 test_verify_reports.rb 的
+  # test_unknown_level_becomes_blocker 继续覆盖。
+  def test_final_rejects_unreviewed_acceptable
+    report = SebasAgents::VerificationReport.new
+    report.acceptable("可留")
+    result = SebasAgents::Verifier.final_verification(report, {}, checker: ->(_item, _fix) { {passed: true} })
+    assert_equal "打回", result.conclusion
   end
 
   # --help 不得有副作用
