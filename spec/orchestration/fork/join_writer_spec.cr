@@ -5,7 +5,7 @@ require "../../../src/platform/store/expectations_store"
 require "../../../src/orchestration/fork/expectations"
 require "../../../src/orchestration/fork/join_writer"
 
-def new_env
+def jw_env
   dir = Path[Dir.tempdir, "sebas-joinwriter-spec", "#{Random::Secure.hex(4)}"]
   FileUtils.mkdir_p(dir)
   store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
@@ -29,7 +29,7 @@ end
 module Sebas
   describe "JoinWriter 分层回写（M4.1-WP4）" do
     it "正常完成：L1 回写父会话可见（system 行含 join.report JSON），成员引用齐全" do
-      store, writer, ex = new_env
+      store, writer, ex = jw_env
       parent_session = "agent:main:test-acc:email:alice@example.com"
       members = seed_fork(store, ex, "fork:aa111111", "allSettled", 2, parent_session)
       members.each do |task_id|
@@ -55,7 +55,7 @@ module Sebas
     end
 
     it "超时 expired：partial 由 members[].state 承载（未终态成员标 running）" do
-      store, writer, ex = new_env
+      store, writer, ex = jw_env
       parent_session = "agent:main:test-acc:email:bob@example.com"
       seed_fork(store, ex, "fork:bb222222", "all", 2, parent_session)
       store.complete_task("fork:bb222222:1")
@@ -72,7 +72,7 @@ module Sebas
     end
 
     it "重放不重复回写（memo 幂等）：第二次 write 返回 false，行数不变" do
-      store, writer, ex = new_env
+      store, writer, ex = jw_env
       parent_session = "agent:main:test-acc:email:carol@example.com"
       seed_fork(store, ex, "fork:cc333333", "allSettled", 1, parent_session)
       store.complete_task("fork:cc333333:1", "done")
