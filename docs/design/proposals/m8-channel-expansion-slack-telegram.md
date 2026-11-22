@@ -136,38 +136,14 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
      - **已有 intent 分支也要确认**：若消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent（`INSERT OR IGNORE` 返回 false）而提前返回，**也必须**回调把对应 `telegram_updates.dispatched` 置 `true`——否则启动恢复会重投该行，消费者又走「已有 intent」分支提前返回，永远卡在 `dispatched=false`，每次启动都被重复重投。
      - 生产者在 `Bus#publish` 返回后**不置位**——`dispatched` 仍为 `false`，直到消费者确认；
      - 已标 `dispatched=true` 的行不得再次入总线。
-   - **`record_intent` 失败的运行期恢复**：若消费者 `record_intent` 因临时数据库错误抛异常，`dispatched` 保持 `false`、Telegram `update_id` 已被生产者侧推进 offset（Telegram 不会重投），现有 `process_message` 捕获该异常只记录日志、不重试。提案采用「**周期性扫描 + 重启兜底**」双路恢复：
-     - **周期扫描**：消费者进程内每 **60 秒**扫一次 `telegram_updates.dispatched=false` 且 `status != 'dead_letter'` 且 `created_at < now() - 30s` 的行（30 秒豁免避免与正常 in-flight 冲突），按 update_id 升序重建消息、按 Case A/B 分流入总线（见下方「已 admission 事件的重新派发」）——`record_intent` 已成功的行会走「已有 intent」分支被确认，新失败的行会重试 `record_intent`。
-     - **重启兜底**：进程重启时同样扫 `dispatched=false` 且 `status != 'dead_letter'`，走 replay 路径（见下方启动恢复）。
-     - **已 admission 事件的重新派发（避开 duplicate 丢弃，且不破坏调度不变式）**：现有 `admit` 在 `session_inputs` 中查 `event_id`——已 admission 的事件重投会返回 `duplicate` 直接丢弃，消费者不会再走 `record_intent`，扫描器每次重投都停在 admission 关卡。同时，现有 `process_message` 在 `replay=true` 时直接跳过 `record_intent`（`src/platform/cli/gateway.cr` 入站事件处理分支）——若简单复用 `replay` 标志会让缺 intent 的事件无记录进入 dispatch。提案用**独立的 `skip_admission` 标志**（不复用 `replay`）+ **按 `session_inputs` 是否存在分流**：
-       - **首次入站**：走 `Bus#publish_new(event)`（或现有 `Bus#publish`），事件经 admission——`session_inputs` 查重、新增则落库（含 `received_seq`、批次归属、`policy_snapshot`）并 dispatch。
-       - **恢复重投（按 `session_inputs` 分流）**：走 `Bus#publish_with_timeout(event, timeout, skip_admission: Bool)`，**`skip_admission` 是独立标志**，与 `process_message` 的 `replay` 参数无关——`replay` 仍按其原义（重放已有 intent 的消息）保留；`skip_admission=true` 只决定「跳过 `admit` 的 `session_inputs` 查重」这一动作，**不影响 `process_message` 在 `record_intent` 上的行为**（`record_intent` 仍会被执行——已存在则走「已有 intent」分支，不存在则正常落库）。
-         - **Case A · 已有 `session_inputs` 行**（典型：消费者 `record_intent` 失败；或 Step 3 入总线后、`record_intent` 前崩溃）：事件已完成 admission，`session_inputs` 已有 `received_seq`、批次归属、`policy_snapshot`。**关键问题：failed 批次的状态机出边**。现有 `SessionScheduler#dispatch_locked` 只推进 `sealed → queued → running`；`run_batch_job` 把 `record_intent` 失败的成员记入 `failed`、`batch_done` 把批次和成员改为 `failed`（`src/platform/cli/gateway.cr` 的 `run_batch_job`、`src/sessions/scheduling/scheduler.cr` 的 `batch_done`）；`src/sessions/scheduling/envelope.cr` 的迁移表没有从 `failed` 出发的批次迁移；`recovery.cr` 处理 `sealed/queued/running`，不处理 `failed`。**按现有规则实现，Case A 没有自动恢复路径**。提案显式扩展状态机：
-           - **新增状态迁移 `failed → queued`**：当批次内**所有成员都是「无 intent 失败」**（`intents` 表中无该 `event_id` 行）时，允许 `SessionScheduler#retry_failed_batch(batch_id)` 把批次从 `failed` 迁移回 `queued`、把所有「无 intent 失败」成员从 `failed` 迁移回 `queued`；「有 intent 但处理失败」的成员**不适用**此迁移（已有 intent 的消息由 `replay_unfinished` 覆盖，避免双路重复）。
-           - **保持会话串行约束**：`retry_failed_batch` 只在 `@running_batch.nil?` 且同会话无 `running` 批次时执行——由 `dispatch_locked` 守卫保证同会话同时在途批次 ≤1。迁移完成后，`dispatch_locked` 按既有 `queued → running` 流程正常派发。
-           - **扫描器入口**：扫描器在 Case A 分流时调用 `SessionScheduler#retry_failed_batch(batch_id)`（而非 `dispatch_if_idle`）——先把 failed 批次迁回 queued，再让调度器自然派发。`skip_admission=true` 的语义在 `retry_failed_batch` 内部：跳过 `admit` 的 `session_inputs` 查重（因为行已存在），但仍走 `dispatch_locked` 的批次串行约束。
-           - **bus 饱和时的回退**：`dispatch_locked` 内部直接调 `@dispatch.call`（不经 bus），因此 `Bus#publish_with_timeout` 的超时不适用于 Case A。若 `@dispatch.call` 抛异常（如 bus 满导致下游阻塞），现有代码已回退 `running → queued`；`retry_failed_batch` 迁移后的批次同样受此回退保护。管理面暴露 `failed_batch_retry_total` 指标。
-         - **Case B · 尚无 `session_inputs` 行**（典型：Step 1 落库后、Step 3 入总线前崩溃——事件从未进入 admission）：扫描器**不能用 `skip_admission=true`**——直接 dispatch 会让消费者在缺少 `received_seq`、批次归属、`policy_snapshot` 的情况下执行 turn，绕过会话调度器的串行约束。扫描器调用 `Bus#publish_with_timeout(event, 5.seconds, skip_admission: false)`——`skip_admission=false` 时走正常 admission 流程：建立 `session_inputs` 行（含 `received_seq`、批次归属、`policy_snapshot`）→ 经 `SessionScheduler` 按批次串行约束 dispatch；超时返回 `PublishResult::Timeout`、扫描器跳过本轮、下一轮再试（与 Case A 同一入口、同一超时语义）。
-         - **分流判定**：扫描器在重投前先查 `session_inputs.where(event_id = event_id).exists?`——存在则 Case A、不存在则 Case B。这个查询是确定性的，与 `admit` 的查重语义一致。
-       - **重启后 replay_unfinished 不覆盖此场景**：现有 `replay_unfinished` 只重放已有 intent 的消息；首次 `record_intent` 失败时没有 intent 行，因此重启必须额外扫 `telegram_updates.dispatched=false` 按上述 Case A/B 分流——双路合流。
-     - **延迟目标（有前提）**：在 bus 队列**未持续饱和**且消费者能及时排空的前提下，一次 `record_intent` 失败的消息**目标在 90 秒内**（60s 周期 + 30s 豁免）被重新处理。**前提条件**：bus 队列容量上限 `bus.capacity ≥ 16`（与现有 pool 配置一致）、消费者处理单条消息 P99 ≤ 5s、扫描批次大小 ≤ 100 条。若 bus 队列持续饱和，90s 目标失效。
-     - **bus 饱和时的非阻塞投递**：现有 `Bus#publish` 是阻塞 `Channel#send`、不接受超时参数。提案扩展 bus API 新增 `Bus#publish_with_timeout(event, timeout : Time::Span, skip_admission : Bool = false) : PublishResult`——内部用**同一个 `select`**同时等待 `channel.send(event)` 和 `timeout(timeout)` 两个分支（Crystal 1.19 标准库 `select` 超时分支语法：`select; when channel.send(event); when timeout(timeout); end`）：发送就绪即写入、超时先触发即返回 `PublishResult::Timeout`。这样「超时检查」和「发送」在同一原子 `select` 中，其他生产者无法在中间插入填满队列。扫描器按 Case A/B 调用 `Bus#publish_with_timeout(reconstructed_event, 5.seconds, skip_admission: <true|false>)`，超时则跳过本轮、`bus_publish_timeout_count` 加 1、下一轮再试，避免扫描器本身被卡死。管理面暴露 `dispatch_recovery_lag_seconds` 与 `bus_publish_timeout_total` 指标供观察。
-     - **两类失败分开计数（不计入消费者失败上限）**：
-       - **`record_intent` 失败**（消费者侧 DB 错误）：`retry_count` 加 1，受 `max_dispatch_retries = 20` 上限控制，超出转入 `dead_letter`。
-       - **bus 投递超时**（基础设施拥塞，不是消费者失败）：`bus_publish_timeout_count` 加 1，**不计入** `max_dispatch_retries`，**永不转入 `dead_letter`**——bus 恢复后由周期扫描继续重试，避免健康消息仅因拥塞而需要人工重放。`bus_publish_timeout_count` 仅用于观测指标与告警阈值（如连续 5 次超时触发 `BusSaturated` 告警），不影响消息生命周期。
-     - **重试上限与 dead-letter**：`record_intent` 多次连续失败会被周期性扫描反复重试，直到成功或达到重试上限 `max_dispatch_retries = 20`。超出后把该行 `status` 置为 `'dead_letter'`（不再依赖 `dispatched` 标记），**两条扫描路径都用 `status != 'dead_letter'` 显式排除 dead-letter 行**，确保「不再重试」语义；同时上报管理面告警、保留原文供人工审计与重放。
+   - **`record_intent` 失败的运行期恢复**：若消费者 `record_intent` 因临时数据库错误抛异常，`dispatched` 保持 `false`、Telegram `update_id` 已被生产者侧推进 offset（Telegram 不会重投）。恢复路径依赖**调度器 failed 批次重试扩展**（见下方「前置依赖」节），M8 Telegram 适配器只负责渠道接入（long-poll 接收、持久化、offset 管理、发送），不实现调度器扩展。适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义。
    - **入站 `event_id` 派生规则（确定性，含内容指纹）**：Telegram 入站消息的 `event_id` **唯一形式**为 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——同时纳入 `update_id` 与 `content_fingerprint`。原因：Telegram 空闲重置后可能再次分配相同的 `update_id`，纯 `(account_id, update_id)` 派生会让内容不同的两条 update 得到相同 `event_id`，消费者 `record_intent` 用 `INSERT OR IGNORE` 会忽略新消息、且 Step 3 已标 `dispatched=true`，启动恢复也不会再投递，新消息被静默跳过。加入内容指纹后：
      - 同一条 update（同 `update_id` + 同内容）在所有投递路径上得到相同 `event_id`；
      - 内容不同的 update 即使 `update_id` 相同也得到不同 `event_id`，不会被 intent 排重忽略；
      - 启动恢复路径用持久化行的 `update_id` 与 `content_fingerprint` 按同一规则重建 `event_id`，与原投递路径同值；
      - 消费者按 `event_id` 做提交级排重（已有先例：`src/platform/cli/gateway.cr` 与 `src/platform/store/store.cr` 的 intent 落库路径——非重放路径中已存在的 intent 直接返回，不再派发），**同一条 update 被处理一次**；
      - 出站幂等键由 `event_id` 派生（`src/tools/executor.cr` 发消息工具实现），同一条 update 触发的发消息动作也不会重复。
-   - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 且 `status != 'dead_letter'` 的行，按 update_id 升序重建消息（`event_id` 按上述含指纹规则派生）、按上文 Case A/B 分流恢复——Case A 调 `SessionScheduler#retry_failed_batch(batch_id)` 把 failed 批次迁回 queued 后经调度器派发；Case B 调 `Bus#publish_with_timeout(event, 5.seconds, skip_admission: false)` 经正常 admission 建立 `session_inputs` 行后经 `SessionScheduler` dispatch，**两条路径都不绕过会话调度器的串行约束**。
-   - **启动屏障（等待既有 intent 重放完成）**：现有 Gateway 在 `replay_unfinished` 前启动适配器——若启动扫描在旧 intent 的重放期间调用 `retry_failed_batch` 或 `publish_with_timeout`，调度器可能派发同会话的下一批，而旧重放不受 `@running_batch` 约束，两个 turn 因此可能并发执行。提案在 Gateway 启动流程中增加**启动屏障**：
-     - **屏障位置**：`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前，设置 `@replay_completed = true`（内存标志 + store 持久化标志 `gateway_state.replay_completed_at`）。
-     - **扫描器等待**：Telegram adapter 的启动扫描与周期扫描在每次调用 `retry_failed_batch` 或 `publish_with_timeout` 前，先检查 `@replay_completed`——为 `false` 则跳过本轮、记录 `dispatch_recovery_deferred_total` 指标、等待下一轮（不阻塞扫描器 fiber，用 `sleep 5s` 后重试）。
-     - **适配器启动顺序调整**：适配器启动（长连接 fiber spawn）**可以**在 `replay_unfinished` 前开始——接收侧只负责收消息落 `telegram_updates`，不触发 dispatch；dispatch 由扫描器在屏障后触发。这样接收与恢复解耦，不丢失消息。
-     - **屏障超时**：若 `replay_unfinished` 超过 `replay_timeout = 300s` 仍未完成，Gateway 上报 `ReplayStuck` 告警、扫描器继续等待（不强行突破屏障——避免并发 turn）。
+   - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 且 `status != 'dead_letter'` 的行，按 update_id 升序重建消息（`event_id` 按上述含指纹规则派生）、经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束）。这样「Step 1 落库后崩溃、Step 2/3 未执行」「Step 3 入总线成功但消费者尚未 `record_intent` 就崩溃」两个窗口都能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。intent 落库之后的崩溃由既有重放规则覆盖。
    - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
    - `last_update_at` 在 Step 2 同步落库。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
@@ -179,6 +155,17 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
 5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, status, retry_count, bus_publish_timeout_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时与周期扫描未投递行做恢复，`status` 枚举值 `'pending' | 'dead_letter'`（默认 `'pending'`）用于 dead-letter 排除，`retry_count` 用于 `max_dispatch_retries` 上限控制（仅 `record_intent` 失败计数），`bus_publish_timeout_count` 用于 bus 饱和观测与告警（不影响消息生命周期）。
 
 > 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m8-channels.md §M8.1-WP3 验收](../plan/wbs/m8-channels.md) 落地为可测验收条目。
+
+#### 前置依赖：调度器 failed 批次重试扩展（独立 WP）
+
+Telegram 适配器的「`record_intent` 失败的运行期恢复」依赖 SessionScheduler 支持 `failed → queued` 状态迁移与重派触发器。这些属于**调度器本身的设计演进**，不在 M8 渠道接入范围内。M8 开工前，以下调度器扩展必须已完成（由独立 issue 跟踪，建议挂在 M4x 并行轨或 M5 主线）：
+
+- **扩展点 1 · `SessionScheduler#retry_failed_batch(batch_id)`**：批次内所有成员都是「无 intent 失败」（`intents` 表中无该 `event_id` 行）时，允许 `failed → queued` 迁移；`retry_failed_batch` 只在 `@running_batch.nil?` 且同会话无 `running` 批次时执行（保持会话串行约束）。
+- **扩展点 2 · 重试成员状态流转**：无 intent 失败成员从 `failed` 重新排队后，由 `dispatch_locked` 推进至 `dispatched`，`batch_done` 能结算其成功完成或再次失败的结果。
+- **扩展点 3 · queued 批次重派触发器**：`dispatch_locked` 在 `@dispatch.call` 抛异常后把批次回退为 `queued` 时，需要显式重派触发器（周期扫描调用调度器派发入口，或仅依赖后续事件/启动恢复）。
+- **扩展点 4 · 启动屏障**：`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前设置 `@replay_completed = true`；扫描器在屏障前跳过 dispatch 触发，避免旧重放与新派发并发执行。
+
+M8 Telegram 适配器只负责**渠道接入**（long-poll 接收、持久化、offset 管理、发送），**不实现上述调度器扩展**。适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义。
 
 ### 4.3 TokenProvider 与凭据
 
