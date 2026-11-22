@@ -106,6 +106,42 @@ report.conclusion                  # "通过" / "打回" / "有条件通过"
 
 结论只来自实际跑出的命令输出；跑不了写 `unverified`，不编证据。
 
+## 可执行实现：PR 上的自动核验（#122）
+
+「独立上下文」不靠自觉，而由 Actions 的独立 job 承载：
+[`.github/workflows/verify.yml`](../../../.github/workflows/verify.yml) 有三个 job。
+
+| job | 做什么 | 何时失败 |
+|---|---|---|
+| `verifier` | 跑 `verify docs` + 生成并核验 anchors，产出 `verification.json` artifact，贴 PR 评论 | 产不出报告（基础设施故障） |
+| `reviewer` | 只读读 artifact 出终验结论：任一 blocker / must_fix / 无证据 unverified / 报告结构非法即打回 | 打回时（这才是 PR 的红灯） |
+| `publish-verdict` | 仅当 reviewer 打回时运行，把结论贴成 PR 评论 | 发布失败 |
+
+判定与发布拆开：判定 job 只持 `contents: read`（连评论权限都没有，无法写）；
+发布 job 拿最小写权限 `pull-requests: write`，且不再用 `|| true` 掩盖失败。
+
+**fail-closed 汇总。** 核验证据先经 `tools/verify_merge_reports.rb` 归一：
+任一非零退出、报告为空文件/非 JSON/缺 `items`/条目非对象/未知 level、
+或本应产出的报告缺失，一律转 `blocker`——「工具挂了」与「核验通过」必须可区分，
+不能把「没看见问题」当成「没有问题」。`tools/test_verify_reports.rb` 逐条覆盖。
+
+**安全核心：核验脚本取自 base 分支。** PR 可以改 `.github/workflows/**` 与 `tools/**`；
+若直接跑 PR 里的核验脚本，PR 就能改核验逻辑让自己通过。因此 base sha checkout 到
+`trusted/`，PR 内容 checkout 到 `target/`，只在 `trusted/` 里执行 ruby、用 `--root ../target`
+指定被核验对象。
+
+**但这条只保护脚本，不保护 workflow 定义本身。** 为避免 PR 直接改写
+`.github/workflows/verify.yml`（删掉 base checkout、让 reviewer 恒成功），本 workflow
+用 `pull_request_target` 而非 `pull_request`：后者的 workflow 定义取自 PR 的 merge commit，
+可取 PR 任意改写；前者取自 base 分支，PR 改不动。
+
+`tools/test_verify_workflow.rb` 把这两条固定为测试（写法断言 + 篡改脚本的端到端行为验证），
+**但它与 workflow 同在 PR 可改范围内，因此不能作为绕过 PR 的独立控制**。阻止 PR 替换
+workflow 的独立控制是 `pull_request_target` 本身，以及 `.github/` 的审核红线（AGENTS.md
+「fork PR 的 workflow 改动必须先审 diff 再批准运行」）。
+
+本 workflow 只做确定性层（证据收集 + 规则汇总），**不做语义判断**——那是 #123 的范围。
+
 ## 可执行实现：issue 批量抽验
 
 ```sh

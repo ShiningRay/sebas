@@ -1,0 +1,360 @@
+name: Verify PR
+
+# Verifier/Reviewer 的确定性实现（#122）。
+#
+# 把设计上的「独立上下文只读核验」落成 Actions 的两个独立 job：
+#   verifier —— 收集证据（锚点核验 + 文档核验），产出 verification.json，贴 PR 评论
+#               只在「产不出报告」这类基础设施故障时失败
+#   reviewer —— 读 verification.json 出终验结论；判定打回时 job 失败
+#
+# 只做确定性层（证据收集 + 规则汇总），不做语义判断（那是 #123）。
+#
+# ## 安全核心：核验脚本必须来自 base 分支
+#
+# PR 可以改 `.github/workflows/**` 与 `tools/**`。若直接跑 PR 里的核验脚本，
+# PR 就能改核验逻辑让自己通过——门禁形同虚设。
+# 因此：可信脚本从 base sha 单独 checkout 到 `trusted/`，PR 内容 checkout 到
+# `target/` 只作为被核验对象，其中的脚本一律不执行。
+
+on:
+  # 用 pull_request_target 而非 pull_request：后者的 workflow 定义取自 PR 的
+  # merge commit，PR 作者可以改写本文件（删掉 base checkout、让 reviewer 直接
+  # 成功）来绕过核验。pull_request_target 的 workflow 定义取自 base 分支，
+  # PR 无法修改——这是本 workflow 能在 PR 上充当门禁的前提。
+  #
+  # pull_request_target 的经典风险是「checkout PR 代码后执行」会拿到写权限。
+  # 本 workflow 的约束（与安全核心同一件事）：
+  #   - 只以只读方式用 target：verify 的 --root 指向它，ruby 一律不取自它；
+  #   - 不在 target 目录里执行任何命令（测试 test_ruby_invocations_run_from_trusted 固定）；
+  #   - permissions 收到最小集。
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verifier:
+    name: verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 只有这个 job 需要发评论；顶层不给写权限。
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout base scripts (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout PR content (verification target)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: target
+          persist-credentials: false
+
+      - name: Select preinstalled Ruby
+        shell: bash
+        run: |
+          want="$(cat trusted/.ruby-version)"
+          want_minor="$(echo "$want" | cut -d. -f1-2)"
+          ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+
+          best=""
+          for dir in /opt/hostedtoolcache/Ruby/*/x64; do
+            [ -x "$dir/bin/ruby" ] || continue
+            version="$("$dir/bin/ruby" -e 'print RUBY_VERSION')"
+            ge "$version" "$want_minor" || continue
+            if [ -z "$best" ] || ge "$version" "$best_version"; then
+              best="$dir"; best_version="$version"
+            fi
+          done
+
+          if [ -z "$best" ]; then
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want）"
+            ls /opt/hostedtoolcache/Ruby/ || true
+            exit 1
+          fi
+          echo "$best/bin" >> "$GITHUB_PATH"
+          echo "selected Ruby $best_version from $best"
+
+      - name: Assert trusted scripts exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in tools/sebas-process \
+                      tools/agents/lib/sebas_agents/verifier.rb \
+                      tools/agents/lib/sebas_agents/verification_report.rb \
+                      tools/agents/lib/sebas_agents/policy/evidence.rb \
+                      tools/agents/lib/sebas_agents/model.rb \
+                      tools/anchors_extract.rb \
+                      tools/verify_merge_reports.rb \
+                      tools/verify_reviewer_verdict.rb; do
+            [ -f "trusted/$path" ] || { echo "::error::base 缺 $path"; exit 1; }
+          done
+          echo "base 版本脚本齐备"
+
+      # 收集证据。所有 ruby 调用都在 trusted/ 下执行（用 base 脚本），
+      # 通过 --root 指向 target/（PR 内容）。
+      - name: Collect docs evidence (base scripts, PR content)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+
+          # -z：core.quotePath 会把中文文件名转义成带引号的字符串，
+          # mapfile -t 不解码它，会让存在的文件被误判为缺失。
+          mapfile -d '' -t docs < <(cd target && git ls-files -z 'docs/**/*.md')
+          if [ "${#docs[@]}" -eq 0 ]; then
+            echo "::error::PR 里 docs/ 下没有 markdown 文件，核验无对象"
+            exit 1
+          fi
+
+          # verify docs 的位置参数上限 100（Argv.parse 的 optional: 100）。
+          # 一次性传 101+ 会返回用法错误（无 items），下游若把它当空报告
+          # 就会误判通过。这里分批，并把任一批的失败显式记为 blocker。
+          cd trusted
+          : > ../out/docs_failures.txt
+          batch=()
+          batch_no=0
+          flush() {
+            [ "${#batch[@]}" -eq 0 ] && return 0
+            batch_no=$((batch_no + 1))
+            if ! ruby tools/sebas-process verify docs "${batch[@]}" --root ../target \
+              > "../out/docs_report_${batch_no}.json" 2> "../out/docs_err_${batch_no}.txt"; then
+              echo "第 ${batch_no} 批 verify docs 执行失败（见 docs_err_${batch_no}.txt）" >> ../out/docs_failures.txt
+            fi
+            batch=()
+          }
+          for file in "${docs[@]}"; do
+            batch+=("$file")
+            [ "${#batch[@]}" -eq 80 ] && flush
+          done
+          flush
+
+          # 结构校验：任何一批产出非 JSON 或缺 items，都视为工具故障而非「无问题」。
+          for report in ../out/docs_report_*.json; do
+            [ -e "${report}" ] || continue
+            if ! ruby -rjson -e '
+              data = JSON.parse(File.read(ARGV[0], encoding: "UTF-8"))
+              abort("缺 items 数组") unless data["items"].is_a?(Array)
+            ' "${report}" 2> ../out/docs_struct_err.txt; then
+              echo "$(basename "${report}") 结构非法：$(head -1 ../out/docs_struct_err.txt)" >> ../out/docs_failures.txt
+            fi
+          done
+          echo "docs 证据已收集（#{batch_no} 批）"
+
+      - name: Collect anchors evidence (base generator, PR content)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          mapfile -d '' -t docs < <(cd target && git ls-files -z 'docs/**/*.md')
+
+          cd trusted
+          # 生成失败（如越界）时退出码非 0，但这本身也是证据：把 ERROR 行
+          # 收进日志，随后在构建报告时转成 blocker。
+          set +e
+          ruby tools/anchors_extract.rb --root ../target --output ../out/anchors.json "${docs[@]}" \
+            > ../out/anchors_extract.txt 2>&1
+          extract_status=$?
+          set -e
+          echo "extract exit=${extract_status}" >> ../out/anchors_extract.txt
+
+          if [ -s ../out/anchors.json ]; then
+            set +e
+            ruby tools/sebas-process verify anchors ../out/anchors.json --root ../target \
+              > ../out/anchors_report.json 2> ../out/anchors_err.txt
+            anchors_status=$?
+            set -e
+            echo "anchors verify exit=${anchors_status}" >> ../out/anchors_extract.txt
+          else
+            # 生成器退出码为 0 却没产出清单 = 工具异常。
+            # 若不记录，后续 verify anchors 会被静默跳过，汇总阶段只看到
+            # 「有日志没报告」而当成正常，reviewer 便可能误判通过。
+            echo "generator exit=${extract_status} 但未产出 anchors.json（工具异常）" \
+              >> ../out/anchors_extract.txt
+          fi
+          echo "anchors 证据已收集"
+          tail -3 ../out/anchors_extract.txt
+
+      - name: Build verification.json
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cd trusted
+          # 汇总逻辑取自 base（trusted/），可本地测试。
+          ruby tools/verify_merge_reports.rb --out ../out --base "${BASE_SHA}" --head "${HEAD_SHA}"
+
+          # 摘要评论：只列证据，结论由 reviewer 定。
+          ruby -e '
+            require "json"
+            d = JSON.parse(File.read("../out/verification.json", encoding: "UTF-8"))
+            c = d["counts"]
+            lines = []
+            lines << "<!-- verify-pr:summary -->"
+            lines << "## Verifier 核验（证据收集）"
+            lines << ""
+            lines << "核验脚本取自 base `#{ENV.fetch("BASE_SHA")}`，被核验内容取自 head `#{ENV.fetch("HEAD_SHA")}`。"
+            lines << ""
+            lines << "| 级别 | 数量 |"
+            lines << "|---|---|"
+            %w[blocker must_fix acceptable unverified].each { |l| lines << "| #{l} | #{c[l]} |" }
+            items = d["items"]
+            unless items.empty?
+              lines << ""
+              lines << "<details><summary>逐条明细（#{items.length}）</summary>"
+              lines << ""
+              items.each { |i| lines << "- **[#{i["level"]}]** #{i["message"]}" }
+              lines << ""
+              lines << "</details>"
+            end
+            File.write("../out/comment.md", lines.join("\n") + "\n", encoding: "UTF-8")
+          '
+
+      - name: Stage verdict script into artifact
+        if: always()
+        run: cp trusted/tools/verify_reviewer_verdict.rb out/verify_reviewer_verdict.rb
+
+      - name: Upload verification artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-report
+          path: |
+            out/verification.json
+            out/comment.md
+            out/verify_reviewer_verdict.rb
+          # reviewer 需要的判定脚本随 artifact 传递，且是 base 版本
+          # （来自 trusted/），reviewer 不必再取一次 PR 内容。
+          if-no-files-found: error
+
+      - name: Post verification comment
+        # fork PR 的 GITHUB_TOKEN 是只读的，发评论会 403。核验本身不依赖评论，
+        # 所以这里容忍失败并给出提示，不让权限问题把核验结果说成「失败」。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # 同一 PR 重跑时更新既有评论，避免刷屏。
+          #
+          # 必须 --slurp 后全局选一个 id（CodeRabbit）：`--paginate --jq` 会
+          # 逐页应用 jq，若两页各有一条匹配评论，existing 会含两个换行分隔的
+          # id，后续 PATCH 无法定位。`--slurp` 不能与 `--jq` 同用，所以改接管道。
+          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --slurp \
+            | jq -r 'first(.[][] | select(.body | startswith("<!-- verify-pr:summary -->")) | .id) // empty')
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
+              -F body=@out/comment.md > /dev/null
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -F body=@out/comment.md > /dev/null
+          fi
+          echo "comment posted"
+
+  reviewer:
+    name: reviewer
+    needs: verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 只读判定：下载 artifact + 本地计算，不需要任何写权限。
+    # 发评论拆到 publish-verdict job（CodeRabbit：未声明的权限为 none，
+    # 在此 job 里发评论会 403，而容错代码会把失败藏起来）。
+    permissions:
+      contents: read
+    steps:
+      - name: Download verification report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: verification-report
+          path: out
+
+      # 只读判定，不重跑核验（与 Reviewer 的设计一致）。
+      # 判定脚本是 base 版本，随 artifact 传递（见 verifier 的 Stage 步骤）；
+      # 落点在 out/，因此调用路径必须带 out/ 前缀。
+      - name: Decide final verdict
+        run: |
+          set -euo pipefail
+          set +e
+          verdict_text="$(ruby out/verify_reviewer_verdict.rb out/verification.json)"
+          verdict_status=$?
+          set -e
+          printf '%s\n' "${verdict_text}"
+
+          # 判定结果落盘：评论正文与状态码交给 publish-verdict job。
+          {
+            echo "<!-- verify-pr:reviewer -->"
+            printf '%s\n' "${verdict_text}"
+          } > out/reviewer_comment.md
+          printf '%s\n' "${verdict_status}" > out/reviewer_status.txt
+
+          if [ "${verdict_status}" -ne 0 ]; then
+            echo "::error::Reviewer 终验打回"
+          fi
+          exit "${verdict_status}"
+
+      - name: Upload verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reviewer-verdict
+          path: |
+            out/reviewer_comment.md
+            out/reviewer_status.txt
+          # 判定步骤正常跑完（无论通过与否）都会写出这两个文件；
+          # 缺文件说明流程本身坏了，应显式失败而不是静默跳过发布。
+          if-no-files-found: error
+
+  # 打回评论的发布需要 pull-requests: write，但判定本身应当只读——
+  # 因此拆成独立 job：只在 reviewer 失败时运行，且不再用 `|| true`
+  # 掩盖发布失败（CodeRabbit）。
+  publish-verdict:
+    name: publish verdict
+    needs: reviewer
+    if: always() && needs.reviewer.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download verdict
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: reviewer-verdict
+          path: out
+
+      - name: Post rejection comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # 同一 PR 重跑时更新既有评论，避免刷屏。
+          # 必须 --slurp 后全局选一个 id，理由同 summary 评论。
+          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --slurp \
+            | jq -r 'first(.[][] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id) // empty')
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
+              -F body=@out/reviewer_comment.md > /dev/null
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -F body=@out/reviewer_comment.md > /dev/null
+          fi
+          echo "打回评论已发布"
+

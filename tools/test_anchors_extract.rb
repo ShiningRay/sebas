@@ -223,6 +223,34 @@ class AnchorsExtractTest < Minitest::Test
     end
   end
 
+  # 目标是目录：File.exist? 为真但读行会抛 EISDIR。
+  # 异常会绕过统一 ERROR 汇总，连带丢失此前累计的越界问题（CodeRabbit CWE-636），
+  # 必须判成可报告的 problem 而不是崩溃。
+  def test_reports_directory_target_as_problem
+    with_repo do |dir|
+      FileUtils.mkdir_p(File.join(dir, "src/anchor_probe"))
+      write(dir, "docs/a.md", "见 src/anchor_probe:1。\n")
+
+      _anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_equal 1, problems.length
+      assert_includes problems[0], "目标是目录而非文件"
+    end
+  end
+
+  # 且目录问题不能吃掉此前累计的越界问题（同一份文档两处引用）。
+  def test_directory_target_does_not_swallow_earlier_problems
+    with_repo do |dir|
+      write(dir, "src/x.cr", "只有一行\n")
+      FileUtils.mkdir_p(File.join(dir, "src/anchor_probe"))
+      write(dir, "docs/a.md", "见 src/x.cr:99 与 src/anchor_probe:1。\n")
+
+      _anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_equal 2, problems.length, "两处问题都要报出：#{problems.inspect}"
+      assert(problems.any? { |p| p.include?("只有 1 行") })
+      assert(problems.any? { |p| p.include?("目录") })
+    end
+  end
+
   def test_dedupe_keeps_one_per_file_line
     with_repo do |dir|
       write(dir, "src/x.cr", "一行\n二行\n")
