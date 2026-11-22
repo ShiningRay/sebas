@@ -29,6 +29,12 @@ module Sebas
 
       record SearchRow, kind : String, key : String, body : String
 
+      # 存量库列迁移：CREATE TABLE IF NOT EXISTS 不改既有表——members_final
+      # 为基线后新增列，ALTER TABLE 幂等补列（duplicate column 静默忽略，见 initialize）
+      MIGRATIONS = [
+        "ALTER TABLE expectations ADD COLUMN members_final INTEGER NOT NULL DEFAULT 0",
+      ]
+
       # 逐条执行（crystal-sqlite3 prepared statement 一次只接受一条语句）
       SCHEMA = [
         <<-SQL,
@@ -185,6 +191,16 @@ module Sebas
           @db.exec("PRAGMA synchronous=NORMAL")
           @db.exec("PRAGMA busy_timeout=5000")
           SCHEMA.each { |ddl| @db.exec(ddl) }
+          # 存量库列迁移：CREATE TABLE IF NOT EXISTS 不改既有表。新库 SCHEMA 已含
+          # 全部列，ALTER 撞 duplicate 属预期（幂等静默）；只有存量旧库会真正补列。
+          MIGRATIONS.each do |sql|
+            begin
+              @db.exec(sql)
+            rescue ex : SQLite3::Exception
+              # duplicate column = 列已在（新库 SCHEMA 建过），幂等跳过
+              raise ex unless ex.message.to_s.includes?("duplicate column")
+            end
+          end
           Sebas::Log.info { "store opened: #{@path} (journal_mode=#{@db.scalar("PRAGMA journal_mode")})" }
         end
 

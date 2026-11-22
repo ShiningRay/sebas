@@ -45,8 +45,11 @@ module Sebas
                 input : SnapshotBuilder::Input) : Array(MemberResult)
           fork_id = "fork:" + ::Random::Secure.hex(4)
           declared = (1..input.count).map { |i| fork_id + ":#{i}" }
+          # deadline 在持久化前只算一次：快照读取耗时计入期限（CodeRabbit——
+          # 否则慢快照会把启动门槛推后到已持久化期限之外）。
+          deadline = ::Time.utc + input.deadline.seconds
           row = @expectations.create(fork_id, parent_task_id, parent_session_key,
-            input.mode, declared, ::Time.utc + input.deadline.seconds)
+            input.mode, declared, deadline)
           # 预登记即声明为「派发中」：judge 对 final=0 跳过（成员任务逐个 create
           # 期间不判，防误报缺失）；派发完成后 mark_dispensed 置回 1 终判。
           @store.expectations_unmark_dispensed(row.id)
@@ -56,7 +59,6 @@ module Sebas
           frozen_transcripts = @store.transcripts(parent_session_key).last(window)
 
           results = [] of MemberResult
-          deadline = ::Time.utc + input.deadline.seconds
 
           input.count.times do |i|
             member_index = i + 1
