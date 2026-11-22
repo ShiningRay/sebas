@@ -128,9 +128,16 @@ jobs:
           flush() {
             [ "${#batch[@]}" -eq 0 ] && return 0
             batch_no=$((batch_no + 1))
-            if ! ruby tools/sebas-process verify docs "${batch[@]}" --root ../target \
-              > "../out/docs_report_${batch_no}.json" 2> "../out/docs_err_${batch_no}.txt"; then
-              echo "第 ${batch_no} 批 verify docs 执行失败（见 docs_err_${batch_no}.txt）" >> ../out/docs_failures.txt
+            set +e
+            ruby tools/sebas-process verify docs "${batch[@]}" --root ../target \
+              > "../out/docs_report_${batch_no}.json" 2> "../out/docs_err_${batch_no}.txt"
+            status=$?
+            set -e
+            # 退出码 1 表示报告有效（含应修/阻断项，由报告条目承载）；
+            # 仅 2 及以上才是工具/用法故障，才记入 failures（CodeRabbit：
+            # 否则 must_fix 会被误记成无 evidence 的 blocker，终验永远打回）。
+            if [ "${status}" -gt 1 ]; then
+              echo "第 ${batch_no} 批 verify docs 执行失败（退出码 ${status}，见 docs_err_${batch_no}.txt）" >> ../out/docs_failures.txt
             fi
             batch=()
           }

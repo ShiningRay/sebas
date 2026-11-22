@@ -26,7 +26,10 @@ module SebasAgents
         relative_path = relative(full, root)
         line_count = text.lines.length
         if line_count > max_lines
-          report.must_fix("#{relative_path} 共 #{line_count} 行，超过 #{max_lines} 行上限")
+          # evidence 是可复跑命令（#124 终验 checker 重执行判定修复）；
+          # 路径用相对 root 的形式，checker 在 root 下执行。
+          report.must_fix("#{relative_path} 共 #{line_count} 行，超过 #{max_lines} 行上限",
+            evidence: RERUN_LINE_COUNT % [max_lines, relative_path])
         end
 
         anchors = text.scan(LINE_ANCHOR).map { |match| match.join }
@@ -34,11 +37,16 @@ module SebasAgents
 
         level = ARCHIVE_DIRS.any? { |dir| relative_path.start_with?(dir) } ? :acceptable : :must_fix
         anchors.tally.each do |anchor, count|
-          report.public_send(level, "#{relative_path} 含行号锚 #{anchor.inspect}（#{count} 处）")
+          report.public_send(level, "#{relative_path} 含行号锚 #{anchor.inspect}（#{count} 处）",
+            evidence: level == :must_fix ? RERUN_DOCS_CHECK % relative_path : nil)
         end
       end
       report
     end
+
+    # 终验可复跑命令模板：checker 在仓库根（root）下执行。
+    RERUN_LINE_COUNT = "ruby -e 'exit(File.readlines(ARGV.fetch(0), encoding: \"UTF-8\").length <= %d ? 0 : 1)' %s"
+    RERUN_DOCS_CHECK = "ruby tools/sebas-process verify docs %s"
 
     # 核验代码锚点：docs 声称的 file:line 片段必须与源码一致。
     # anchors 形如 [{"file" => "src/x.cr", "line" => 12, "content" => "..."}]
@@ -85,6 +93,9 @@ module SebasAgents
         if actual.include?(content)
           report.ok("#{label} 一致")
         else
+          # 此条 evidence 留空：复跑需要「重新 extract + verify」两段命令，
+          # 不满足终验 checker 的单命令白名单口径；修复后由新 CI 产物承载
+          # 修复结果（该条目在新产物中消失），终验读新产物即可收口。
           report.must_fix("#{label} 实际内容与文档声称不符")
         end
       end

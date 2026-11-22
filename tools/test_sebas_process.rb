@@ -726,6 +726,42 @@ class VerifierTest < Minitest::Test
     end
   end
 
+  # #124：可复跑的 must_fix 必须带 evidence 命令，checker 才能就地复跑收口。
+  def test_docs_must_fix_items_carry_rerunnable_evidence
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "doc.md")
+      File.write(path, "见 design.md:L12\n" + ("填充\n" * 410), encoding: "UTF-8")
+      report = SebasAgents::Verifier.verify_docs(["doc.md"], root: dir, max_lines: 400)
+
+      size_item = report.must_fix_items.find { |item| item.message.include?("超过") }
+      refute_nil size_item&.evidence, "行数超限条目应带可复跑命令"
+      assert_includes size_item.evidence, "doc.md"
+
+      anchor_item = report.must_fix_items.find { |item| item.message.include?("行号锚") }
+      refute_nil anchor_item&.evidence, "锚点存在条目应带可复跑命令"
+      assert_includes anchor_item.evidence, "verify docs doc.md"
+
+      # 行数命令真实复跑：修复后（行数降回上限内）应通过。
+      checker = SebasAgents::VerifyChecks
+      File.write(path, "见 design.md\n", encoding: "UTF-8")
+      shrunk = SebasAgents::Verifier.verify_docs(["doc.md"], root: dir, max_lines: 400)
+      assert shrunk.pass?, "行数修复后应无 must_fix"
+      result = checker.rerun(size_item, {}, root: dir)
+      assert result[:passed], "行数 evidence 命令对修复后的文件应通过：#{result[:reason]}"
+    end
+  end
+
+  # 存档目录的行号锚是 acceptable，不参与终验，不带 evidence。
+  def test_archive_anchor_item_has_no_evidence
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "docs/design/review/x.md")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "见 design.md:L12\n", encoding: "UTF-8")
+      report = SebasAgents::Verifier.verify_docs(["docs/design/review/x.md"], root: dir)
+      assert report.acceptable_items.first.evidence.nil?
+    end
+  end
+
   def test_archive_line_anchor_is_acceptable
     Dir.mktmpdir do |dir|
       path = File.join(dir, "docs/design/review/x.md")
