@@ -139,8 +139,12 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
    - **`record_intent` 失败的运行期恢复**：若消费者 `record_intent` 因临时数据库错误抛异常，`dispatched` 保持 `false`、Telegram `update_id` 已被生产者侧推进 offset（Telegram 不会重投），现有 `process_message` 捕获该异常只记录日志、不重试。提案采用「**周期性扫描 + 重启兜底**」双路恢复：
      - **周期扫描**：消费者进程内每 **60 秒**扫一次 `telegram_updates.dispatched=false` 且 `status != 'dead_letter'` 且 `created_at < now() - 30s` 的行（30 秒豁免避免与正常 in-flight 冲突），按 update_id 升序重建消息、经非重放路径入总线（让 intent 排重生效）——`record_intent` 已成功的行会走「已有 intent」分支被确认，新失败的行会重试 `record_intent`。
      - **重启兜底**：进程重启时同样扫 `dispatched=false` 且 `status != 'dead_letter'`（见下方启动恢复）。
-     - **延迟目标（有前提）**：在 bus 队列**未持续饱和**且消费者能及时排空的前提下，一次 `record_intent` 失败的消息**目标在 90 秒内**（60s 周期 + 30s 豁免）被重新处理。**前提条件**：bus 队列容量上限 `bus.capacity ≥ 16`（与现有 pool 配置一致）、消费者处理单条消息 P99 ≤ 5s、扫描批次大小 ≤ 100 条。若 bus 队列持续饱和导致 `Bus#publish` 阻塞，90s 目标失效——此时扫描器在 `Bus#publish` 前用 `select` + 5s 超时降级为非阻塞投递，超时则跳过本轮、把 `retry_count` 加 1、下一轮再试，避免扫描器本身被卡死。管理面暴露 `dispatch_recovery_lag_seconds` 指标供观察。
-     - **重试上限与 dead-letter**：多次连续失败会被周期性扫描反复重试，直到成功或达到重试上限 `max_dispatch_retries = 20`。超出后把该行 `status` 置为 `'dead_letter'`（不再依赖 `dispatched` 标记），**两条扫描路径都用 `status != 'dead_letter'` 显式排除 dead-letter 行**，确保「不再重试」语义；同时上报管理面告警、保留原文供人工审计与重放。
+     - **延迟目标（有前提）**：在 bus 队列**未持续饱和**且消费者能及时排空的前提下，一次 `record_intent` 失败的消息**目标在 90 秒内**（60s 周期 + 30s 豁免）被重新处理。**前提条件**：bus 队列容量上限 `bus.capacity ≥ 16`（与现有 pool 配置一致）、消费者处理单条消息 P99 ≤ 5s、扫描批次大小 ≤ 100 条。若 bus 队列持续饱和，90s 目标失效。
+     - **bus 饱和时的非阻塞投递**：现有 `Bus#publish` 是阻塞 `Channel#send`、不接受超时参数。提案扩展 bus API 新增 `Bus#publish_with_timeout(event, timeout : Time::Span) : PublishResult`——内部用**同一个 `select`**同时等待 `channel.send(event)` 和 `timeout.after` 两个分支：发送就绪即写入、超时先触发即返回 `PublishResult::Timeout`。这样「超时检查」和「发送」在同一原子 `select` 中，其他生产者无法在中间插入填满队列。扫描器调用 `publish_with_timeout(5.seconds)`，超时则跳过本轮、`bus_publish_timeout_count` 加 1、下一轮再试，避免扫描器本身被卡死。管理面暴露 `dispatch_recovery_lag_seconds` 与 `bus_publish_timeout_total` 指标供观察。
+     - **两类失败分开计数（不计入消费者失败上限）**：
+       - **`record_intent` 失败**（消费者侧 DB 错误）：`retry_count` 加 1，受 `max_dispatch_retries = 20` 上限控制，超出转入 `dead_letter`。
+       - **bus 投递超时**（基础设施拥塞，不是消费者失败）：`bus_publish_timeout_count` 加 1，**不计入** `max_dispatch_retries`，**永不转入 `dead_letter`**——bus 恢复后由周期扫描继续重试，避免健康消息仅因拥塞而需要人工重放。`bus_publish_timeout_count` 仅用于观测指标与告警阈值（如连续 5 次超时触发 `BusSaturated` 告警），不影响消息生命周期。
+     - **重试上限与 dead-letter**：`record_intent` 多次连续失败会被周期性扫描反复重试，直到成功或达到重试上限 `max_dispatch_retries = 20`。超出后把该行 `status` 置为 `'dead_letter'`（不再依赖 `dispatched` 标记），**两条扫描路径都用 `status != 'dead_letter'` 显式排除 dead-letter 行**，确保「不再重试」语义；同时上报管理面告警、保留原文供人工审计与重放。
    - **入站 `event_id` 派生规则（确定性，含内容指纹）**：Telegram 入站消息的 `event_id` **唯一形式**为 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——同时纳入 `update_id` 与 `content_fingerprint`。原因：Telegram 空闲重置后可能再次分配相同的 `update_id`，纯 `(account_id, update_id)` 派生会让内容不同的两条 update 得到相同 `event_id`，消费者 `record_intent` 用 `INSERT OR IGNORE` 会忽略新消息、且 Step 3 已标 `dispatched=true`，启动恢复也不会再投递，新消息被静默跳过。加入内容指纹后：
      - 同一条 update（同 `update_id` + 同内容）在所有投递路径上得到相同 `event_id`；
      - 内容不同的 update 即使 `update_id` 相同也得到不同 `event_id`，不会被 intent 排重忽略；
@@ -156,7 +160,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
    - **空轮询不退出**：若本轮 `getUpdates()` 返回空数组，**继续保持重置模式**——不重置 offset、不更新 `last_update_at`、不切换回活跃窗口。下一轮仍用无 offset 轮询，直到收到至少 1 条新 update。原因：空轮询时若恢复旧 offset，bot 空闲超过一周后的较小新 ID 仍会被确认跳过，与本策略目的直接冲突。
    - **重置模式与活跃窗口的持久化口径一致**：每一步都先持久化、再入总线，崩溃恢复路径与活跃窗口共用同一「扫 `dispatched=false` 重投」逻辑。
 4. **拒绝跳过新消息**：任何路径下，`getUpdates` 的 `offset` 参数都必须 ≥ 已确认的 `persisted_offset+1`，不允许因为「新值比旧值小」就跳过；重置模式通过内容指纹而非 offset 比较保证幂等。
-5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, status, retry_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时与周期扫描未投递行做恢复，`status` 枚举值 `'pending' | 'dead_letter'`（默认 `'pending'`）用于 dead-letter 排除，`retry_count` 用于 `max_dispatch_retries` 上限控制。
+5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, status, retry_count, bus_publish_timeout_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时与周期扫描未投递行做恢复，`status` 枚举值 `'pending' | 'dead_letter'`（默认 `'pending'`）用于 dead-letter 排除，`retry_count` 用于 `max_dispatch_retries` 上限控制（仅 `record_intent` 失败计数），`bus_publish_timeout_count` 用于 bus 饱和观测与告警（不影响消息生命周期）。
 
 > 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m8-channels.md §M8.1-WP3 验收](../plan/wbs/m8-channels.md) 落地为可测验收条目。
 
