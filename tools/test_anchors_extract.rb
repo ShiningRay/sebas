@@ -60,16 +60,77 @@ class AnchorsExtractTest < Minitest::Test
     end
   end
 
-  # 外部项目引用（如研究笔记引用 autobot 仓库）不得判错，否则引入假红。
-  def test_skips_paths_not_in_repo
+  # 存档目录里的外部项目引用：跳过，不判错。
+  def test_skips_external_paths_in_archive_dirs
     with_repo do |dir|
-      write(dir, "docs/a.md", "参考 src/autobot/cli/gateway.cr:76 的设计。\n")
+      write(dir, "docs/design/research/a.md", "参考 src/autobot/cli/gateway.cr:76 的设计。\n")
+
+      anchors, skipped, problems = AnchorExtractor.extract(["docs/design/research/a.md"], root: dir)
+      assert_empty anchors
+      assert_empty problems, "存档目录的外部路径不得判错"
+      assert_equal 1, skipped.length
+      assert_includes skipped[0]["ref"], "src/autobot/cli/gateway.cr:76"
+    end
+  end
+
+  # 当前文档引用不存在的本地文件：必须报错（CodeRabbit Major）。
+  # 否则文档引用的源文件被删除或拼错时会被静默放过。
+  def test_reports_missing_local_file_in_current_docs
+    with_repo do |dir|
+      write(dir, "docs/a.md", "见 src/deleted.cr:12。\n")
 
       anchors, skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
       assert_empty anchors
-      assert_empty problems, "外部路径不得判错"
-      assert_equal 1, skipped.length
-      assert_includes skipped[0]["ref"], "src/autobot/cli/gateway.cr:76"
+      assert_empty skipped, "当前文档不得把缺失文件当外部引用跳过"
+      assert_equal 1, problems.length
+      assert_includes problems[0], "本仓库没有该文件"
+    end
+  end
+
+  # 显式输入的 markdown 不存在：报错，不能生成空清单冒充成功。
+  def test_reports_missing_input_markdown
+    with_repo do |dir|
+      write(dir, "src/x.cr", "内容\n")
+      _anchors, _skipped, problems = AnchorExtractor.extract(["docs/typo.md"], root: dir)
+      assert_equal 1, problems.length
+      assert_includes problems[0], "输入文件不存在"
+    end
+  end
+
+  # 无扩展名的脚本引用也要抽取（tools/sebas-process:123）。
+  def test_extracts_extensionless_script_reference
+    with_repo do |dir|
+      write(dir, "tools/sebas-process", "#!/usr/bin/env ruby\n第二行\n")
+      write(dir, "docs/a.md", "见 tools/sebas-process:2。\n")
+
+      anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_empty problems
+      assert_equal 1, anchors.length
+      assert_equal "tools/sebas-process", anchors[0]["file"]
+      assert_equal "第二行", anchors[0]["content"]
+    end
+  end
+
+  # `./src/x.cr:12` 与 `src/x.cr:12` 必须等价（CodeRabbit）。
+  def test_normalizes_dot_slash_prefix
+    with_repo do |dir|
+      write(dir, "src/x.cr", "一行\n二行\n")
+      write(dir, "docs/a.md", "见 ./src/x.cr:2。\n")
+
+      anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_empty problems
+      assert_equal 1, anchors.length, "./ 前缀不应导致漏检"
+      assert_equal "src/x.cr", anchors[0]["file"]
+    end
+  end
+
+  def test_dot_slash_out_of_range_is_reported
+    with_repo do |dir|
+      write(dir, "src/x.cr", "只有一行\n")
+      write(dir, "docs/a.md", "见 ./src/x.cr:99。\n")
+
+      _anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_equal 1, problems.length, "./ 前缀下越界也必须被发现"
     end
   end
 

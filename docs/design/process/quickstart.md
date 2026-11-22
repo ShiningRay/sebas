@@ -165,17 +165,28 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 
 ```sh
 ruby tools/sebas-process verify docs docs/design/process/*.md
-ruby tools/anchors_extract.rb --output /tmp/anchors.json docs/**/*.md   # 生成锚点清单
+# 生成锚点清单：用 git ls-files 枚举全部文档（sh 的 ** 默认不递归）
+git ls-files -z 'docs/**/*.md' \
+  | xargs -0 ruby tools/anchors_extract.rb --output /tmp/anchors.json
 ruby tools/sebas-process verify anchors /tmp/anchors.json
 ruby tools/sebas-process verify merge 95 87
 ```
 
 三条命令全部只读，结论为 `blocker` / `must_fix` / `acceptable` / `unverified`。
 
-`anchors_extract` 抽取文档里的 `src/x.cr:123` 形态引用，取该行实际内容生成
-`anchors.json`（派生物，不入库）。它会跳过两类不应报错的引用：本仓库不存在的
-路径（如研究笔记引用的外部项目源码）与指向空行的锚点。行号越界是硬错误，
-直接拒绝生成。
+`anchors_extract` 抽取文档里的「文件路径 + 行号」形态引用，取该行实际内容生成
+`anchors.json`（派生物，不入库）。判定规则按文档位置分两档：
+
+| 文档位置 | 目标文件缺失 | 指向空行 | 行号越界 |
+|---|---|---|---|
+| 当前文档（其余路径） | **报错** | 跳过 | **报错** |
+| 存档（`review/`、`research/`） | 跳过 | 跳过 | **报错** |
+
+存档目录放宽是因为它们记录当时的调研结论，可能引用外部项目（如 `research/autobot-architecture.md`
+引用 autobot 仓库的 32 处源码路径）或已被删除的文件。当前文档严格，避免本地文件被删除或拼错
+时被静默放过——这条正是 CodeRabbit 在 PR #128 上指出的漏洞。
+
+输入文件本身不存在也是硬错误，避免「文档没有锚点」与「文档没被读取」不可区分。
 
 CI 的 `verify` job 在每次 PR 上重跑这两步（必检，与 spec×3 + ameba 并列）。
 

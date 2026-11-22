@@ -19,11 +19,24 @@ require "optparse"
 module AnchorExtractor
   # file:line 开头，后接可选的 `-N` 与 `,N-M` 组合。
   # 前置字符类排除字母数字与 ./：避免把 `xsrc/a.cr:1` 或 URL 尾部误认。
-  REF = %r{(?<![A-Za-z0-9_./-])([A-Za-z0-9_.][A-Za-z0-9_.+/-]*\.[A-Za-z0-9]+):(\d+)((?:-\d+)?(?:,\d+(?:-\d+)?)*)}
+  # 不要求扩展名：`tools/sebas-process:123` 这类无扩展名脚本也是有效引用；
+  # 版本号（`1.2:3`）与 URL 由下面的前缀过滤与前置字符类共同排除。
+  REF = %r{(?<![A-Za-z0-9_./-])([A-Za-z0-9_.][A-Za-z0-9_.+/-]*):(\d+)((?:-\d+)?(?:,\d+(?:-\d+)?)*)}
   # 只认这些顶层目录下的源码/脚本引用，避免把版本号（如 `1.2:`）当锚点。
   TRACKED_PREFIX = %r{\A(?:src|spec|tools|dev|scripts|examples|lib)/}
+  # 历史存档目录：这里记录的是当时的调研结论，可能引用外部项目（如 autobot）
+  # 或已被删除的文件，按「留档」处理。当前文档则严格判定——文件缺失即报错，
+  # 否则本地文件被删除或拼错时会被静默放过（CodeRabbit Major）。
+  # 与 Verifier::ARCHIVE_DIRS 同口径。
+  ARCHIVE_DIRS = ["docs/design/review/", "docs/design/research/"].freeze
 
   module_function
+
+  def archive?(path, root)
+    relative = File.expand_path(path, root)
+      .delete_prefix(File.expand_path(root) + File::SEPARATOR).tr("\\", "/")
+    ARCHIVE_DIRS.any? { |dir| relative.start_with?(dir) }
+  end
 
   # 把 `12`、`12-15`、`12,20-22` 展开为行号数组。
   def line_numbers(start, rest)
@@ -40,8 +53,8 @@ module AnchorExtractor
 
   # 返回 [anchors, skipped, problems]
   #   anchors  —— 可核验项 [{"file","line","content"}]
-  #   skipped  —— 本仓库不存在的路径引用（外部项目/已删除文件），不计入
-  #   problems —— 需报错项（文件在但越界）
+  #   skipped  —— 有意不核验项：存档目录里的缺失引用、指向空行的锚点
+  #   problems —— 需报错项：当前文档里的缺失引用、行号越界、输入文件不存在
   def extract(paths, root: Dir.pwd)
     anchors = []
     skipped = []
@@ -49,20 +62,29 @@ module AnchorExtractor
 
     paths.each do |path|
       full = File.expand_path(path, root)
-      next unless File.exist?(full)
+      unless File.exist?(full)
+        # 显式输入却读不到：不能让「文档没有锚点」与「文档没被读取」不可区分。
+        problems << "输入文件不存在：#{path}"
+        next
+      end
 
+      archived = archive?(path, root)
       text = File.read(full, encoding: "UTF-8")
       text.each_line.with_index(1) do |line_text, _|
         line_text.scan(REF) do
           match = Regexp.last_match
-          file = match[1]
+          # 规范化 `./` 前缀：`./src/x.cr:12` 与 `src/x.cr:12` 是同一引用。
+          file = match[1].sub(%r{\A\./}, "")
           next unless TRACKED_PREFIX.match?(file)
 
           target = File.expand_path(file, root)
           unless File.exist?(target)
-            # 本仓库没有这个文件：外部项目引用或已删除文件。
-            # 不判错（会引入假红），但要报出来供人核对。
-            skipped << {"source" => path, "ref" => "#{file}:#{match[2]}#{match[3]}"}
+            if archived
+              skipped << {"source" => path, "ref" => "#{file}:#{match[2]}#{match[3]}",
+                          "reason" => "存档引用，目标不在本仓库"}
+            else
+              problems << "#{path} 引用 #{file}:#{match[2]}，但本仓库没有该文件"
+            end
             next
           end
 

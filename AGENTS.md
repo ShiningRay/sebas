@@ -83,7 +83,7 @@ scripts/
 
 ## 分支与 PR
 
-- 主分支 `main`，受保护：squash-only + 4 项必检（spec×3 + ameba）+ strict + conversation resolution。
+- 主分支 `main`，受保护：squash-only + 5 项必检（spec×3 + ameba + verify）+ strict + conversation resolution。
 - 分支命名：`feat/…` / `fix/…` / `docs/…` / `ci/…`，从 main 切出，合并即删。
 - PR body 写 `Fixes #<issue号>` 自动关联关闭。
 - commit 用 Conventional Commits（`feat(orchestration): …`）。
