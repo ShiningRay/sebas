@@ -166,6 +166,9 @@ track: main
   脚本用 `head_sha` 走 `commits/{sha}/pulls` 找已合并的那个。
 - **中间态按 blocked 处理**：`merged_into_main: false` 期间下游前置仍是 blocked，这是正确语义
   （稍后重跑即通过），不得为消除这个窗口放宽判据。
+- **`status` 与 `merged_into_main` 正交**：合并前块写 `status=accepted` 表示「验收判断已成立」，
+  不表示「已合并」；合并事实只由 `merged_into_main` 承载。因此 `accepted + false` 是合法中间态，
+  而 `true` 必须由合并事件写入。
 
 **它自动化的是机械登记，不是验收判断。** 门禁要求的「必须实测」项仍由 Verifier 判定并写入
 `untested`；workflow 只负责在条件满足后把结论落成可机读凭据。里程碑级验收（M-gate、冻结口径、
