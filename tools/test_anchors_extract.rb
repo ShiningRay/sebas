@@ -170,6 +170,34 @@ class AnchorsExtractTest < Minitest::Test
     end
   end
 
+  # URL 里的伪引用（查询参数/片段）不得被当成源码锚点。
+  def test_ignores_references_inside_urls
+    with_repo do |dir|
+      write(dir, "docs/a.md", <<~MD)
+        见 [搜索](https://example.org/search?q=src/remote.cr:999) 与
+        https://example.org/page#src/other.cr:42 两个链接。
+      MD
+
+      anchors, skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_empty anchors
+      assert_empty skipped
+      assert_empty problems, "URL 内的伪引用不得让门禁失败"
+    end
+  end
+
+  # URL 剥离不能误伤同行的独立源码引用。
+  def test_still_extracts_real_reference_next_to_url
+    with_repo do |dir|
+      write(dir, "src/x.cr", "目标行\n")
+      write(dir, "docs/a.md", "见 https://example.org/a?q=src/none.cr:9 与 src/x.cr:1。\n")
+
+      anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_empty problems
+      assert_equal 1, anchors.length, "URL 之外的独立引用仍须核验"
+      assert_equal "src/x.cr", anchors[0]["file"]
+    end
+  end
+
   def test_dedupe_keeps_one_per_file_line
     with_repo do |dir|
       write(dir, "src/x.cr", "一行\n二行\n")

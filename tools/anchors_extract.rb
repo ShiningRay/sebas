@@ -70,6 +70,10 @@ module AnchorExtractor
 
       archived = archive?(path, root)
       text = File.read(full, encoding: "UTF-8")
+      # 先剥掉 URL，再扫引用：`https://example.org/search?q=src/remote.cr:999`
+      # 里的 `src/remote.cr:999` 会被 REF 匹配（前置字符 `=` 不在排除类里），
+      # 目标不存在时会让正常的外部链接把文档门禁弄红。
+      text = text.gsub(%r{\b(?:https?|ftp)://\S+}, "")
       text.each_line.with_index(1) do |line_text, _|
         line_text.scan(REF) do
           match = Regexp.last_match

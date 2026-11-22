@@ -166,9 +166,10 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 ```sh
 ruby tools/sebas-process verify docs docs/design/process/*.md
 # 生成锚点清单：用 git ls-files 枚举全部文档（sh 的 ** 默认不递归）
+# 用 && 连接：生成失败时不得继续读旧清单（那会核验上一次的文档）
 git ls-files -z 'docs/**/*.md' \
-  | xargs -0 ruby tools/anchors_extract.rb --output /tmp/anchors.json
-ruby tools/sebas-process verify anchors /tmp/anchors.json
+  | xargs -0 ruby tools/anchors_extract.rb --output /tmp/anchors.json \
+  && ruby tools/sebas-process verify anchors /tmp/anchors.json
 ruby tools/sebas-process verify merge 95 87
 ```
 
