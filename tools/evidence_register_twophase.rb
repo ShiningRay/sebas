@@ -94,7 +94,21 @@ module EvidenceRegister
       end
 
       payload = EvidenceRegister.gh_json("repos/#{repo}/commits/#{sha}/check-runs?per_page=100")
-      runs = Array(payload["check_runs"]).reject { |run| run["name"].to_s == SELF_CHECK_NAME }
+      raw = Array(payload["check_runs"])
+
+      # 先校验元数据完整性，再按名排除自身（CodeRabbit）：
+      # 若先过滤名称，一条 `{"name":"register evidence"}`（缺 status）会被静默跳过；
+      # 缺元数据的记录本身可疑，必须 fail-closed 而不是当作可忽略项。
+      malformed = raw.reject do |run|
+        run["name"].is_a?(String) && !run["name"].strip.empty? &&
+          run["status"].is_a?(String) && !run["status"].strip.empty?
+      end
+      unless malformed.empty?
+        out.puts "fail: PR ##{pr_number} 存在元数据不完整的检查记录（#{malformed.length} 条），拒绝登记"
+        return :failed
+      end
+
+      runs = raw.reject { |run| run["name"] == SELF_CHECK_NAME }
       if runs.empty?
         out.puts "fail: PR ##{pr_number} 没有任何 CI 检查记录，无法确认全绿"
         return :failed

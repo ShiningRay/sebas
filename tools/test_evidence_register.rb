@@ -673,6 +673,33 @@ class EvidenceRegisterTest < Minitest::Test
     assert_includes out, "没有任何 CI 检查记录"
   end
 
+  # 缺 status 的记录不能被名称过滤静默跳过（CodeRabbit）：先校验元数据、再排除自身。
+  def test_pre_register_blocks_on_metadata_incomplete_own_check
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "spec", "status" => "completed", "conclusion" => "success"},
+        {"name" => "register evidence"}
+      ]
+    })
+    code, calls, out = run_pre(fake)
+    assert_equal 1, code, "缺 status 必须拒绝，out=#{out}"
+    assert_includes out, "元数据不完整"
+    assert(calls.none? { |m, _| m == "POST" }, "不得写入，calls=#{calls.inspect}")
+  end
+
+  def test_pre_register_blocks_on_metadata_incomplete_other_check
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "spec", "status" => "completed", "conclusion" => "success"},
+        {"name" => "another", "conclusion" => "success"}
+      ]
+    })
+    code, calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "元数据不完整"
+    assert(calls.none? { |m, _| m == "POST" })
+  end
+
   def test_pre_register_skips_when_issue_closed
     fake = pre_fake("GET repos/o/r/issues/42" => {"state" => "closed", "state_reason" => "completed", "body" => ""})
     code, calls, out = run_pre(fake)
