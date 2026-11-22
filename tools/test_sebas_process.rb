@@ -1001,10 +1001,13 @@ class VerifyChecksTest < Minitest::Test
   end
 
   # CodeRabbit：config/remote/symbolic-ref 有写形态且无法按参数区分读写，直接排除。
+  # 断言 allowed? 本身（不真跑），否则白名单若回归放行，
+  # git 自身的执行失败也会让 rerun 返回 passed:false，测试区分不出拒绝分支。
   def test_git_writable_read_listed_subcommands_reject
+    require "shellwords"
     %w[config remote symbolic-ref].each do |subcommand|
-      result = SebasAgents::VerifyChecks.rerun(item_with("git #{subcommand} HEAD"), {})
-      refute result[:passed], "git #{subcommand} 不应放行"
+      reason = SebasAgents::VerifyChecks.allowed?(Shellwords.split("git #{subcommand} HEAD"))
+      refute_equal true, reason, "git #{subcommand} 不应进入白名单：#{reason.inspect}"
     end
   end
 
