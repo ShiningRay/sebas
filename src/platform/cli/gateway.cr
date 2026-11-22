@@ -103,7 +103,15 @@ module Sebas
           data = payload.as_h? || {} of String => JSON::Any
           task = data["task"]?.try(&.as_s?) || ""
           raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 task") if task.empty?
-          count = data["count"]?.try(&.as_i?) || 1
+          # 区分缺失与类型错误（CodeRabbit）：缺失用默认 1；存在但非整数
+          # （字符串/浮点）拒绝，不被默认值吞掉。
+          count = if raw_count = data["count"]?
+                    raw_count.as_i? ||
+                      raise ::Sebas::Platform::Store::StoreError.new(
+                        "count 必须为整数，实际：#{raw_count}")
+                  else
+                    1
+                  end
           raise ::Sebas::Platform::Store::StoreError.new("count 必须为正整数，实际：#{count}") if count <= 0
           max_concurrent = Orchestration::Fork::Executor::DEFAULT_MAX_CONCURRENT
           raise ::Sebas::Platform::Store::StoreError.new(

@@ -71,14 +71,20 @@ module Sebas
         # fork/join 触发面（M4.1-WP5，Q3：用户显式命令，不动生产 agent_turn）；
         # nil 时 fork/join 命令回 not available（gateway 未装配 fork 组件的旧链路）。
         @fork_handler : (JSON::Any -> JSON::Any)?
-        # 已认证连接（hello token 匹配的 socket object_id 集合）
-        @authenticated_connections = Set(UInt64).new
+        # 已认证连接（hello token 匹配）——持有 socket 引用本身（防 object_id
+        # 内存地址复用导致匿名连接继承认证，CWE-613），连接结束即撤销。
+        @authenticated_connections = Set(TCPSocket).new
 
         def initialize(@store : Platform::Store::Store, data_dir : Path,
                        @host : String = "127.0.0.1", @port : Int32 = DEFAULT_PORT,
                        @token : String = Random::Secure.hex(16),
                        @runs_view : ::Sebas::Orchestration::RunsView? = nil,
                        &@on_reload : -> Hash(String, JSON::Any))
+          # IPC 明文 TCP（CWE-319）：仅允许回环绑定——远程部署须经认证加密传输
+          # （TLS 另卡），否则可观察链路的攻击者可截获可复用 token。
+          unless {"127.0.0.1", "::1", "localhost"}.includes?(@host)
+            raise ArgumentError.new("IPC host 必须为回环地址（127.0.0.1/::1/localhost），实际：#{@host}；远程 IPC 需加密传输（另卡）")
+          end
           discovery_dir = data_dir / "ipc"
           Dir.mkdir_p(discovery_dir)
           @discovery_path = discovery_dir / "discovery.json"
@@ -147,29 +153,32 @@ module Sebas
             end
           end
 
-          if hello.caps.includes?("events.subscribe")
-            events = @tap.register(subscriber_id)
-            loop do
-              select
-              when frame = frames.receive
+          begin
+            if hello.caps.includes?("events.subscribe")
+              events = @tap.register(subscriber_id)
+              loop do
+                select
+                when frame = frames.receive
+                  break if frame.nil?
+                  dispatch(io, frame)
+                when line = events.receive?
+                  io.puts(line) if line
+                end
+              end
+            else
+              loop do
+                frame = frames.receive
                 break if frame.nil?
                 dispatch(io, frame)
-              when line = events.receive?
-                io.puts(line) if line
               end
             end
-          else
-            loop do
-              frame = frames.receive
-              break if frame.nil?
-              dispatch(io, frame)
-            end
+          ensure
+            # 连接结束（正常/异常）即撤销认证——认证绑定 socket 本身，
+            # object_id 可被 GC 后的新连接复用（CWE-613）
+            @authenticated_connections.delete(io)
+            @tap.unregister(subscriber_id)
+            io.close rescue nil
           end
-          @tap.unregister(subscriber_id)
-          io.close
-        rescue ::Exception
-          @tap.unregister(subscriber_id)
-          io.close rescue nil
         end
 
         # 握手：首帧必须为合法 hello；失败回错误并断开
@@ -250,14 +259,14 @@ module Sebas
         end
 
         # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。
+        # 认证绑定 socket 引用本身（非 object_id——内存地址可复用）。
         private def mark_authenticated(io : TCPSocket, hello : Hello) : Nil
-          @authenticated_connections.add(io.object_id) if hello.token == @token
+          @authenticated_connections.add(io) if hello.token == @token
         end
 
-        # 调用者认证：握手 hello 的 token 与服务端 token 常量比较
-        # （fork/join 写命令前置条件，普通读命令匿名可用）。
+        # 调用者认证：fork/join 写命令前置条件，普通读命令匿名可用。
         private def caller_authenticated?(io : TCPSocket) : Bool
-          @authenticated_connections.includes?(io.object_id)
+          @authenticated_connections.includes?(io)
         end
 
         private def runs_response(frame : Frame) : String

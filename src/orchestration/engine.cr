@@ -124,10 +124,10 @@ module Sebas
           @store.memo_put(memo_key, "running")
           @ledger.try(&.append(run_id, "action.start", %({"id": "#{action.id}", "tool": "#{action.tool}"})))
           # fork/join 不走默认工具注册表（不支持这两个原语）——编排处理路径：
-          # 本期落库面即 expectation 登记/判定（M4.1-WP2），执行体（WP3）经
-          # IPC/HTTP 显式触发面跑（Q3：DSL 声明的是编排意图，生产 agent_turn 不动）。
+          # fork 经 Executor 实际派发分身并等待终态（M4.1-WP3 执行体），join 返回
+          # 汇聚状态；生产 agent_turn 不动（Q3）。
           result = if {"fork", "join"}.includes?(action.tool)
-                     fork_join_action(action)
+                     fork_join_action(action, run_id, ctx_session)
                    else
                      @executor.run(action.tool, ::JSON.parse(action.args),
                        Tools::ToolContext.new(ctx_session, @account_id, run_id, @store))
