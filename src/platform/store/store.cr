@@ -1,6 +1,7 @@
 require "db"
 require "sqlite3"
 require "json"
+require "./expectations_store"
 require "digest/sha256"
 require "../../log"
 require "../../sessions/scheduling/policy"
@@ -133,7 +134,7 @@ module Sebas
           )
           SQL
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_batch_members_order ON session_batch_members(batch_id, position)",
-        <<-SQL
+        <<-SQL,
           CREATE TABLE IF NOT EXISTS session_steers (
             steer_id         TEXT PRIMARY KEY,
             session_key      TEXT NOT NULL,
@@ -146,9 +147,25 @@ module Sebas
             updated_at       TEXT NOT NULL
           )
           SQL
+        "CREATE TABLE IF NOT EXISTS expectations (" \
+        "id             TEXT PRIMARY KEY, " \
+        "fork_id        TEXT NOT NULL, " \
+        "parent_task_id TEXT NOT NULL REFERENCES tasks(id), " \
+        "parent_session TEXT NOT NULL, " \
+        "mode           TEXT NOT NULL, " \
+        "deadline       TEXT NOT NULL, " \
+        "members        TEXT NOT NULL, " \
+        "settled_count  INTEGER NOT NULL DEFAULT 0, " \
+        "status         TEXT NOT NULL DEFAULT 'open', " \
+        "result         TEXT, " \
+        "created_at     TEXT NOT NULL, " \
+        "updated_at     TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id)",
       ]
 
       class Store
+        include ::Sebas::Platform::ExpectationStoreMethods
+
         getter db : ::DB::Database
         getter path : Path
         getter sessions_dir : Path
@@ -260,6 +277,11 @@ module Sebas
           @db.query_one?("SELECT status FROM tasks WHERE id = ?", task_id, as: String)
         end
 
+        # 任务状态迁移时刻（ISO-8601）：成员「成功先后」的唯一可持久化证据（any 判定）。
+        def task_updated_at(task_id : String) : String?
+          @db.query_one?("SELECT updated_at FROM tasks WHERE id = ?", task_id, as: String)
+        end
+
         # owner 的全部子任务（Pi ownership 找回口径，M3-WP3）
         def tasks_by_owner(owner_task_id : String) : Array(TaskRow)
           rows = [] of TaskRow
@@ -340,6 +362,8 @@ module Sebas
         end
 
         TASK_COLUMNS = "id, parent_id, kind, status, phase, restart_count, owner_task_id"
+
+        EXPECTATION_COLUMNS = "id, fork_id, parent_task_id, parent_session, mode, deadline, members, settled_count, status, result, created_at, updated_at"
 
         private def query_tasks(where : String) : Array(TaskRow)
           rows = [] of TaskRow
