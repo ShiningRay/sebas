@@ -57,7 +57,7 @@ module Sebas
     it "超时 expired：partial 由 members[].state 承载（未终态成员标 running）" do
       store, writer, ex = new_env
       parent_session = "agent:main:test-acc:email:bob@example.com"
-      members = seed_fork(store, ex, "fork:bb222222", "all", 2, parent_session)
+      seed_fork(store, ex, "fork:bb222222", "all", 2, parent_session)
       store.complete_task("fork:bb222222:1")
       row = store.expectation("fork:bb222222")
       store.transition_expectation(row.id, "open", "expired",
