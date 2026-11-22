@@ -81,30 +81,58 @@ module Sebas
 
       # fork/join 编排动作处理（M4.1-WP5）：登记 expectation（fork）/ 返回
       # 汇聚状态（join）。分身执行由 ForkManager 执行体在触发面完成。
-      private def fork_join_action(action : DSL::Action) : Tools::ToolResult
+      # fork 必填字段校验（ Validator 前置：缺字段不被运行时默认值吞掉）。
+      private def fork_arg_errors(args : JSON::Any) : Array(String)
+        errors = [] of String
+        task = args["task"]?.try(&.as_s?)
+        count = args["count"]?.try(&.as_i?)
+        mode = args["mode"]?.try(&.as_s?)
+        deadline = args["deadline"]?.try(&.as_i?)
+        errors << "缺 task" if task.nil? || task.empty?
+        errors << "缺 count（必填）" if count.nil?
+        errors << "count 必须为正整数" if count && count <= 0
+        errors << "缺 mode（必填）" if mode.nil?
+        errors << "mode 必须为 all/any/allSettled" if mode && !%w[all any allSettled].includes?(mode)
+        errors << "缺 deadline（必填）" if deadline.nil?
+        errors
+      end
+
+      # fork/join 编排动作处理（M4.1-WP5）：fork 经 Executor 实际派发分身并等
+      # 终态（JoinWriter 回写父会话在 Executor 内完成）；join 返回汇聚状态。
+      # 保存真实 run_id 与 ctx_session（CodeRabbit：父子关系与回写归属必须锚
+      # 当前 run 与调用会话，不用固定占位）。
+      private def fork_join_action(action : DSL::Action, run_id : String,
+                                   ctx_session : String) : Tools::ToolResult
         args = ::JSON.parse(action.args)
         case action.tool
         when "fork"
-          fork_id = "fork:" + ::Random::Secure.hex(4)
-          members = (1..(args["count"]?.try(&.as_i?) || 1)).map { |i| "#{fork_id}:#{i}" }
-          @store.insert_expectation(::Sebas::Orchestration::Fork::ExpectationRow.new(
-            id: "join:#{fork_id}", members_final: 0, fork_id: fork_id,
-            parent_task_id: run_id_placeholder, parent_session: "agent:main:engine:orchestration",
+          validation_errors = fork_arg_errors(args)
+          unless validation_errors.empty?
+            return Tools::ToolResult.error("fork #{action.id}: #{validation_errors.join("；")}")
+          end
+
+          # 校验通过后字段必有值；从 args 重读（nil 已被 fork_arg_errors 拒绝）
+          input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
+            task: args["task"]?.try(&.as_s?) || "", count: args["count"]?.try(&.as_i?) || 0,
+            window: nil, include: nil, tools: nil, role: nil,
             mode: args["mode"]?.try(&.as_s?) || "allSettled",
-            deadline: (::Time.utc + (args["deadline"]?.try(&.as_i?) || 3600).seconds).to_rfc3339,
-            members: members.to_json, settled_count: 0, status: "open",
-            result: nil, created_at: ::Time.utc.to_rfc3339, updated_at: ::Time.utc.to_rfc3339,
-          ))
-          Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "registered": true}))
+            deadline: args["deadline"]?.try(&.as_i?) || 3600
+          )
+          # engine 场景分身 provider 工厂未接线（gateway 装配面另卡）：fail-closed
+          # 显式报错，不静默跳过分身。
+          executor = ::Sebas::Orchestration::Fork::Executor.new(
+            @store, ::Sebas::Orchestration::Fork::Expectations.new(@store),
+            -> { raise ::Sebas::Platform::Store::StoreError.new("engine 场景 provider 工厂未接线（gateway 装配面另卡）") }
+          )
+          results = executor.run(run_id, ctx_session, @account_id, "", "", input)
+          fork_id = results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s
+          ::Sebas::Orchestration::Fork::JoinWriter.new(@store).write(fork_id)
+          Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "members": #{results.size}}))
         else # join
           fork_id = args["fork_id"]?.try(&.as_s?) || ""
           row = @store.expectation?(fork_id)
           row ? Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "status": "#{row.status}"})) : Tools::ToolResult.error("join: unknown fork_id #{fork_id}")
         end
-      end
-
-      private def run_id_placeholder : String
-        "engine-orchestration"
       end
 
       private def execute_phases(run_id : String, workflow : DSL::Workflow,
