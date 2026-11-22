@@ -315,7 +315,15 @@ module SebasAgents
     end
 
     def ensure_head_unchanged!(number, pr, expected_head)
-      return unless expected_head && pr.is_a?(Hash) && pr["head_sha"].to_s != expected_head.to_s
+      unless expected_head && pr.is_a?(Hash)
+        # 快照身份未经确认不得放行（CodeRabbit）：缺 head 或结构非法一律拒绝。
+        raise CommandError.new(
+          "PR ##{number} 详情结构非法或快照缺 head sha（expected=#{expected_head.inspect}）；" \
+          "拒绝构建快照（fail-closed）",
+          command: ["gh", "api", "pulls/#{number}"]
+        )
+      end
+      return if pr["head_sha"].to_s == expected_head.to_s
 
       raise CommandError.new(
         "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{pr["head_sha"]}）；" \

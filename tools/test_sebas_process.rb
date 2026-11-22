@@ -1939,3 +1939,44 @@ class PrDetailsSecondReadTest < Minitest::Test
     assert_includes error.message, "混合快照"
   end
 end
+
+# #125 第四轮复审：ensure_head_unchanged! 对缺失/非法输入 fail-closed。
+class EnsureHeadGuardTest < Minitest::Test
+  class SeqRunner
+    def initialize(responses)
+      @responses = responses
+    end
+
+    def json!(*_argv)
+      JSON.parse(@responses.shift)
+    end
+  end
+
+  def gateway_with(*responses)
+    SebasAgents::GithubGateway.new(SeqRunner.new(responses), repo: "o/r")
+  end
+
+  def test_missing_expected_head_rejects
+    gateway = gateway_with('{"body": "b", "head_sha": "x"}',
+      '[{"filename": "a.rb", "patch": "+x"}]', '{"body": "b", "head_sha": "x"}')
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_pr_details, 10)
+    end
+    assert_includes error.message, "fail-closed"
+  end
+
+  def test_non_hash_detail_rejects
+    gateway = gateway_with('[]', '[]', '[]')
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_pr_details, 10, expected_head: "old")
+    end
+    assert_includes error.message, "fail-closed"
+  end
+
+  def test_matching_head_proceeds
+    gateway = gateway_with('{"body": "b", "head_sha": "same"}',
+      '[{"filename": "a.rb", "patch": "+x"}]', '{"body": "b", "head_sha": "same"}')
+    details = gateway.send(:fetch_pr_details, 10, expected_head: "same")
+    assert_equal 1, details["files"].length
+  end
+end
