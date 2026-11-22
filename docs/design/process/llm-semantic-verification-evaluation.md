@@ -101,13 +101,15 @@ workflow 与工具脚本本身（`.github/workflows/verify.yml` 8 条、`tools/v
 `blocker` 与无证据的 `unverified` 都转为阻断。这层口径在两条消费路径上宽严不同：
 
 - **CLI `sebas-process review`**（`--fixes` + `Reviewer.final_verification`）：
-  未修复的应修项转为阻断，已修复的应修项不再阻断（对已修复步输出 `ok` 或
-  `unverified`）；Reviewer 输出的 `must_fix`（来自可留项理由失效或未复核）
-  同样计入阻断判定。
+  未修复的应修项转为阻断；已修复的应修项降为 `unverified`——CLI 不注入
+  `checker`，`passed=true` 且有 commit 时记「自报已修复、Reviewer 未独立复跑」
+  （`evidence` 为空），结论为有条件通过，**不输出 `ok`**（`ok` 仅在调用方注入
+  `checker` 并复跑通过时产生）。Reviewer 输出的 `must_fix`（来自可留项理由
+  失效或未复核）同样计入阻断判定。
 - **Actions reviewer gate**（`verify.yml` 的 reviewer job，
   `tools/verify_reviewer_verdict.rb`）：不读取 `--fixes`，输入报告中
-  **任一 `must_fix` 即打回**（脚本头部注释与 `passed` 判定均如此）——
-  阻断范围比 CLI 更宽。
+  **任一 `must_fix` 即打回**，`unverified` 且无间接证据同样打回——CLI 自报
+  已修复的条目无 `evidence`，在这层仍会打回。阻断范围比 CLI 更宽。
 
 两条路径上，新增一个核验层必然新增分级条目，其中若有假阳性，就会带来额外的
 打回；一次假阳性打回要走一轮 Implementer 修复。**LLM 核验的假阳性率与收益均
