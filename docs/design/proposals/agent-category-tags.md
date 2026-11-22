@@ -40,14 +40,14 @@
 
 - 类型：`String?`，省略即 `nil`（未分类）。
 - 语义：一个 Agent 一个主分类，表达「团队/岗位」这类稳定维度，例如 `writing`、`research`、`ops`。
-- 约定：小写 ASCII 字母、数字、连字符，正则 `^[a-z0-9][a-z0-9-]*$`，长度 1..64。
+- 约定：小写 ASCII 字母、数字、连字符，正则 `^[a-z0-9][a-z0-9-]*$`，长度 1..64。校验须整串匹配（Crystal 用 锚点 `\A` 与 `\z` 包裹正则，或 `Regex#matches?` 的 full-match 语义），不得用单行匹配放行末尾换行等非法字符。
 - 校验：违反约定时报错 `agents.<name>.category must match ^[a-z0-9][a-z0-9-]*$ (1..64 chars)`。
 
 ### 3.2 `tags`：灵活细粒度标签
 
 - 类型：`Array(String)`，默认 `[]`，多归属、无序。
 - 语义：表达「技能/场景/状态」这类灵活维度，例如 `["drafting", "english", "oncall"]`。
-- 约定：每个标签同样匹配 `^[a-z0-9][a-z0-9-]*$`，长度 1..64；同一 Agent 内去重（重复值报错而非静默丢弃）。
+- 约定：每个标签同样按 `^[a-z0-9][a-z0-9-]*$` 整串匹配（同 §3.1 的锚定要求），长度 1..64；同一 Agent 内去重（重复值报错而非静默丢弃）。
 - 校验：任一标签非法时报错 `agents.<name>.tags[<i>] must match ^[a-z0-9][a-z0-9-]*$ (1..64 chars)`；重复时报错 `agents.<name>.tags contains duplicate '<tag>'`。
 
 ### 3.3 配置示例
@@ -83,14 +83,14 @@ agents:
 
 - 请求帧：`{"type": "agents.list", "id": "<request-id>"}`。
 - 响应帧：`{"type": "response", "id": "...", "ok": true, "payload": {"agents": [...]}}`。
-- 每个条目：`{"id": "<agent-id>", "category": "<category-or-null>", "tags": ["..."]}`。
+- 每个条目形态：`{"id": "<agent-id>", "category": "<category>", "tags": ["..."]}`；未分类时 `category` 必须是 JSON `null`，例如 `{"id": "worker", "category": null, "tags": []}`，不得输出字符串 `"null"`（避免与合法分类名 `null` 混淆）。
 - 数据来源：当前 `Config.agents`（配置真相源），不读 registry 缓存；因此热更新后立即可见。
 - 排序：按 Agent id 字典序，保证输出稳定。
 - 只读：不接受过滤参数（过滤留给客户端或后续 DSL 卡），无副作用。
 
 ## 5. 验收标准
 
-- `crystal spec` 覆盖：①合法配置解析出 `category`/`tags`；②非法 category/tags 报出定位到字段的错误行；③重复标签报错；④省略时默认 `nil` / `[]`；⑤`agents.list` 返回全部 Agent 且按 id 排序、热更新后反映新值。
+- `crystal spec` 覆盖：①合法配置解析出 `category`/`tags`；②非法 category/tags 报出定位到字段的错误行；③重复标签报错；④省略时默认 `nil` / `[]`；⑤末尾换行等非法字符被拒（整串匹配，category 与 tags 各一例）；⑥`agents.list` 返回全部 Agent 且按 id 排序、热更新后反映新值、未分类输出 JSON `null`。
 - `crystal tool format --check`、`ameba`、`verify docs`、`ruby tools/check_docs.rb` 全绿。
 - 文档回写：核心概念 §3.1 表格中的 Agent 定义补充「分类与标签」，§3.4 配置示例补 `category`/`tags`；本文与源码路径锚点经 verify 核对。
 
