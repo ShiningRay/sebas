@@ -8,6 +8,7 @@ require "../../admin/http/server"
 require "../bus/bus"
 require "../store/store"
 require "../../agents/pool"
+require "../../agents/agents"
 require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
@@ -15,6 +16,9 @@ require "../../providers/fake_provider"
 require "../../sessions/scheduling/scheduler"
 require "../../sessions/scheduling/recovery"
 require "../../tools/executor"
+require "../../orchestration/approvals/approvals"
+require "../../orchestration/fork/fork_manager"
+require "../../orchestration/fork/join_writer"
 require "../../admin/ipc/server"
 require "../../log"
 
@@ -41,6 +45,11 @@ module Sebas
         getter reload_manager : Config::ReloadManager?
         getter http : Admin::HTTP::Server
         getter scheduling : Sessions::Scheduling::Registry
+        # orchestration/agents 装配面（M4.1-WP1，Q4：全线前置首包）。
+        getter agent_registry : ::Sebas::Agents::AgentRegistry
+        getter approvals : ::Sebas::Orchestration::Approvals::Center
+        getter fork_manager : ::Sebas::Orchestration::Fork::ForkManager
+        getter join_writer : ::Sebas::Orchestration::Fork::JoinWriter
 
         # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
         # pool handler ↔ scheduling registry 的循环引用
@@ -74,6 +83,13 @@ module Sebas
             &->trigger_reload)
           @store.recover!
           Sessions::Scheduling::Recovery.recover_stale(@store)
+          # orchestration 装配置 initialize 尾段（恢复完成后）：组件可达即装配成立；
+          # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
+          # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
+          @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
+          @approvals = Orchestration::Approvals::Center.new(@store)
+          @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
+          @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters
         end
 
