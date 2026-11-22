@@ -74,7 +74,7 @@ module Sebas
     it "重放不重复回写（memo 幂等）：第二次 write 返回 false，行数不变" do
       store, writer, ex = new_env
       parent_session = "agent:main:test-acc:email:carol@example.com"
-      members = seed_fork(store, ex, "fork:cc333333", "allSettled", 1, parent_session)
+      seed_fork(store, ex, "fork:cc333333", "allSettled", 1, parent_session)
       store.complete_task("fork:cc333333:1", "done")
       ex.judge("fork:cc333333")
 
