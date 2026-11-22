@@ -31,7 +31,7 @@ module VerifyMergeReports
     items = []
 
     # 1. 锚点报告
-    collect(items, "anchors", File.join(out_dir, "anchors_report.json"))
+    anchors_items = collect(items, "anchors", File.join(out_dir, "anchors_report.json"))
 
     # 2. docs 分批报告
     Dir.glob(File.join(out_dir, "docs_report_*.json")).sort.each do |path|
@@ -39,7 +39,7 @@ module VerifyMergeReports
     end
 
     # 3. 锚点生成/核验的非零退出
-    collect_anchors_failures(items, File.join(out_dir, "anchors_extract.txt"))
+    collect_anchors_failures(items, File.join(out_dir, "anchors_extract.txt"), anchors_items)
 
     # 4. docs 侧执行与结构失败
     failure_log = File.join(out_dir, "docs_failures.txt")
@@ -86,59 +86,72 @@ module VerifyMergeReports
     report
   end
 
-  # 读取单份报告并归一化进 items。结构非法 → blocker（不吞错）。
+  # 读取单份报告并归一化进 items，返回本报告贡献的条目。
   def collect(items, kind, path)
+    contributed = []
+    # 统一出口：既记入总表，也记入本报告的贡献列表。
+    blocking = lambda do |message|
+      entry = item(items, "blocker", message)
+      items << entry
+      contributed << entry
+    end
+
     unless File.exist?(path)
       # docs 分批时缺某批是正常情况（批次号不连续时不存在）；锚点报告另有缺失检查。
-      return
+      return contributed
     end
 
     raw = File.read(path, encoding: "UTF-8")
     if raw.strip.empty?
-      items << item(items, "blocker", "#{kind}: #{File.basename(path)} 为空文件")
-      return
+      blocking.call("#{kind}: #{File.basename(path)} 为空文件")
+      return contributed
     end
 
     data = begin
       JSON.parse(raw)
     rescue JSON::ParserError => e
-      items << item(items, "blocker", "#{kind}: #{File.basename(path)} 不是合法 JSON（#{e.message}）")
-      return
+      blocking.call("#{kind}: #{File.basename(path)} 不是合法 JSON（#{e.message}）")
+      return contributed
     end
 
     unless data.is_a?(Hash) && data["items"].is_a?(Array)
       # CLI 的错误响应形如 {"ok":false,"error":{...}}，没有 items。
       # 把它当空报告会让 400 行超限之类的失败被静默放过。
       detail = data.is_a?(Hash) && data["error"].is_a?(Hash) ? data["error"]["message"].to_s : "缺 items 数组"
-      items << item(items, "blocker", "#{kind}: #{File.basename(path)} 结构非法：#{detail}")
-      return
+      blocking.call("#{kind}: #{File.basename(path)} 结构非法：#{detail}")
+      return contributed
     end
 
     data["items"].each_with_index do |entry, index|
       unless entry.is_a?(Hash)
         # 不能静默跳过非 Hash 条目：`{"items":[null]}` 若被跳过，
         # 唯一的结构提示就消失了，报告反而显示通过（CodeRabbit）。
-        items << item(items, "blocker", "#{kind}: items[#{index}] 不是对象，报告结构非法")
+        blocking.call("#{kind}: items[#{index}] 不是对象，报告结构非法")
         next
       end
 
       level = entry["level"].to_s
       unless LEVELS.include?(level)
-        items << item(items, "blocker", "#{kind}: 未知 level #{level.inspect}（报告结构异常）")
+        blocking.call("#{kind}: 未知 level #{level.inspect}（报告结构异常）")
         next
       end
 
-      items << {
+      entry = {
         "id" => "#{kind}-#{entry["id"]}",
         "level" => level,
         "message" => "#{kind}: #{entry["message"]}",
         "evidence" => entry["evidence"]
       }
+      items << entry
+      contributed << entry
     end
+    contributed
   end
 
   # 生成器/核验器的非零退出必须转成 blocker；否则「工具崩了」会被当成通过。
-  def collect_anchors_failures(items, log_path)
+  # anchors_items 是锚点报告侧贡献的条目，用于判断非零退出是否由报告内
+  # 阻断项预期引发——只看这一侧，docs 侧的同级条目不能掩盖 anchors 的异常。
+  def collect_anchors_failures(items, log_path, anchors_items)
     return unless File.exist?(log_path)
 
     text = File.read(log_path, encoding: "UTF-8")
@@ -161,7 +174,11 @@ module VerifyMergeReports
     end
 
     verify_failed = text.match?(/^anchors verify exit=[1-9]/)
-    if verify_failed && items.none? { |i| %w[blocker must_fix].include?(i["level"]) }
+    # 只看 **anchors 报告侧** 有无阻断项（CodeRabbit）：原判断扫的是全局
+    # items，docs 侧一个 must_fix 就会掩盖 anchors 的异常退出。
+    # 报告内有阻断项时非零退出是预期行为，不重复记账。
+    anchors_blocking = anchors_items.any? { |i| %w[blocker must_fix].include?(i["level"]) }
+    if verify_failed && !anchors_blocking
       items << item(items, "blocker",
         "anchors: 核验非零退出但报告无阻断项（报告结构异常，须人工核查）")
     end

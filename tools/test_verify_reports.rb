@@ -174,15 +174,17 @@ class VerifyMergeReportsTest < Minitest::Test
   end
 
   # 生成器成功退出却无报告：核验被静默跳过 → blocker。
-  # （此前的 `Dir.glob("anchors_*")` 会匹配到日志文件，使该检查恒为假。）
+  # docs 侧保持齐全，确保红的是 anchors 侧（CodeRabbit：此前的夹具反而
+  # 是 docs 缺失，删掉 anchors 检查也不会红）。
   def test_successful_extract_without_anchors_report_becomes_blocker
     with_out do |dir|
+      base_evidence(dir)
+      File.delete(File.join(dir, "anchors_report.json"))
       write_out(dir, "anchors_extract.txt", "已写入 anchors.json：0 条锚点\nextract exit=0\n")
-      base_docs_evidence(dir)
 
       report = VMR.run(dir, base_sha: "b", head_sha: "h")
       assert_equal 1, report["counts"]["blocker"]
-      assert_includes report["items"].first["message"], "核验被跳过"
+      assert_includes report["items"].first["message"], "anchors_report.json"
     end
   end
 
@@ -208,6 +210,37 @@ class VerifyMergeReportsTest < Minitest::Test
       report = VMR.run(dir, base_sha: "b", head_sha: "h")
       assert_equal 2, report["counts"]["blocker"], "null 与字符串各记一条"
       assert_equal 1, report["counts"]["acceptable"], "合法条目仍被保留"
+    end
+  end
+
+  # anchors 核验异常退出时，docs 侧的同级条目不能把它掩盖掉
+  # （CodeRabbit：原判断扫全局 items）。
+  def test_anchors_verify_failure_not_masked_by_docs_must_fix
+    with_out do |dir|
+      base_evidence(dir)
+      # docs 侧有 must_fix，anchors 报告为空但核验非零退出
+      File.write(File.join(dir, "docs_report_1.json"), JSON.generate({"items" => [
+        {"id" => "d1", "level" => "must_fix", "message" => "应修", "evidence" => nil}
+      ]}))
+      write_out(dir, "anchors_report.json", JSON.generate({"items" => []}))
+      write_out(dir, "anchors_extract.txt", "已写入 anchors.json：1 条锚点\nextract exit=0\nanchors verify exit=1\n")
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      assert_includes report["items"].map { |i| i["message"] }.join("\n"), "核验非零退出"
+    end
+  end
+
+  # 对照：anchors 报告内已有 blocker 时，非零退出是预期行为，不重复记账。
+  def test_anchors_verify_failure_with_blocker_in_report_not_duplicated
+    with_out do |dir|
+      base_evidence(dir)
+      write_out(dir, "anchors_report.json", JSON.generate({"items" => [
+        {"id" => "a1", "level" => "blocker", "message" => "越界", "evidence" => nil}
+      ]}))
+      write_out(dir, "anchors_extract.txt", "extract exit=0\nanchors verify exit=1\n")
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      assert_equal 1, report["counts"]["blocker"]
     end
   end
 

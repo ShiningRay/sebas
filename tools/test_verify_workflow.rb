@@ -319,6 +319,21 @@ class VerifyWorkflowTest < Minitest::Test
     refute_match(/\|\|\s*true/, runs, "不得用 || true 掩盖发布失败")
   end
 
+  # 评论去重必须先收集全部分页再全局选一个 id（CodeRabbit）：
+  # `--paginate --jq` 逐页应用 jq，两页各有一条匹配评论时会输出两个 id，
+  # PATCH 无法定位。`--slurp` 与 `--jq` 不兼容，因此必须接管道。
+  def test_comment_lookup_slurps_before_selecting
+    publishes = workflow.dig("jobs", "publish-verdict", "steps")
+      .filter_map { |s| s["run"] }
+    verifies = verifier_steps.filter_map { |s| s["run"] }
+    [*publishes, *verifies].each do |run|
+      next unless run.include?("issues/${PR_NUMBER}/comments")
+
+      assert_includes run, "--slurp", "评论查找必须先 slurp 全部分页"
+      assert_includes run, "[][]", "slurp 后要展平页面数组再筛选"
+    end
+  end
+
   # 结论三级与 VerificationReport#conclusion 一致：打回 / 有条件通过 / 通过。
   def test_verdict_levels_match_report_conclusion
     library = File.read(File.join(ROOT, "tools/agents/lib/sebas_agents/verification_report.rb"), encoding: "UTF-8")

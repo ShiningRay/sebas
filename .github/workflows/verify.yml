@@ -250,9 +250,13 @@ jobs:
         run: |
           set -euo pipefail
           # 同一 PR 重跑时更新既有评论，避免刷屏。
-          # 用 jq 的 first() 取单个 id，不用 `| head -1`（SIGPIPE + pipefail）。
-          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq 'first(.[] | select(.body | startswith("<!-- verify-pr:summary -->")) | .id)')
+          #
+          # 必须 --slurp 后全局选一个 id（CodeRabbit）：`--paginate --jq` 会
+          # 逐页应用 jq，若两页各有一条匹配评论，existing 会含两个换行分隔的
+          # id，后续 PATCH 无法定位。`--slurp` 不能与 `--jq` 同用，所以改接管道。
+          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --slurp \
+            | jq -r 'first(.[][] | select(.body | startswith("<!-- verify-pr:summary -->")) | .id) // empty')
           if [ -n "${existing}" ]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
               -F body=@out/comment.md > /dev/null
@@ -341,10 +345,10 @@ jobs:
         run: |
           set -euo pipefail
           # 同一 PR 重跑时更新既有评论，避免刷屏。
-          # 用 jq 的 first() 直接取单个 id，不用 `| head -1`——head 提前关管道
-          # 会让 gh 收到 SIGPIPE、在 pipefail 下变成非零退出。
-          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq 'first(.[] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id)')
+          # 必须 --slurp 后全局选一个 id，理由同 summary 评论。
+          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate --slurp \
+            | jq -r 'first(.[][] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id) // empty')
           if [ -n "${existing}" ]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
               -F body=@out/reviewer_comment.md > /dev/null
