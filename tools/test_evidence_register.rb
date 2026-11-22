@@ -871,11 +871,10 @@ class EvidenceRegisterTest < Minitest::Test
   end
 
   # 登记块字段不全（缺 status/source_ref、untested 非数组）→ 拒绝，不写半截证据。
-  def test_after_merge_rejects_incomplete_registered_block
+  # 结构不全 → 拒绝。每次只改一个字段，确保每条校验各自被真正覆盖：
+  # 若把「缺 status」与「untested 非数组」混在一个夹具里，删掉任一校验仍会通过。
+  def run_with_registered_block(broken)
     body = pre_block_body(merged: false, commit: nil, untested: [])
-    broken = {"schema" => 1, "subject" => "issue:42",
-              "source" => "workflow", "source_ref" => "https://github.com/o/r/issues/42#issuecomment-7",
-              "pr" => 99, "untested" => "not-an-array"}
     fake = FakeGh.new(lambda do |key, _calls|
       case key
       when "GET repos/o/r/pulls/99" then BASE_RESPONSES["GET repos/o/r/pulls/99"]
@@ -894,12 +893,49 @@ class EvidenceRegisterTest < Minitest::Test
     $stderr = captured
     begin
       code, calls, _ = run_with(fake, BASE_ENV)
-      assert_equal 1, code, "结构不全必须拒绝"
-      assert(calls.none? { |m, _| m == "PATCH" }, "不得写入，calls=#{calls.inspect}")
+      [code, calls, captured.string]
     ensure
       $stderr = orig
     end
-    assert_includes captured.string, "结构非法"
+  end
+
+  # 基线：完整合法块（untested 为空数组）必须能升级，证明后续拒绝是「单字段」造成的。
+  def test_after_merge_accepts_complete_registered_block
+    complete = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "c", untested: [], source_ref: "https://github.com/o/r/issues/42#issuecomment-7",
+      merged_into_main: false)
+    code, _calls, err = run_with_registered_block(complete)
+    assert_equal 0, code, "完整块应通过，stderr=#{err}"
+  end
+
+  def test_after_merge_rejects_missing_status_only
+    broken = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "c", untested: [], source_ref: "https://github.com/o/r/issues/42#issuecomment-7",
+      merged_into_main: false).merge("status" => "")
+    code, calls, err = run_with_registered_block(broken)
+    assert_equal 1, code, "缺 status 必须拒绝"
+    assert(calls.none? { |m, _| m == "PATCH" }, "不得写入，calls=#{calls.inspect}")
+    assert_includes err, "缺 status"
+  end
+
+  def test_after_merge_rejects_non_array_untested_only
+    broken = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "c", untested: [], source_ref: "https://github.com/o/r/issues/42#issuecomment-7",
+      merged_into_main: false).merge("untested" => "not-an-array")
+    code, calls, err = run_with_registered_block(broken)
+    assert_equal 1, code, "untested 非数组必须拒绝"
+    assert(calls.none? { |m, _| m == "PATCH" }, "不得写入，calls=#{calls.inspect}")
+    assert_includes err, "untested 必须是数组"
+  end
+
+  def test_after_merge_rejects_missing_source_ref_only
+    broken = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "c", untested: [], source_ref: "https://github.com/o/r/issues/42#issuecomment-7",
+      merged_into_main: false).merge("source_ref" => "")
+    code, calls, err = run_with_registered_block(broken)
+    assert_equal 1, code, "缺 source_ref 必须拒绝"
+    assert(calls.none? { |m, _| m == "PATCH" }, "不得写入，calls=#{calls.inspect}")
+    assert_includes err, "缺 source_ref"
   end
 
   def test_after_merge_idempotent_on_true_block
