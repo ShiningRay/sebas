@@ -243,12 +243,83 @@ jobs:
           ruby tools/test_oneline_sheet.rb
           ruby tools/test_backfill_script.rb
           ruby tools/test_ruby_version_guard.rb
+          ruby tools/test_evidence_register.rb
 
       - name: Smoke test agent CLI
         run: |
           ruby tools/sebas-process version
           ruby tools/sebas-process roles --one-line
           ruby tools/sebas-process help
+
+  # 确定性核验（#121）：把「文档声称的锚点」变成可机器核验的断言。
+  #
+  # 与 docs job 的分工（避免重复报告同一问题）：
+  #   check_docs.rb —— 死链、行号锚（design.md:L<n> 形态）、单文件行数。
+  #   本 job        —— 额外核验 docs 里 `src/x.cr:123` 形态引用的内容是否真的
+  #                    与源码一致、行号是否越界。这是 check_docs.rb 没覆盖的。
+  #
+  # 与 changes job 无关：纯文档改动恰恰是它唯一要拦的场景，不能走 skip。
+  # 生成物不入库：anchors.json 是派生物，在 CI 里即时生成后核验。
+  # 范围限定 docs/：verify docs 的行号锚正则会命中 CONTRIBUTING.md 里
+  # 讲解规则本身的那句示例（`design.md:L749`-style），那不是真锚点。
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Select preinstalled Ruby
+        shell: bash
+        run: |
+          want="$(cat .ruby-version)"
+          want_minor="$(echo "$want" | cut -d. -f1-2)"
+          ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+
+          best=""
+          for dir in /opt/hostedtoolcache/Ruby/*/x64; do
+            [ -x "$dir/bin/ruby" ] || continue
+            version="$("$dir/bin/ruby" -e 'print RUBY_VERSION')"
+            ge "$version" "$want_minor" || continue
+            if [ -z "$best" ] || ge "$version" "$best_version"; then
+              best="$dir"; best_version="$version"
+            fi
+          done
+
+          if [ -z "$best" ]; then
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want）"
+            ls /opt/hostedtoolcache/Ruby/ || true
+            exit 1
+          fi
+          echo "$best/bin" >> "$GITHUB_PATH"
+          echo "selected Ruby $best_version from $best"
+
+      - name: Test the anchors extractor itself
+        run: ruby tools/test_anchors_extract.rb
+
+      # 全量 docs 跑 verify docs：不限改动文件，防止旧文档劣化。
+      # acceptable 级（存档行号锚）不算失败；blocker/must_fix 让退出码非 0。
+      - name: Verify docs gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files 'docs/**/*.md')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::docs/ 下没有 markdown 文件，核验无对象"
+            exit 1
+          fi
+          ruby tools/sebas-process verify docs "${files[@]}"
+
+      - name: Verify doc code anchors against source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files 'docs/**/*.md')
+          ruby tools/anchors_extract.rb --output /tmp/anchors.json "${files[@]}"
+          ruby tools/sebas-process verify anchors /tmp/anchors.json
 
   # 三平台 release 构建成本最高，只在 main 与手动触发时跑；PR 由 spec 覆盖
   # 编译正确性。下面的 if 保证 PR 不会进入这里，因此 macOS 直接走 self-hosted。
