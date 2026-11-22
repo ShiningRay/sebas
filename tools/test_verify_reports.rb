@@ -21,11 +21,18 @@ class VerifyMergeReportsTest < Minitest::Test
     File.write(File.join(dir, name), content, encoding: "UTF-8")
   end
 
-  # 「证据缺失」检查会在某侧完全无产物时记 blocker——那是正确行为，
+  # 「报告缺失」检查会在缺具体报告时记 blocker——那是正确行为，
   # 但多数用例只想测单侧逻辑，所以默认给两侧都放最小合法产物。
   def base_evidence(dir)
-    write_out(dir, "anchors_extract.txt", "已写入 anchors.json：0 条锚点\n")
+    write_out(dir, "anchors_extract.txt", "已写入 anchors.json：0 条锚点\nextract exit=0\n")
+    write_out(dir, "anchors_report.json", JSON.generate({"items" => []}))
+    write_out(dir, "docs_report_1.json", JSON.generate({"items" => []}))
     write_out(dir, "docs_failures.txt", "")
+  end
+
+  # anchors 侧置为「生成成功且产出报告」，docs 侧留空——由调用方补。
+  def base_docs_evidence(dir)
+    write_out(dir, "anchors_report.json", JSON.generate({"items" => []}))
   end
 
   def report_file(dir, name, items)
@@ -166,6 +173,44 @@ class VerifyMergeReportsTest < Minitest::Test
     end
   end
 
+  # 生成器成功退出却无报告：核验被静默跳过 → blocker。
+  # （此前的 `Dir.glob("anchors_*")` 会匹配到日志文件，使该检查恒为假。）
+  def test_successful_extract_without_anchors_report_becomes_blocker
+    with_out do |dir|
+      write_out(dir, "anchors_extract.txt", "已写入 anchors.json：0 条锚点\nextract exit=0\n")
+      base_docs_evidence(dir)
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      assert_equal 1, report["counts"]["blocker"]
+      assert_includes report["items"].first["message"], "核验被跳过"
+    end
+  end
+
+  # docs 侧没有任何批次报告、也没有失败记录 → blocker。
+  def test_missing_docs_reports_become_blocker
+    with_out do |dir|
+      base_evidence(dir)
+      File.delete(File.join(dir, "docs_report_1.json"))
+      write_out(dir, "docs_failures.txt", "")
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      assert_equal 1, report["counts"]["blocker"]
+      assert_includes report["items"].first["message"], "核验被跳过"
+    end
+  end
+
+  # 非 Hash 条目（`{"items":[null]}`）不能静默跳过 → blocker。
+  def test_non_hash_item_becomes_blocker
+    with_out do |dir|
+      base_evidence(dir)
+      write_out(dir, "docs_report_1.json", JSON.generate({"items" => [nil, "str", {"id" => "ok-1", "level" => "acceptable", "message" => "好", "evidence" => nil}]}))
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      assert_equal 2, report["counts"]["blocker"], "null 与字符串各记一条"
+      assert_equal 1, report["counts"]["acceptable"], "合法条目仍被保留"
+    end
+  end
+
   def test_docs_failures_become_blockers
     with_out do |dir|
       base_evidence(dir)
@@ -245,6 +290,37 @@ class VerifyReviewerVerdictTest < Minitest::Test
 
   def test_empty_items_pass
     assert decide([])["passed"]
+  end
+
+  # 消费边界的结构校验（CodeRabbit）：损坏报告不得显示为「终验通过」。
+  def test_missing_items_key_fails
+    result = VRV.decide({})
+    refute result["passed"], "缺 items 必须打回"
+    assert result["structure_problem"]
+    assert_includes VRV.render(result).join("\n"), "报告结构非法"
+  end
+
+  def test_non_hash_report_fails
+    refute VRV.decide(nil)["passed"]
+    refute VRV.decide("str")["passed"]
+    refute VRV.decide([1, 2])["passed"]
+  end
+
+  def test_non_hash_item_fails
+    refute decide([nil])["passed"], "items 含 null 必须打回"
+    refute decide(["str"])["passed"], "items 含字符串必须打回"
+  end
+
+  def test_unknown_level_fails
+    result = decide([{"level" => "whatever", "message" => "x", "evidence" => nil}])
+    refute result["passed"]
+    assert_includes result["structure_problem"], "level"
+  end
+
+  # 对照：合法空报告仍通过，与上面的非法情形区分。
+  def test_valid_empty_report_still_passes
+    assert VRV.decide({"items" => []})["passed"]
+    assert decide([{"level" => "acceptable", "message" => "存档", "evidence" => nil}])["passed"]
   end
 
   def test_render_lists_each_failure_kind

@@ -53,16 +53,28 @@ module VerifyMergeReports
 
     # 5. 本应产出却缺失的报告：静默缺失等于放行，必须显式记 blocker。
     #
-    # 判定必须精确：某侧只有日志没有报告是正常情况（错误响应走 blocker 而非报告），
-    # 不能把「该侧已有产物」也判成缺失。只有该侧**完全没有产物**时才记。
-    anchors_artifacts = Dir.glob(File.join(out_dir, "anchors_*"))
-    if anchors_artifacts.empty?
-      items << item(items, "blocker", "anchors: 既无报告也无生成日志（证据缺失）")
+    # 判定必须精确到「报告」而不是同前缀的任何文件（CodeRabbit）：
+    # `anchors_*` 会匹配到日志 `anchors_extract.txt`，`docs_*` 会匹配到
+    # `docs_failures.txt`——两者都始终存在，于是检查恒为假、永远不报警。
+    # 日志不能替代报告。
+    anchors_log = File.join(out_dir, "anchors_extract.txt")
+    unless File.exist?(File.join(out_dir, "anchors_report.json"))
+      # 生成器成功退出却无报告 = 核验被跳过；生成失败的情况另有
+      # collect_anchors_failures 记账，不重复。
+      if File.exist?(anchors_log) && File.read(anchors_log, encoding: "UTF-8").match?(/^extract exit=0/)
+        items << item(items, "blocker", "anchors: 生成成功但无 anchors_report.json（核验被跳过）")
+      elsif !File.exist?(anchors_log)
+        items << item(items, "blocker", "anchors: 既无报告也无生成日志（证据缺失）")
+      end
     end
 
-    docs_artifacts = Dir.glob(File.join(out_dir, "docs_*"))
-    if docs_artifacts.empty?
-      items << item(items, "blocker", "docs: 没有任何报告或失败记录（证据缺失）")
+    unless Dir.glob(File.join(out_dir, "docs_report_*.json")).any?
+      # docs_failures.txt 非空说明失败已被单独记过；空则说明整侧缺失。
+      failures = File.join(out_dir, "docs_failures.txt")
+      recorded = File.exist?(failures) && !File.read(failures, encoding: "UTF-8").strip.empty?
+      unless recorded
+        items << item(items, "blocker", "docs: 没有任何批次报告（核验被跳过）")
+      end
     end
 
     report = {
@@ -102,8 +114,13 @@ module VerifyMergeReports
       return
     end
 
-    data["items"].each do |entry|
-      next unless entry.is_a?(Hash)
+    data["items"].each_with_index do |entry, index|
+      unless entry.is_a?(Hash)
+        # 不能静默跳过非 Hash 条目：`{"items":[null]}` 若被跳过，
+        # 唯一的结构提示就消失了，报告反而显示通过（CodeRabbit）。
+        items << item(items, "blocker", "#{kind}: items[#{index}] 不是对象，报告结构非法")
+        next
+      end
 
       level = entry["level"].to_s
       unless LEVELS.include?(level)

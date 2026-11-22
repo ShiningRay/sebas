@@ -97,6 +97,11 @@ class VerifyWorkflowTest < Minitest::Test
     reviewer = workflow.dig("jobs", "reviewer", "permissions") || {}
     refute_equal "write", reviewer["pull-requests"],
       "reviewer 只读判定，不得有 PR 写权限"
+
+    # 发布 job 是唯一例外，且它只发评论。
+    publish = workflow.dig("jobs", "publish-verdict", "permissions") || {}
+    assert_equal "write", publish["pull-requests"]
+    assert_equal "read", publish["contents"], "发布 job 不需要写内容"
   end
 
   # 入口必须是 pull_request_target：pull_request 下 workflow 定义来自 PR 的
@@ -279,13 +284,39 @@ class VerifyWorkflowTest < Minitest::Test
       assert_includes script, %("#{level}"), "判定脚本应处理 #{level}"
     end
     assert_includes script, "exit(", "打回必须让进程退出码非零"
+  end
 
-    # workflow 侧：非零退出必须转成 job 失败，且把结论贴成评论。
-    step = workflow.dig("jobs", "reviewer", "steps")
-      .find { |s| s["name"]&.include?("verdict") }
+  # 判定脚本的调用路径必须与 artifact 解压位置一致（CodeRabbit）：
+  # 脚本落在 out/，调用写成 `ruby verify_reviewer_verdict.rb`（无前缀）
+  # 会找不到文件，让 reviewer 恒失败。
+  def test_reviewer_invokes_script_at_download_path
+    step = reviewer_steps.find { |s| s["name"]&.include?("verdict") }
     refute_nil step, "缺少判定步骤"
-    assert_includes step["run"], "exit 1"
-    assert_includes step["run"], "verify_reviewer_verdict.rb"
+
+    assert_includes step["run"], "out/verify_reviewer_verdict.rb",
+      "脚本路径必须与 download-artifact 的 path（out）一致"
+    assert_includes step["run"], "out/verification.json"
+
+    download = reviewer_steps.find { |s| s["uses"].to_s.include?("download-artifact") }
+    assert_equal "out", download.dig("with", "path"), "下载目录与调用路径必须一致"
+  end
+
+  # 发评论需要 pull-requests: write，但判定 job 必须只读（CodeRabbit）：
+  # 拆分后 reviewer 只读、publish-verdict 才持写权限，且打回时仍会运行。
+  def test_comment_publishing_split_from_readonly_verdict
+    reviewer_perms = workflow.dig("jobs", "reviewer", "permissions") || {}
+    refute_equal "write", reviewer_perms["pull-requests"],
+      "reviewer 不得持写权限"
+
+    publish = workflow.dig("jobs", "publish-verdict")
+    refute_nil publish, "缺少独立的发布 job"
+    assert_equal "write", publish.dig("permissions", "pull-requests"),
+      "发布 job 需要 pull-requests: write"
+    assert_includes publish["if"].to_s, "needs.reviewer.result == 'failure'",
+      "打回时也要运行"
+
+    runs = publish["steps"].filter_map { |s| s["run"] }.join("\n")
+    refute_match(/\|\|\s*true/, runs, "不得用 || true 掩盖发布失败")
   end
 
   # 结论三级与 VerificationReport#conclusion 一致：打回 / 有条件通过 / 通过。
@@ -306,6 +337,10 @@ class VerifyWorkflowTest < Minitest::Test
     step = verifier_steps.find { |s| s["name"].to_s.include?("anchors evidence") }
     refute_nil step, "缺少 anchors 证据收集步骤"
     step
+  end
+
+  def reviewer_steps
+    workflow.dig("jobs", "reviewer", "steps") || []
   end
 
   # 把 workflow 里的相对路径参数（../target、../out/...）还原成本地临时目录路径。

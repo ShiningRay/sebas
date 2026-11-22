@@ -17,10 +17,44 @@
 require "json"
 
 module VerifyReviewerVerdict
+  LEVELS = %w[blocker must_fix acceptable unverified].freeze
+
   module_function
 
+  # 消费边界的结构校验（CodeRabbit）：损坏的报告不得判成「通过」。
+  # 上游客（verify_merge_reports）做同类校验，但消费边界必须自证——
+  # 只修上游不能代替这里的检查。
+  #
+  # 返回 nil 表示结构合法，否则返回问题描述（调用方按打回处理）。
+  def structure_problem(report)
+    return "报告不是 JSON 对象" unless report.is_a?(Hash)
+
+    unless report["items"].is_a?(Array)
+      detail = report.dig("error", "message")
+      return "报告缺 items 数组#{detail ? "（#{detail}）" : ""}"
+    end
+
+    report["items"].each_with_index do |entry, index|
+      return "items[#{index}] 不是对象" unless entry.is_a?(Hash)
+
+      level = entry["level"].to_s
+      return "items[#{index}] 的 level #{level.inspect} 非法" unless LEVELS.include?(level)
+    end
+
+    nil
+  end
+
   def decide(report)
-    items = Array(report["items"]).select { |i| i.is_a?(Hash) }
+    if (problem = structure_problem(report))
+      # 结构非法等同于阻断：宁可打回也不能让损坏报告显示为通过。
+      return {
+        "passed" => false,
+        "structure_problem" => problem,
+        "blockers" => [], "must_fix" => [], "no_evidence" => []
+      }
+    end
+
+    items = report["items"]
     blockers = items.select { |i| i["level"] == "blocker" }
     must_fix = items.select { |i| i["level"] == "must_fix" }
     no_evidence = items.select do |i|
@@ -29,6 +63,7 @@ module VerifyReviewerVerdict
 
     {
       "passed" => blockers.empty? && must_fix.empty? && no_evidence.empty?,
+      "structure_problem" => nil,
       "blockers" => blockers,
       "must_fix" => must_fix,
       "no_evidence" => no_evidence
@@ -40,6 +75,13 @@ module VerifyReviewerVerdict
     unless result["passed"]
       lines << "结论：**打回**"
       lines << ""
+      if result["structure_problem"]
+        lines << "报告结构非法：#{result["structure_problem"]}"
+        lines << ""
+        lines << "（无法判定核验项，按打回处理。）"
+        return lines
+      end
+
       lines << "blocker=#{result["blockers"].length} " \
         "must_fix=#{result["must_fix"].length} " \
         "无证据未实测=#{result["no_evidence"].length}"
@@ -65,8 +107,18 @@ if $PROGRAM_NAME == __FILE__
   path = ARGV.first
   abort("缺少 verification.json 路径") if path.nil?
 
-  data = JSON.parse(File.read(path, encoding: "UTF-8"))
-  result = VerifyReviewerVerdict.decide(data)
+  # 读不到 / 解析不了同样按打回处理并保持可读输出——不能让异常替我们沉默。
+  result = begin
+    data = JSON.parse(File.read(path, encoding: "UTF-8"))
+    VerifyReviewerVerdict.decide(data)
+  rescue Errno::ENOENT
+    {"passed" => false, "structure_problem" => "找不到报告文件 #{path}",
+     "blockers" => [], "must_fix" => [], "no_evidence" => []}
+  rescue JSON::ParserError => e
+    {"passed" => false, "structure_problem" => "报告不是合法 JSON（#{e.message}）",
+     "blockers" => [], "must_fix" => [], "no_evidence" => []}
+  end
+
   puts VerifyReviewerVerdict.render(result).join("\n")
   exit(result["passed"] ? 0 : 1)
 end

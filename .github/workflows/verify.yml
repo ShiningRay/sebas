@@ -250,8 +250,9 @@ jobs:
         run: |
           set -euo pipefail
           # 同一 PR 重跑时更新既有评论，避免刷屏。
+          # 用 jq 的 first() 取单个 id，不用 `| head -1`（SIGPIPE + pipefail）。
           existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq '.[] | select(.body | startswith("<!-- verify-pr:summary -->")) | .id' | head -1 || true)
+            --jq 'first(.[] | select(.body | startswith("<!-- verify-pr:summary -->")) | .id)')
           if [ -n "${existing}" ]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
               -F body=@out/comment.md > /dev/null
@@ -267,6 +268,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # 只读判定：下载 artifact + 本地计算，不需要任何写权限。
+    # 发评论拆到 publish-verdict job（CodeRabbit：未声明的权限为 none，
+    # 在此 job 里发评论会 403，而容错代码会把失败藏起来）。
     permissions:
       contents: read
     steps:
@@ -277,40 +280,77 @@ jobs:
           path: out
 
       # 只读判定，不重跑核验（与 Reviewer 的设计一致）。
-      # 判定逻辑在 base 的 tools/verify_reviewer_verdict.rb；这里只提供报告路径。
-      # 本 job 刻意不给 pull-requests: write——它不需要写任何东西。
+      # 判定脚本是 base 版本，随 artifact 传递（见 verifier 的 Stage 步骤）；
+      # 落点在 out/，因此调用路径必须带 out/ 前缀。
       - name: Decide final verdict
+        run: |
+          set -euo pipefail
+          set +e
+          verdict_text="$(ruby out/verify_reviewer_verdict.rb out/verification.json)"
+          verdict_status=$?
+          set -e
+          printf '%s\n' "${verdict_text}"
+
+          # 判定结果落盘：评论正文与状态码交给 publish-verdict job。
+          {
+            echo "<!-- verify-pr:reviewer -->"
+            printf '%s\n' "${verdict_text}"
+          } > out/reviewer_comment.md
+          printf '%s\n' "${verdict_status}" > out/reviewer_status.txt
+
+          if [ "${verdict_status}" -ne 0 ]; then
+            echo "::error::Reviewer 终验打回"
+          fi
+          exit "${verdict_status}"
+
+      - name: Upload verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reviewer-verdict
+          path: |
+            out/reviewer_comment.md
+            out/reviewer_status.txt
+          # 判定步骤正常跑完（无论通过与否）都会写出这两个文件；
+          # 缺文件说明流程本身坏了，应显式失败而不是静默跳过发布。
+          if-no-files-found: error
+
+  # 打回评论的发布需要 pull-requests: write，但判定本身应当只读——
+  # 因此拆成独立 job：只在 reviewer 失败时运行，且不再用 `|| true`
+  # 掩盖发布失败（CodeRabbit）。
+  publish-verdict:
+    name: publish verdict
+    needs: reviewer
+    if: always() && needs.reviewer.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download verdict
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: reviewer-verdict
+          path: out
+
+      - name: Post rejection comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          # 判定脚本取自 base（base checkout 在 verifier job，这里从 artifact 旁取）。
-          # 该脚本不依赖仓库内容，只读 JSON，故随 PR 运行不构成绕过风险；
-          # 但它必须来自 base——所以随 artifact 一起带过来的是 base 版本。
-          set +e
-          verdict_text="$(ruby verify_reviewer_verdict.rb out/verification.json)"
-          verdict_status=$?
-          set -e
-          printf '%s\n' "${verdict_text}"
-
-          if [ "${verdict_status}" -ne 0 ]; then
-            # 把打回结论贴成评论（评论失败不影响退出码判定）。
-            {
-              echo "<!-- verify-pr:reviewer -->"
-              printf '%s\n' "${verdict_text}"
-            } > out/reviewer_comment.md
-            existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
-              --jq '.[] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id' | head -1 || true)
-            if [ -n "${existing}" ]; then
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
-                -F body=@out/reviewer_comment.md > /dev/null || true
-            else
-              gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-                -F body=@out/reviewer_comment.md > /dev/null || true
-            fi
-            echo "::error::Reviewer 终验打回"
-            exit 1
+          # 同一 PR 重跑时更新既有评论，避免刷屏。
+          # 用 jq 的 first() 直接取单个 id，不用 `| head -1`——head 提前关管道
+          # 会让 gh 收到 SIGPIPE、在 pipefail 下变成非零退出。
+          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq 'first(.[] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id)')
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
+              -F body=@out/reviewer_comment.md > /dev/null
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -F body=@out/reviewer_comment.md > /dev/null
           fi
-          echo "Reviewer 终验通过"
+          echo "打回评论已发布"
 
