@@ -29,6 +29,12 @@ module Sebas
 
       record SearchRow, kind : String, key : String, body : String
 
+      # 存量库列迁移：CREATE TABLE IF NOT EXISTS 不改既有表——members_final
+      # 为基线后新增列，ALTER TABLE 幂等补列（duplicate column 静默忽略，见 initialize）
+      MIGRATIONS = [
+        "ALTER TABLE expectations ADD COLUMN members_final INTEGER NOT NULL DEFAULT 0",
+      ]
+
       # 逐条执行（crystal-sqlite3 prepared statement 一次只接受一条语句）
       SCHEMA = [
         <<-SQL,
@@ -149,6 +155,7 @@ module Sebas
           SQL
         "CREATE TABLE IF NOT EXISTS expectations (" \
         "id             TEXT PRIMARY KEY, " \
+        "members_final  INTEGER NOT NULL DEFAULT 0, " \
         "fork_id        TEXT NOT NULL, " \
         "parent_task_id TEXT NOT NULL REFERENCES tasks(id), " \
         "parent_session TEXT NOT NULL, " \
@@ -184,6 +191,15 @@ module Sebas
           @db.exec("PRAGMA synchronous=NORMAL")
           @db.exec("PRAGMA busy_timeout=5000")
           SCHEMA.each { |ddl| @db.exec(ddl) }
+          # 存量库列迁移：CREATE TABLE IF NOT EXISTS 不改既有表。新库 SCHEMA 已含
+          # 全部列，ALTER 撞 duplicate 属预期（幂等静默）；只有存量旧库会真正补列。
+          MIGRATIONS.each do |sql|
+            @db.exec(sql)
+          rescue ex : SQLite3::Exception
+            # do-end 块后不能直接挂 rescue；SQLite3::Exception 不继承 DB::Error，
+            # 必须显式捕获该类型。duplicate = 列已在（新库 SCHEMA 建过），幂等跳过。
+            raise ex unless ex.message.to_s.includes?("duplicate column")
+          end
           Sebas::Log.info { "store opened: #{@path} (journal_mode=#{@db.scalar("PRAGMA journal_mode")})" }
         end
 
@@ -391,6 +407,23 @@ module Sebas
 
         # ---- 决策级幂等：memo first-write-wins（§7.3）----
 
+        # join.report 落库与 memo 幂等标记的原子提交（#152 CodeRabbit）：
+        # 同一事务两条语句（max_pool_size=1，块内复用 checkout 的方法会死锁，
+        # 故实现为单方法而非通用 transaction 块）。
+        # 附带 JSONL 归档（append_transcript 同款双写；JSONL 失败抛错前 DB 已提交，
+        # 重放被 memo 挡住——缺 JSONL 行可由 DB 权威重建，另卡）。
+        def write_join_report(session_key : String, content : String, memo_key : String, memo_value : String) : Nil
+          @db.transaction do |tx|
+            conn = tx.connection
+            created = ::Time.utc.to_rfc3339
+            conn.exec("INSERT INTO transcripts (session_key, role, content, created_at) VALUES (?, ?, ?, ?)",
+              session_key, "system", content, created)
+            conn.exec("INSERT INTO memos (key, value, created_at) VALUES (?, ?, ?) " \
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", memo_key, memo_value, created)
+            append_jsonl(session_key, "system", content, created)
+          end
+        end
+
         def memo_put(key : String, value : String) : String
           @db.exec("INSERT OR IGNORE INTO memos (key, value, created_at) VALUES (?, ?, ?)", key, value, now)
           @db.query_one("SELECT value FROM memos WHERE key = ?", key, as: String)
@@ -410,9 +443,18 @@ module Sebas
         # ---- 会话转录：SQLite 权威 + JSONL 人可读归档双写（§6.1，A4 升级）----
 
         def append_transcript(session_key : String, role : String, content : String) : Nil
+          append_jsonl(session_key, role, content, append_transcript_row(session_key, role, content))
+        end
+
+        # DB 行写入（返回 created 时刻），JSONL 归档由调用方决定是否同批
+        private def append_transcript_row(session_key : String, role : String, content : String) : String
           created = now
           @db.exec("INSERT INTO transcripts (session_key, role, content, created_at) VALUES (?, ?, ?, ?)",
             session_key, role, content, created)
+          created
+        end
+
+        private def append_jsonl(session_key : String, role : String, content : String, created : String) : Nil
           Dir.mkdir_p(@sessions_dir) unless Dir.exists?(@sessions_dir)
           File.open(jsonl_path(session_key), "a") do |io|
             io.puts({ts: created, session_key: session_key, role: role, content: content}.to_json)

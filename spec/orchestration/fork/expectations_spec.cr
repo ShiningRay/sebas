@@ -3,7 +3,7 @@ require "file_utils"
 require "../../../src/platform/cli/gateway"
 require "../../../src/orchestration/fork/expectations"
 
-def new_env
+def ex_env
   dir = Path[Dir.tempdir, "sebas-expectations-spec", "#{Random::Secure.hex(4)}"]
   FileUtils.mkdir_p(dir)
   store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
@@ -31,7 +31,7 @@ end
 module Sebas
   describe "Expectations (M4.1-WP2：join 汇聚点 + mode 判定器)" do
     it "all：全部成功 → settled；有失败 → settled(result=failed) 且仍等全部到位（不短路）" do
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:a", 3, final: "done")
       ex.create("fork:a", "parent-1", "agent:main:test:email:p", "all", members, Time.utc + 1.hour)
       row = ex.judge("fork:a")
@@ -41,7 +41,7 @@ module Sebas
       store.close
 
       # 不短路：2 done + 1 running → 仍 open；第三个失败落定后 → settled(result=failed)
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:b", 2, final: "done")
       store.create_task("fork:b:3", "fork_child", parent_id: "parent-1", owner_task_id: "parent-1")
       members << "fork:b:3"
@@ -57,7 +57,7 @@ module Sebas
     end
 
     it "any：首个成功即 settle；全失败未到期保持 open，到期 → expired" do
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:c", 2)
       ex.create("fork:c", "parent-1", "agent:main:test:email:p", "any", members, Time.utc + 1.hour)
       store.fail_task("fork:c:1")
@@ -69,7 +69,7 @@ module Sebas
       row.result.should eq("first success: fork:c:2")
       store.close
 
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:d", 2, final: "failed")
       ex.create("fork:d", "parent-1", "agent:main:test:email:p", "any", members, Time.utc - 1.minute)
       row = ex.judge("fork:d")
@@ -79,7 +79,7 @@ module Sebas
     end
 
     it "allSettled：失败计入 settled_count，整体恒 settled" do
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:e", 3)
       ex.create("fork:e", "parent-1", "agent:main:test:email:p", "allSettled", members, Time.utc + 1.hour)
       store.complete_task("fork:e:1")
@@ -95,7 +95,7 @@ module Sebas
     end
 
     it "强杀后 open expectation 续判且已 settled 行不被重复迁移（恢复幂等）" do
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:f", 2)
       ex.create("fork:f", "parent-1", "agent:main:test:email:p", "allSettled", members, Time.utc + 1.hour)
       store.complete_task("fork:f:1")
@@ -116,14 +116,14 @@ module Sebas
     end
 
     it "cancel 只旁路 open；非法 mode 登记即拒" do
-      store, ex = new_env
+      store, ex = ex_env
       members = seed_members(store, "fork:g", 1)
       ex.create("fork:g", "parent-1", "agent:main:test:email:p", "any", members, Time.utc + 1.hour)
       ex.cancel("fork:g")
       store.expectation("fork:g").status.should eq("cancelled")
       store.close
 
-      store, ex = new_env
+      store, ex = ex_env
       expect_raises(::Sebas::Platform::Store::StoreError, "非法 join mode") do
         ex.create("fork:h", "parent-1", "agent:main:test:email:p", "some", members, Time.utc + 1.hour)
       end
