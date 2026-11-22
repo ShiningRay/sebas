@@ -1,14 +1,16 @@
 # frozen_string_literal: true
 
-# Reviewer 的终验判定（#122）。
+# 终验判定（#122 建成；#124 起随 Verifier/Reviewer 合并为终验阶段）。
 #
-# 只读 verification.json 出结论，不重跑核验（与 Reviewer 的设计一致）。
+# 只读 verification.json 出结论，不重跑核验——CI 只做确定性汇总；
+#
+# 真正的逐项复跑由 `sebas-process verify merge <pr> <issue> --final` 的 checker 承载。
 #
 # 为什么打回三类：
 #   - blocker  ：Verifier 已断言阻断。
 #   - must_fix ：应修项。本 workflow 没有 LLM，无法自动确认「修复是否到位」，
 #                因此任一 must_fix 即打回，由 Implementer 修完后重跑。
-#   - unverified 且无间接证据：与 Reviewer.final_verification 同口径——
+#   - unverified 且无间接证据：与 Verifier.final_verification 同口径——
 #                没有证据的未实测项不能算通过。
 #
 # unverified 但有 evidence（间接证据）时不算失败：那属于「有条件通过」，
@@ -16,7 +18,7 @@
 
 require "json"
 
-module VerifyReviewerVerdict
+module VerifyFinalVerdict
   LEVELS = %w[blocker must_fix acceptable unverified].freeze
 
   module_function
@@ -71,7 +73,7 @@ module VerifyReviewerVerdict
   end
 
   def render(result)
-    lines = ["## Reviewer 终验", ""]
+    lines = ["## 终验结论", ""]
     unless result["passed"]
       lines << "结论：**打回**"
       lines << ""
@@ -102,7 +104,7 @@ if $PROGRAM_NAME == __FILE__
 
   path = nil
   OptionParser.new do |parser|
-    parser.banner = "用法：ruby tools/verify_reviewer_verdict.rb <verification.json>"
+    parser.banner = "用法：ruby tools/verify_final_verdict.rb <verification.json>"
   end.parse!(ARGV)
   path = ARGV.first
   abort("缺少 verification.json 路径") if path.nil?
@@ -110,7 +112,7 @@ if $PROGRAM_NAME == __FILE__
   # 读不到 / 解析不了同样按打回处理并保持可读输出——不能让异常替我们沉默。
   result = begin
     data = JSON.parse(File.read(path, encoding: "UTF-8"))
-    VerifyReviewerVerdict.decide(data)
+    VerifyFinalVerdict.decide(data)
   rescue Errno::ENOENT
     {"passed" => false, "structure_problem" => "找不到报告文件 #{path}",
      "blockers" => [], "must_fix" => [], "no_evidence" => []}
@@ -119,6 +121,6 @@ if $PROGRAM_NAME == __FILE__
      "blockers" => [], "must_fix" => [], "no_evidence" => []}
   end
 
-  puts VerifyReviewerVerdict.render(result).join("\n")
+  puts VerifyFinalVerdict.render(result).join("\n")
   exit(result["passed"] ? 0 : 1)
 end

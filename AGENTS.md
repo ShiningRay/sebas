@@ -108,7 +108,7 @@ scripts/
 ## 验收
 
 - 执行与验收分离：实现者不能验收自己的产出。
-- Verifier（只读、独立上下文）做初核，Reviewer（只读、独立上下文）做终验。
+- Verifier（只读、独立上下文）承载核验与终验两阶段，两阶段由独立进程执行（#124 起 Reviewer 并入）。
 - 结论三级：阻断 / 应修 / 可留。允许"未实测"，不许编证据。
 - M-gate：B.3 五项 + 本期特有条目 + m-gate.md 证据 + 冻结口径三条件。
 
@@ -123,14 +123,13 @@ scripts/
 
 ## Agent 角色
 
-本仓库定义了 7 个角色，详见 `docs/design/process/`：
+本仓库定义了 6 个角色，详见 `docs/design/process/`：
 
 | 角色 | 性质 | 职责 |
 |---|---|---|
 | Maintainer | 人 | 决策与裁决（不可由 AI 替代） |
 | Implementer | AI | 实现工作包、修 review/CI、提 PR |
-| Verifier | AI | 独立核验（只读、独立上下文） |
-| Reviewer | AI | 终验复核（只读、独立上下文） |
+| Verifier | AI | 独立核验与终验（只读、独立上下文；两阶段分离进程，#124 起 Reviewer 并入） |
 | Triager | AI | issue 研判与分派 |
 | Scribe | AI | 文档维护与记忆库管理 |
 | Release Manager | AI | 发版执行与产物校验 |

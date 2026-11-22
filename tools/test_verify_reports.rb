@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# verify_merge_reports / verify_reviewer_verdict 单测（#122）。
+# verify_merge_reports / verify_final_verdict 单测（#122；#124 改名 final-verdict）。
 #
 # 重点覆盖 CodeRabbit 在 PR #129 报的 CWE-636：工具异常被吞掉后放行。
 require "minitest/autorun"
@@ -8,7 +8,7 @@ require "json"
 require "tmpdir"
 require "fileutils"
 require_relative "verify_merge_reports"
-require_relative "verify_reviewer_verdict"
+require_relative "verify_final_verdict"
 
 class VerifyMergeReportsTest < Minitest::Test
   VMR = VerifyMergeReports
@@ -285,8 +285,8 @@ class VerifyMergeReportsTest < Minitest::Test
   end
 end
 
-class VerifyReviewerVerdictTest < Minitest::Test
-  VRV = VerifyReviewerVerdict
+class VerifyFinalVerdictTest < Minitest::Test
+  VRV = VerifyFinalVerdict
 
   def decide(items)
     VRV.decide({"items" => items})
