@@ -638,6 +638,41 @@ class EvidenceRegisterTest < Minitest::Test
     assert_includes out, "未完成的检查"
   end
 
+  # 本 workflow 自身的 check 必须排除（#126 实测）：register evidence 运行时
+  # 是 in_progress、失败时是 failure，不排除会自我阻塞且永远无法通过。
+  def test_pre_register_ignores_own_check_run
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "spec", "status" => "completed", "conclusion" => "success"},
+        {"name" => "register evidence", "status" => "in_progress", "conclusion" => nil}
+      ]
+    })
+    code, calls, out = run_pre(fake)
+    assert_equal 0, code, "自身 check 不应阻塞，out=#{out}"
+    assert_includes calls, ["POST", "repos/o/r/issues/42/comments"]
+  end
+
+  def test_pre_register_ignores_own_failed_check_run
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "spec", "status" => "completed", "conclusion" => "success"},
+        {"name" => "register evidence", "status" => "completed", "conclusion" => "failure"}
+      ]
+    })
+    code, _calls, out = run_pre(fake)
+    assert_equal 0, code, "上一次预登记的失败不应成为新阻塞，out=#{out}"
+  end
+
+  # 排除自身后若没有任何其它检查，仍须拒绝——不能把「只看见自己」当全绿。
+  def test_pre_register_blocks_when_only_own_check_present
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [{"name" => "register evidence", "status" => "completed", "conclusion" => "success"}]
+    })
+    code, _calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "没有任何 CI 检查记录"
+  end
+
   def test_pre_register_skips_when_issue_closed
     fake = pre_fake("GET repos/o/r/issues/42" => {"state" => "closed", "state_reason" => "completed", "body" => ""})
     code, calls, out = run_pre(fake)

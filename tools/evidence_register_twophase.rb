@@ -79,6 +79,13 @@ module EvidenceRegister
 
     # 合并前的「全绿」不能只看「没有失败」：checks 为空说明没取到结果，
     # 此时放行等于把「没看见」当成「通过」。
+    #
+    # 必须排除本 workflow 自身的 check（#126 实测发现）：evidence-register 的
+    # `register evidence` job 也挂在同一 head sha 上，运行时状态是 in_progress、
+    # 失败时是 failure。若不排除，预登记会把自己判成「未完成」或「失败」而自我阻塞，
+    # 且前一次失败会在重跑时变成新的「失败检查」——永远无法通过。
+    SELF_CHECK_NAME = "register evidence"
+
     def pre_checks_url(repo, pr, pr_number, out:)
       sha = pr.dig("head", "sha").to_s
       if sha.empty?
@@ -87,7 +94,7 @@ module EvidenceRegister
       end
 
       payload = EvidenceRegister.gh_json("repos/#{repo}/commits/#{sha}/check-runs?per_page=100")
-      runs = Array(payload["check_runs"])
+      runs = Array(payload["check_runs"]).reject { |run| run["name"].to_s == SELF_CHECK_NAME }
       if runs.empty?
         out.puts "fail: PR ##{pr_number} 没有任何 CI 检查记录，无法确认全绿"
         return :failed
