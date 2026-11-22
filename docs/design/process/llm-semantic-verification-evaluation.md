@@ -98,16 +98,25 @@ workflow 与工具脚本本身（`.github/workflows/verify.yml` 8 条、`tools/v
 （两者是不同系统，不能外推）。
 
 **可以推的因果链**（基于现有判定口径，非实测）：`verification.json` 进入判定后，
-`blocker`、无证据的 `unverified`、以及未修复的应修项都转为阻断；已修复的应修项
-不再阻断（`final_verification` 对已修复步输出 `ok` 或 `unverified`）。Reviewer
-输出的 `must_fix`（来自可留项理由失效或未复核）同样计入阻断判定。新增一个核验层
-必然新增分级条目，其中若有假阳性，就会带来额外的打回；一次假阳性打回要走一轮
-Implementer 修复。**LLM 核验的假阳性率与收益均未测量**，所以「净成本为正」是
-风险判断（依据：判定口径 + 本仓库对假阳性的敏感度），不是实测结论。
+`blocker` 与无证据的 `unverified` 都转为阻断。这层口径在两条消费路径上宽严不同：
+
+- **CLI `sebas-process review`**（`--fixes` + `Reviewer.final_verification`）：
+  未修复的应修项转为阻断，已修复的应修项不再阻断（对已修复步输出 `ok` 或
+  `unverified`）；Reviewer 输出的 `must_fix`（来自可留项理由失效或未复核）
+  同样计入阻断判定。
+- **Actions reviewer gate**（`verify.yml` 的 reviewer job，
+  `tools/verify_reviewer_verdict.rb`）：不读取 `--fixes`，输入报告中
+  **任一 `must_fix` 即打回**（脚本头部注释与 `passed` 判定均如此）——
+  阻断范围比 CLI 更宽。
+
+两条路径上，新增一个核验层必然新增分级条目，其中若有假阳性，就会带来额外的
+打回；一次假阳性打回要走一轮 Implementer 修复。**LLM 核验的假阳性率与收益均
+未测量**，所以「净成本为正」是风险判断（依据：判定口径 + 本仓库对假阳性的
+敏感度），不是实测结论。
 
 **「只输出结构化 JSON、不发 inline 评论」不足以免除这层风险**：卡面提出的这条缓解
-只避免了「与 CodeRabbit 抢同一代码行」，但判定噪音来自分级条目本身进入 `review`
-的判定，不来自评论形态。
+只避免了「与 CodeRabbit 抢同一代码行」，但判定噪音来自分级条目本身进入门禁判定
+（无论 CLI `review` 还是 Actions reviewer gate），不来自评论形态。
 
 ## 结论
 
@@ -115,7 +124,7 @@ Implementer 修复。**LLM 核验的假阳性率与收益均未测量**，所以
 |---|---|---|
 | 1. 可复现性 | **不成立** | 现有管线把 `verification.json` 当门禁输入，没有「仅建议」通道；让不可复现的结论进门禁无法与 Implementer 对账（本评估自设判据，见问题 1） |
 | 2. 上下文独立性 | 成立（独立性问题好解决） | Actions 天然干净上下文优于人工 Harness；但要让 LLM 自己跑命令验证需一套工具调用 Harness，与「确定性优先」取向相反 |
-| 3. 成本与噪音 | **风险不划算（判断，非实测）** | 实测数据（8 个 PR 合计 67 条意见、#129 四轮往返）只说明既有 review 噪音规模；据 `review` 的判定口径（blocker、无证据 unverified、未修复应修项均转阻断），新增分级条目**可以**增加打回次数。**LLM 核验的假阳性率与收益均未测量**，本评估未做对照实验 |
+| 3. 成本与噪音 | **风险不划算（判断，非实测）** | 实测数据（8 个 PR 合计 67 条意见、#129 四轮往返）只说明既有 review 噪音规模；据现有判定口径（CLI `review`：blocker、无证据 unverified、未修复应修项均转阻断；Actions reviewer gate：输入报告任一 `must_fix` 即打回，阻断范围比 CLI 更宽），新增分级条目**可以**增加打回次数。**LLM 核验的假阳性率与收益均未测量**，本评估未做对照实验 |
 
 **不做。** 三个问题里两个不成立；第三个（独立性）只说明「如果做，能做对」，
 不构成值得做的理由。
