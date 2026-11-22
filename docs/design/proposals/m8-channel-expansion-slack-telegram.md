@@ -1,0 +1,184 @@
+# M8 渠道扩展（Slack + Telegram）——对标 Hermes/OpenClaw
+
+> 状态：**Proposal**（设计提案，2026-11-23）。
+> 关联：[design.md §5 多账号设计](../spec/05-multi-account.md)、[research/hermes-agent.md](../research/hermes-agent.md)、[research/openclaw.md](../research/openclaw.md)。
+> 本文职责：在 Email / WeCom / Lark 三渠道之外扩展 Slack 与 Telegram 两个新渠道，对齐 Hermes 21+ 与 OpenClaw 33+ 渠道矩阵中已验证多账号形态的两个最常见入口。
+
+## 1. 背景与动机
+
+### 1.1 现状
+
+Sebas 本期已规划三类渠道（design.md §2.1）：
+
+| 渠道 | channel_type | 接收形态 | 多账号 |
+|---|---|---|---|
+| Email | `email` | IMAP IDLE / Gmail API | N |
+| 企业微信 | `wecom` | 智能机器人长连接 / 自建应用回调 | N |
+| 飞书 / Lark | `lark` | WebSocket / Webhook | N（platform 字段区分） |
+
+另有单向出站 webhook（企微群机器人、飞书自定义机器人）作为低敏通知通道。
+
+### 1.2 对标差距
+
+Hermes Agent 官方 messaging gateway 覆盖 **21+ 平台**（[research/hermes-agent.md:9](../research/hermes-agent.md)）：
+
+> telegram、discord、slack、whatsapp、whatsapp_cloud、signal、email（IMAP/SMTP）、sms、matrix、line、teams（插件）、google_chat、msgraph-webhook、wecom、wecom-callback、feishu、dingtalk、qqbot、weixin、webhooks
+
+OpenClaw 官方渠道目录 2026-11 版共 **33 项**（[research/openclaw.md:48](../research/openclaw.md)）：
+
+> bundled：Telegram、WebChat、A2A、Reef、X/Twitter；
+> official plugin：Discord、Feishu(Lark)、Google Chat、iMessage、IRC、LINE、Matrix、Mattermost、Microsoft Teams、Nextcloud Talk、Nostr、QQ bot、Signal、Slack、SMS(Twilio)、Synology Chat、Tlon、Twitch、WhatsApp、Zalo、…；
+> external plugin：WeChat、WeCom、Yuanbao、Zalo ClawBot。
+
+**明确支持「同渠道 N 账号」的 17 个渠道**（OpenClaw multi-agent.md）：
+
+> discord、feishu、googlechat、imessage、irc、line、mattermost、matrix、msteams、nextcloud-talk、nostr、signal、slack、telegram、whatsapp、zalo、zalouser。
+
+Sebas 当前渠道数 = 3，对标对象成熟渠道数 ≥ 17（多账号一等公民）。差距显著。
+
+### 1.3 优先级判据
+
+按以下三条收敛首期范围：
+
+1. **两家对照对象都已实现**（避免踩独家渠道的坑）；
+2. **官方支持同渠道 N 账号**（在 OpenClaw 17 个清单内）；
+3. **个人单机部署友好**：优先长连接 / long-poll（免公网 IP、免内网穿透），与 Sebas §5.2「接收侧两形态归并」中长连接优先的设计一致。
+
+## 2. 候选渠道矩阵
+
+| 渠道 | Hermes | OpenClaw | 多账号 | 接收形态 | 国内可用性 | 优先级 |
+|---|---|---|---|---|---|---|
+| **Slack** | ✅ native | ✅ official | ✅ | Socket Mode（WSS）/ HTTP Request URLs | 需科学上网 | **P0** |
+| **Telegram** | ✅ native | ✅ bundled（首推） | ✅ | long-poll / webhook | 需科学上网 | **P0** |
+| Discord | ✅ native | ✅ official | ✅ | Gateway（WSS） | 需科学上网 | P1 |
+| Matrix | ✅ native | ✅ official | ✅ | AS / Client-Server API | 自建 Synapse 可国内 | P1 |
+| Microsoft Teams | ✅ plugin | ✅ official | ✅ | Bot Framework webhook | 国内可 | P1 |
+| LINE | ✅ native | ✅ official | ✅ | webhook | 国内不可 | P2 |
+| Google Chat | ✅ native | ✅ official | ✅ | HTTP webhook | 需科学上网 | P2 |
+| WhatsApp | ✅ native | ✅ official | ✅ | Baileys（WSS）/ Cloud API | 需科学上网 | P2 |
+| Signal | ✅ native | ✅ official | ✅ | signal-cli 子进程 | 需科学上网 | P2 |
+| iMessage | ✅ via BlueBubbles | ✅ official | ✅ | imsg（macOS only） | macOS 限定 | P2 |
+| IRC | ✅ via plugin | ✅ official | ✅ | 长连接 | 国内可 | P3 |
+| Mattermost | — | ✅ official | ✅ | 长连接 | 自建可 | P3 |
+| QQ bot | ✅ native | ✅ official | ❌ 未列入 | 长连接 | 国内可 | P3 |
+| 钉钉 DingTalk | ✅ native | — | — | Stream 长连接 | 国内可 | P3 |
+| 个人微信 WeChat | ✅ via iLink | ✅ external plugin | — | iLink Bot API | 国内可，协议风险 | **不做**（OpenClaw 同款由社区在仓外维护，风险隔离） |
+| SMS（Twilio） | ✅ native | ✅ official | — | webhook | 付费 + 国内落地困难 | **本期排除**（用户决策） |
+
+**P0 = 首期（M8）落地；P1 = 主线 M8+1 候选；P2 = 视需求另立 milestone；P3 = 仅当有用户诉求。**
+
+## 3. 首期范围（M8 · v0.6.0）
+
+仅 **Slack + Telegram** 两个渠道。理由：
+
+- Hermes 与 OpenClaw 都把 Telegram 列为首推接入渠道（"一个 bot token 即可"）；Slack 是 Hermes 多 profile 长轮询形态的教科书示例。
+- 两者都提供免公网的接收形态（Slack Socket Mode = 出站 WSS；Telegram long-poll = 出站 HTTPS 轮询），与 Sebas §5.2 长连接优先的设计一致。
+- 两者都在 OpenClaw 17 个多账号清单内，profile/accountId 范式可直接对接 Sebas 的 `(channel_type, account_id)` 命名空间。
+- 两者发送侧都是 Bot API HTTP 调用，无 SMTP/IMAP 类历史包袱。
+
+### 3.1 非目标（本期不做）
+
+- 不做 Discord / Matrix / Teams / WhatsApp / Signal / LINE / Google Chat / iMessage / IRC / Mattermost / QQ bot / 钉钉（见 §2 优先级）。
+- 不做 SMS（用户决策排除）。
+- 不做个人微信 WeChat（协议风险渠道，按 OpenClaw 惯例由社区仓外维护）。
+- 不做 Slack Relay Mode / HTTP Request URLs（OpenClaw 已明列为三种 transport 中的历史形态，首期只做 Socket Mode）。
+- 不做 Telegram webhook 形态（需公网 IP，与 §5.2 长连接优先原则冲突；long-poll 在单机部署下完全够用）。
+- 不做 voice call（Plivo/Telnyx/Twilio）。
+
+## 4. 设计要点
+
+### 4.1 配置树（沿用 §3.4 账号数组结构）
+
+```yaml
+channels:
+  slack:
+    accounts:
+      - id: work-team
+        app_token: "xapp-..."          # Socket Mode 用
+        bot_token: "xoxb-..."          # Web API 用
+        token_ref: keyring://sebas/slack/work-team
+      - id: personal-team
+        app_token: "xapp-..."
+        bot_token: "xoxb-..."
+        token_ref: keyring://sebas/slack/personal-team
+  telegram:
+    accounts:
+      - id: personal-bot
+        bot_token: "123456:ABC..."
+        token_ref: keyring://sebas/telegram/personal-bot
+      - id: work-bot
+        bot_token: "..."
+        token_ref: keyring://sebas/telegram/work-bot
+```
+
+**session_key 五段不变**：`agent:<agent_id>:<account_id>:slack:<peer>` / `...:telegram:<peer>`。
+
+### 4.2 接收侧形态归并（沿用 §5.2）
+
+两渠道都属于**长连接型**（出站连接，免公网）：
+
+| 渠道 | 形态 | 心跳/重连 | 排重 |
+|---|---|---|---|
+| Slack | Socket Mode（WSS 长连接，Endpoint 由 `apps.connections.open` 换取） | 服务端 ping；断线指数退避 5s→60s（沿用 §5.1） | `event_id` 排重；`envelope_id` ACK |
+| Telegram | `getUpdates` long-poll（HTTPS 长轮询，默认 timeout=50s） | 轮询循环 + 指数退避 | `update_id` 单调递增，offset 推进即排重 |
+
+每账号一条监督 fiber（§5.1 生命周期状态机：connecting→online⇄backoff→disabled/degraded）。
+
+### 4.3 TokenProvider 与凭据
+
+- Slack 的 `app_token` / `bot_token` 是长期凭据，无 refresh 概念；失效凭人工在 api.slack.com 后台重置。TokenProvider 抽象在 Slack 适配器退化为「从 keyring 读取并缓存」，无临期刷新逻辑。
+- Telegram 的 `bot_token` 同理，长期凭据。
+- 两者都按 `(channel_type, account_id)` 命名空间存 keyring（§10 安全）。
+- 限流：
+  - Slack Web API：按方法分级 Tier 1–4（如 `chat.postMessage` 每秒每 workspace ~1 条 + 突发）。token bucket 按 `(account_id, method, target)` 建桶。
+  - Telegram Bot API：单群每秒 1 条、单用户每秒 1 条、全局每秒 30 条（官方 FAQ）。token bucket 按 `(account_id, chat_id)` 建桶。
+
+### 4.4 发送侧幂等（沿用 §5 + Pi 教训）
+
+- Slack：`chat.postMessage` 的幂等键 `send:slack:<account_id>:<channel>:<client_msg_id>`（客户端生成 UUID），复用 Sebas 已有的 intent 幂等表。
+- Telegram：`sendMessage` 不支持服务端幂等键，客户端幂等键 `send:telegram:<account_id>:<chat_id>:<client_msg_id>`，崩溃恢复时**默认不重放**（沿用 design.md §11.2④ 的副作用幂等纪律——发送类动作 outcome_unknown 不自动重放）。
+
+### 4.5 Binding 路由
+
+沿用 design.md §3.4 most-specific 优先级：
+
+```
+exact peer > parent peer > peer wildcard > guild+roles > guild > team > account > channel > fallback(owner)
+```
+
+Slack 的 `guild` 对应 `team_id`，Telegram 没有对应概念（跳过该层）。
+
+### 4.6 出站群机器人形态
+
+Slack Incoming Webhooks、Telegram 群通知（`sendMessage` 直接发到 chat_id）都属于单向出站，与现有企微/飞书自定义机器人一致；M8 不需要新增机制，账号 CRUD 即可覆盖。
+
+## 5. 风险与未验证项
+
+| 项 | 风险 | 缓解 |
+|---|---|---|
+| Slack Socket Mode 在国内不可达 | 网络环境依赖 | 文档明示需科学上网；`degraded` 状态上报管理面 |
+| Telegram Bot API 在国内不可达 | 同上 | 同上；提供 `api_base_url` 账号级配置以支持自建反代 |
+| Slack 限流分级表 | 未逐页核对 | 实现前补研官方 rate-limits 页，按 Tier 实现通用 token bucket |
+| Telegram long-poll offset 持久化 | 进程重启 offset 丢失会重拉旧消息 | offset 落 store，启动时读取；已 ACK 的 update_id 排重 |
+| 多账号并发接收 | Slack 单 app 单 Socket Mode 连接数上限（默认 50） | 每账号一连接；同账号不重复启动 |
+| Crystal WebSocket 客户端成熟度 | Crystal 标准库 `HTTP::WebSocket` 已稳定 | M0 已有 WebSocket 用例（飞书）；Socket Mode 协议字段为 JSON，无新序列化负担 |
+
+## 6. 验收（设计评审口径）
+
+- [ ] 配置树与 §3.4 一致，无新原语
+- [ ] 接收形态归并进 §5.2 长连接型，无第三类形态引入
+- [ ] TokenProvider 抽象在 Slack/Telegram 退化为「无刷新」形态，不破坏 WeCom/Lark 已有临期刷新逻辑
+- [ ] session_key 五段不动，`channel_type` 新增枚举值 `slack` / `telegram`
+- [ ] 幂等键与既有 email/wecom/lark 命名空间一致
+- [ ] 单文件不超 400 行约束覆盖两个新适配器
+
+## 7. 实施拆解
+
+详见 [plan/wbs/m8-channels.md](../plan/wbs/m8-channels.md)（本文只列设计决策，不重复 WBS）。
+
+## 8. 来源
+
+- [research/hermes-agent.md](../research/hermes-agent.md) §4.1–§4.2、§8.4（21+ 平台矩阵、profile 隔离、per-credential 轮询 vs port-binding webhook）
+- [research/openclaw.md](../research/openclaw.md) §2.1、§3（33 渠道目录、17 多账号清单、配置树 `channels.<channel>.accounts.<accountId>`）
+- [spec/05-multi-account.md](../spec/05-multi-account.md) §5.1–§5.3（账号生命周期、接收形态归并、TokenProvider、限流桶）
+- [spec/10-security.md](../spec/10-security.md)（凭据 keyring 命名空间）
