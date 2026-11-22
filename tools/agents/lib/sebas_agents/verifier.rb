@@ -172,6 +172,14 @@ module SebasAgents
           untested = Array(evidence["untested"])
           report.blocker("issue ##{issue_number} 仍有未实测必需项：#{untested.join("、")}") unless untested.empty?
         end
+
+        # #125：路径联动 + 安全不变量 + CWE 汇总。快照未提供变更文件时
+        # 不可判定——留痕为 unverified，不静默跳过也不伪造判定。
+        if pr.files.nil?
+          report.unverified("路径联动/安全不变量/CWE 汇总未执行：快照缺 PR #{pr_number} 的变更文件清单与正文")
+        else
+          PathChecks.check(changes: pr.files, body: pr.body, threads: pr.review_threads, report: report)
+        end
       elsif !issue.completed?
         report.blocker("issue ##{issue_number} 未以 completed 关闭")
       end

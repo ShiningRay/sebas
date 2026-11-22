@@ -15,6 +15,7 @@ require_relative "sebas_agents/policy/milestones"
 require_relative "sebas_agents/policy/evidence"
 require_relative "sebas_agents/policy/dependencies"
 require_relative "sebas_agents/policy/selection"
+require_relative "sebas_agents/path_checks"
 
 require_relative "sebas_agents/command_runner"
 require_relative "sebas_agents/github_gateway"
