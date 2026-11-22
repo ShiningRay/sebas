@@ -144,6 +144,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
      - 消费者按 `event_id` 做提交级排重（已有先例：`src/platform/cli/gateway.cr` 与 `src/platform/store/store.cr` 的 intent 落库路径——非重放路径中已存在的 intent 直接返回，不再派发），**同一条 update 被处理一次**；
      - 出站幂等键由 `event_id` 派生（`src/tools/executor.cr` 发消息工具实现），同一条 update 触发的发消息动作也不会重复。
    - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 且 `status != 'dead_letter'` 的行，按 update_id 升序重建消息（`event_id` 按上述含指纹规则派生）、经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束）。这样「Step 1 落库后崩溃、Step 2/3 未执行」「Step 3 入总线成功但消费者尚未 `record_intent` 就崩溃」两个窗口都能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。intent 落库之后的崩溃由既有重放规则覆盖。
+   - **已有 admission 的恢复记录补确认**：若进程在 `record_intent` 成功后、确认回调前崩溃，重投会在正常 admission 的 `session_inputs` 查重处返回 `duplicate`，不会进入 `process_message` 的已有 intent 分支；既有 intent 重放使用 `replay=true`，也不执行该分支。此时 `dispatched` 可能一直为 `false`。补确认路径：**在 `admit` 返回 `duplicate` 的分支中，检查该 `event_id` 对应的 `telegram_updates.dispatched`——为 `false` 则直接置 `true`**（因为 intent 已持久化、事件已 admission，无需再 dispatch）。此操作在 `admit` 内部完成，不绕过会话串行约束（`admit` 本身就在调度器上下文中执行）。同时，在 `replay_unfinished` 完成后的 `recover_dispatch` 中，对 replay 涉及的所有 `event_id` 统一补置 `telegram_updates.dispatched=true`。
    - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
    - `last_update_at` 在 Step 2 同步落库。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
