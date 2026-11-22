@@ -88,7 +88,8 @@ module SebasAgents
     end
 
     PullRequest = Data.define(:number, :branch, :base, :head_sha, :state, :merged,
-      :merge_state_status, :checks, :review_threads, :closing_issues, :url) do
+      :merge_state_status, :checks, :review_threads, :closing_issues, :url,
+      :files, :body) do
       def self.from_hash(hash)
         new(
           number: hash.fetch("number").to_i,
@@ -101,8 +102,19 @@ module SebasAgents
           checks: Array(hash["checks"]),
           review_threads: Array(hash["review_threads"]),
           closing_issues: Array(hash["closing_issues"]).map(&:to_i),
-          url: hash["url"]
+          url: hash["url"],
+          # #125：变更文件与正文由 gateway 对 open PR 填充；离线快照缺省为 nil 时
+          # 路径联动/安全/CWE 检查不可判定，verify_merge 按未执行留痕。
+          files: hash.key?("files") ? hash["files"] : nil,
+          body: hash.key?("body") ? hash["body"].to_s : nil
         )
+      end
+
+      # #125：gateway 取回的正文/变更文件合并为带数据的新实例（Data 不可变）。
+      def merge_pr_details(details)
+        return self if details.nil? || details.empty?
+
+        with(files: details["files"], body: details["body"].to_s)
       end
 
       def merged?

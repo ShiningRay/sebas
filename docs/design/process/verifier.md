@@ -154,6 +154,27 @@ require_relative "tools/agents/lib/sebas_agents"
 result = SebasAgents::VerifyChecks.rerun(item, fix, root: Dir.pwd) # {passed:, reason:}
 ```
 
+## 可执行实现：路径联动 / 安全不变量 / CWE 汇总（#125）
+
+合并前自检（`verify merge <pr> <issue> --pre`）在快照提供 PR 变更文件与正文时
+执行三类确定性检查（`PathChecks`，规则写死；误报必须显式豁免且留痕，不靠改规则绕过）：
+
+| 检查 | 结果 |
+|---|---|
+| `src/**` 实质改动而 `spec/**` 无变更 | blocker |
+| `src/**` 实质改动而 `docs/**` 无变更且正文未声明「无行为变更」 | must_fix |
+| `.github/workflows/**` 改动而正文缺「安全边界」说明 | must_fix |
+| `tools/**` 实质改动而 `tools/test_*.rb` 无变更 | blocker |
+| workflow `uses:` 未钉 40 位 SHA / force-push / 分支保护写入 | blocker |
+| 新增行疑似凭据进输出语句（正则近似，误报走可留复核） | must_fix |
+| `policy/evidence.rb` 触碰 `SOURCES`（授权段位变更） | blocker |
+| 未 resolve 的 CWE 安全意见（已 resolve 的计入已处理） | blocker |
+
+边界：本检查**不承诺「证明没有漏洞」**——不做覆盖率统计、不判断「测试是否测对了需求」
+（语义判断，另卡）、不扫描未知漏洞类型（无 SAST 工具链）。快照缺变更文件清单时检查
+不可判定，按 `unverified` 留痕，不静默跳过。纯空白/`#` 注释改动可豁免联动
+（diff 级判定），豁免以 `acceptable` 条目留痕。
+
 ## 可执行实现：PR 上的自动核验（#122，#124 更名）
 
 「独立上下文」不靠自觉，而由 Actions 的独立 job 承载：

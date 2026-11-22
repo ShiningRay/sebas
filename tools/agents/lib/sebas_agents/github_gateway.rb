@@ -262,6 +262,9 @@ module SebasAgents
       raw.reject { |item| item["isCrossRepository"] }.map do |item|
         # 只有 open PR 需要未解决 thread；已合并/关闭的 PR 不发起 GraphQL 往返。
         threads = item["state"].to_s.casecmp?("OPEN") ? fetch_review_threads(item["number"]) : []
+        # #125：open PR 需要变更文件与正文承载路径联动/安全/CWE 检查；
+        # 已合并/关闭 PR 的快照不带这两项（检查不可判定即留痕 unverified）。
+        details = item["state"].to_s.casecmp?("OPEN") ? fetch_pr_details(item["number"]) : {}
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -273,8 +276,27 @@ module SebasAgents
           "review_threads" => threads,
           "closing_issues" => Array(item["closingIssuesReferences"]).map { |ref| ref["number"] },
           "url" => item["url"]
+        ).merge_pr_details(details)
+      end
+    end
+
+    # PR 详情：正文 + 变更文件（filename/patch）。失败必须抛错——
+    # 缺数据时 verify_merge 会留痕 unverified，但拿不到详情这个事实本身
+    # 不允许被静默吞掉。
+    def fetch_pr_details(number)
+      pr = @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}",
+        "--jq", "{body: .body}")
+      files = @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}/files?per_page=100")
+      unless files.is_a?(Array)
+        raise CommandError.new("PR ##{number} files 返回非数组", command: ["gh", "api", "pulls/#{number}/files"])
+      end
+      if files.length >= 100
+        raise CommandError.new(
+          "PR ##{number} 变更文件达到单页上限 100，可能截断；路径联动检查需要全量文件",
+          command: ["gh", "api", "pulls/#{number}/files"]
         )
       end
+      {"body" => pr.is_a?(Hash) ? pr["body"].to_s : "", "files" => files}
     end
 
     # reviewThreads 连接没有 isResolved 查询参数：取回后在本地过滤。

@@ -1592,3 +1592,179 @@ class ClosedIssueLabelTest < Minitest::Test
     assert_equal "claim_issue", select(data).action
   end
 end
+
+# #125：合并后 Verifier 的三类确定性检查——路径联动、安全不变量、CWE 汇总。
+class PathChecksTest < Minitest::Test
+  def change(path, patch)
+    SebasAgents::PathChecks::Change.new(path: path, patch: patch)
+  end
+
+  def run_check(changes, body: "", threads: [])
+    report = SebasAgents::VerificationReport.new
+    SebasAgents::PathChecks.check(changes: changes, body: body, threads: threads, report: report)
+    report
+  end
+
+  # 验收 1：只改 src/ 不改 spec/ → blocker。
+  def test_src_change_without_spec_blocks
+    report = run_check([change("src/store/store.cr", "+def x; end\n")])
+    assert report.blockers.any? { |i| i.message.include?("spec/") }
+  end
+
+  # 验收 2：workflow 用 @v4 而非 SHA → blocker。
+  def test_unpinned_workflow_uses_blocks
+    report = run_check([change(".github/workflows/ci.yml", "+      uses: actions/checkout@v4\n")])
+    assert report.blockers.any? { |i| i.message.include?("未钉 SHA") }
+  end
+
+  # 钉了 40 位 sha 的 uses 不报。
+  def test_sha_pinned_uses_passes
+    sha = "a" * 40
+    report = run_check([change(".github/workflows/ci.yml", "+      uses: actions/checkout@#{sha}\n")])
+    assert report.blockers.empty?, report.blockers.map(&:message).inspect
+  end
+
+  # 验收 3：未 resolve 的 CWE 意见 → blocker；resolve 后不再阻断。
+  def test_unresolved_cwe_blocks_and_resolved_passes
+    threads = [{"isResolved" => false, "path" => "src/x.cr",
+                "comments" => [{"body" => "授权绕过，见 CWE-862 与 CWE-863。"}]}]
+    report = run_check([], threads: threads)
+    assert report.blockers.any? { |i| i.message.include?("CWE-862") }
+
+    resolved = threads.map { |t| t.merge("isResolved" => true) }
+    report = run_check([], threads: resolved)
+    assert report.blockers.empty?
+  end
+
+  # 验收 4：全合规 → 通过（无 blocker/must_fix）。
+  def test_fully_compliant_change_passes
+    sha = "b" * 40
+    body = "行为变更已同步文档；安全边界：workflow 全部 SHA 钉版。"
+    changes = [
+      change("src/store/store.cr", "+def y; end\n"),
+      change("spec/store/store_spec.cr", "+it \"y\" do\nend\n"),
+      change("docs/design/design.md", "+## 新行为\n"),
+      change(".github/workflows/ci.yml", "+      uses: actions/checkout@#{sha}\n")
+    ]
+    report = run_check(changes, body: body)
+    assert report.pass?, report.items.map(&:message).inspect
+  end
+
+  # tools/ 有实质改动但 tools/test_*.rb 无变更 → blocker。
+  def test_tools_change_without_tests_blocks
+    report = run_check([change("tools/new_script.rb", "+puts 1\n")])
+    assert report.blockers.any? { |i| i.message.include?("tools/test_*.rb") }
+  end
+
+  # 纯空白/注释改动豁免 spec 联动，且以 acceptable 留痕。
+  def test_comment_only_src_change_is_exempted_with_trail
+    report = run_check([change("src/store/store.cr", "+# 注释说明\n-# 旧注释\n+  \n")])
+    refute report.blockers.any? { |i| i.message.include?("spec/") }
+    assert report.acceptable_items.any? { |i| i.message.include?("空白/注释") }
+  end
+
+  # src 改动 + 正文声明「无行为变更」→ 文档联动豁免。
+  def test_no_behavior_change_declaration_exempts_docs
+    report = run_check([change("src/store/store.cr", "+def x; end\n"),
+                        change("spec/store/store_spec.cr", "+it {}\n")],
+      body: "本次为内部重构，无行为变更")
+    refute report.must_fix_items.any? { |i| i.message.include?("docs/") }
+  end
+
+  # workflow 改动缺「安全边界」说明 → must_fix；有声明则豁免。
+  def test_workflow_change_requires_security_boundary_note
+    sha = "c" * 40
+    report = run_check([change(".github/workflows/ci.yml", "+      uses: x/y@#{sha}\n")])
+    assert report.must_fix_items.any? { |i| i.message.include?("安全边界") }
+
+    report = run_check([change(".github/workflows/ci.yml", "+      uses: x/y@#{sha}\n")], body: "安全边界：无新增权限")
+    assert report.must_fix_items.empty?
+  end
+
+  # 凭据正则：puts + token 同行 → must_fix。
+  def test_credential_in_log_line_is_must_fix
+    report = run_check([change("src/keys/store.cr", "+    puts token_info\n")])
+    assert report.must_fix_items.any? { |i| i.message.include?("凭据") }
+  end
+
+  # 规则文件自身与测试文件不扫凭据正则（避免自触发）。
+  def test_rule_and_test_files_are_not_scanned
+    report = run_check([change("tools/test_path_checks.rb", "+    puts token_info\n"),
+                        change("tools/agents/lib/sebas_agents/path_checks.rb", "+  CREDENTIAL_LINE = /puts.*token/\n")])
+    assert report.must_fix_items.empty?
+  end
+
+  # evidence.rb 触碰 SOURCES → blocker。
+  def test_evidence_sources_touch_blocks
+    report = run_check([change("tools/agents/lib/sebas_agents/policy/evidence.rb",
+      "+      SOURCES = {\"workflow\" => ...}\n")])
+    assert report.blockers.any? { |i| i.message.include?("SOURCES") }
+  end
+
+  # workflow 中的 force-push / 分支保护写入 → blocker。
+  def test_force_push_and_branch_protection_block
+    report = run_check([change(".github/workflows/rel.yml", "+      git push --force origin main\n")])
+    assert report.blockers.any? { |i| i.message.include?("push 保护") }
+    report = run_check([change(".github/workflows/rel.yml", "+      gh api repos/o/r/branches/main/protection -X PUT\n")])
+    assert report.blockers.any? { |i| i.message.include?("分支保护") }
+  end
+end
+
+# #125：verify_merge 的 pre 模式接线——快照提供 files/body 时执行，缺省留痕。
+class PathChecksIntegrationTest < Minitest::Test
+  include SnapshotHelpers
+
+  def run_pre(data)
+    SebasAgents::Verifier.verify_merge(
+      10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true
+    )
+  end
+
+  # 与既有合并前 fixture 同构（SnapshotHelpers 原语自构）。
+  def pre_data_with_pr_extra(issue_body:, pr_extra: {})
+    snapshot(
+      issues: [issue(39, body: issue_body)],
+      pull_requests: [{
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}],
+        "review_threads" => []
+      }.merge(pr_extra)],
+      trusted_bots: ["github-actions[bot]"],
+      source_authors: {
+        "https://github.com/o/r/issues/1#issuecomment-1" => "github-actions[bot]"
+      },
+      source_bodies: {
+        "https://github.com/o/r/issues/1#issuecomment-1" => evidence(
+          subject: "issue:39", merged: false, source: "workflow"
+        )
+      }
+    )
+  end
+
+  def test_snapshot_without_files_leaves_unverified_trail
+    body = automation + evidence(subject: "issue:39", merged: false, source: "workflow")
+    report = run_pre(pre_data_with_pr_extra(issue_body: body))
+    assert report.pass?, "缺 files 不产生 blocker"
+    assert report.unverified_items.any? { |i| i.message.include?("变更文件清单") }
+  end
+
+  def test_snapshot_with_violating_files_blocks
+    body = automation + evidence(subject: "issue:39", merged: false, source: "workflow")
+    files = [{"filename" => "src/store/new.cr", "patch" => "+def x; end\n"}]
+    report = run_pre(pre_data_with_pr_extra(issue_body: body, pr_extra: {"files" => files, "body" => "PR 正文"}))
+    refute report.pass?
+    assert report.blockers.any? { |i| i.message.include?("spec/") }
+  end
+
+  def test_snapshot_with_compliant_files_passes
+    body = automation + evidence(subject: "issue:39", merged: false, source: "workflow")
+    files = [{"filename" => "src/store/new.cr", "patch" => "+def x; end\n"},
+             {"filename" => "spec/store/new_spec.cr", "patch" => "+it \"x\" do\nend\n"},
+             {"filename" => "docs/design/design.md", "patch" => "+## x\n"}]
+    report = run_pre(pre_data_with_pr_extra(
+      issue_body: body,
+      pr_extra: {"files" => files, "body" => "文档已同步；安全边界：无 workflow 改动"}
+    ))
+    assert report.pass?, "全合规应通过：#{report.items.map(&:message).inspect}"
+  end
+end
