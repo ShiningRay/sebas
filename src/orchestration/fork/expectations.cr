@@ -134,9 +134,10 @@ module Sebas
           @store.expectation(row.fork_id)
         end
 
-        # any 的 result 必须指向**最先进入成功终态**的成员（semantics §2.3/§4.3）：
-        # tasks.status 无成功先后信息，tasks.updated_at（状态迁移时刻戳）是唯一
-        # 可持久化恢复的先后证据——取 done 成员中 updated_at 最早者。
+        # any 的 result 指向**最先进入成功终态**的成员（semantics §2.3/§4.3）：
+        # tasks.updated_at（状态迁移时刻戳，秒级精度）是可持久化的先后证据；
+        # 同秒并列时 min_by 按 members 遍历序取首个（确定性规则，不声称区分
+        # 真实先后）——严格区分同秒先后需存储层单调成功序号（另卡）。
         private def first_done_summary(member_ids : Array(String)) : String
           done = member_ids.select { |id| @store.task_status?(id) == "done" }
           raise ::Sebas::Platform::Store::StoreError.new("any 判定失败：无 done 成员") if done.empty?
