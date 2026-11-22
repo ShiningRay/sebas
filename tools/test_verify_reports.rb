@@ -153,6 +153,19 @@ class VerifyMergeReportsTest < Minitest::Test
     end
   end
 
+  # 生成器退出 0 但未产出清单：verify anchors 被静默跳过 → 必须 blocker。
+  def test_successful_extract_without_manifest_becomes_blocker
+    with_out do |dir|
+      base_evidence(dir)
+      write_out(dir, "anchors_extract.txt",
+        "已写入 anchors.json：0 条锚点\nextract exit=0\ngenerator exit=0 但未产出 anchors.json（工具异常）\n")
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      assert_equal 1, report["counts"]["blocker"]
+      assert_includes report["items"].first["message"], "未产出 anchors.json"
+    end
+  end
+
   def test_docs_failures_become_blockers
     with_out do |dir|
       base_evidence(dir)

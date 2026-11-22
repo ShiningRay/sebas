@@ -176,6 +176,12 @@ jobs:
             anchors_status=$?
             set -e
             echo "anchors verify exit=${anchors_status}" >> ../out/anchors_extract.txt
+          else
+            # 生成器退出码为 0 却没产出清单 = 工具异常。
+            # 若不记录，后续 verify anchors 会被静默跳过，汇总阶段只看到
+            # 「有日志没报告」而当成正常，reviewer 便可能误判通过。
+            echo "generator exit=${extract_status} 但未产出 anchors.json（工具异常）" \
+              >> ../out/anchors_extract.txt
           fi
           echo "anchors 证据已收集"
           tail -3 ../out/anchors_extract.txt

@@ -9,7 +9,15 @@
 # PR 就能改核验逻辑让自己通过，而所有其他测试仍会绿。
 # 所以这里把「安全核心」写成断言：改坏了就红。
 #
+# 行为测试从 workflow 步骤**派生**执行命令（见 derive_anchors_invocation），
+# 不手写命令；否则改动 workflow 不会同步改变测试，断言就形同虚设
+# （CodeRabbit 在 PR #129 指出：手写命令 + 只查 `cd target` 时，
+# `ruby ../target/tools/anchors_extract.rb` 这类写法能骗过全部断言）。
+#
 # 同时验证 shell 片段里的关键逻辑（结论映射、退出码）与 action 钉版。
+#
+# 注意：本测试与 workflow 同在 PR 可改范围内，是回归绊线而**非** PR 时控制；
+# 阻止 PR 替换 workflow 的独立控制是 pull_request_target + .github/ 审核红线。
 
 require "minitest/autorun"
 require "json"
@@ -137,24 +145,68 @@ class VerifyWorkflowTest < Minitest::Test
 
   # --- 判定逻辑（与 tools 层同口径）---
 
+  # 从 workflow 步骤派生「实际执行的脚本 + 工作目录 + 参数」。
+  #
+  # 为什么不手写命令（CodeRabbit）：手写时把 workflow 改成
+  # `ruby ../target/tools/anchors_extract.rb` 而保留 `cd trusted`，
+  # 旧断言（只查 cd target）与旧的端到端测试都会照常通过——
+  # 测试没跟着 workflow 变，就区分不出「执行 base 脚本」与「执行 target 脚本」。
+  def derive_anchors_invocation(run, root:)
+    lines = run.lines.map(&:strip)
+    cd = lines.find { |l| l.start_with?("cd ") }
+    refute_nil cd, "workflow 应显式 cd 到核验目录"
+    base = File.expand_path(cd.split(/\s+/)[1], root)
+
+    cmd = lines.find { |l| l.start_with?("ruby ") && l.include?("anchors_extract.rb") }
+    refute_nil cmd, "workflow 应调用 anchors_extract.rb"
+    tokens = cmd.sub(/\\\z/, "").split
+    script = tokens[1]
+    # 去掉 shell 变量展开（"${docs[@]}"），其余是静态参数
+    args = tokens[2..].to_a.reject { |t| t.include?("${") }
+    {base: base, script: File.expand_path(script, base), args: args}
+  end
+
+  # 派生出的脚本路径必须落在 base checkout 内。
+  def assert_script_is_trusted(invocation, trusted_root)
+    assert invocation[:script].start_with?(File.expand_path(trusted_root)),
+      "实际执行的脚本必须位于 base checkout 内，实际为 #{invocation[:script]}"
+  end
+
+  # 反证：把命令改成显式指向 target 时，上面的断言必须失败——
+  # 否则断言就无法区分「base 脚本」与「target 脚本」。
+  def test_derivation_catches_target_script_path
+    tampered = <<~SH
+      mapfile -d '' -t docs < <(cd target && git ls-files -z 'docs/**/*.md')
+      cd trusted
+      ruby ../target/tools/anchors_extract.rb --root ../target --output ../out/anchors.json "${docs[@]}"
+    SH
+
+    # 在假 root 下派生（不需要真实目录，只做路径解析）
+    inv = derive_anchors_invocation(tampered, root: "/repo")
+    refute inv[:script].start_with?("/repo/trusted"),
+      "篡改为 ../target/... 后应解析到 target 内"
+
+    error = assert_raises(Minitest::Assertion) do
+      assert_script_is_trusted(inv, "/repo/trusted")
+    end
+    assert_includes error.message, "/repo/target/tools/anchors_extract.rb"
+  end
+
   # 端到端安全属性：用 base 脚本核验被篡改的 PR 内容，越界仍须被抓。
-  # 这条是把「脚本取自 base」从「写法断言」升级为「行为断言」——
-  # 篡改的是 workflow 里实际调用的组件（anchors_extract.rb），
-  # 而不是另挑一个无关文件（CodeRabbit 指出旧版篡改 verifier.rb 但只调用
-  # anchors_extract.rb，被篡改的组件并未参与测试）。
+  # 命令由 workflow 派生，篡改的组件是 workflow 实际调用的 anchors_extract.rb。
   def test_base_scripts_catch_sabotaged_content
     Dir.mktmpdir do |dir|
       trusted = File.join(dir, "trusted")
       target = File.join(dir, "target")
-      FileUtils.mkdir_p(trusted)
-      FileUtils.mkdir_p(target)
+      out_dir = File.join(dir, "out")
+      [trusted, target, out_dir].each { |d| FileUtils.mkdir_p(d) }
 
       tar = File.join(dir, "base.tar")
       system("git", "archive", "HEAD", "-o", tar, chdir: ROOT) || skip("无法导出仓库归档")
       system("tar", "--force-local", "-xf", tar, "-C", trusted) || skip("无法解归档")
       system("tar", "--force-local", "-xf", tar, "-C", target) || skip("无法解归档")
 
-      # 篡改 workflow 实际调用的组件：anchors_extract.rb
+      # 篡改 workflow 实际调用的组件
       File.write(File.join(target, "tools/anchors_extract.rb"), <<~RUBY, encoding: "UTF-8")
         module AnchorExtractor
           def self.run(*) = 0
@@ -162,14 +214,16 @@ class VerifyWorkflowTest < Minitest::Test
         exit(AnchorExtractor.run(ARGV)) if $PROGRAM_NAME == __FILE__
       RUBY
 
-      sabotage = File.join(target, "docs/design/sabotage.md")
-      File.write(sabotage, "# 破坏测试\n\n见 src/main.cr:999999。\n", encoding: "UTF-8")
+      File.write(File.join(target, "docs/design/sabotage.md"),
+        "# 破坏测试\n\n见 src/main.cr:999999。\n", encoding: "UTF-8")
 
-      out = File.join(dir, "anchors.json")
+      invocation = derive_anchors_invocation(anchors_evidence_step["run"], root: dir)
+      assert_script_is_trusted(invocation, trusted)
+
       _o, err, st = Open3.capture3(
-        "ruby", "tools/anchors_extract.rb", "--root", target, "--output", out,
+        "ruby", invocation[:script], *materialize(invocation[:args], target:, out_dir:),
         "docs/design/sabotage.md", "docs/design/design.md",
-        chdir: trusted
+        chdir: invocation[:base]
       )
 
       assert_equal 1, st.exitstatus, "base 脚本必须抓住越界锚点"
@@ -177,29 +231,38 @@ class VerifyWorkflowTest < Minitest::Test
     end
   end
 
-  # 反证：同一篡改内容用 target 脚本执行就检测不到——说明 base 版本不可省。
+  # 反证：用 target 的（篡改后）脚本执行同一内容就检测不到。
   def test_target_scripts_would_be_bypassed
     Dir.mktmpdir do |dir|
+      trusted = File.join(dir, "trusted")
       target = File.join(dir, "target")
-      FileUtils.mkdir_p(target)
+      out_dir = File.join(dir, "out")
+      [trusted, target, out_dir].each { |d| FileUtils.mkdir_p(d) }
+
       tar = File.join(dir, "base.tar")
       system("git", "archive", "HEAD", "-o", tar, chdir: ROOT) || skip("无法导出仓库归档")
+      system("tar", "--force-local", "-xf", tar, "-C", trusted) || skip("无法解归档")
       system("tar", "--force-local", "-xf", tar, "-C", target) || skip("无法解归档")
 
-      # 把生成器改成「永远成功」，模拟 PR 让门禁形同虚设。
       File.write(File.join(target, "tools/anchors_extract.rb"), <<~RUBY, encoding: "UTF-8")
         module AnchorExtractor
           def self.run(*) = 0
         end
         exit(AnchorExtractor.run(ARGV)) if $PROGRAM_NAME == __FILE__
       RUBY
+      File.write(File.join(target, "docs/design/sabotage.md"),
+        "# 破坏测试\n\n见 src/main.cr:999999。\n", encoding: "UTF-8")
 
-      sabotage = File.join(target, "docs/design/sabotage.md")
-      File.write(sabotage, "# 破坏测试\n\n见 src/main.cr:999999。\n", encoding: "UTF-8")
+      invocation = derive_anchors_invocation(anchors_evidence_step["run"], root: dir)
+      # 同一命令，脚本改从 target 解析——这就是被绕过的场景。
+      # 用相对路径还原，避免 "/tools/x.rb" 被 expand_path 当绝对路径。
+      rel_script = invocation[:script].delete_prefix("#{File.expand_path(trusted)}/")
+      sabotaged_script = File.join(target, rel_script)
+      refute sabotaged_script.start_with?(File.expand_path(trusted))
+      assert File.exist?(sabotaged_script), "反证用例需要 target 侧的脚本存在"
 
-      out = File.join(dir, "anchors.json")
       _o, _e, st = Open3.capture3(
-        "ruby", "tools/anchors_extract.rb", "--root", target, "--output", out,
+        "ruby", sabotaged_script, *materialize(invocation[:args], target:, out_dir:),
         "docs/design/sabotage.md",
         chdir: target
       )
@@ -237,6 +300,23 @@ class VerifyWorkflowTest < Minitest::Test
 
   def verifier_steps
     workflow.dig("jobs", "verifier", "steps") || []
+  end
+
+  def anchors_evidence_step
+    step = verifier_steps.find { |s| s["name"].to_s.include?("anchors evidence") }
+    refute_nil step, "缺少 anchors 证据收集步骤"
+    step
+  end
+
+  # 把 workflow 里的相对路径参数（../target、../out/...）还原成本地临时目录路径。
+  def materialize(args, target:, out_dir:)
+    args.map do |arg|
+      case arg
+      when "../target" then target
+      when %r{\A\.\./out/} then File.join(out_dir, File.basename(arg))
+      else arg
+      end
+    end
   end
 
   def collect_uses(node, path = "", acc = [])

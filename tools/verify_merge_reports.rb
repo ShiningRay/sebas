@@ -137,6 +137,12 @@ module VerifyMergeReports
         "anchors: 生成器非零退出但无可解析错误行（工具异常，须人工核查）")
     end
 
+    # 生成器「成功退出但没产出清单」：安静跳过 verify 是典型的 fail-open。
+    if text.match?(/^generator exit=\d+ 但未产出 anchors\.json/)
+      items << item(items, "blocker",
+        "anchors: 生成器未产出 anchors.json（工具异常，须人工核查）")
+    end
+
     verify_failed = text.match?(/^anchors verify exit=[1-9]/)
     if verify_failed && items.none? { |i| %w[blocker must_fix].include?(i["level"]) }
       items << item(items, "blocker",
