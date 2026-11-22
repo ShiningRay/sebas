@@ -164,6 +164,8 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
 2. Verifier 核验结论无 `blocker` / `must_fix`。
 3. Reviewer 终验结论为 `通过`（`有条件通过` 需 Maintainer 裁决，Implementer 不得自行合并）。
 4. issue 有有效 `Evidence` 块（`source` 为 `maintainer` 或 `workflow`），`status=accepted`。
+   两阶段登记（#126）下合并前的块是 `merged_into_main: false`、`merge_commit: null`，
+   门禁接受这种形态；若块已声称 `merged_into_main: true` 而 PR 未合并，一律判伪造并阻断。
 5. `mergeStateStatus=CLEAN` 且未解决 review thread 为 0。
 
 Implementer **不能自己验收**：Verifier 与 Reviewer 必须是独立上下文。

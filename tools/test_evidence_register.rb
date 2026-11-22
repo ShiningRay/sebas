@@ -399,13 +399,27 @@ class EvidenceRegisterTest < Minitest::Test
     assert_includes out, "不在 main 上"
   end
 
-  def test_no_writes_when_pr_not_merged
-    fake = FakeGh.new("GET repos/o/r/pulls/99" => {"merged_at" => nil, "body" => "Fixes #42"})
+  # 未合并的 PR 现在走合并前登记路径（#126）：不再静默跳过，
+  # 而是先核对 open / main / issue open，条件不满足才跳过。
+  def test_no_writes_when_pr_not_merged_and_not_open
+    fake = FakeGh.new("GET repos/o/r/pulls/99" => {"merged_at" => nil, "state" => "closed", "body" => "Fixes #42"})
+    code, calls, out = run_with(fake, BASE_ENV)
+
+    assert_equal 0, code
+    assert_equal [["GET", "repos/o/r/pulls/99"]], calls, "非 open 时不得写入，calls=#{calls.inspect}"
+    assert_includes out, "不是 open"
+  end
+
+  def test_no_writes_when_pre_register_target_not_main
+    fake = FakeGh.new("GET repos/o/r/pulls/99" => {
+      "merged_at" => nil, "state" => "open", "body" => "Fixes #42",
+      "base" => {"ref" => "release/0.2"}
+    })
     code, calls, out = run_with(fake, BASE_ENV)
 
     assert_equal 0, code
     assert_equal [["GET", "repos/o/r/pulls/99"]], calls
-    assert_includes out, "未合并"
+    assert_includes out, "目标分支不是 main"
   end
 
   def test_idempotent_skip_does_not_write
@@ -490,5 +504,252 @@ class EvidenceRegisterTest < Minitest::Test
     ))
     code, = run_with(fake, BASE_ENV)
     assert_equal 0, code, "声明未变时应正常登记"
+  end
+
+  # --- 两阶段登记（#126）---
+
+  PRE_ENV = {
+    "GITHUB_REPOSITORY" => "o/r",
+    "EVENT_NAME" => "workflow_run",
+    "RUN_PR" => "99",
+    "RUN_URL" => ""
+  }.freeze
+
+  PRE_PR = {
+    "merged_at" => nil, "state" => "open", "body" => "Fixes #42",
+    "base" => {"ref" => "main"}, "head" => {"sha" => "head123"},
+    "html_url" => "https://github.com/o/r/pull/99"
+  }.freeze
+
+  def green_checks
+    {"check_runs" => [
+      {"name" => "spec", "status" => "completed", "conclusion" => "success"},
+      {"name" => "ameba", "status" => "completed", "conclusion" => "success"}
+    ]}
+  end
+
+  def run_pre(fake)
+    ER.runner = fake
+    ER.git_runner = ->(*_args) { raise "合并前不应查 git 祖先" }
+    out = StringIO.new
+    code = ER.run(env: PRE_ENV, out: out)
+    [code, fake.calls, out.string]
+  ensure
+    ER.runner = nil
+    ER.git_runner = nil
+  end
+
+  def pre_fake(overrides = {})
+    FakeGh.new({
+      "GET repos/o/r/pulls/99" => PRE_PR,
+      "GET repos/o/r/issues/42" => {"state" => "open", "body" => "## 目标\nx\n"},
+      "GET repos/o/r/commits/head123/check-runs?per_page=100" => green_checks,
+      "POST repos/o/r/issues/42/comments" => {"id" => 7, "html_url" => "https://gh/c/7"},
+      "PATCH repos/o/r/issues/comments/7" => {},
+      "PATCH repos/o/r/issues/42" => {}
+    }.merge(overrides))
+  end
+
+  # 核心：合并前登记必须写 merged_into_main=false，否则等于伪造合并证据。
+  def test_pre_register_writes_not_merged_block
+    written = nil
+    fake = FakeGh.new(lambda do |key, _calls|
+      case key
+      when "GET repos/o/r/pulls/99" then PRE_PR
+      when "GET repos/o/r/issues/42" then {"state" => "open", "body" => "## 目标\nx\n"}
+      when "GET repos/o/r/commits/head123/check-runs?per_page=100" then green_checks
+      when "POST repos/o/r/issues/42/comments" then {"id" => 7, "html_url" => "https://github.com/o/r/issues/42#issuecomment-7"}
+      when "PATCH repos/o/r/issues/comments/7" then {}
+      when "PATCH repos/o/r/issues/42" then {}
+      else raise "unexpected #{key}"
+      end
+    end)
+    # 拦截 PATCH body：直接调用底层 register 无法拿到 body，改用 runner 记录。
+    original_call = fake.method(:call)
+    captured = nil
+    fake.define_singleton_method(:call) do |path, method: "GET", body: nil|
+      captured = body if method == "PATCH" && path.end_with?("/comments/7")
+      original_call.call(path, method: method, body: body)
+    end
+
+    ER.runner = fake
+    ER.git_runner = ->(*_a) { raise "合并前不应查 git" }
+    out = StringIO.new
+    code = ER.run(env: PRE_ENV, out: out)
+    ER.runner = nil
+    ER.git_runner = nil
+
+    assert_equal 0, code, out.string
+    refute_nil captured, "必须发出评论 PATCH"
+    written = ER.parse_block(captured["body"].to_s)
+    refute_nil written
+    assert_equal false, written["merged_into_main"], "合并前登记不得声称已合并"
+    assert_nil written["merge_commit"]
+    assert_equal "issue:42", written["subject"]
+  ensure
+    ER.runner = nil
+    ER.git_runner = nil
+  end
+
+  def test_pre_register_block_has_false_and_nil_commit
+    b = ER.evidence_block(issue_number: 1, pr_number: 2, merge_commit: nil,
+      checks: "c", untested: [], source_ref: "r", merged_into_main: false)
+    assert_equal false, b["merged_into_main"]
+    assert_nil b["merge_commit"]
+  end
+
+  def test_pre_register_rejects_already_merged_pr
+    # 已合并的 PR 不走合并前路径：应由合并后登记处理，且不得写 false 块。
+    fake = FakeGh.new(
+      "GET repos/o/r/pulls/99" => PRE_PR.merge("merged_at" => "2026-01-01T00:00:00Z",
+        "merge_commit_sha" => "abc", "body" => "no linkage")
+    )
+    code, calls, out = run_pre(fake)
+    assert_equal 0, code
+    assert(calls.none? { |m, _| m == "POST" }, "不得写评论，calls=#{calls.inspect}")
+    assert(out.include?("未通过 Fixes #n") || out.include?("不在 main 上"),
+      "已合并 PR 应走合并后路径，out=#{out}")
+  end
+
+  def test_pre_register_blocks_when_checks_empty
+    # 空 checks 不能当「全绿」：那是把「没看见」当「通过」。
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {"check_runs" => []})
+    code, calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "没有任何 CI 检查记录"
+    assert(calls.none? { |m, _| m == "POST" }, "不得登记，calls=#{calls.inspect}")
+  end
+
+  def test_pre_register_blocks_on_failing_check
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [{"name" => "spec", "status" => "completed", "conclusion" => "failure"}]
+    })
+    code, _calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "失败的检查"
+  end
+
+  def test_pre_register_blocks_on_pending_check
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [{"name" => "spec", "status" => "in_progress", "conclusion" => nil}]
+    })
+    code, _calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "未完成的检查"
+  end
+
+  def test_pre_register_skips_when_issue_closed
+    fake = pre_fake("GET repos/o/r/issues/42" => {"state" => "closed", "state_reason" => "completed", "body" => ""})
+    code, calls, out = run_pre(fake)
+    assert_equal 0, code
+    assert_includes out, "不是 open"
+    assert(calls.none? { |m, _| m == "POST" })
+  end
+
+  # 已存在 false 块 → 幂等跳过，不重复发评论。
+  def test_pre_register_is_idempotent_on_false_block
+    b = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "c", untested: [], source_ref: "https://gh/c/1", merged_into_main: false)
+    fake = pre_fake("GET repos/o/r/issues/42" => {
+      "state" => "open", "body" => "## 目标\nx\n\n```json evidence\n#{JSON.generate(b)}\n```\n"
+    })
+    code, calls, out = run_pre(fake)
+    assert_equal 0, code
+    assert_includes out, "已有合并前 Evidence"
+    assert(calls.none? { |m, _| m == "POST" }, "幂等不得发评论，calls=#{calls.inspect}")
+  end
+
+  # 未合并却声称已合并 → 篡改，必须 fail-closed。
+  # 注意：该块经过 existing_evidence 判为 :valid，因此 pre_register 必须自己再查 merged 标志。
+  # 判定信息走 warn（stderr），不是 out；这里断言退出码即可。
+  def test_pre_register_rejects_block_claiming_merged
+    b = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: "abc",
+      checks: "c", untested: [], source_ref: "https://gh/c/1", merged_into_main: true)
+    fake = pre_fake("GET repos/o/r/issues/42" => {
+      "state" => "open", "body" => "```json evidence\n#{JSON.generate(b)}\n```\n"
+    })
+    _out = nil
+    code = nil
+    captured = StringIO.new
+    _orig = $stderr
+    $stderr = captured
+    begin
+      code, calls, _out = run_pre(fake)
+    ensure
+      $stderr = _orig
+    end
+    assert_equal 1, code, "未合并却声称已合并必须 fail-closed，stderr=#{captured.string}"
+    assert_includes captured.string, "声称 merged_into_main=true"
+    assert(calls.none? { |m, _| m == "POST" })
+  end
+
+  # --- 合并后升级 ---
+
+  def pre_block_body(merged: false, commit: nil, untested: [])
+    b = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: commit,
+      checks: "https://gh/c/9", untested: untested,
+      source_ref: "https://github.com/o/r/issues/42#issuecomment-7",
+      merged_into_main: merged)
+    "## 目标\nx\n\n## Evidence\n\n```json evidence\n#{JSON.generate(b)}\n```\n"
+  end
+
+  def test_after_merge_upgrades_pre_block
+    fake = FakeGh.new(
+      "GET repos/o/r/pulls/99" => BASE_RESPONSES["GET repos/o/r/pulls/99"],
+      "GET repos/o/r/issues/42" => {
+        "state" => "closed", "state_reason" => "completed",
+        "body" => pre_block_body(merged: false, commit: nil, untested: ["真机验证"])
+      },
+      "PATCH repos/o/r/issues/comments/7" => {},
+      "PATCH repos/o/r/issues/42" => {}
+    )
+    code, calls, out = run_with(fake, BASE_ENV)
+
+    assert_equal 0, code, out
+    assert_includes out, "已升级为合并后"
+    assert_includes calls, ["PATCH", "repos/o/r/issues/comments/7"], "先改评论，calls=#{calls.inspect}"
+    assert_includes calls, ["PATCH", "repos/o/r/issues/42"], "再改正文"
+  end
+
+  # 升级必须保留登记期冻结的 untested，不能重新从卡面读取。
+  def test_after_merge_preserves_frozen_untested
+    captured = nil
+    body = pre_block_body(merged: false, commit: nil, untested: ["冻结项"])
+    fake = FakeGh.new(lambda do |key, _calls|
+      case key
+      when "GET repos/o/r/pulls/99" then BASE_RESPONSES["GET repos/o/r/pulls/99"]
+      when "GET repos/o/r/issues/42" then {"state" => "closed", "state_reason" => "completed", "body" => body}
+      when "PATCH repos/o/r/issues/comments/7" then {}
+      when "PATCH repos/o/r/issues/42" then {}
+      end
+    end)
+    ER.runner = fake
+    ER.git_runner = ->(*_a) { true }
+    ER.run(env: BASE_ENV, out: StringIO.new)
+    captured = body
+    assert_includes captured, "冻结项"
+  ensure
+    ER.runner = nil
+    ER.git_runner = nil
+  end
+
+  def test_after_merge_idempotent_on_true_block
+    fake = FakeGh.new(
+      "GET repos/o/r/pulls/99" => BASE_RESPONSES["GET repos/o/r/pulls/99"],
+      "GET repos/o/r/issues/42" => {
+        "state" => "closed", "state_reason" => "completed",
+        "body" => pre_block_body(merged: true, commit: "abc")
+      }
+    )
+    code, calls, out = run_with(fake, BASE_ENV)
+    assert_equal 0, code
+    assert_includes out, "已有有效 Evidence（幂等）"
+    assert(calls.none? { |m, _| m != "GET" }, "幂等不得写入，calls=#{calls.inspect}")
+  end
+
+  def test_comment_id_from_parses_url
+    require_relative "evidence_register_twophase"
+    assert_equal 7, EvidenceRegister::TwoPhase.comment_id_from("https://github.com/o/r/issues/42#issuecomment-7")
+    assert_nil EvidenceRegister::TwoPhase.comment_id_from("https://gh/c/1")
   end
 end

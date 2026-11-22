@@ -29,6 +29,8 @@ permissions:
   issues: write
   pull-requests: read
   actions: read
+  # 合并前登记要读 head sha 的 check-runs 才能判定「全绿」。
+  checks: read
 
 concurrency:
   # 按 PR 归一化分组；dispatch 输入的 099 由脚本拒绝，

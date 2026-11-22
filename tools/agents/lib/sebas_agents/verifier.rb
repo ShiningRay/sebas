@@ -148,6 +148,10 @@ module SebasAgents
           report.blocker("issue ##{issue_number} 的 Evidence 未由 Maintainer 或受信 bot 登记")
         else
           # 合并前不可能有 merged_into_main，只判 accepted + 无未实测。
+          # 反过来：若已声称 true，说明证据已被篡改，必须阻断而非放行。
+          if evidence["merged_into_main"] == true
+            report.blocker("issue ##{issue_number} 的 Evidence 声称 merged_into_main=true，但 PR ##{pr_number} 未合并")
+          end
           unless evidence["status"] == "accepted"
             report.blocker("issue ##{issue_number} 的 Evidence status 必须为 accepted")
           end

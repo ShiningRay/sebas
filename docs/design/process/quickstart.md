@@ -148,9 +148,14 @@ ruby tools/sebas-process next                 # 输出单一动作
 ruby tools/sebas-process claim 39 --dry-run   # 校验是否可认领
 ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + 远端标签并回读
 ruby tools/sebas-process resume 39            # 续跑本机已认领卡
-ruby tools/sebas-process verify merge 95 39 --pre  # 合并前自检（CI + 关联 issue）
+ruby tools/sebas-process verify merge 95 39 --pre  # 合并前自检（CI + 关联 issue + Evidence）
 ruby tools/sebas-process unclaim 39 --apply   # 收口后释放认领（要求已合并 + completed）
 ```
+
+合并前还需让 issue 带有可机读 Evidence。两阶段登记（#126）由
+[`evidence-register`](../../../.github/workflows/evidence-register.yml) 自动完成：
+PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`。
+手工补登记可用 `gh workflow run "Evidence register" -f pr=<n>`。
 
 `next` 返回 `claim_issue` / `resume_pr` / `wait` / `blocked` / `needs_human` /
 `invalid_plan` / `handoff_release` / `idle` 之一，见
