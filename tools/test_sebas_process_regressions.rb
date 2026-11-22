@@ -554,7 +554,7 @@ class VerifierRegressionTest < Minitest::Test
   # #107：合并前模式不能因为「未合并 / 未关闭」而必然失败。
   # 但仍须满足可提前判定的条件：Evidence accepted + thread 清空 + CI 全绿。
   def test_verify_merge_pre_passes_when_ci_green
-    body = automation + evidence(subject: "issue:39")
+    body = automation + evidence(subject: "issue:39", merged: false)
     data = snapshot(
       issues: [issue(39, body: body, state: "OPEN")],
       pull_requests: [{
@@ -619,7 +619,7 @@ class VerifierRegressionTest < Minitest::Test
   end
 
   def test_verify_merge_pre_blocks_with_unresolved_threads
-    body = automation + evidence(subject: "issue:39")
+    body = automation + evidence(subject: "issue:39", merged: false)
     data = snapshot(
       issues: [issue(39, body: body, state: "OPEN")],
       pull_requests: [{
@@ -648,7 +648,7 @@ class VerifierRegressionTest < Minitest::Test
   end
 
   def test_verify_merge_pre_passes_with_evidence_and_clean_threads
-    body = automation + evidence(subject: "issue:39")
+    body = automation + evidence(subject: "issue:39", merged: false)
     data = snapshot(
       issues: [issue(39, body: body, state: "OPEN")],
       pull_requests: [{
@@ -662,7 +662,7 @@ class VerifierRegressionTest < Minitest::Test
 
   # CR：checks 为空说明快照没取到 CI 结果，不能当成「没有失败 = 全绿」放行。
   def test_verify_merge_pre_blocks_when_no_checks_recorded
-    body = automation + evidence(subject: "issue:39")
+    body = automation + evidence(subject: "issue:39", merged: false)
     data = snapshot(
       issues: [issue(39, body: body, state: "OPEN")],
       pull_requests: [{
@@ -678,7 +678,7 @@ class VerifierRegressionTest < Minitest::Test
 
   # CR 安全项：--pre 不能只看 status 字段，必须走 trusted? 授权校验。
   def test_verify_merge_pre_blocks_on_untrusted_evidence_source
-    body = automation + evidence(subject: "issue:39")
+    body = automation + evidence(subject: "issue:39", merged: false)
     data = snapshot(
       issues: [issue(39, body: body, state: "OPEN")],
       pull_requests: [{

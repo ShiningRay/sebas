@@ -90,6 +90,10 @@ module SebasAgents
         return unauthorized(subject) unless trusted?(block, snapshot)
 
         # §2.4：状态不符、未进 main、必需项未实测均算“未满足”。
+        #
+        # 两阶段登记（#126）会先写 merged_into_main=false，此时下游应继续 blocked：
+        # 前置确实尚未合并，放行等于 fail-open。升级前那几十秒的 blocked
+        # 是正确语义（稍后重跑即通过），不是「误判窗口」，不得为消除它放宽判据。
         reasons = []
         reasons << "#{subject} 的 status 必须为 accepted" unless block["status"] == "accepted"
         reasons << "#{subject} 的 ready 必须为 null" unless block["ready"].nil?

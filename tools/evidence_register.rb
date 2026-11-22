@@ -19,6 +19,7 @@ require "open3"
 
 module EvidenceRegister
   EVIDENCE_FENCE = "json evidence"
+  EVIDENCE_SCHEMA = 1
   BOT_MARKER = "<!-- evidence-register:bot -->"
 
   # 测试注入点。生产环境为 nil，走真实 gh / git。
@@ -38,9 +39,11 @@ module EvidenceRegister
     end
 
     pr = gh_json("repos/#{repo}/pulls/#{pr_number}")
+
+    # 合并前登记（#126）：PR 未合并时走 pre_register，让 `verify merge --pre` 有据可依。
     unless pr["merged_at"]
-      out.puts "skip: PR ##{pr_number} 未合并（merged_at 为空）"
-      return 0
+      require_relative "evidence_register_twophase"
+      return TwoPhase.pre_register(repo: repo, pr: pr, pr_number: pr_number, out: out)
     end
 
     merge_commit = pr["merge_commit_sha"].to_s
@@ -64,13 +67,23 @@ module EvidenceRegister
       return 0
     end
 
+    # 已有合并前块 → 升级，而不是幂等跳过；否则 merged_into_main 永远停在 false。
     case existing_evidence(issue["body"], subject: "issue:#{issue_number}")
-    when :valid
-      out.puts "skip: issue ##{issue_number} 已有有效 Evidence（幂等）"
-      return 0
     when :invalid
       warn "::error::issue ##{issue_number} 的现有 Evidence 块结构非法，需人工修复后再登记"
       return 1
+    when :valid
+      block = parse_block(issue["body"].to_s)
+      if block && block["merged_into_main"] != true
+        require_relative "evidence_register_twophase"
+        return TwoPhase.upgrade_after_merge(
+          repo: repo, issue: issue, issue_number: issue_number, pr_number: pr_number,
+          merge_commit: merge_commit, checks_url: checks_url, out: out
+        )
+      end
+
+      out.puts "skip: issue ##{issue_number} 已有有效 Evidence（幂等）"
+      return 0
     end
 
     register(repo: repo, issue: issue, issue_number: issue_number, pr_number: pr_number,
@@ -84,7 +97,7 @@ module EvidenceRegister
 
   # --- 登记主流程 ---
 
-  def register(repo:, issue:, issue_number:, pr_number:, merge_commit:, checks_url:, out:)
+  def register(repo:, issue:, issue_number:, pr_number:, merge_commit:, checks_url:, merged_into_main: true, out:)
     untested = declared_untested(issue["body"])
     comment = post_placeholder(repo, issue_number, out)
     comment_url = comment["html_url"]
@@ -97,7 +110,8 @@ module EvidenceRegister
         merge_commit: merge_commit,
         checks: checks_url,
         untested: untested,
-        source_ref: comment_url
+        source_ref: comment_url,
+        merged_into_main: merged_into_main
       )
       gh_json("repos/#{repo}/issues/comments/#{comment_id}",
         method: "PATCH", body: {"body" => render_comment(block)})
@@ -265,7 +279,7 @@ module EvidenceRegister
     # 否则会追加第二个块，或者把损坏块留在原地。
     return :invalid if block.nil?
 
-    valid = block["schema"] == 1 &&
+    valid = block["schema"] == EVIDENCE_SCHEMA &&
       block["subject"].to_s == subject &&
       !block["status"].to_s.empty? &&
       !block["source"].to_s.empty? &&
@@ -302,7 +316,11 @@ module EvidenceRegister
 
   # --- 证据块 ---
 
-  def evidence_block(issue_number:, pr_number:, merge_commit:, checks:, untested:, source_ref:)
+  # merged_into_main 默认为 true（合并后登记）。
+  # 合并前登记必须显式为 false 且 merge_commit 为 nil：
+  # 「已合并」只能由合并事件证实，登记路径不得自行宣称。
+  def evidence_block(issue_number:, pr_number:, merge_commit:, checks:, untested:, source_ref:,
+    merged_into_main: true)
     {
       "schema" => 1,
       "subject" => "issue:#{issue_number}",
@@ -311,7 +329,7 @@ module EvidenceRegister
       "source_ref" => source_ref,
       "pr" => pr_number,
       "merge_commit" => merge_commit,
-      "merged_into_main" => true,
+      "merged_into_main" => merged_into_main,
       "checks" => checks,
       "gate_status" => nil,
       "evidence_path" => nil,
