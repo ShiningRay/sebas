@@ -55,8 +55,10 @@ module Sebas
             return WriteResult::NonTerminal
           end
           report = build_report(row)
-          @store.append_transcript(row.parent_session, "system", report.to_json)
-          @store.memo_put(memo_key(fork_id), row.status)
+          # 报告行 + memo 同一 SQLite 事务原子提交（CodeRabbit）：任一步失败
+          # 整体回滚，重放不会出现「有报告无 memo」导致的第二份 join.report。
+          @store.write_join_report(row.parent_session, report.to_json,
+            memo_key(fork_id), row.status)
           WriteResult::Written
         end
 
@@ -64,10 +66,10 @@ module Sebas
         # partial 非 outcome 值——不完整信息由 members[].state 终态数组承载。
         def build_report(row : ExpectationRow) : JSON::Any
           member_ids = Array(String).from_json(row.members)
-          # any 选定成员：done 中 tasks.updated_at 最早者（先成功，判定器同口径）
-          selected = if row.mode == "any"
-                       done_ids = member_ids.select { |id| @store.task_status?(id) == "done" }
-                       done_ids.min_by? { |id| @store.task_updated_at(id) || "9999" }
+          # any 获胜成员：读判定时持久化的 row.result（"first success: <task_id>"）——
+          # 回写与判定同一成员，不按 updated_at 重选（同秒并列可能漂移，CodeRabbit）
+          selected = if row.mode == "any" && row.result.to_s.starts_with?("first success: ")
+                       row.result.to_s.lchop("first success: ")
                      end
           members = member_ids.map do |task_id|
             session_key = member_session_key(row, task_id)
@@ -84,7 +86,7 @@ module Sebas
             }
             # any：选定成功结论进 L1（只合并选中者，不复制完整 transcript）；
             # members 数组按声明序，结论取该成员 tasks.result（complete_task 落的）。
-            if row.mode == "any" && task_id == selected
+            if row.mode == "any" && row.status != "cancelled" && task_id == selected
               # 只合并选定的先成功成员结论（semantics §4.3 any 行）；不复制完整 transcript
               conclusion = @store.transcripts(session_key).reverse_each
                 .find(&.role.==("agent")).try(&.content)
