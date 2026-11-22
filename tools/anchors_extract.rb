@@ -73,7 +73,12 @@ module AnchorExtractor
       # 先剥掉 URL，再扫引用：`https://example.org/search?q=src/remote.cr:999`
       # 里的 `src/remote.cr:999` 会被 REF 匹配（前置字符 `=` 不在排除类里），
       # 目标不存在时会让正常的外部链接把文档门禁弄红。
-      text = text.gsub(%r{\b(?:https?|ftp)://\S+}, "")
+      #
+      # 不能用 `\S+` 一刀切：中文/无空格排版下 URL 后面常紧跟 `)，参见`，
+      # 那会把链接之外的独立引用一起删掉，静默漏检。
+      # 只剥到「URL 自身的合法字符」为止：ASCII 可见字符里排除掉
+      # 常见分隔符（反引号、引号、尖括号、方括号、圆括号）与中文标点。
+      text = text.gsub(%r{\b(?:https?|ftp)://[^\s`"'<>\[\]()（）【】「」《》，。；：、！？]+}, "")
       text.each_line.with_index(1) do |line_text, _|
         line_text.scan(REF) do
           match = Regexp.last_match

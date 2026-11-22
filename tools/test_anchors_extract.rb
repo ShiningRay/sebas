@@ -198,6 +198,31 @@ class AnchorsExtractTest < Minitest::Test
     end
   end
 
+  # Markdown 链接后紧跟（无空格）的反引号引用必须保留。
+  # `\S+` 一刀切会把 `)，参见` 与引用一起删掉，导致越界静默放行。
+  def test_url_stripping_stops_at_link_boundary
+    with_repo do |dir|
+      write(dir, "src/x.cr", "只有一行\n")
+      write(dir, "docs/a.md", "[链接](https://example.org)，参见`src/x.cr:999`\n")
+
+      _anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_equal 1, problems.length, "链接之后的越界引用不得被 URL 剥离吃掉"
+      assert_includes problems[0], "只有 1 行"
+    end
+  end
+
+  # 无空格版的同一场景（CodeRabbit 原始例子）。
+  def test_url_stripping_keeps_trailing_reference_without_space
+    with_repo do |dir|
+      write(dir, "src/x.cr", "目标\n")
+      write(dir, "docs/a.md", "详见(https://example.org)，还有`src/x.cr:1`\n")
+
+      anchors, _skipped, problems = AnchorExtractor.extract(["docs/a.md"], root: dir)
+      assert_empty problems
+      assert_equal 1, anchors.length, "URL 后的独立引用仍须被抽取"
+    end
+  end
+
   def test_dedupe_keeps_one_per_file_line
     with_repo do |dir|
       write(dir, "src/x.cr", "一行\n二行\n")
