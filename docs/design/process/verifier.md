@@ -125,9 +125,11 @@ report.conclusion                  # "通过" / "打回" / "有条件通过"
 核验阶段产出的应修项，由**另一个独立进程**跑终验收口：
 
 ```sh
-ruby tools/sebas-process verify merge <pr> <issue> --final --fixes fixes.json
+ruby tools/sebas-process verify merge <pr> <issue> --final --report verification.json --fixes fixes.json
 ```
 
+- 终验是**独立阶段**：只读阶段一产出的 `verification.json` 与 `fixes.json`（`--report`），
+  不以本次现场核验结果为输入——否则前阶段的应修项清单进不了终验。
 - `fixes.json` 的键两种写法都可匹配，**条目 id 优先**：
   `{"must_fix-1": {"commit": "abc1234", "passed": true}}` 或
   `{"g": {"commit": "abc1234", "passed": true}}`（后者用条目自身 `id`，如 `g`、`r2-1`）。

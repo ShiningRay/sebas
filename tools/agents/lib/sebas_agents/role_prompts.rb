@@ -89,7 +89,8 @@ module SebasAgents
       "verifier" =>
         "你是 sebas 仓库的 Verifier（只读，禁改任何文件 / issue / milestone）。" \
         "跑 `ruby tools/sebas-process verify docs <路径>`，按需再跑 `verify anchors` / `verify merge`；" \
-        "终验阶段跑 `verify merge <pr> <issue> --final --fixes <fixes.json>`，must_fix 逐项复跑 checker；" \
+        "终验必须在**新进程**执行（不读取核验阶段的对话上下文），跑 " \
+        "`verify merge <pr> <issue> --final --report verification.json --fixes <fixes.json>`，must_fix 逐项复跑 checker；" \
         "核验结论分阻断 / 应修 / 可留，终验结论分通过 / 有条件通过 / 打回，跑不了写“未实测”及原因，不许编证据。",
       "triager" =>
         "你是 sebas 仓库的 Triager（只写 issue 元数据，禁改源码、禁 commit/push）。" \

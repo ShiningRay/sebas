@@ -1000,6 +1000,14 @@ class VerifyChecksTest < Minitest::Test
     assert_match(/只读/, result[:reason].to_s)
   end
 
+  # CodeRabbit：config/remote/symbolic-ref 有写形态且无法按参数区分读写，直接排除。
+  def test_git_writable_read_listed_subcommands_reject
+    %w[config remote symbolic-ref].each do |subcommand|
+      result = SebasAgents::VerifyChecks.rerun(item_with("git #{subcommand} HEAD"), {})
+      refute result[:passed], "git #{subcommand} 不应放行"
+    end
+  end
+
   # gh 白名单判定不真跑（不依赖网络）：只测 allowed? 本身。
   def test_gh_view_is_allowed_but_edit_is_not
     require "shellwords"
@@ -1069,6 +1077,57 @@ class CliTest < Minitest::Test
     err = StringIO.new
     status = SebasAgents::CLI.new(out: out, err: err).run(argv)
     [status, out.string, err.string]
+  end
+
+  # #124：终验读阶段一的 verification.json，不现场生成报告。
+  def write_report(dir, items)
+    path = File.join(dir, "verification.json")
+    File.write(path, JSON.generate({"items" => items}), encoding: "UTF-8")
+    path
+  end
+
+  def write_fixes(dir, data)
+    path = File.join(dir, "fixes.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+    path
+  end
+
+  # CodeRabbit：前阶段报告里的失败命令必须导致打回（不能借当场全绿蒙混）。
+  def test_final_reads_phase_one_report_and_reruns
+    Dir.mktmpdir do |dir|
+      report_path = write_report(dir, [
+        {"id" => "m", "level" => "must_fix", "message" => "锚点不符", "evidence" => "ruby -e \"exit 1\""}
+      ])
+      fixes_path = write_fixes(dir, {"m" => {"passed" => true, "commit" => "abc"}})
+      status, out, = run_cli(["verify", "merge", "10", "39", "--final", "--report", report_path, "--fixes", fixes_path])
+      assert_equal 1, status
+      data = JSON.parse(out)
+      assert_equal "打回", data["conclusion"]
+      assert_equal 10, data["pr"], "终验输出应带 pr 可追溯"
+    end
+  end
+
+  # CodeRabbit：带间接证据的未实测项保留「有条件通过」语义。
+  def test_final_conditional_pass_with_indirect_evidence
+    Dir.mktmpdir do |dir|
+      report_path = write_report(dir, [
+        {"id" => "u", "level" => "unverified", "message" => "CI 未跑", "evidence" => "main 上的 run 45004530157 已成功"}
+      ])
+      fixes_path = write_fixes(dir, {})
+      status, out, = run_cli(["verify", "merge", "10", "39", "--final", "--report", report_path, "--fixes", fixes_path])
+      assert_equal 0, status
+      assert_equal "有条件通过", JSON.parse(out)["conclusion"]
+    end
+  end
+
+  # #124：终验缺 --report 或 --fixes 在解析阶段 fail-fast。
+  def test_final_requires_report_and_fixes
+    Dir.mktmpdir do |dir|
+      report_path = write_report(dir, [])
+      status, out, = run_cli(["verify", "merge", "1", "1", "--final", "--report", report_path])
+      assert_equal 2, status
+      assert_includes out, "--report"
+    end
   end
 
   def test_unknown_command_returns_usage

@@ -194,9 +194,10 @@ CI 的 `verify` job 在每次 PR 上重跑这两步（必检，与 spec×3 + ame
 ### 终验（#124，Reviewer 并入 Verifier）
 
 ```sh
-ruby tools/sebas-process verify merge <pr> <issue> --final --fixes fixes.json
+ruby tools/sebas-process verify merge <pr> <issue> --final --report verification.json --fixes fixes.json
 ```
 
+终验是独立阶段：`--report` 指向阶段一产出的 `verification.json`，终验只读它与 `fixes.json`；
 `fixes.json` 形如 `{"must_fix-1": {"commit": "abc123", "passed": true}}`。
 checker 必填且真实复跑：每项 `must_fix` 按 `evidence` 里的命令重执行并比对退出码
 （命令必须在白名单内：`crystal` / `ruby` / `ameba` / `shards`，`git` / `gh` 只读子命令）；

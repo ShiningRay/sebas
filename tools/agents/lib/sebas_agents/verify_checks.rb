@@ -21,8 +21,11 @@ module SebasAgents
 
     GIT_READ_SUBCOMMANDS = %w[
       log describe rev-parse show diff status ls-files ls-tree cat-file
-      merge-base symbolic-ref remote config blame shortlog
+      merge-base blame shortlog
     ].freeze
+    # symbolic-ref / remote / config 不在白名单：三者都有写形态
+    # （`git config user.name x`、`git remote add`、`git symbolic-ref HEAD …`），
+    # 且 allowed? 只看子命令名，无法区分读写形态——直接排除（CodeRabbit）。
 
     GH_READ_SUBCOMMANDS = %w[list view status auth search].freeze
 

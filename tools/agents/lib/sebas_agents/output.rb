@@ -30,6 +30,7 @@ module SebasAgents
         opts.on("--snapshot PATH") { |value| options[:snapshot] = value }
         opts.on("--record PATH") { |value| options[:record] = value }
         opts.on("--fixes PATH") { |value| options[:fixes] = value }
+        opts.on("--report PATH") { |value| options[:report] = value }
         opts.on("--verdict PATH") { |value| options[:verdict] = value }
         opts.on("--apply") { options[:apply] = true }
         opts.on("--dry-run") { options[:apply] = false }

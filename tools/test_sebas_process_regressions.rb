@@ -179,11 +179,25 @@ class CliRobustnessTest < Minitest::Test
     end
   end
 
-  # #124：review 命令并入 verify --final；缺 fixes 在解析阶段 fail-fast（不触网）。
-  def test_final_requires_fixes
+  # #124：review 命令并入 verify --final；缺输入文件在解析阶段 fail-fast（不触网）。
+  # 「未知 level 不静默丢弃」由 load_report 抛 UsageError（退 2）继续保障。
+  def test_final_requires_report_and_fixes
     status, out, = run_cli(["verify", "merge", "1", "1", "--final"])
     assert_equal 2, status
+    assert_includes out, "--report"
     assert_includes out, "--fixes"
+  end
+
+  def test_final_rejects_unknown_level_in_phase_one_report
+    Dir.mktmpdir do |dir|
+      report_path = File.join(dir, "verification.json")
+      fixes_path = File.join(dir, "fixes.json")
+      File.write(report_path, JSON.generate({"items" => [{"level" => "must-fix", "message" => "x"}]}), encoding: "UTF-8")
+      File.write(fixes_path, "{}", encoding: "UTF-8")
+      status, out, = run_cli(["verify", "merge", "1", "1", "--final", "--report", report_path, "--fixes", fixes_path])
+      assert_equal 2, status
+      assert_includes out, "must-fix"
+    end
   end
 
   # 阻断 14：可留项必须有复核结论（#124 后由 --final 的 checker 阶段承载）。
