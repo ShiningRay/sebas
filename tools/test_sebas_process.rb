@@ -1768,3 +1768,103 @@ class PathChecksIntegrationTest < Minitest::Test
     assert report.pass?, "全合规应通过：#{report.items.map(&:message).inspect}"
   end
 end
+
+# #125 第一轮 CodeRabbit 复审（7 条）回归。
+class PathChecksRound2Test < Minitest::Test
+  def change(path, patch)
+    SebasAgents::PathChecks::Change.new(path: path, patch: patch)
+  end
+
+  def run_check(changes, body: "", threads: [])
+    report = SebasAgents::VerificationReport.new
+    SebasAgents::PathChecks.check(changes: changes, body: body, threads: threads, report: report)
+    report
+  end
+
+  # jobI：patch 缺失的文件必须显式拒绝核验，不按空改动放行。
+  def test_missing_patch_fails_closed
+    report = run_check([change(".github/workflows/ci.yml", nil)], body: "安全边界：略")
+    assert report.blockers.any? { |i| i.message.include?("无 patch 内容") }
+  end
+
+  # jobJ：注释里的假 sha 骗不过；带引号的合法引用能过。
+  def test_uses_value_is_validated_whole
+    report = run_check([change(".github/workflows/ci.yml",
+      "+      uses: actions/checkout@v4 # uses: x/y@#{'a' * 40}\n")])
+    assert report.blockers.any? { |i| i.message.include?("未钉 SHA") }, "注释中的 40 位文本不能代替字段校验"
+
+    quoted = run_check([change(".github/workflows/ci.yml",
+      "+      uses: \"actions/checkout@#{'b' * 40}\"\n")])
+    assert quoted.blockers.empty?, quoted.blockers.map(&:message).inspect
+  end
+
+  # jobD：git push -f 短参数也拦；普通 push 不拦。
+  def test_git_push_short_force_flag_blocks
+    report = run_check([change(".github/workflows/rel.yml", "+      git push -f origin main\n")])
+    assert report.blockers.any? { |i| i.message.include?("push 保护") }
+    report = run_check([change(".github/workflows/rel.yml", "+      git push origin main\n")])
+    assert report.blockers.empty?, report.blockers.map(&:message).inspect
+  end
+
+  # jobK：读取分支保护配置（GET）不触发；新增写方法触发。
+  def test_branch_protection_read_does_not_block
+    report = run_check([change(".github/workflows/rel.yml", "+      gh api repos/o/r/branches/main/protection\n")])
+    assert report.blockers.empty?, "只读 GET 不应触发"
+    report = run_check([change(".github/workflows/rel.yml", "+      gh api repos/o/r/branches/main/protection -X PUT\n")])
+    assert report.blockers.any? { |i| i.message.include?("分支保护") }
+  end
+
+  # jobF：test_ 前缀的 Markdown 不满足 tools 测试联动。
+  def test_tools_test_pattern_requires_rb
+    report = run_check([change("tools/new_script.rb", "+puts 1\n"),
+                        change("tools/test_notes.md", "+note\n")])
+    assert report.blockers.any? { |i| i.message.include?("tools/test_*.rb") }
+
+    ok = run_check([change("tools/new_script.rb", "+puts 1\n"),
+                    change("tools/test_new_script.rb", "+assert true\n")])
+    refute ok.blockers.any? { |i| i.message.include?("tools/test_*.rb") }
+  end
+
+  # jobG：纯注释 src 改动同时豁免文档联动，完整报告通过。
+  def test_comment_only_src_change_exempts_docs_linkage
+    report = run_check([change("src/store/store.cr", "+# 注释\n-# 旧注释\n")])
+    assert report.pass?, "纯注释改动应完整通过：#{report.items.map(&:message).inspect}"
+    assert report.acceptable_items.any?
+  end
+end
+
+# #125 第一轮复审 jobB：混合快照 fail-closed（gateway 层）。
+class PrDetailsHeadMismatchTest < Minitest::Test
+  # 用 FakeRunner 模拟 gh api 返回，验证 head 不一致时抛错。
+  class StubRunner
+    Result = Struct.new(:stdout)
+    def initialize(responses)
+      @responses = responses
+    end
+
+    def json!(*_argv)
+      r = @responses.shift
+      JSON.parse(r)
+    end
+  end
+
+  def test_head_mismatch_raises
+    gateway = SebasAgents::GithubGateway.new(
+      StubRunner.new(['{"body": "b", "head_sha": "new"}', "[]"]), repo: "o/r"
+    )
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_pr_details, 10, expected_head: "old")
+    end
+    assert_includes error.message, "混合快照"
+  end
+
+  def test_head_match_proceeds
+    gateway = SebasAgents::GithubGateway.new(
+      StubRunner.new(['{"body": "b", "head_sha": "same"}', '[{"filename": "a.rb", "patch": "+x"}]']),
+      repo: "o/r"
+    )
+    details = gateway.send(:fetch_pr_details, 10, expected_head: "same")
+    assert_equal "b", details["body"]
+    assert_equal 1, details["files"].length
+  end
+end

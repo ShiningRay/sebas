@@ -264,7 +264,9 @@ module SebasAgents
         threads = item["state"].to_s.casecmp?("OPEN") ? fetch_review_threads(item["number"]) : []
         # #125：open PR 需要变更文件与正文承载路径联动/安全/CWE 检查；
         # 已合并/关闭 PR 的快照不带这两项（检查不可判定即留痕 unverified）。
-        details = item["state"].to_s.casecmp?("OPEN") ? fetch_pr_details(item["number"]) : {}
+        # 详情必须属于快照记录的同一 head：两次请求间若 PR 推了新提交，
+        # 门禁会拿旧 head 的 checks 配新 head 的 files 形成混合快照——fail-closed。
+        details = item["state"].to_s.casecmp?("OPEN") ? fetch_pr_details(item["number"], expected_head: item["headRefOid"]) : {}
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -283,9 +285,19 @@ module SebasAgents
     # PR 详情：正文 + 变更文件（filename/patch）。失败必须抛错——
     # 缺数据时 verify_merge 会留痕 unverified，但拿不到详情这个事实本身
     # 不允许被静默吞掉。
-    def fetch_pr_details(number)
+    # expected_head：快照记录的 head sha。详情取回后回读当前 head，
+    # 不一致直接抛错（fail-closed）——不能把旧 head 的 checks 配新 head 的
+    # files 拼成混合快照让门禁误判（CodeRabbit）。
+    def fetch_pr_details(number, expected_head: nil)
       pr = @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}",
-        "--jq", "{body: .body}")
+        "--jq", "{body: .body, head_sha: .head.sha}")
+      if expected_head && pr.is_a?(Hash) && pr["head_sha"].to_s != expected_head.to_s
+        raise CommandError.new(
+          "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{pr["head_sha"]}）；" \
+          "拒绝构建混合快照，请重跑选择器",
+          command: ["gh", "api", "pulls/#{number}"]
+        )
+      end
       files = @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}/files?per_page=100")
       unless files.is_a?(Array)
         raise CommandError.new("PR ##{number} files 返回非数组", command: ["gh", "api", "pulls/#{number}/files"])
