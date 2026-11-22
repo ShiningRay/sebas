@@ -106,6 +106,24 @@ report.conclusion                  # "通过" / "打回" / "有条件通过"
 
 结论只来自实际跑出的命令输出；跑不了写 `unverified`，不编证据。
 
+## 可执行实现：PR 上的自动核验（#122）
+
+「独立上下文」不靠自觉，而由 Actions 的独立 job 承载：
+[`.github/workflows/verify.yml`](../../../.github/workflows/verify.yml) 有两个 job。
+
+| job | 做什么 | 何时失败 |
+|---|---|---|
+| `verifier` | 跑 `verify docs` + 生成并核验 anchors，产出 `verification.json` artifact，贴 PR 评论 | 产不出报告（基础设施故障） |
+| `reviewer` | 读 artifact 出终验结论：任一 blocker / must_fix / 无证据 unverified 即打回 | 打回时（这才是 PR 的红灯） |
+
+**安全核心：核验脚本取自 base 分支。** PR 可以改 `.github/workflows/**` 与 `tools/**`；
+若直接跑 PR 里的核验脚本，PR 就能改核验逻辑让自己通过。因此 base sha checkout 到
+`trusted/`，PR 内容 checkout 到 `target/`，只在 `trusted/` 里执行 ruby、用 `--root ../target`
+指定被核验对象。这条属性由 `tools/test_verify_workflow.rb` 固定：既断言 YAML 写法
+（`ref: base.sha`），也用篡改过的核验脚本做端到端行为验证。
+
+本 workflow 只做确定性层（证据收集 + 规则汇总），**不做语义判断**——那是 #123 的范围。
+
 ## 可执行实现：issue 批量抽验
 
 ```sh

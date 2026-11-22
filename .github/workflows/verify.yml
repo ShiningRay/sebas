@@ -1,0 +1,282 @@
+name: Verify PR
+
+# Verifier/Reviewer 的确定性实现（#122）。
+#
+# 把设计上的「独立上下文只读核验」落成 Actions 的两个独立 job：
+#   verifier —— 收集证据（锚点核验 + 文档核验），产出 verification.json，贴 PR 评论
+#               只在「产不出报告」这类基础设施故障时失败
+#   reviewer —— 读 verification.json 出终验结论；判定打回时 job 失败
+#
+# 只做确定性层（证据收集 + 规则汇总），不做语义判断（那是 #123）。
+#
+# ## 安全核心：核验脚本必须来自 base 分支
+#
+# PR 可以改 `.github/workflows/**` 与 `tools/**`。若直接跑 PR 里的核验脚本，
+# PR 就能改核验逻辑让自己通过——门禁形同虚设。
+# 因此：可信脚本从 base sha 单独 checkout 到 `trusted/`，PR 内容 checkout 到
+# `target/` 只作为被核验对象，其中的脚本一律不执行。
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verifier:
+    name: verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout base scripts (trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout PR content (verification target)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: target
+          persist-credentials: false
+
+      - name: Select preinstalled Ruby
+        shell: bash
+        run: |
+          want="$(cat trusted/.ruby-version)"
+          want_minor="$(echo "$want" | cut -d. -f1-2)"
+          ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+
+          best=""
+          for dir in /opt/hostedtoolcache/Ruby/*/x64; do
+            [ -x "$dir/bin/ruby" ] || continue
+            version="$("$dir/bin/ruby" -e 'print RUBY_VERSION')"
+            ge "$version" "$want_minor" || continue
+            if [ -z "$best" ] || ge "$version" "$best_version"; then
+              best="$dir"; best_version="$version"
+            fi
+          done
+
+          if [ -z "$best" ]; then
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want）"
+            ls /opt/hostedtoolcache/Ruby/ || true
+            exit 1
+          fi
+          echo "$best/bin" >> "$GITHUB_PATH"
+          echo "selected Ruby $best_version from $best"
+
+      - name: Assert trusted scripts exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in tools/sebas-process \
+                      tools/agents/lib/sebas_agents/verifier.rb \
+                      tools/agents/lib/sebas_agents/verification_report.rb \
+                      tools/agents/lib/sebas_agents/policy/evidence.rb \
+                      tools/agents/lib/sebas_agents/model.rb \
+                      tools/anchors_extract.rb; do
+            [ -f "trusted/$path" ] || { echo "::error::base 缺 $path"; exit 1; }
+          done
+          echo "base 版本脚本齐备"
+
+      # 收集证据。所有 ruby 调用都在 trusted/ 下执行（用 base 脚本），
+      # 通过 --root 指向 target/（PR 内容）。
+      - name: Collect docs evidence (base scripts, PR content)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+
+          mapfile -t docs < <(cd target && git ls-files 'docs/**/*.md')
+          if [ "${#docs[@]}" -eq 0 ]; then
+            echo "::error::PR 里 docs/ 下没有 markdown 文件，核验无对象"
+            exit 1
+          fi
+
+          cd trusted
+          ruby tools/sebas-process verify docs "${docs[@]}" --root ../target \
+            > ../out/docs_report.json 2> ../out/docs_err.txt || true
+
+          if [ ! -s ../out/docs_report.json ]; then
+            echo "::error::verify docs 未产出报告：$(head -3 ../out/docs_err.txt 2>/dev/null || true)"
+            exit 1
+          fi
+          echo "docs 证据已收集"
+
+      - name: Collect anchors evidence (base generator, PR content)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          mapfile -t docs < <(cd target && git ls-files 'docs/**/*.md')
+
+          cd trusted
+          # 生成失败（如越界）时退出码非 0，但这本身也是证据：把 ERROR 行
+          # 收进日志，随后在构建报告时转成 blocker。
+          ruby tools/anchors_extract.rb --root ../target --output ../out/anchors.json "${docs[@]}" \
+            > ../out/anchors_extract.txt 2>&1 || echo "锚点生成非零退出（见下方 ERROR 行）" >> ../out/anchors_extract.txt
+
+          if [ -s ../out/anchors.json ]; then
+            ruby tools/sebas-process verify anchors ../out/anchors.json --root ../target \
+              > ../out/anchors_report.json 2> ../out/anchors_err.txt || true
+          fi
+          echo "anchors 证据已收集"
+          tail -3 ../out/anchors_extract.txt
+
+      - name: Build verification.json
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cd trusted
+          ruby -e '
+            require "json"
+
+            items = []
+            %w[anchors docs].each do |kind|
+              path = "../out/#{kind}_report.json"
+              next unless File.exist?(path) && !File.read(path, encoding: "UTF-8").strip.empty?
+
+              data = JSON.parse(File.read(path, encoding: "UTF-8"))
+              Array(data["items"]).each do |item|
+                items << {
+                  "id" => "#{kind}-#{item["id"]}",
+                  "level" => item["level"],
+                  "message" => "#{kind}: #{item["message"]}",
+                  "evidence" => item["evidence"]
+                }
+              end
+            end
+
+            # 锚点生成失败（越界/缺失）本身即阻断，必须进报告，不能只留在日志里。
+            extract_log = "../out/anchors_extract.txt"
+            if File.exist?(extract_log)
+              File.read(extract_log, encoding: "UTF-8").each_line do |line|
+                next unless line.start_with?("ERROR ")
+                items << {
+                  "id" => "anchors-extract-#{items.length + 1}",
+                  "level" => "blocker",
+                  "message" => "anchors: #{line.sub(/\AERROR\s*/, "").strip}",
+                  "evidence" => nil
+                }
+              end
+            end
+
+            report = {
+              "conclusion" => nil,
+              "counts" => %w[blocker must_fix acceptable unverified]
+                .to_h { |level| [level, items.count { |i| i["level"] == level }] },
+              "items" => items,
+              "observed" => {"base" => ENV.fetch("BASE_SHA"), "head" => ENV.fetch("HEAD_SHA")}
+            }
+            File.write("../out/verification.json", JSON.pretty_generate(report) + "\n", encoding: "UTF-8")
+            puts "verification.json: #{items.length} items"
+          '
+
+          # 摘要评论：结论由 reviewer 定，这里只列证据。
+          ruby -e '
+            require "json"
+            d = JSON.parse(File.read("../out/verification.json", encoding: "UTF-8"))
+            c = d["counts"]
+            lines = []
+            lines << "<!-- verify-pr:summary -->"
+            lines << "## Verifier 核验（证据收集）"
+            lines << ""
+            lines << "核验脚本取自 base `#{ENV.fetch("BASE_SHA")}`，被核验内容取自 head `#{ENV.fetch("HEAD_SHA")}`。"
+            lines << ""
+            lines << "| 级别 | 数量 |"
+            lines << "|---|---|"
+            %w[blocker must_fix acceptable unverified].each { |l| lines << "| #{l} | #{c[l]} |" }
+            items = d["items"]
+            unless items.empty?
+              lines << ""
+              lines << "<details><summary>逐条明细（#{items.length}）</summary>"
+              lines << ""
+              items.each { |i| lines << "- **[#{i["level"]}]** #{i["message"]}" }
+              lines << ""
+              lines << "</details>"
+            end
+            File.write("../out/comment.md", lines.join("\n") + "\n", encoding: "UTF-8")
+          '
+
+      - name: Upload verification artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verification-report
+          path: |
+            out/verification.json
+            out/comment.md
+          if-no-files-found: error
+
+      - name: Post verification comment
+        # fork PR 的 GITHUB_TOKEN 是只读的，发评论会 403。核验本身不依赖评论，
+        # 所以这里容忍失败并给出提示，不让权限问题把核验结果说成「失败」。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # 同一 PR 重跑时更新既有评论，避免刷屏。
+          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- verify-pr:summary -->")) | .id' | head -1 || true)
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
+              -F body=@out/comment.md > /dev/null
+          else
+            gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -F body=@out/comment.md > /dev/null
+          fi
+          echo "comment posted"
+
+  reviewer:
+    name: reviewer
+    needs: verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download verification report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: verification-report
+          path: out
+
+      # 只读判定，不重跑核验（与 Reviewer 的设计一致）。
+      # 本 workflow 没有 LLM，无法自动确认 must_fix 的修复，所以任一
+      # must_fix 即打回；unverified 无间接证据同样打回。
+      - name: Decide final verdict
+        run: |
+          set -euo pipefail
+          ruby -e '
+            require "json"
+            d = JSON.parse(File.read("out/verification.json", encoding: "UTF-8"))
+            items = Array(d["items"])
+            blockers = items.select { |i| i["level"] == "blocker" }
+            must_fix = items.select { |i| i["level"] == "must_fix" }
+            no_evidence = items.select { |i| i["level"] == "unverified" && i["evidence"].to_s.strip.empty? }
+
+            puts "## Reviewer 终验"
+            puts
+            if blockers.any? || must_fix.any? || no_evidence.any?
+              puts "结论：**打回**"
+              puts
+              puts "blocker=#{blockers.length} must_fix=#{must_fix.length} 无证据未实测=#{no_evidence.length}"
+              puts
+              blockers.each { |i| puts "- 阻断：#{i["message"]}" }
+              must_fix.each { |i| puts "- 应修：#{i["message"]}" }
+              no_evidence.each { |i| puts "- 未实测且无间接证据：#{i["message"]}" }
+              exit 1
+            end
+            puts "结论：**通过**（无阻断、无应修、无缺证未实测项）"
+          '

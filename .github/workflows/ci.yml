@@ -300,6 +300,11 @@ jobs:
       - name: Test the anchors extractor itself
         run: ruby tools/test_anchors_extract.rb
 
+      # verify.yml 的安全属性（脚本取自 base）靠契约测试固定：
+      # 若有人把 base.sha 改成 head.sha，仅靠人工 review 很容易漏过。
+      - name: Test the PR verify workflow
+        run: ruby tools/test_verify_workflow.rb
+
       # 全量 docs 跑 verify docs：不限改动文件，防止旧文档劣化。
       # acceptable 级（存档行号锚）不算失败；blocker/must_fix 让退出码非 0。
       - name: Verify docs gate
