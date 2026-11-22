@@ -60,7 +60,7 @@
 - 范围：
   - `src/channels/telegram/` 目录：adapter.cr / long_poll.cr / bot_api.cr；
   - long-poll：`getUpdates(offset, timeout=50)` 循环；offset 落 store 持久化，启动时读；**活跃窗口/空闲双模**——`last_update_at` 距今 ≥6 天进入重置模式（详见 [proposals/m8-channel-expansion-slack-telegram.md §4.2](../../proposals/m8-channel-expansion-slack-telegram.md)「Telegram 空闲后 `update_id` 重置策略」）；
-  - 排重：活跃窗口内 `update_id` 单调递增推进；重置模式下用内容指纹（`update_id + chat_id + message_id + text hash`）查重，不靠 offset 比较；**持久化优先于 offset 推进**——每条 update 按「Step 1 落 `telegram_updates`（含 `dispatched=false`）→ Step 2 推进 `persisted_offset` → Step 3 入总线并标 `dispatched=true`」顺序，启动时扫 `dispatched=false` 重投；
+  - 排重：活跃窗口内 `update_id` 单调递增推进；重置模式下用内容指纹（`update_id + chat_id + message_id + text hash`）查重，不靠 offset 比较；**持久化优先于 offset 推进**——每条 update 按「Step 1 落 `telegram_updates`（含 `dispatched=false`）→ Step 2 推进 `persisted_offset` → Step 3 入总线」顺序；**`dispatched=true` 由消费者侧在 `record_intent` 落库成功后回调置位**，`Bus#publish` 返回不等于处理完成；启动时扫 `dispatched=false` 重投；
   - 重置模式退出条件：本轮 ≥1 条新 update 且全部持久化 + 入总线成功后才重置 `persisted_offset` 并切回活跃窗口；**空轮询继续保持重置模式**；
   - store 表新增 `telegram_accounts.last_update_at` 与 `telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, created_at)`，`(content_fingerprint, account_id)` 唯一索引；
   - 发送：`sendMessage` + token bucket（按 `(account_id, chat_id)` 建桶，1 msg/s；全局 30 msg/s 桶）；
@@ -77,8 +77,9 @@
   - **空闲重置场景**：mock server 模拟「bot 空闲 ≥1 周后，下一条 update 的 `update_id` 小于持久化 offset」——适配器进入重置模式，**不丢弃该消息**（内容指纹查重落库 + 入总线），并把 `persisted_offset` 重置为新值；同一条 update 重推时按内容指纹排重，不重复入总线；
   - **拒绝旧 offset 确认**：在重置模式下，任何 `getUpdates` 调用不得因为「新 `update_id` < persisted_offset」而直接 ACK 跳过——必须在内容指纹查重后才决定是否消费；
   - **活跃窗口持久化优先**：fault-injection 在「Step 1 落库后、Step 2 推进 offset 前」`kill -9`，重启后扫 `dispatched=false` 行重投入总线，不丢消息；再注入「Step 2 推进 offset 后、Step 3 入总线前」`kill -9`，同样靠 `dispatched=false` 扫描恢复；
+  - **`dispatched` 由消费者置位**：fault-injection 在「`Bus#publish` 已返回但消费者尚未 `record_intent`」`kill -9`——生产者侧 `dispatched` 仍为 `false`；重启后扫到该行重投入总线，消费者这次完成 `record_intent` 并回调置 `dispatched=true`；验证 bus 投递成功不等于处理完成、`dispatched` 不会因 bus 返回被过早置位；
   - **唯一索引冲突不阻塞 offset 推进**：mock server 让进程在 Step 1 后、Step 2 前崩溃，重启并恢复后 mock server 再次返回同一条 `update_id`——适配器在 Step 1 命中唯一索引冲突时**不视为失败**，继续 Step 2 推进 `persisted_offset`；该行的 `dispatched` 已为 `true`，Step 3 跳过不重复入总线。验证轮询不停滞、消息不重复入总线；
-  - **入站 `event_id` 确定性派生**：fault-injection 在「Step 3 入总线成功后、`dispatched=true` 写入前」`kill -9`，重启后扫到 `dispatched=false` 行重建消息——用持久化行的 `update_id` 按提案 §4.2 派生规则算出与原投递**同值**的 `event_id`，经非重放路径入总线，消费者按 `event_id` 命中 intent 排重——该 update 全程只被处理一次，触发的发消息动作也只执行一次；
+  - **入站 `event_id` 确定性派生（含内容指纹）**：fault-injection 在「Step 3 入总线成功后、消费者 `record_intent` 落库前」`kill -9`，重启后扫到 `dispatched=false` 行重建消息——用持久化行的 `update_id` 与 `content_fingerprint` 按提案 §4.2 唯一形式 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>` 算出与原投递**同值**的 `event_id`，经非重放路径入总线，消费者按 `event_id` 命中 intent 排重——该 update 全程只被处理一次，触发的发消息动作也只执行一次；额外验证：mock server 让适配器进入重置模式后收到两条 `update_id` 相同但内容不同的 update，两条都能得到独立 `event_id`，第二条不会被消费者 intent 排重忽略；
   - **空轮询不退重置模式**：mock server 让适配器进入重置模式后，前 N 轮 `getUpdates()` 返回空数组，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——前 N 轮持续无 offset 轮询、不重置 offset；第 N+1 轮该 update 被消费，`persisted_offset` 重置为新值，下一轮回到活跃窗口。
 - 风险：long-poll 在 NAT/反代后容易被中间设备掐空闲连接——`timeout=50` 是官方推荐值，不低于 30 不高于 60。[推演]
 

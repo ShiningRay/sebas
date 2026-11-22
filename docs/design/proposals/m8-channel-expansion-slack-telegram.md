@@ -131,12 +131,17 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
 1. **活跃窗口内（持久化优先于 offset 推进）**：对收到的每条 update，按以下顺序处理：
    - **Step 1 · 持久化**：先把 update 原文 + 内容指纹落 `telegram_updates` 表（含 `dispatched: false` 标记）。**唯一索引冲突处理**：若 INSERT 触发 `(content_fingerprint, account_id)` 唯一索引冲突，说明该 update 之前已持久化（典型场景：上一次进程在 Step 1 后、Step 2 前崩溃，重启后 Telegram 再次返回同一条 update）——**不视为失败**，继续执行 Step 2 推进 `persisted_offset`；同时查一次该行的 `dispatched` 标记，`dispatched=true` 则 Step 3 跳过（不重复入总线），`dispatched=false` 则 Step 3 照常执行。
    - **Step 2 · 推进 offset**：持久化成功（含唯一索引冲突被视为已持久化）后，才把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 才确认旧值。**绝不在持久化前推进 offset**——否则崩溃后 Telegram 已确认、本地无记录，静默丢消息。
-   - **Step 3 · 入总线**：把该 update 投递到 bus（**入站 `event_id` 派生规则见下**），投递成功后把 `telegram_updates.dispatched` 置 `true`。已标 `dispatched=true` 的行不得再次入总线。
-   - **入站 `event_id` 派生规则（确定性）**：Telegram 入站消息的 `event_id` 由 `(account_id, update_id)` 经 SHA-256 派生（形如 `tg:<account_id>:<update_id>`，或 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——同一条 update 在所有投递路径上得到相同值）。这样：
-     - 启动恢复路径用持久化行的 `update_id` 重建 `event_id`，与原投递路径同值；
+   - **Step 3 · 入总线 + 消费者确认**：把该 update 投递到 bus。**`Bus#publish` 成功返回 ≠ 处理完成**——`Bus#publish` 只把事件写入进程内存 Channel，没有落盘或确认机制；消费者在接收事件后才调用 `record_intent` 把 intent 写入 intents 表。因此 `dispatched=true` 的置位必须由**消费者侧**发起：
+     - 消费者 `process_message` 在 `record_intent` 落库成功后，回调 Telegram adapter 把对应 `telegram_updates.dispatched` 置 `true`；
+     - 生产者在 `Bus#publish` 返回后**不置位**——`dispatched` 仍为 `false`，直到消费者确认；
+     - 已标 `dispatched=true` 的行不得再次入总线。
+   - **入站 `event_id` 派生规则（确定性，含内容指纹）**：Telegram 入站消息的 `event_id` **唯一形式**为 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——同时纳入 `update_id` 与 `content_fingerprint`。原因：Telegram 空闲重置后可能再次分配相同的 `update_id`，纯 `(account_id, update_id)` 派生会让内容不同的两条 update 得到相同 `event_id`，消费者 `record_intent` 用 `INSERT OR IGNORE` 会忽略新消息、且 Step 3 已标 `dispatched=true`，启动恢复也不会再投递，新消息被静默跳过。加入内容指纹后：
+     - 同一条 update（同 `update_id` + 同内容）在所有投递路径上得到相同 `event_id`；
+     - 内容不同的 update 即使 `update_id` 相同也得到不同 `event_id`，不会被 intent 排重忽略；
+     - 启动恢复路径用持久化行的 `update_id` 与 `content_fingerprint` 按同一规则重建 `event_id`，与原投递路径同值；
      - 消费者按 `event_id` 做提交级排重（已有先例：`src/platform/cli/gateway.cr` 与 `src/platform/store/store.cr` 的 intent 落库路径——非重放路径中已存在的 intent 直接返回，不再派发），**同一条 update 被处理一次**；
      - 出站幂等键由 `event_id` 派生（`src/tools/executor.cr` 发消息工具实现），同一条 update 触发的发消息动作也不会重复。
-   - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 的行，按 update_id 升序重建消息（`event_id` 按上述规则派生）、经**非重放路径**重新入总线（让 intent 排重生效），投递成功后标 `dispatched=true`。这样「Step 1 落库后崩溃、Step 2/3 未执行」「Step 3 入总线成功但 `dispatched=true` 写入前崩溃」两个窗口都能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。
+   - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 的行，按 update_id 升序重建消息（`event_id` 按上述含指纹规则派生）、经**非重放路径**重新入总线（让 intent 排重生效）。这样「Step 1 落库后崩溃、Step 2/3 未执行」「Step 3 入总线成功但消费者尚未 `record_intent` 就崩溃」两个窗口都能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。intent 落库之后的崩溃由既有重放规则覆盖。
    - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
    - `last_update_at` 在 Step 2 同步落库。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
