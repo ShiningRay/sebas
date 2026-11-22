@@ -1,6 +1,6 @@
 # Fork/Join 影分身语义（fork-join-semantics）
 
-> **状态**：Proposal · 待评审（M4.0-WP1 定稿条件 = 本文档评审通过）
+> **状态**：已定稿并吸收（M4.0-WP1 评审定稿 + M4.0-WP2 吸收回写完成：契约摘要落 spec/08-multi-agent.md §8.4、M4 期落 spec/14-roadmap.md §14；本文转为语义细则的权威参考）
 > **日期**：2026-11-20 · **作者**：工部尚书（受首辅分派）
 > **定位**：本文是 Fork/Join 影分身的**方案核心**——原语契约、Join 语义矩阵、分层回写、expectations 表、能力衰减、触发权、成本与失败语义。架构落位见 [fork-join-shadow-clone-architecture.md](fork-join-shadow-clone-architecture.md)；现状差距见 [fork-join-shadow-clone-analysis.md](../fork-join-shadow-clone-analysis.md)；定位立论见 [fork-join-shadow-clone-positioning.md](fork-join-shadow-clone-positioning.md)。
 > **命名**：原语名 `fork` / `join`（POSIX 直觉）；UI 层叫「影分身」。

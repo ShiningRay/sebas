@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 设计主体 | [design.md](../design.md) | 16 章：三正交概念/分层架构/多账号/编排/协作/管理面/安全/热更新(§11)/插件(§12：子进程+包生命周期)/目录结构(§13)/M0-M3 路线图(§14)/风险(§15)/来源对照表 41 条(§16)+附录 | [来源: design.md §1~§16] |
 | 目录结构基线 | design.md §13 | src/{platform,config,bus,supervisor,store,keys}/+channels/routing/agents/orchestration/tools/providers/admin/plugins/ 模块划分与 A1-A10 承接表 | [来源: design.md §13] |
-| 里程碑验收 | design.md §14 | M0-M3 各期验收要点+排期依据（热更新 M1、插件 M3） | [来源: design.md §14] |
+| 里程碑验收 | design.md §14 | M0-M4 各期验收要点+排期依据（热更新 M1、插件 M3、fork/join M4——M4.0-WP2 吸收回写后延至 M4） | [来源: design.md §14] |
 | 风险与未验证 | design.md §15 | 未验证 13 条（15.1）/架构风险 7 条（15.2）/取舍 3 条（15.3）；mrb.cr 甄别与 Windows 构建 blocker 已更新 | [来源: design.md §15] |
 | 质量门禁惯例 | [CONTRIBUTING.md](../../../CONTRIBUTING.md) 质量门禁节 | `crystal spec` 全过 / `crystal tool format --check` / `./bin/ameba` 无警告 / `make release` 成功 / 改动须同步 docs | [来源: 仓库:CONTRIBUTING.md Quality gates 节] |
 | 格式范本 | tessell/docs/plan.md、plan-execution.md | `M*-WP*` 编号、pd 区间估算、相对周、EX-W1-01 执行分块、DoD 分层、状态与证据边界纪律 | [来源: 任务输入] |
