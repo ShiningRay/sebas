@@ -133,8 +133,13 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
    - **Step 2 · 推进 offset**：持久化成功（含唯一索引冲突被视为已持久化）后，才把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 才确认旧值。**绝不在持久化前推进 offset**——否则崩溃后 Telegram 已确认、本地无记录，静默丢消息。
    - **Step 3 · 入总线 + 消费者确认**：把该 update 投递到 bus。**`Bus#publish` 成功返回 ≠ 处理完成**——`Bus#publish` 只把事件写入进程内存 Channel，没有落盘或确认机制；消费者在接收事件后才调用 `record_intent` 把 intent 写入 intents 表。因此 `dispatched=true` 的置位必须由**消费者侧**发起：
      - 消费者 `process_message` 在 `record_intent` 落库成功后，回调 Telegram adapter 把对应 `telegram_updates.dispatched` 置 `true`；
+     - **已有 intent 分支也要确认**：若消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent（`INSERT OR IGNORE` 返回 false）而提前返回，**也必须**回调把对应 `telegram_updates.dispatched` 置 `true`——否则启动恢复会重投该行，消费者又走「已有 intent」分支提前返回，永远卡在 `dispatched=false`，每次启动都被重复重投。
      - 生产者在 `Bus#publish` 返回后**不置位**——`dispatched` 仍为 `false`，直到消费者确认；
      - 已标 `dispatched=true` 的行不得再次入总线。
+   - **`record_intent` 失败的运行期恢复**：若消费者 `record_intent` 因临时数据库错误抛异常，`dispatched` 保持 `false`、Telegram `update_id` 已被生产者侧推进 offset（Telegram 不会重投），现有 `process_message` 捕获该异常只记录日志、不重试。提案采用「**周期性扫描 + 重启兜底**」双路恢复：
+     - **周期扫描**：消费者进程内每 **60 秒**扫一次 `telegram_updates.dispatched=false` 且 `created_at < now() - 30s` 的行（30 秒豁免避免与正常 in-flight 冲突），按 update_id 升序重建消息、经非重放路径入总线（让 intent 排重生效）——`record_intent` 已成功的行会走「已有 intent」分支被确认，新失败的行会重试 `record_intent`。
+     - **重启兜底**：进程重启时同样扫 `dispatched=false`（见下方启动恢复）——双路合流，任何路径下 `dispatched=false` 的行都会在**最迟 90 秒内**被重新处理（周期扫描 60s + 30s 豁免）。
+     - **明确延迟上限**：在不重启的前提下，一次 `record_intent` 失败的消息**最多延迟 90 秒**就会被重新处理；多次连续失败会被周期性扫描反复重试，直到成功或达到重试上限 `max_dispatch_retries = 20`（超出后转入 `dead_letter` 状态、上报管理面告警、不再重试）。
    - **入站 `event_id` 派生规则（确定性，含内容指纹）**：Telegram 入站消息的 `event_id` **唯一形式**为 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——同时纳入 `update_id` 与 `content_fingerprint`。原因：Telegram 空闲重置后可能再次分配相同的 `update_id`，纯 `(account_id, update_id)` 派生会让内容不同的两条 update 得到相同 `event_id`，消费者 `record_intent` 用 `INSERT OR IGNORE` 会忽略新消息、且 Step 3 已标 `dispatched=true`，启动恢复也不会再投递，新消息被静默跳过。加入内容指纹后：
      - 同一条 update（同 `update_id` + 同内容）在所有投递路径上得到相同 `event_id`；
      - 内容不同的 update 即使 `update_id` 相同也得到不同 `event_id`，不会被 intent 排重忽略；
@@ -150,7 +155,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
    - **空轮询不退出**：若本轮 `getUpdates()` 返回空数组，**继续保持重置模式**——不重置 offset、不更新 `last_update_at`、不切换回活跃窗口。下一轮仍用无 offset 轮询，直到收到至少 1 条新 update。原因：空轮询时若恢复旧 offset，bot 空闲超过一周后的较小新 ID 仍会被确认跳过，与本策略目的直接冲突。
    - **重置模式与活跃窗口的持久化口径一致**：每一步都先持久化、再入总线，崩溃恢复路径与活跃窗口共用同一「扫 `dispatched=false` 重投」逻辑。
 4. **拒绝跳过新消息**：任何路径下，`getUpdates` 的 `offset` 参数都必须 ≥ 已确认的 `persisted_offset+1`，不允许因为「新值比旧值小」就跳过；重置模式通过内容指纹而非 offset 比较保证幂等。
-5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时扫描未投递行做恢复。
+5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, retry_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时与周期扫描未投递行做恢复，`retry_count` 用于 `max_dispatch_retries` 上限控制。
 
 > 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m8-channels.md §M8.1-WP3 验收](../plan/wbs/m8-channels.md) 落地为可测验收条目。
 
