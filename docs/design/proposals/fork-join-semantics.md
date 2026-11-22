@@ -149,7 +149,7 @@ L1 回写消息 JSON 草案：[推演]
 ```sql
 CREATE TABLE IF NOT EXISTS expectations (
   id             TEXT PRIMARY KEY,        -- "join:" + fork_id
-  fork_id        TEXT NOT NULL,          -- 与分身会话键 peer 段一致，唯一
+  fork_id        TEXT NOT NULL,          -- fork 级标识（不含 member_index）；从成员键 peer 段 fork_id:member_index 取前段即可关联，同次 fork 全部成员共享同一 expectation 行
   parent_task_id TEXT NOT NULL REFERENCES tasks(id),
   parent_session TEXT NOT NULL,          -- L1 回写目标（父会话五段键）
   mode           TEXT NOT NULL,          -- all | any | allSettled
