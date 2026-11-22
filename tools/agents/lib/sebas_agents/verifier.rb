@@ -2,6 +2,7 @@
 
 require "json"
 require "open3"
+require "shellwords"
 
 module SebasAgents
   # Verifier：只读核验。全部方法只读文件、只跑只读命令，不写仓库。
@@ -29,7 +30,7 @@ module SebasAgents
           # evidence 是可复跑命令（#124 终验 checker 重执行判定修复）；
           # 路径用相对 root 的形式，checker 在 root 下执行。
           report.must_fix("#{relative_path} 共 #{line_count} 行，超过 #{max_lines} 行上限",
-            evidence: RERUN_LINE_COUNT % [max_lines, relative_path])
+            evidence: RERUN_LINE_COUNT % [max_lines, Shellwords.escape(relative_path)])
         end
 
         anchors = text.scan(LINE_ANCHOR).map { |match| match.join }
@@ -38,13 +39,15 @@ module SebasAgents
         level = ARCHIVE_DIRS.any? { |dir| relative_path.start_with?(dir) } ? :acceptable : :must_fix
         anchors.tally.each do |anchor, count|
           report.public_send(level, "#{relative_path} 含行号锚 #{anchor.inspect}（#{count} 处）",
-            evidence: level == :must_fix ? RERUN_DOCS_CHECK % relative_path : nil)
+            evidence: level == :must_fix ? RERUN_DOCS_CHECK % Shellwords.escape(relative_path) : nil)
         end
       end
       report
     end
 
     # 终验可复跑命令模板：checker 在仓库根（root）下执行。
+# 路径必须 Shellwords.escape：checker 用 Shellwords.split 解析，
+# 含空格/引号的路径不转义会被拆错甚至解析失败（CodeRabbit）。
     RERUN_LINE_COUNT = "ruby -e 'exit(File.readlines(ARGV.fetch(0), encoding: \"UTF-8\").length <= %d ? 0 : 1)' %s"
     RERUN_DOCS_CHECK = "ruby tools/sebas-process verify docs %s"
 

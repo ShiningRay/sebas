@@ -735,11 +735,12 @@ class VerifierTest < Minitest::Test
 
       size_item = report.must_fix_items.find { |item| item.message.include?("超过") }
       refute_nil size_item&.evidence, "行数超限条目应带可复跑命令"
-      assert_includes size_item.evidence, "doc.md"
+      require "shellwords"
+      assert_equal SebasAgents::Verifier::RERUN_LINE_COUNT % [400, Shellwords.escape("doc.md")], size_item.evidence
 
       anchor_item = report.must_fix_items.find { |item| item.message.include?("行号锚") }
       refute_nil anchor_item&.evidence, "锚点存在条目应带可复跑命令"
-      assert_includes anchor_item.evidence, "verify docs doc.md"
+      assert_equal SebasAgents::Verifier::RERUN_DOCS_CHECK % Shellwords.escape("doc.md"), anchor_item.evidence
 
       # 行数命令真实复跑：修复后（行数降回上限内）应通过。
       checker = SebasAgents::VerifyChecks
@@ -748,6 +749,24 @@ class VerifierTest < Minitest::Test
       assert shrunk.pass?, "行数修复后应无 must_fix"
       result = checker.rerun(size_item, {}, root: dir)
       assert result[:passed], "行数 evidence 命令对修复后的文件应通过：#{result[:reason]}"
+    end
+  end
+
+  # CodeRabbit：路径含空格时必须整体作为一个参数被 checker 解析。
+  def test_rerun_command_escapes_paths_with_spaces
+    Dir.mktmpdir do |dir|
+      tricky = File.join(dir, "guide notes.md")
+      File.write(tricky, "填充\n" * 401, encoding: "UTF-8")
+      report = SebasAgents::Verifier.verify_docs(["guide notes.md"], root: dir, max_lines: 400)
+      item = report.must_fix_items.find { |i| i.message.include?("超过") }
+      refute_nil item&.evidence
+      require "shellwords"
+      assert_includes item.evidence, Shellwords.escape("guide notes.md")
+
+      # 同时放一个更短的同前缀文件：不转义时命令会读错对象并误判通过。
+      File.write(File.join(dir, "guide"), "一行\n", encoding: "UTF-8")
+      result = SebasAgents::VerifyChecks.rerun(item, {}, root: dir)
+      refute result[:passed], "含空格路径必须整体复跑且仍失败：#{result[:reason]}"
     end
   end
 
