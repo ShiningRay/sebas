@@ -128,11 +128,20 @@ channels:
 
 Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 update 后不再保证单调递增**，下一个 `update_id` 会从随机位置重新开始，可能小于持久化 offset。若沿用「`getUpdates(offset=last+1)` 确认旧值」的活跃期策略，会把重置后的新消息确认跳过、静默丢失。本设计采用「**活跃/空闲双模 + 重置检测**」：
 
-1. **活跃窗口内**：沿用单调排重——`update_id > persisted_offset` 才接收，每收到一条就把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 确认旧值。`last_update_at` 同步落库。
+1. **活跃窗口内（持久化优先于 offset 推进）**：对收到的每条 update，按以下顺序处理：
+   - **Step 1 · 持久化**：先把 update 原文 + 内容指纹落 `telegram_updates` 表（含 `dispatched: false` 标记）；内容指纹唯一索引挡重复（同 update_id 重推不重复落库）。
+   - **Step 2 · 推进 offset**：持久化成功后，才把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 才确认旧值。**绝不在持久化前推进 offset**——否则崩溃后 Telegram 已确认、本地无记录，静默丢消息。
+   - **Step 3 · 入总线**：把该 update 投递到 bus，投递成功后把 `telegram_updates.dispatched` 置 `true`。
+   - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 的行，按 update_id 升序重新入总线并标 `dispatched=true`，再进入正常轮询。这样「Step 1 落库后崩溃、Step 2/3 未执行」的窗口也能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。
+   - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
+   - `last_update_at` 在 Step 2 同步落库。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
-3. **重置模式首轮**：调用 `getUpdates()` **不传 offset**（拉取未确认的全集）；对返回的每条 update，按内容指纹（`update_id + chat_id + message_id + text/caption hash`）在本地 `telegram_updates` 表里查重——命中即跳过、不命中才落库 + 入总线。首轮结束后把 `persisted_offset` 重置为本轮最大 `update_id`，回到活跃窗口逻辑。
+3. **重置模式轮询（持续到收到新 update 才退出）**：调用 `getUpdates()` **不传 offset**（拉取未确认的全集）。对返回的每条 update 走「活跃窗口 Step 1–3」（持久化 → 入总线，暂不推进 offset）。**只有满足下述退出条件才离开重置模式**：
+   - **退出条件**：本轮**至少收到 1 条 update 且全部持久化 + 入总线成功**后，才把 `persisted_offset` 重置为本轮最大 `update_id`，把 `last_update_at` 更新为当前时刻，下一轮回到活跃窗口逻辑（带 offset 轮询）。
+   - **空轮询不退出**：若本轮 `getUpdates()` 返回空数组，**继续保持重置模式**——不重置 offset、不更新 `last_update_at`、不切换回活跃窗口。下一轮仍用无 offset 轮询，直到收到至少 1 条新 update。原因：空轮询时若恢复旧 offset，bot 空闲超过一周后的较小新 ID 仍会被确认跳过，与本策略目的直接冲突。
+   - **重置模式与活跃窗口的持久化口径一致**：每一步都先持久化、再入总线，崩溃恢复路径与活跃窗口共用同一「扫 `dispatched=false` 重投」逻辑。
 4. **拒绝跳过新消息**：任何路径下，`getUpdates` 的 `offset` 参数都必须 ≥ 已确认的 `persisted_offset+1`，不允许因为「新值比旧值小」就跳过；重置模式通过内容指纹而非 offset 比较保证幂等。
-5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重）。
+5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时扫描未投递行做恢复。
 
 > 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m8-channels.md §M8.1-WP3 验收](../plan/wbs/m8-channels.md) 落地为可测验收条目。
 
