@@ -97,8 +97,16 @@ module AnchorExtractor
             next
           end
 
-          total = File.read(target, encoding: "UTF-8").lines.length
-          contents = File.read(target, encoding: "UTF-8").lines
+          # 目录不是文件：`File.exist?` 对它为真，但按行读取会抛 EISDIR。
+          # 抛异常会绕过下面的统一 ERROR 汇总，连带丢失此前累计的越界问题
+          # （CodeRabbit CWE-636）。必须在这里判成一个可报告的 problem。
+          unless File.file?(target)
+            problems << "#{path} 引用 #{file}:#{match[2]}，但目标是目录而非文件"
+            next
+          end
+
+          content_lines = File.readlines(target, encoding: "UTF-8")
+          total = content_lines.length
 
           line_numbers(match[2], match[3]).each do |number|
             if number < 1 || number > total
@@ -106,7 +114,7 @@ module AnchorExtractor
               next
             end
 
-            content = contents[number - 1].to_s.chomp
+            content = content_lines[number - 1].to_s.chomp
             # 指向空行/纯空白行：文档用区间表达「这一带」，起点常落在空行或
             # 注释分隔行上。这类锚点无法逐字比对，且不是漂移信号——记入 skipped。
             if content.strip.empty?

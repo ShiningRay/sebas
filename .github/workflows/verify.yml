@@ -17,12 +17,21 @@ name: Verify PR
 # `target/` 只作为被核验对象，其中的脚本一律不执行。
 
 on:
-  pull_request:
+  # 用 pull_request_target 而非 pull_request：后者的 workflow 定义取自 PR 的
+  # merge commit，PR 作者可以改写本文件（删掉 base checkout、让 reviewer 直接
+  # 成功）来绕过核验。pull_request_target 的 workflow 定义取自 base 分支，
+  # PR 无法修改——这是本 workflow 能在 PR 上充当门禁的前提。
+  #
+  # pull_request_target 的经典风险是「checkout PR 代码后执行」会拿到写权限。
+  # 本 workflow 的约束（与安全核心同一件事）：
+  #   - 只以只读方式用 target：verify 的 --root 指向它，ruby 一律不取自它；
+  #   - 不在 target 目录里执行任何命令（测试 test_ruby_invocations_run_from_trusted 固定）；
+  #   - permissions 收到最小集。
+  pull_request_target:
     branches: [main]
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
   group: verify-${{ github.event.pull_request.number }}
@@ -33,6 +42,10 @@ jobs:
     name: verifier
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # 只有这个 job 需要发评论；顶层不给写权限。
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout base scripts (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -82,7 +95,9 @@ jobs:
                       tools/agents/lib/sebas_agents/verification_report.rb \
                       tools/agents/lib/sebas_agents/policy/evidence.rb \
                       tools/agents/lib/sebas_agents/model.rb \
-                      tools/anchors_extract.rb; do
+                      tools/anchors_extract.rb \
+                      tools/verify_merge_reports.rb \
+                      tools/verify_reviewer_verdict.rb; do
             [ -f "trusted/$path" ] || { echo "::error::base 缺 $path"; exit 1; }
           done
           echo "base 版本脚本齐备"
@@ -95,38 +110,72 @@ jobs:
           set -euo pipefail
           mkdir -p out
 
-          mapfile -t docs < <(cd target && git ls-files 'docs/**/*.md')
+          # -z：core.quotePath 会把中文文件名转义成带引号的字符串，
+          # mapfile -t 不解码它，会让存在的文件被误判为缺失。
+          mapfile -d '' -t docs < <(cd target && git ls-files -z 'docs/**/*.md')
           if [ "${#docs[@]}" -eq 0 ]; then
             echo "::error::PR 里 docs/ 下没有 markdown 文件，核验无对象"
             exit 1
           fi
 
+          # verify docs 的位置参数上限 100（Argv.parse 的 optional: 100）。
+          # 一次性传 101+ 会返回用法错误（无 items），下游若把它当空报告
+          # 就会误判通过。这里分批，并把任一批的失败显式记为 blocker。
           cd trusted
-          ruby tools/sebas-process verify docs "${docs[@]}" --root ../target \
-            > ../out/docs_report.json 2> ../out/docs_err.txt || true
+          : > ../out/docs_failures.txt
+          batch=()
+          batch_no=0
+          flush() {
+            [ "${#batch[@]}" -eq 0 ] && return 0
+            batch_no=$((batch_no + 1))
+            if ! ruby tools/sebas-process verify docs "${batch[@]}" --root ../target \
+              > "../out/docs_report_${batch_no}.json" 2> "../out/docs_err_${batch_no}.txt"; then
+              echo "第 ${batch_no} 批 verify docs 执行失败（见 docs_err_${batch_no}.txt）" >> ../out/docs_failures.txt
+            fi
+            batch=()
+          }
+          for file in "${docs[@]}"; do
+            batch+=("$file")
+            [ "${#batch[@]}" -eq 80 ] && flush
+          done
+          flush
 
-          if [ ! -s ../out/docs_report.json ]; then
-            echo "::error::verify docs 未产出报告：$(head -3 ../out/docs_err.txt 2>/dev/null || true)"
-            exit 1
-          fi
-          echo "docs 证据已收集"
+          # 结构校验：任何一批产出非 JSON 或缺 items，都视为工具故障而非「无问题」。
+          for report in ../out/docs_report_*.json; do
+            [ -e "${report}" ] || continue
+            if ! ruby -rjson -e '
+              data = JSON.parse(File.read(ARGV[0], encoding: "UTF-8"))
+              abort("缺 items 数组") unless data["items"].is_a?(Array)
+            ' "${report}" 2> ../out/docs_struct_err.txt; then
+              echo "$(basename "${report}") 结构非法：$(head -1 ../out/docs_struct_err.txt)" >> ../out/docs_failures.txt
+            fi
+          done
+          echo "docs 证据已收集（#{batch_no} 批）"
 
       - name: Collect anchors evidence (base generator, PR content)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
-          mapfile -t docs < <(cd target && git ls-files 'docs/**/*.md')
+          mapfile -d '' -t docs < <(cd target && git ls-files -z 'docs/**/*.md')
 
           cd trusted
           # 生成失败（如越界）时退出码非 0，但这本身也是证据：把 ERROR 行
           # 收进日志，随后在构建报告时转成 blocker。
+          set +e
           ruby tools/anchors_extract.rb --root ../target --output ../out/anchors.json "${docs[@]}" \
-            > ../out/anchors_extract.txt 2>&1 || echo "锚点生成非零退出（见下方 ERROR 行）" >> ../out/anchors_extract.txt
+            > ../out/anchors_extract.txt 2>&1
+          extract_status=$?
+          set -e
+          echo "extract exit=${extract_status}" >> ../out/anchors_extract.txt
 
           if [ -s ../out/anchors.json ]; then
+            set +e
             ruby tools/sebas-process verify anchors ../out/anchors.json --root ../target \
-              > ../out/anchors_report.json 2> ../out/anchors_err.txt || true
+              > ../out/anchors_report.json 2> ../out/anchors_err.txt
+            anchors_status=$?
+            set -e
+            echo "anchors verify exit=${anchors_status}" >> ../out/anchors_extract.txt
           fi
           echo "anchors 证据已收集"
           tail -3 ../out/anchors_extract.txt
@@ -139,51 +188,10 @@ jobs:
         run: |
           set -euo pipefail
           cd trusted
-          ruby -e '
-            require "json"
+          # 汇总逻辑取自 base（trusted/），可本地测试。
+          ruby tools/verify_merge_reports.rb --out ../out --base "${BASE_SHA}" --head "${HEAD_SHA}"
 
-            items = []
-            %w[anchors docs].each do |kind|
-              path = "../out/#{kind}_report.json"
-              next unless File.exist?(path) && !File.read(path, encoding: "UTF-8").strip.empty?
-
-              data = JSON.parse(File.read(path, encoding: "UTF-8"))
-              Array(data["items"]).each do |item|
-                items << {
-                  "id" => "#{kind}-#{item["id"]}",
-                  "level" => item["level"],
-                  "message" => "#{kind}: #{item["message"]}",
-                  "evidence" => item["evidence"]
-                }
-              end
-            end
-
-            # 锚点生成失败（越界/缺失）本身即阻断，必须进报告，不能只留在日志里。
-            extract_log = "../out/anchors_extract.txt"
-            if File.exist?(extract_log)
-              File.read(extract_log, encoding: "UTF-8").each_line do |line|
-                next unless line.start_with?("ERROR ")
-                items << {
-                  "id" => "anchors-extract-#{items.length + 1}",
-                  "level" => "blocker",
-                  "message" => "anchors: #{line.sub(/\AERROR\s*/, "").strip}",
-                  "evidence" => nil
-                }
-              end
-            end
-
-            report = {
-              "conclusion" => nil,
-              "counts" => %w[blocker must_fix acceptable unverified]
-                .to_h { |level| [level, items.count { |i| i["level"] == level }] },
-              "items" => items,
-              "observed" => {"base" => ENV.fetch("BASE_SHA"), "head" => ENV.fetch("HEAD_SHA")}
-            }
-            File.write("../out/verification.json", JSON.pretty_generate(report) + "\n", encoding: "UTF-8")
-            puts "verification.json: #{items.length} items"
-          '
-
-          # 摘要评论：结论由 reviewer 定，这里只列证据。
+          # 摘要评论：只列证据，结论由 reviewer 定。
           ruby -e '
             require "json"
             d = JSON.parse(File.read("../out/verification.json", encoding: "UTF-8"))
@@ -209,6 +217,10 @@ jobs:
             File.write("../out/comment.md", lines.join("\n") + "\n", encoding: "UTF-8")
           '
 
+      - name: Stage verdict script into artifact
+        if: always()
+        run: cp trusted/tools/verify_reviewer_verdict.rb out/verify_reviewer_verdict.rb
+
       - name: Upload verification artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -217,6 +229,9 @@ jobs:
           path: |
             out/verification.json
             out/comment.md
+            out/verify_reviewer_verdict.rb
+          # reviewer 需要的判定脚本随 artifact 传递，且是 base 版本
+          # （来自 trusted/），reviewer 不必再取一次 PR 内容。
           if-no-files-found: error
 
       - name: Post verification comment
@@ -245,6 +260,9 @@ jobs:
     needs: verifier
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # 只读判定：下载 artifact + 本地计算，不需要任何写权限。
+    permissions:
+      contents: read
     steps:
       - name: Download verification report
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -253,30 +271,40 @@ jobs:
           path: out
 
       # 只读判定，不重跑核验（与 Reviewer 的设计一致）。
-      # 本 workflow 没有 LLM，无法自动确认 must_fix 的修复，所以任一
-      # must_fix 即打回；unverified 无间接证据同样打回。
+      # 判定逻辑在 base 的 tools/verify_reviewer_verdict.rb；这里只提供报告路径。
+      # 本 job 刻意不给 pull-requests: write——它不需要写任何东西。
       - name: Decide final verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          ruby -e '
-            require "json"
-            d = JSON.parse(File.read("out/verification.json", encoding: "UTF-8"))
-            items = Array(d["items"])
-            blockers = items.select { |i| i["level"] == "blocker" }
-            must_fix = items.select { |i| i["level"] == "must_fix" }
-            no_evidence = items.select { |i| i["level"] == "unverified" && i["evidence"].to_s.strip.empty? }
+          # 判定脚本取自 base（base checkout 在 verifier job，这里从 artifact 旁取）。
+          # 该脚本不依赖仓库内容，只读 JSON，故随 PR 运行不构成绕过风险；
+          # 但它必须来自 base——所以随 artifact 一起带过来的是 base 版本。
+          set +e
+          verdict_text="$(ruby verify_reviewer_verdict.rb out/verification.json)"
+          verdict_status=$?
+          set -e
+          printf '%s\n' "${verdict_text}"
 
-            puts "## Reviewer 终验"
-            puts
-            if blockers.any? || must_fix.any? || no_evidence.any?
-              puts "结论：**打回**"
-              puts
-              puts "blocker=#{blockers.length} must_fix=#{must_fix.length} 无证据未实测=#{no_evidence.length}"
-              puts
-              blockers.each { |i| puts "- 阻断：#{i["message"]}" }
-              must_fix.each { |i| puts "- 应修：#{i["message"]}" }
-              no_evidence.each { |i| puts "- 未实测且无间接证据：#{i["message"]}" }
-              exit 1
-            end
-            puts "结论：**通过**（无阻断、无应修、无缺证未实测项）"
-          '
+          if [ "${verdict_status}" -ne 0 ]; then
+            # 把打回结论贴成评论（评论失败不影响退出码判定）。
+            {
+              echo "<!-- verify-pr:reviewer -->"
+              printf '%s\n' "${verdict_text}"
+            } > out/reviewer_comment.md
+            existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq '.[] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id' | head -1 || true)
+            if [ -n "${existing}" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
+                -F body=@out/reviewer_comment.md > /dev/null || true
+            else
+              gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                -F body=@out/reviewer_comment.md > /dev/null || true
+            fi
+            echo "::error::Reviewer 终验打回"
+            exit 1
+          fi
+          echo "Reviewer 终验通过"
+

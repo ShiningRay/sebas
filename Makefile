@@ -30,6 +30,7 @@ agents-check:
 	ruby tools/test_evidence_register.rb
 	ruby tools/test_anchors_extract.rb
 	ruby tools/test_verify_workflow.rb
+	ruby tools/test_verify_reports.rb
 	ruby tools/test_coderabbit_config.rb
 
 # ameba 是 development dependency；未构建时先构建，再运行

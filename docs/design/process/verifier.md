@@ -119,8 +119,17 @@ report.conclusion                  # "通过" / "打回" / "有条件通过"
 **安全核心：核验脚本取自 base 分支。** PR 可以改 `.github/workflows/**` 与 `tools/**`；
 若直接跑 PR 里的核验脚本，PR 就能改核验逻辑让自己通过。因此 base sha checkout 到
 `trusted/`，PR 内容 checkout 到 `target/`，只在 `trusted/` 里执行 ruby、用 `--root ../target`
-指定被核验对象。这条属性由 `tools/test_verify_workflow.rb` 固定：既断言 YAML 写法
-（`ref: base.sha`），也用篡改过的核验脚本做端到端行为验证。
+指定被核验对象。
+
+**但这条只保护脚本，不保护 workflow 定义本身。** 为避免 PR 直接改写
+`.github/workflows/verify.yml`（删掉 base checkout、让 reviewer 恒成功），本 workflow
+用 `pull_request_target` 而非 `pull_request`：后者的 workflow 定义取自 PR 的 merge commit，
+可取 PR 任意改写；前者取自 base 分支，PR 改不动。
+
+`tools/test_verify_workflow.rb` 把这两条固定为测试（写法断言 + 篡改脚本的端到端行为验证），
+**但它与 workflow 同在 PR 可改范围内，因此不能作为绕过 PR 的独立控制**。阻止 PR 替换
+workflow 的独立控制是 `pull_request_target` 本身，以及 `.github/` 的审核红线（AGENTS.md
+「fork PR 的 workflow 改动必须先审 diff 再批准运行」）。
 
 本 workflow 只做确定性层（证据收集 + 规则汇总），**不做语义判断**——那是 #123 的范围。
 
