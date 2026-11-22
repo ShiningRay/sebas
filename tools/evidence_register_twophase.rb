@@ -138,6 +138,22 @@ module EvidenceRegister
       registered = fetch_registered_comment(repo, issue_number, comment_id, block, out)
       return 1 if registered.nil?
 
+      # 登记必须属于本次合并的 PR（CodeRabbit CWE-345 第二点）。
+      # 受信作者只证明「谁写了这条评论」，不证明「这条登记属于当前 PR」——
+      # 否则 issue 上残留的旧 PR 登记会被本次合并继承其冻结的 untested。
+      unless registered["pr"].to_i == pr_number
+        warn "::error::issue ##{issue_number} 的登记评论属于 PR ##{registered["pr"].inspect}，与本次合并的 PR ##{pr_number} 不符，拒绝升级"
+        return 1
+      end
+
+      # 结构必须先完整，再生成升级块：merge 不会补齐缺失字段，
+      # 否则两处 PATCH 会写入不完整 Evidence，且 merged_into_main=true 后不再自愈。
+      problems = structure_problems(registered)
+      unless problems.empty?
+        warn "::error::issue ##{issue_number} 的登记评论 Evidence 结构非法：#{problems.join("、")}"
+        return 1
+      end
+
       # untested 以登记评论为唯一权威；正文副本只用于结构校验（上面 parse_block）。
       upgraded = registered.merge(
         "pr" => pr_number,
@@ -203,10 +219,32 @@ module EvidenceRegister
 
       require "yaml"
       data = YAML.safe_load_file(path)
-      Array(data && data["trusted_bots"]).map(&:to_s).reject(&:empty?).include?(login)
+      raw = data && data["trusted_bots"]
+      # 结构非法必须拒绝：`trusted_bots: "github-actions[bot]"` 经 Array() 会变成
+      # 单元素列表而误授权。只接受字符串数组，且逐项非空。
+      unless raw.is_a?(Array) && raw.all? { |entry| entry.is_a?(String) && !entry.strip.empty? }
+        warn "::error::.github/agents.yml 的 trusted_bots 必须是字符串数组，按不可信处理"
+        return false
+      end
+
+      raw.map(&:strip).include?(login)
     rescue StandardError => e
       warn "::error::读取 .github/agents.yml 失败（#{e.message}），按不可信处理"
       false
+    end
+
+    REQUIRED_KEYS = %w[schema subject status source source_ref].freeze
+
+    # 登记块结构完整性：merge 只覆盖给定键，缺失字段不会被补齐。
+    def structure_problems(block)
+      problems = []
+      REQUIRED_KEYS.each do |key|
+        value = block[key]
+        problems << "缺 #{key}" if value.nil? || value.to_s.strip.empty?
+      end
+      problems << "schema 必须为 #{EvidenceRegister::EVIDENCE_SCHEMA}" unless block["schema"] == EvidenceRegister::EVIDENCE_SCHEMA
+      problems << "untested 必须是数组" unless block["untested"].is_a?(Array)
+      problems
     end
   end
 end

@@ -19,6 +19,7 @@ require "open3"
 
 module EvidenceRegister
   EVIDENCE_FENCE = "json evidence"
+  EVIDENCE_SCHEMA = 1
   BOT_MARKER = "<!-- evidence-register:bot -->"
 
   # 测试注入点。生产环境为 nil，走真实 gh / git。
@@ -278,7 +279,7 @@ module EvidenceRegister
     # 否则会追加第二个块，或者把损坏块留在原地。
     return :invalid if block.nil?
 
-    valid = block["schema"] == 1 &&
+    valid = block["schema"] == EVIDENCE_SCHEMA &&
       block["subject"].to_s == subject &&
       !block["status"].to_s.empty? &&
       !block["source"].to_s.empty? &&
