@@ -83,7 +83,7 @@ module Sebas
     it "any 模式：选定成功结论进 L1；all 失败 outcome=failed" do
       store, writer, ex = jw_env
       parent_session = "agent:main:test-acc:email:erin@example.com"
-      seed_fork(store, ex, "fork:ee555555", "any", 2, parent_session)
+      members = seed_fork(store, ex, "fork:ee555555", "any", 2, parent_session)
       members.each_with_index do |task_id, i|
         sk = ::Sebas::Agents.session_key("main", "internal", "fork", "fork:ee555555:#{i + 1}")
         store.append_transcript(sk, "user", "t")
