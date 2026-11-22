@@ -53,6 +53,23 @@ module Sebas
         raise ::Sebas::Platform::Store::StoreError.new("expectation #{id} 状态迁移失败：期望 from=#{from}，当前非该状态") if changed == 0
       end
 
+      # fork 派发期逐成员补全 members 列表（状态机仍 open 时；幂等去重）。
+      def expectations_append_member(id : String, task_id : String) : Nil
+        row = expectation_by_id(id)
+        members = Array(String).from_json(row.members)
+        return if members.includes?(task_id)
+        @db.exec("UPDATE expectations SET members = ?, updated_at = ? WHERE id = ?",
+          (members + [task_id]).to_json, now, id)
+      end
+
+      def expectation_by_id(id : String) : ::Sebas::Orchestration::Fork::ExpectationRow
+        row = @db.query_one?("SELECT id, fork_id, parent_task_id, parent_session, mode, deadline, members, settled_count, status, result, created_at, updated_at FROM expectations WHERE id = ?", id) do |result_set|
+          read_expectation(result_set)
+        end
+        raise ::Sebas::Platform::Store::StoreError.new("unknown expectation #{id}") if row.nil?
+        row
+      end
+
       private def read_expectation(rs) : ::Sebas::Orchestration::Fork::ExpectationRow
         ::Sebas::Orchestration::Fork::ExpectationRow.new(
           id: rs.read(String), fork_id: rs.read(String), parent_task_id: rs.read(String),
