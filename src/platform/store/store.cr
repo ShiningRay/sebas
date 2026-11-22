@@ -443,7 +443,7 @@ module Sebas
         # ---- 会话转录：SQLite 权威 + JSONL 人可读归档双写（§6.1，A4 升级）----
 
         def append_transcript(session_key : String, role : String, content : String) : Nil
-          append_jsonl(session_key, content, append_transcript_row(session_key, role, content))
+          append_jsonl(session_key, role, content, append_transcript_row(session_key, role, content))
         end
 
         # DB 行写入（返回 created 时刻），JSONL 归档由调用方决定是否同批
@@ -454,10 +454,10 @@ module Sebas
           created
         end
 
-        private def append_jsonl(session_key : String, content : String, created : String) : Nil
+        private def append_jsonl(session_key : String, role : String, content : String, created : String) : Nil
           Dir.mkdir_p(@sessions_dir) unless Dir.exists?(@sessions_dir)
           File.open(jsonl_path(session_key), "a") do |io|
-            io.puts({ts: created, session_key: session_key, role: "system", content: content}.to_json)
+            io.puts({ts: created, session_key: session_key, role: role, content: content}.to_json)
           end
         end
 
