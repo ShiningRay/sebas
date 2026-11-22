@@ -407,6 +407,23 @@ module Sebas
 
         # ---- 决策级幂等：memo first-write-wins（§7.3）----
 
+        # join.report 落库与 memo 幂等标记的原子提交（#152 CodeRabbit）：
+        # 同一事务两条语句（max_pool_size=1，块内复用 checkout 的方法会死锁，
+        # 故实现为单方法而非通用 transaction 块）。
+        # 附带 JSONL 归档（append_transcript 同款双写；JSONL 失败抛错前 DB 已提交，
+        # 重放被 memo 挡住——缺 JSONL 行可由 DB 权威重建，另卡）。
+        def write_join_report(session_key : String, content : String, memo_key : String, memo_value : String) : Nil
+          @db.transaction do |tx|
+            conn = tx.connection
+            created = ::Time.utc.to_rfc3339
+            conn.exec("INSERT INTO transcripts (session_key, role, content, created_at) VALUES (?, ?, ?, ?)",
+              session_key, "system", content, created)
+            conn.exec("INSERT INTO memos (key, value, created_at) VALUES (?, ?, ?) " \
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", memo_key, memo_value, created)
+            append_jsonl(session_key, "system", content, created)
+          end
+        end
+
         def memo_put(key : String, value : String) : String
           @db.exec("INSERT OR IGNORE INTO memos (key, value, created_at) VALUES (?, ?, ?)", key, value, now)
           @db.query_one("SELECT value FROM memos WHERE key = ?", key, as: String)
@@ -426,9 +443,18 @@ module Sebas
         # ---- 会话转录：SQLite 权威 + JSONL 人可读归档双写（§6.1，A4 升级）----
 
         def append_transcript(session_key : String, role : String, content : String) : Nil
+          append_jsonl(session_key, role, content, append_transcript_row(session_key, role, content))
+        end
+
+        # DB 行写入（返回 created 时刻），JSONL 归档由调用方决定是否同批
+        private def append_transcript_row(session_key : String, role : String, content : String) : String
           created = now
           @db.exec("INSERT INTO transcripts (session_key, role, content, created_at) VALUES (?, ?, ?, ?)",
             session_key, role, content, created)
+          created
+        end
+
+        private def append_jsonl(session_key : String, role : String, content : String, created : String) : Nil
           Dir.mkdir_p(@sessions_dir) unless Dir.exists?(@sessions_dir)
           File.open(jsonl_path(session_key), "a") do |io|
             io.puts({ts: created, session_key: session_key, role: role, content: content}.to_json)
