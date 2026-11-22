@@ -49,7 +49,7 @@ module Sebas
         # 成员 task_id：与成员会话键一一对应（join.report members[].task_id /
         # session 由同一 member_index 派生），前缀循 subtask `sub:` 可读先例。
         def member_task_id(fork_id : String, member_index : Int) : String
-          "fork:#{member_peer(fork_id, member_index)}"
+          "#{fork_id}:#{member_index}"
         end
 
         # 分身会话键的 peer 段：完整 fork_id + 成员序号。

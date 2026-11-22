@@ -75,7 +75,7 @@ module Sebas
       key1.should eq(Agents.session_key("main", "internal", "fork", "#{fork_id}:1"))
       key2.should eq(Agents.session_key("main", "internal", "fork", "#{fork_id}:2"))
       key1.should_not eq(key2)
-      fm.member_task_id(fork_id, 1).should eq("fork:#{fork_id}:1")
+      fm.member_task_id(fork_id, 1).should eq("#{fork_id}:1")
     end
 
     it "builds the join memo idempotency key and reflects written state" do
