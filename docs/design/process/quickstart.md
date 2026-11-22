@@ -122,7 +122,7 @@ ruby tools/sebas-process roles verifier --prompt-only > /tmp/verifier.md
 #    claude -p "$(cat /tmp/verifier.md)" --allowedTools "Read,Bash"
 ```
 
-只读角色（Verifier / Reviewer）应当只给只读工具；工具名以各 Harness 的 `--help` 为准，
+只读角色（Verifier）应当只给只读工具；工具名以各 Harness 的 `--help` 为准，
 不要假定交互式命令可自动化。
 
 ### C. 子 Agent / 多角色并行
@@ -191,15 +191,17 @@ ruby tools/sebas-process verify merge 95 87
 
 CI 的 `verify` job 在每次 PR 上重跑这两步（必检，与 spec×3 + ameba 并列）。
 
-### Reviewer
+### 终验（#124，Reviewer 并入 Verifier）
 
 ```sh
-ruby tools/sebas-process review verification.json --fixes fixes.json
+ruby tools/sebas-process verify merge <pr> <issue> --final --fixes fixes.json
 ```
 
-`verification.json` 是 Verifier 的输出；`fixes.json` 形如
-`{"must_fix-1": {"commit": "abc123", "passed": true}}`。
-未提供独立复跑时，结论最多是“有条件通过”。
+`fixes.json` 形如 `{"must_fix-1": {"commit": "abc123", "passed": true}}`。
+checker 必填且真实复跑：每项 `must_fix` 按 `evidence` 里的命令重执行并比对退出码
+（命令必须在白名单内：`crystal` / `ruby` / `ameba` / `shards`，`git` / `gh` 只读子命令）；
+无 `evidence` 或复跑失败记 blocker，结论为打回。自报 `passed: true` 不再构成
+「有条件通过」——该结论只留给有间接证据的未实测项，最终裁决交 Maintainer。
 
 ### Triager
 
@@ -240,4 +242,4 @@ ruby tools/sebas-process next --snapshot snapshot.json --record run.json
 - 不在日志、运行记录、快照里写凭据；凭据只由环境注入。
 - `--apply` 只写本地 `.sebas-agent/run.json`；GitHub 写操作仍需 Agent 按角色权限执行。
 - 元数据缺失、依赖冲突、身份不可信一律 fail-closed，返回 `invalid_plan`。
-- 只读角色（Verifier / Reviewer）的 Harness 不要给写工具，即使提示词已声明禁止。
+- 只读角色（Verifier）的 Harness 不要给写工具，即使提示词已声明禁止。

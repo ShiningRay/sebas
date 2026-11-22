@@ -80,8 +80,7 @@
 | [process/development-workflow.md](process/development-workflow.md) | 开发工作流总纲：分支模型、里程碑、issue、验收、发版 |
 | [process/maintainer.md](process/maintainer.md) | Maintainer（人）：决策与裁决 |
 | [process/implementer.md](process/implementer.md) | Implementer（AI）：实现与交付 |
-| [process/verifier.md](process/verifier.md) | Verifier（AI）：独立核验 |
-| [process/reviewer.md](process/reviewer.md) | Reviewer（AI）：终验复核 |
+| [process/verifier.md](process/verifier.md) | Verifier（AI）：独立核验与终验（#124 起 Reviewer 并入） |
 | [process/triager.md](process/triager.md) | Triager（AI）：issue 研判 |
 | [process/scribe.md](process/scribe.md) | Scribe（AI）：文档与记忆 |
 | [process/release-manager.md](process/release-manager.md) | Release Manager（AI）：发版执行 |
