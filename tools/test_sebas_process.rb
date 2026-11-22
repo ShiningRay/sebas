@@ -1860,11 +1860,82 @@ class PrDetailsHeadMismatchTest < Minitest::Test
 
   def test_head_match_proceeds
     gateway = SebasAgents::GithubGateway.new(
-      StubRunner.new(['{"body": "b", "head_sha": "same"}', '[{"filename": "a.rb", "patch": "+x"}]']),
+      StubRunner.new(['{"body": "b", "head_sha": "same"}',
+                      '[{"filename": "a.rb", "patch": "+x"}]',
+                      '{"body": "b", "head_sha": "same"}']),
       repo: "o/r"
     )
     details = gateway.send(:fetch_pr_details, 10, expected_head: "same")
     assert_equal "b", details["body"]
     assert_equal 1, details["files"].length
+  end
+end
+
+# #125 第二轮复审（3 条）回归。
+class PathChecksRound3Test < Minitest::Test
+  def change(path, patch)
+    SebasAgents::PathChecks::Change.new(path: path, patch: patch)
+  end
+
+  def run_check(changes, body: "", threads: [])
+    report = SebasAgents::VerificationReport.new
+    SebasAgents::PathChecks.check(changes: changes, body: body, threads: threads, report: report)
+    report
+  end
+
+  # julr：删除未钉引用 + 新增钉版引用 = 正常修复，不得报 blocker。
+  def test_deleted_unpinned_uses_does_not_block
+    report = run_check([change(".github/workflows/ci.yml",
+      "-      uses: actions/checkout@v4\n+      uses: actions/checkout@#{'a' * 40}\n")])
+    assert report.blockers.empty?, report.blockers.map(&:message).inspect
+  end
+
+  # juln：--method 空格形式与 -X 前置都拦；不依赖路径与方法顺序；GET 不拦。
+  def test_branch_protection_write_method_variants
+    variants = [
+      "+      gh api repos/o/r/branches/main/protection --method PUT\n",
+      "+      gh api -X PUT repos/o/r/branches/main/protection\n",
+      "+      gh api repos/o/r/branches/main/protection -X DELETE\n"
+    ]
+    variants.each do |patch|
+      report = run_check([change(".github/workflows/rel.yml", patch)])
+      assert report.blockers.any? { |i| i.message.include?("分支保护") }, patch
+    end
+    get_only = run_check([change(".github/workflows/rel.yml", "+      gh api repos/o/r/branches/main/protection\n")])
+    assert get_only.blockers.empty?
+  end
+
+  # jobI 补充：patch 缺失同时不产生其他误判条目。
+  def test_missing_patch_only_reports_the_missing_file
+    report = run_check([change("src/new.cr", nil)])
+    assert_equal 1, report.blockers.length
+    assert_includes report.blockers.first.message, "src/new.cr"
+  end
+end
+
+# julm：files 请求后二次回读 head——两次夹缝任一变化都抛错。
+class PrDetailsSecondReadTest < Minitest::Test
+  class SeqRunner
+    def initialize(responses)
+      @responses = responses
+    end
+
+    def json!(*_argv)
+      JSON.parse(@responses.shift)
+    end
+  end
+
+  def test_head_changed_during_files_request_raises
+    gateway = SebasAgents::GithubGateway.new(
+      SeqRunner.new([
+        '{"body": "b", "head_sha": "old"}',
+        '[{"filename": "a.rb", "patch": "+x"}]',
+        '{"body": "b", "head_sha": "new"}'
+      ]), repo: "o/r"
+    )
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_pr_details, 10, expected_head: "old")
+    end
+    assert_includes error.message, "混合快照"
   end
 end

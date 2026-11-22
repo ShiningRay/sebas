@@ -15,7 +15,8 @@ module SebasAgents
     # （去引号、锚定整值），不是整行子串——注释里的 40 位文本骗不过校验，
     # 带引号的合法引用也能通过（CodeRabbit）。
     USES_FULL_SHA = /\A[\w.-]+\/[\w.-]+@[0-9a-f]{40}\z/
-    USES_LINE = /^.*?\buses:\s*(\S+)/
+    # 只校验新增/保留行（^\+）：删除未钉引用属正常修复，不得报 blocker（CodeRabbit）。
+    USES_LINE = /^\+.*?\buses:\s*(\S+)/
 
     # 凭据正则（近似）：输出语句与凭据词同行。token 前缀词（token_count）
     # 会误报——按卡面走「可留项复核」人工留，不走改规则。
@@ -27,7 +28,9 @@ module SebasAgents
     # git push 的长/短 force 参数都要拦（-f 须带词边界，避免误伤 -file 类参数）。
     FORCE_PUSH_LINE = /^\+.*\bgit\s+push\b.*(\s--force\b|\s--force-with-lease\b|\s-f\b)/
     # 分支保护仅拦显式写方法（PUT/POST/DELETE）；读取保护配置不是写。
-    BRANCH_PROTECTION_LINE = /^\+.*branch(es)?[\w\/.-]*protection.*(X (PUT|POST|DELETE)|--method=(PUT|POST|DELETE))/
+    # 目标路径与方法分开判定，不依赖两者顺序；--method 支持空格与等号两种形式。
+    BRANCH_PROTECTION_PATH = /branch(es)?[\w\/.-]*protection/
+    WRITE_METHOD_FLAG = /(-X\s+(PUT|POST|DELETE)|--method[= ](PUT|POST|DELETE))/
 
     NO_BEHAVIOR_CHANGE = /无行为变更|no\s+behavior\s+change/i
     SECURITY_BOUNDARY = /安全边界|security\s+boundary/i
@@ -102,7 +105,8 @@ module SebasAgents
               report.blocker("workflow #{change.path} 的 uses 未钉 SHA：#{ref}（必须 <owner>/<repo>@<40位sha>）")
             end
           end
-          next unless FORCE_PUSH_LINE.match?(line) || BRANCH_PROTECTION_LINE.match?(line)
+          next unless FORCE_PUSH_LINE.match?(line) ||
+            (BRANCH_PROTECTION_PATH.match?(line) && WRITE_METHOD_FLAG.match?(line))
 
           report.blocker("workflow #{change.path} 疑似改写 push 保护或分支保护：#{line.strip[0, 120]}")
         end

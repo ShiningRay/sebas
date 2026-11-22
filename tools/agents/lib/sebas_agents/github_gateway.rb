@@ -289,16 +289,12 @@ module SebasAgents
     # 不一致直接抛错（fail-closed）——不能把旧 head 的 checks 配新 head 的
     # files 拼成混合快照让门禁误判（CodeRabbit）。
     def fetch_pr_details(number, expected_head: nil)
-      pr = @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}",
-        "--jq", "{body: .body, head_sha: .head.sha}")
-      if expected_head && pr.is_a?(Hash) && pr["head_sha"].to_s != expected_head.to_s
-        raise CommandError.new(
-          "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{pr["head_sha"]}）；" \
-          "拒绝构建混合快照，请重跑选择器",
-          command: ["gh", "api", "pulls/#{number}"]
-        )
-      end
+      pr = read_pr_detail(number)
+      ensure_head_unchanged!(number, pr, expected_head)
       files = @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}/files?per_page=100")
+      # files 请求期间若 PR 推进了 head，取到的 files 已属于新 head——
+      # 必须再次比对（CodeRabbit：两次请求夹缝同样会形成混合快照）。
+      ensure_head_unchanged!(number, read_pr_detail(number), expected_head)
       unless files.is_a?(Array)
         raise CommandError.new("PR ##{number} files 返回非数组", command: ["gh", "api", "pulls/#{number}/files"])
       end
@@ -309,6 +305,23 @@ module SebasAgents
         )
       end
       {"body" => pr.is_a?(Hash) ? pr["body"].to_s : "", "files" => files}
+    end
+
+    private
+
+    def read_pr_detail(number)
+      @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}",
+        "--jq", "{body: .body, head_sha: .head.sha}")
+    end
+
+    def ensure_head_unchanged!(number, pr, expected_head)
+      return unless expected_head && pr.is_a?(Hash) && pr["head_sha"].to_s != expected_head.to_s
+
+      raise CommandError.new(
+        "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{pr["head_sha"]}）；" \
+        "拒绝构建混合快照，请重跑选择器",
+        command: ["gh", "api", "pulls/#{number}"]
+      )
     end
 
     # reviewThreads 连接没有 isResolved 查询参数：取回后在本地过滤。
