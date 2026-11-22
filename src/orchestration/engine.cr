@@ -79,6 +79,34 @@ module Sebas
         @workflows[workflow.id] = workflow
       end
 
+      # fork/join 编排动作处理（M4.1-WP5）：登记 expectation（fork）/ 返回
+      # 汇聚状态（join）。分身执行由 ForkManager 执行体在触发面完成。
+      private def fork_join_action(action : DSL::Action) : Tools::ToolResult
+        args = ::JSON.parse(action.args)
+        case action.tool
+        when "fork"
+          fork_id = "fork:" + ::Random::Secure.hex(4)
+          members = (1..(args["count"]?.try(&.as_i?) || 1)).map { |i| "#{fork_id}:#{i}" }
+          @store.insert_expectation(::Sebas::Orchestration::Fork::ExpectationRow.new(
+            id: "join:#{fork_id}", members_final: 0, fork_id: fork_id,
+            parent_task_id: run_id_placeholder, parent_session: "agent:main:engine:orchestration",
+            mode: args["mode"]?.try(&.as_s?) || "allSettled",
+            deadline: (::Time.utc + (args["deadline"]?.try(&.as_i?) || 3600).seconds).to_rfc3339,
+            members: members.to_json, settled_count: 0, status: "open",
+            result: nil, created_at: ::Time.utc.to_rfc3339, updated_at: ::Time.utc.to_rfc3339,
+          ))
+          Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "registered": true}))
+        else # join
+          fork_id = args["fork_id"]?.try(&.as_s?) || ""
+          row = @store.expectation?(fork_id)
+          row ? Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "status": "#{row.status}"})) : Tools::ToolResult.error("join: unknown fork_id #{fork_id}")
+        end
+      end
+
+      private def run_id_placeholder : String
+        "engine-orchestration"
+      end
+
       private def execute_phases(run_id : String, workflow : DSL::Workflow,
                                  ctx_session : String, from_phase : Int32 = 0) : Tools::ToolResult
         @ledger.try(&.append(run_id, "run.start", %({"workflow": "#{workflow.id}", "actions": #{workflow.actions.size}})))
@@ -95,8 +123,15 @@ module Sebas
 
           @store.memo_put(memo_key, "running")
           @ledger.try(&.append(run_id, "action.start", %({"id": "#{action.id}", "tool": "#{action.tool}"})))
-          result = @executor.run(action.tool, ::JSON.parse(action.args),
-            Tools::ToolContext.new(ctx_session, @account_id, run_id, @store))
+          # fork/join 不走默认工具注册表（不支持这两个原语）——编排处理路径：
+          # 本期落库面即 expectation 登记/判定（M4.1-WP2），执行体（WP3）经
+          # IPC/HTTP 显式触发面跑（Q3：DSL 声明的是编排意图，生产 agent_turn 不动）。
+          result = if {"fork", "join"}.includes?(action.tool)
+                     fork_join_action(action)
+                   else
+                     @executor.run(action.tool, ::JSON.parse(action.args),
+                       Tools::ToolContext.new(ctx_session, @account_id, run_id, @store))
+                   end
 
           if result.ok?
             # phase 尾 commit checkpoint + 结果 memo（效应三明治第②③步）

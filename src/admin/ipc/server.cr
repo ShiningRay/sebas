@@ -71,6 +71,8 @@ module Sebas
         # fork/join 触发面（M4.1-WP5，Q3：用户显式命令，不动生产 agent_turn）；
         # nil 时 fork/join 命令回 not available（gateway 未装配 fork 组件的旧链路）。
         @fork_handler : (JSON::Any -> JSON::Any)?
+        # 已认证连接（hello token 匹配的 socket object_id 集合）
+        @authenticated_connections = Set(UInt64).new
 
         def initialize(@store : Platform::Store::Store, data_dir : Path,
                        @host : String = "127.0.0.1", @port : Int32 = DEFAULT_PORT,
@@ -127,6 +129,7 @@ module Sebas
           io.sync = true
           hello = handshake(io)
           return unless hello
+          mark_authenticated(io, hello)
           subscriber_id = Random::Secure.hex(8)
           io.puts({type: "hello_ack", protocol: PROTOCOL, version: VERSION, caps: CAPABILITIES}.to_json)
 
@@ -190,6 +193,14 @@ module Sebas
 
         private def dispatch(io : TCPSocket, frame : Frame) : Nil
           case frame.type
+          when "fork", "join"
+            # 写触发命令（CWE-306）：调用者必须在 hello 里提供匹配 token——
+            # 读命令维持匿名可用，写命令认证强制（CodeRabbit）。
+            if caller_authenticated?(io)
+              io.puts(fork_join_response(frame))
+            else
+              io.puts(error_response(frame.id, "fork/join requires authenticated hello (token)"))
+            end
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
           when "system.health"
@@ -213,26 +224,40 @@ module Sebas
             io.puts(ok_response(frame.id, result))
           when "runs.list", "runs.get"
             io.puts(runs_response(frame))
-          when "fork", "join"
-            io.puts(fork_join_response(frame))
           else
             io.puts(error_response(frame.id, "unknown command: #{frame.type}"))
           end
-        end
-
-        # 注册 fork/join 命令处理器（gateway 装配后接线；handler 收 IPC payload
-        # 返回结果 JSON）。
-        def fork_handler=(handler : JSON::Any -> JSON::Any) : Nil
-          @fork_handler = handler
         end
 
         private def fork_join_response(frame : Frame) : String
           handler = @fork_handler
           return error_response(frame.id, "#{frame.type} not available: fork 组件未装配") unless handler
 
-          payload = frame.data
-          result = handler.call(JSON::Any.new(payload))
-          ok_response(frame.id, {"result" => result})
+          begin
+            result = handler.call(JSON::Any.new(frame.data))
+            ok_response(frame.id, {"result" => result})
+          rescue ex : ::Sebas::Platform::Store::StoreError
+            # 校验异常（缺 task / 缺 main agent 配置）转错误响应——保留连接，
+            # 客户端拿到该请求的失败原因而非断连（CodeRabbit）
+            error_response(frame.id, ex.message.to_s)
+          end
+        end
+
+        # 注册 fork/join 命令处理器（gateway 装配后接线；handler 收 IPC 帧数据
+        # 返回结果 JSON）。
+        def fork_handler=(handler : JSON::Any -> JSON::Any) : Nil
+          @fork_handler = handler
+        end
+
+        # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。
+        private def mark_authenticated(io : TCPSocket, hello : Hello) : Nil
+          @authenticated_connections.add(io.object_id) if hello.token == @token
+        end
+
+        # 调用者认证：握手 hello 的 token 与服务端 token 常量比较
+        # （fork/join 写命令前置条件，普通读命令匿名可用）。
+        private def caller_authenticated?(io : TCPSocket) : Bool
+          @authenticated_connections.includes?(io.object_id)
         end
 
         private def runs_response(frame : Frame) : String

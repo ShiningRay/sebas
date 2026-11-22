@@ -12,7 +12,7 @@ module Sebas
       CAPABILITIES = %w[sessions.read events.subscribe approvals config.status]
 
       # 首帧 hello（客户端→服务端）
-      record Hello, protocol : String, version : Int32, caps : Array(String) do
+      record Hello, protocol : String, version : Int32, caps : Array(String), token : String? = nil do
         def to_frame : String
           {type: "hello", protocol: protocol, version: version, caps: caps}.to_json
         end
@@ -22,8 +22,9 @@ module Sebas
           protocol = frame["protocol"]?.try(&.as_s?) || ""
           version = frame["version"]?.try(&.as_i?) || 0
           caps = frame["caps"]?.try(&.as_a?).try(&.map { |cap| cap.as_s? || "" }) || [] of String
+          token = frame["token"]?.try(&.as_s?)
           return unless protocol == PROTOCOL && version == VERSION
-          new(protocol, version, caps)
+          new(protocol, version, caps, token)
         end
       end
 
