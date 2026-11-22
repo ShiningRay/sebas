@@ -104,6 +104,10 @@ module Sebas
           task = data["task"]?.try(&.as_s?) || ""
           raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 task") if task.empty?
           count = data["count"]?.try(&.as_i?) || 1
+          raise ::Sebas::Platform::Store::StoreError.new("count 必须为正整数，实际：#{count}") if count <= 0
+          max_concurrent = Orchestration::Fork::Executor::DEFAULT_MAX_CONCURRENT
+          raise ::Sebas::Platform::Store::StoreError.new(
+            "count #{count} 超过分身并发闸 #{max_concurrent}（超限整体拒绝，不排队）") if count > max_concurrent
           mode = data["mode"]?.try(&.as_s?) || "allSettled"
           deadline = data["deadline"]?.try(&.as_i?) || 3600
           parent_session = data["parent_session"]?.try(&.as_s?) || "agent:main:internal:main:fork-cli"
