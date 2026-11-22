@@ -3,6 +3,7 @@ require "./version"
 require "./log"
 
 require "./platform/**"
+require "./platform/store/expectations_store"
 require "./channels/**"
 require "./routing/**"
 require "./agents/**"

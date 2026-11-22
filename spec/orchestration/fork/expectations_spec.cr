@@ -131,3 +131,58 @@ module Sebas
     end
   end
 end
+
+# #42 第一轮复审（settling 恢复 + any 首个成功顺序）回归。
+def seed_done_at(store, fork_id : String, order : Hash(String, Time), parent_task_id : String = "parent-1") : Array(String)
+  store.create_task(parent_task_id, "fork_parent") unless store.task_status?(parent_task_id)
+  members = [] of String
+  order.keys.each_with_index do |task_id, i|
+    store.create_task(task_id, "fork_child", parent_id: parent_task_id, owner_task_id: parent_task_id)
+    members << task_id
+    store.complete_task(task_id)
+    # 把 updated_at 改写成受控时刻（SQLite 直接 UPDATE，模拟先后完成）
+    db = store.db
+    db.exec("UPDATE tasks SET updated_at = ? WHERE id = ?", order[task_id].to_rfc3339, task_id)
+  end
+  members
+end
+
+module Sebas
+  describe "Expectations 恢复与 any 顺序（#42 复审）" do
+    it "settling 中断恢复：不重放第一步，直接收尾到 settled（且 deadline 处理仍生效）" do
+      dir = Path[Dir.tempdir, "sebas-expectations-settling", Random::Secure.hex(4)]
+      FileUtils.mkdir_p(dir)
+      store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
+      ex = ::Sebas::Orchestration::Fork::Expectations.new(store)
+      members = seed_members(store, "fork:s", 2, final: "done")
+      ex.create("fork:s", "parent-1", "agent:main:test:email:p", "allSettled", members, Time.utc + 1.hour)
+      # 模拟 settle 两步迁移间崩溃：手工只提交第一步
+      db = store.db
+      db.exec("UPDATE expectations SET status = 'settling' WHERE fork_id = 'fork:s'")
+
+      ex2 = ::Sebas::Orchestration::Fork::Expectations.new(store)
+      row = ex2.judge("fork:s")
+      row.status.should eq("settled")
+      row.settled_count.should eq(2)
+      store.close
+    end
+
+    it "any：多个成员均已 done 时 result 指向 updated_at 最早（先成功）者" do
+      dir = Path[Dir.tempdir, "sebas-expectations-any", Random::Secure.hex(4)]
+      FileUtils.mkdir_p(dir)
+      store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
+      ex = ::Sebas::Orchestration::Fork::Expectations.new(store)
+      # members 顺序 [A, B]；B（后位）先成功（updated_at 更早）
+      t0 = Time.utc - 10.minutes
+      members = seed_done_at(store, "fork:ord", {
+        "fork:ord:A" => t0 + 5.minutes, # A 后成功
+        "fork:ord:B" => t0,             # B 先成功
+      })
+      ex.create("fork:ord", "parent-1", "agent:main:test:email:p", "any", members, Time.utc + 1.hour)
+      row = ex.judge("fork:ord")
+      row.status.should eq("settled")
+      row.result.should eq("first success: fork:ord:B")
+      store.close
+    end
+  end
+end

@@ -53,7 +53,7 @@ module Sebas
         # 返回迁移后的行；未到 settle 条件时原样返回（open）。
         def judge(fork_id : String, now : ::Time = ::Time.utc) : ExpectationRow
           row = @store.expectation(fork_id)
-          return row unless row.status == "open"
+          return row unless {"open", "settling"}.includes?(row.status)
 
           member_ids = Array(String).from_json(row.members)
           statuses = member_ids.map do |id|
@@ -70,7 +70,7 @@ module Sebas
           when "any"
             # any 只认成功终态；失败不计数。全部失败 + deadline 到期 → expired（§4.3 any 行）。
             if any_done
-              settle(row, settled_count, "settled", result: first_done_summary(member_ids, statuses))
+              settle(row, settled_count, "settled", result: first_done_summary(member_ids))
             elsif deadline_passed?(row.deadline, now)
               expire_row(row, now, settled_count)
               @store.expectation(row.fork_id)
@@ -127,14 +127,21 @@ module Sebas
         end
 
         private def settle(row : ExpectationRow, settled_count : Int32, status : String, result : String) : ExpectationRow
-          @store.transition_expectation(row.id, "open", "settling")
+          # settling 起点 = 两步迁移间崩溃的恢复路径（open→settling 已提交）：
+          # 不重放第一步，直接完成收尾（guarded from=settling）。
+          @store.transition_expectation(row.id, "open", "settling") if row.status == "open"
           @store.transition_expectation(row.id, "settling", status, settled_count: settled_count, result: result)
           @store.expectation(row.fork_id)
         end
 
-        private def first_done_summary(member_ids : Array(String), statuses : Array(String?)) : String
-          index = statuses.index("done") || raise ::Sebas::Platform::Store::StoreError.new("any 判定失败：无 done 成员")
-          "first success: #{member_ids[index]}"
+        # any 的 result 必须指向**最先进入成功终态**的成员（semantics §2.3/§4.3）：
+        # tasks.status 无成功先后信息，tasks.updated_at（状态迁移时刻戳）是唯一
+        # 可持久化恢复的先后证据——取 done 成员中 updated_at 最早者。
+        private def first_done_summary(member_ids : Array(String)) : String
+          done = member_ids.select { |id| @store.task_status?(id) == "done" }
+          raise ::Sebas::Platform::Store::StoreError.new("any 判定失败：无 done 成员") if done.empty?
+          first = done.min_by { |id| @store.task_updated_at(id) || "9999" }
+          "first success: #{first}"
         end
 
         private def deadline_passed?(deadline : String, now : ::Time) : Bool
