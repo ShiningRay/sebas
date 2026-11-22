@@ -94,9 +94,9 @@ class VerifyWorkflowTest < Minitest::Test
     verifier = workflow.dig("jobs", "verifier", "permissions") || {}
     assert_equal "write", verifier["pull-requests"], "verifier 需要发评论"
 
-    reviewer = workflow.dig("jobs", "reviewer", "permissions") || {}
-    refute_equal "write", reviewer["pull-requests"],
-      "reviewer 只读判定，不得有 PR 写权限"
+    finalverdict = workflow.dig("jobs", "final-verdict", "permissions") || {}
+    refute_equal "write", finalverdict["pull-requests"],
+      "final-verdict 只读判定，不得有 PR 写权限"
 
     # 发布 job 是唯一例外，且它只发评论。
     publish = workflow.dig("jobs", "publish-verdict", "permissions") || {}
@@ -120,14 +120,14 @@ class VerifyWorkflowTest < Minitest::Test
 
   # --- job 结构 ---
 
-  def test_reviewer_depends_on_verifier
-    assert_equal ["verifier"], Array(workflow.dig("jobs", "reviewer", "needs"))
+  def test_final_verdict_depends_on_verifier
+    assert_equal ["verifier"], Array(workflow.dig("jobs", "final-verdict", "needs"))
   end
 
-  def test_reviewer_downloads_the_artifact
-    steps = workflow.dig("jobs", "reviewer", "steps")
+  def test_final_verdict_downloads_the_artifact
+    steps = workflow.dig("jobs", "final-verdict", "steps")
     step = steps.find { |s| s["uses"].to_s.include?("download-artifact") }
-    refute_nil step, "reviewer 必须读 verifier 产出的 artifact"
+    refute_nil step, "final-verdict 必须读 verifier 产出的 artifact"
     assert_equal "verification-report", step.dig("with", "name")
   end
 
@@ -276,10 +276,10 @@ class VerifyWorkflowTest < Minitest::Test
     end
   end
 
-  # reviewer 的判定必须覆盖「有 blocker / 有 must_fix / 无证据 unverified」三类。
-  # 判定逻辑在 tools/verify_reviewer_verdict.rb（base 版本随 artifact 传递）。
-  def test_reviewer_verdict_covers_three_failure_kinds
-    script = File.read(File.join(ROOT, "tools/verify_reviewer_verdict.rb"), encoding: "UTF-8")
+  # 终验判定必须覆盖「有 blocker / 有 must_fix / 无证据 unverified」三类。
+  # 判定逻辑在 tools/verify_final_verdict.rb（base 版本随 artifact 传递）。
+  def test_final_verdict_covers_three_failure_kinds
+    script = File.read(File.join(ROOT, "tools/verify_final_verdict.rb"), encoding: "UTF-8")
     %w[blocker must_fix unverified].each do |level|
       assert_includes script, %("#{level}"), "判定脚本应处理 #{level}"
     end
@@ -287,32 +287,32 @@ class VerifyWorkflowTest < Minitest::Test
   end
 
   # 判定脚本的调用路径必须与 artifact 解压位置一致（CodeRabbit）：
-  # 脚本落在 out/，调用写成 `ruby verify_reviewer_verdict.rb`（无前缀）
-  # 会找不到文件，让 reviewer 恒失败。
-  def test_reviewer_invokes_script_at_download_path
-    step = reviewer_steps.find { |s| s["name"]&.include?("verdict") }
+  # 脚本落在 out/，调用写成 `ruby verify_final_verdict.rb`（无前缀）
+  # 会找不到文件，让 final-verdict 恒失败。
+  def test_final_verdict_invokes_script_at_download_path
+    step = final_verdict_steps.find { |s| s["name"]&.include?("verdict") }
     refute_nil step, "缺少判定步骤"
 
-    assert_includes step["run"], "out/verify_reviewer_verdict.rb",
+    assert_includes step["run"], "out/verify_final_verdict.rb",
       "脚本路径必须与 download-artifact 的 path（out）一致"
     assert_includes step["run"], "out/verification.json"
 
-    download = reviewer_steps.find { |s| s["uses"].to_s.include?("download-artifact") }
+    download = final_verdict_steps.find { |s| s["uses"].to_s.include?("download-artifact") }
     assert_equal "out", download.dig("with", "path"), "下载目录与调用路径必须一致"
   end
 
   # 发评论需要 pull-requests: write，但判定 job 必须只读（CodeRabbit）：
-  # 拆分后 reviewer 只读、publish-verdict 才持写权限，且打回时仍会运行。
+  # 拆分后 final-verdict 只读、publish-verdict 才持写权限，且打回时仍会运行。
   def test_comment_publishing_split_from_readonly_verdict
-    reviewer_perms = workflow.dig("jobs", "reviewer", "permissions") || {}
-    refute_equal "write", reviewer_perms["pull-requests"],
-      "reviewer 不得持写权限"
+    final_perms = workflow.dig("jobs", "final-verdict", "permissions") || {}
+    refute_equal "write", final_perms["pull-requests"],
+      "final-verdict 不得持写权限"
 
     publish = workflow.dig("jobs", "publish-verdict")
     refute_nil publish, "缺少独立的发布 job"
     assert_equal "write", publish.dig("permissions", "pull-requests"),
       "发布 job 需要 pull-requests: write"
-    assert_includes publish["if"].to_s, "needs.reviewer.result == 'failure'",
+    assert_includes publish["if"].to_s, "needs.final-verdict.result == 'failure'",
       "打回时也要运行"
 
     runs = publish["steps"].filter_map { |s| s["run"] }.join("\n")
@@ -354,8 +354,8 @@ class VerifyWorkflowTest < Minitest::Test
     step
   end
 
-  def reviewer_steps
-    workflow.dig("jobs", "reviewer", "steps") || []
+  def final_verdict_steps
+    workflow.dig("jobs", "final-verdict", "steps") || []
   end
 
   # 把 workflow 里的相对路径参数（../target、../out/...）还原成本地临时目录路径。

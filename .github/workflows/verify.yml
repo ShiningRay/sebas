@@ -1,11 +1,11 @@
 name: Verify PR
 
-# Verifier/Reviewer 的确定性实现（#122）。
+# Verifier 终验的确定性实现（#122 建成；#124 起 Reviewer 并入 Verifier，判定 job 更名 final-verdict）。
 #
 # 把设计上的「独立上下文只读核验」落成 Actions 的两个独立 job：
 #   verifier —— 收集证据（锚点核验 + 文档核验），产出 verification.json，贴 PR 评论
 #               只在「产不出报告」这类基础设施故障时失败
-#   reviewer —— 读 verification.json 出终验结论；判定打回时 job 失败
+#   final-verdict —— 读 verification.json 出终验结论；判定打回时 job 失败
 #
 # 只做确定性层（证据收集 + 规则汇总），不做语义判断（那是 #123）。
 #
@@ -18,7 +18,7 @@ name: Verify PR
 
 on:
   # 用 pull_request_target 而非 pull_request：后者的 workflow 定义取自 PR 的
-  # merge commit，PR 作者可以改写本文件（删掉 base checkout、让 reviewer 直接
+  # merge commit，PR 作者可以改写本文件（删掉 base checkout、让判定 job 直接
   # 成功）来绕过核验。pull_request_target 的 workflow 定义取自 base 分支，
   # PR 无法修改——这是本 workflow 能在 PR 上充当门禁的前提。
   #
@@ -97,7 +97,7 @@ jobs:
                       tools/agents/lib/sebas_agents/model.rb \
                       tools/anchors_extract.rb \
                       tools/verify_merge_reports.rb \
-                      tools/verify_reviewer_verdict.rb; do
+                      tools/verify_final_verdict.rb; do
             [ -f "trusted/$path" ] || { echo "::error::base 缺 $path"; exit 1; }
           done
           echo "base 版本脚本齐备"
@@ -179,7 +179,7 @@ jobs:
           else
             # 生成器退出码为 0 却没产出清单 = 工具异常。
             # 若不记录，后续 verify anchors 会被静默跳过，汇总阶段只看到
-            # 「有日志没报告」而当成正常，reviewer 便可能误判通过。
+            # 「有日志没报告」而当成正常，终验判定便可能误判通过。
             echo "generator exit=${extract_status} 但未产出 anchors.json（工具异常）" \
               >> ../out/anchors_extract.txt
           fi
@@ -197,7 +197,7 @@ jobs:
           # 汇总逻辑取自 base（trusted/），可本地测试。
           ruby tools/verify_merge_reports.rb --out ../out --base "${BASE_SHA}" --head "${HEAD_SHA}"
 
-          # 摘要评论：只列证据，结论由 reviewer 定。
+          # 摘要评论：只列证据，结论由 final-verdict 判定。
           ruby -e '
             require "json"
             d = JSON.parse(File.read("../out/verification.json", encoding: "UTF-8"))
@@ -225,7 +225,7 @@ jobs:
 
       - name: Stage verdict script into artifact
         if: always()
-        run: cp trusted/tools/verify_reviewer_verdict.rb out/verify_reviewer_verdict.rb
+        run: cp trusted/tools/verify_final_verdict.rb out/verify_final_verdict.rb
 
       - name: Upload verification artifact
         if: always()
@@ -235,9 +235,9 @@ jobs:
           path: |
             out/verification.json
             out/comment.md
-            out/verify_reviewer_verdict.rb
-          # reviewer 需要的判定脚本随 artifact 传递，且是 base 版本
-          # （来自 trusted/），reviewer 不必再取一次 PR 内容。
+            out/verify_final_verdict.rb
+          # 终验判定脚本随 artifact 传递，且是 base 版本
+          # （来自 trusted/），final-verdict 不必再取一次 PR 内容。
           if-no-files-found: error
 
       - name: Post verification comment
@@ -266,8 +266,8 @@ jobs:
           fi
           echo "comment posted"
 
-  reviewer:
-    name: reviewer
+  final-verdict:
+    name: final-verdict
     needs: verifier
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -283,27 +283,27 @@ jobs:
           name: verification-report
           path: out
 
-      # 只读判定，不重跑核验（与 Reviewer 的设计一致）。
+      # 只读判定，不重跑核验（#124 起为 Verifier 的终验阶段，逐项复跑由 verify --final 的 checker 承载）。
       # 判定脚本是 base 版本，随 artifact 传递（见 verifier 的 Stage 步骤）；
       # 落点在 out/，因此调用路径必须带 out/ 前缀。
       - name: Decide final verdict
         run: |
           set -euo pipefail
           set +e
-          verdict_text="$(ruby out/verify_reviewer_verdict.rb out/verification.json)"
+          verdict_text="$(ruby out/verify_final_verdict.rb out/verification.json)"
           verdict_status=$?
           set -e
           printf '%s\n' "${verdict_text}"
 
           # 判定结果落盘：评论正文与状态码交给 publish-verdict job。
           {
-            echo "<!-- verify-pr:reviewer -->"
+            echo "<!-- verify-pr:final -->"
             printf '%s\n' "${verdict_text}"
-          } > out/reviewer_comment.md
-          printf '%s\n' "${verdict_status}" > out/reviewer_status.txt
+          } > out/final_comment.md
+          printf '%s\n' "${verdict_status}" > out/final_status.txt
 
           if [ "${verdict_status}" -ne 0 ]; then
-            echo "::error::Reviewer 终验打回"
+            echo "::error::终验打回"
           fi
           exit "${verdict_status}"
 
@@ -311,21 +311,21 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: reviewer-verdict
+          name: final-verdict
           path: |
-            out/reviewer_comment.md
-            out/reviewer_status.txt
+            out/final_comment.md
+            out/final_status.txt
           # 判定步骤正常跑完（无论通过与否）都会写出这两个文件；
           # 缺文件说明流程本身坏了，应显式失败而不是静默跳过发布。
           if-no-files-found: error
 
   # 打回评论的发布需要 pull-requests: write，但判定本身应当只读——
-  # 因此拆成独立 job：只在 reviewer 失败时运行，且不再用 `|| true`
+  # 因此拆成独立 job：只在 final-verdict 失败时运行，且不再用 `|| true`
   # 掩盖发布失败（CodeRabbit）。
   publish-verdict:
     name: publish verdict
-    needs: reviewer
-    if: always() && needs.reviewer.result == 'failure'
+    needs: final-verdict
+    if: always() && needs.final-verdict.result == 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -335,7 +335,7 @@ jobs:
       - name: Download verdict
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: reviewer-verdict
+          name: final-verdict
           path: out
 
       - name: Post rejection comment
@@ -348,13 +348,13 @@ jobs:
           # 必须 --slurp 后全局选一个 id，理由同 summary 评论。
           existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             --paginate --slurp \
-            | jq -r 'first(.[][] | select(.body | startswith("<!-- verify-pr:reviewer -->")) | .id) // empty')
+            | jq -r 'first(.[][] | select(.body | startswith("<!-- verify-pr:final -->")) | .id) // empty')
           if [ -n "${existing}" ]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" \
-              -F body=@out/reviewer_comment.md > /dev/null
+              -F body=@out/final_comment.md > /dev/null
           else
             gh api -X POST "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-              -F body=@out/reviewer_comment.md > /dev/null
+              -F body=@out/final_comment.md > /dev/null
           fi
           echo "打回评论已发布"
 

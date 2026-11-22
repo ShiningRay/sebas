@@ -6,12 +6,11 @@ module SebasAgents
   # 角色启动契约：新开 Harness 时，把这里生成的文本原样作为系统/初始任务提示词。
   # 内容只描述仓库内真实存在的命令与边界，不复制流程细节，避免与文档漂移。
   module RolePrompts
-    ROLES = %w[implementer verifier reviewer triager scribe release-manager maintainer].freeze
+    ROLES = %w[implementer verifier triager scribe release-manager maintainer].freeze
 
     ROLE_FILES = {
       "implementer" => "docs/design/process/implementer.md",
       "verifier" => "docs/design/process/verifier.md",
-      "reviewer" => "docs/design/process/reviewer.md",
       "triager" => "docs/design/process/triager.md",
       "scribe" => "docs/design/process/scribe.md",
       "release-manager" => "docs/design/process/release-manager.md",
@@ -21,8 +20,7 @@ module SebasAgents
     # 权限性质：决定 Harness 该给哪些工具。
     ACCESS = {
       "implementer" => "读写：可在独立 worktree 写代码、提 PR；不得 force-push 或直接写 main",
-      "verifier" => "只读：禁改代码、文档、issue、milestone；唯一输出是核验报告",
-      "reviewer" => "只读：禁改代码、文档、issue、milestone；唯一输出是终验结论",
+      "verifier" => "只读：禁改代码、文档、issue、milestone；唯一输出是核验报告与终验结论",
       "triager" => "只写 issue 元数据：标签、类型、指派、评论；禁改仓库源码、禁 commit/push",
       "scribe" => "写文档与记忆库：docs/、CHANGELOG、rsrs；不改产品源码逻辑",
       "release-manager" => "写版本号与 tag：只执行机械步骤；版本号与 CHANGELOG 内容由 Maintainer 给定",
@@ -32,8 +30,7 @@ module SebasAgents
     # 接手后的第一步：必须是只读或 dry-run，先看清事实再动手。
     FIRST_STEP = {
       "implementer" => "先跑 `ruby tools/sebas-process next`，只按返回的 action 行事；返回 invalid_plan / needs_human 立即停。",
-      "verifier" => "先跑 `ruby tools/sebas-process verify docs <本次范围路径>`，再按需补 anchors / merge 核验。",
-      "reviewer" => "先读 Verifier 报告，再跑 `ruby tools/sebas-process review <verification.json> --fixes <fixes.json>`。",
+      "verifier" => "先跑 `ruby tools/sebas-process verify docs <本次范围路径>`，再按需补 anchors / merge 核验与 --final 终验。",
       "triager" => "先跑 `ruby tools/sebas-process triage <issue> --dry-run`，按 needs_model 逐项研判。",
       "scribe" => "先跑 `ruby tools/sebas-process docs-check`，确认文档现状后再改。",
       "release-manager" => "先跑 `ruby tools/sebas-process release plan`，确认是否该发、发哪个版本。",
@@ -44,7 +41,6 @@ module SebasAgents
     FORBIDDEN = {
       "implementer" => %w[force-push 直接写main 改分支保护 在用户工作目录改文件],
       "verifier" => %w[修改任何文件 改issue 改milestone 采纳实现者自验结论],
-      "reviewer" => %w[修改任何文件 改issue 改milestone 只信Verifier结论而不复跑],
       "triager" => %w[改源码 commit push 建分支 发版 动生产],
       "scribe" => %w[改产品源码逻辑 改生产配置 提交凭据],
       "release-manager" => %w[自行决定版本号 自行改写CHANGELOG 覆盖既有tag force-push],
@@ -62,10 +58,8 @@ module SebasAgents
       "verifier" => [
         "ruby tools/sebas-process verify docs <path...>",
         "ruby tools/sebas-process verify anchors <anchors.json>",
-        "ruby tools/sebas-process verify merge <pr> <issue>"
-      ],
-      "reviewer" => [
-        "ruby tools/sebas-process review <verification.json> --fixes <fixes.json>"
+        "ruby tools/sebas-process verify merge <pr> <issue>",
+        "ruby tools/sebas-process verify merge <pr> <issue> --final --fixes <fixes.json>"
       ],
       "triager" => [
         "ruby tools/sebas-process triage <issue> --dry-run",
@@ -90,16 +84,13 @@ module SebasAgents
       "implementer" =>
         "你是 sebas 仓库的 Implementer（有代码写权限）。在仓库根跑 `ruby tools/sebas-process next`，只按返回的 action 行事；" \
         "invalid_plan / needs_human / blocked 立即停并报告 Maintainer，不要自己改选卡；" \
-        "合并前必须 `ruby tools/sebas-process verify merge <pr> <issue> --pre` 退出码 0，且 Verifier、Reviewer、Evidence 三关齐全；" \
+        "合并前必须 `ruby tools/sebas-process verify merge <pr> <issue> --pre` 退出码 0，且 Verifier 核验（含终验）与 Evidence 两关齐全；" \
         "禁 force-push、禁直接写 main、禁自验自合。",
       "verifier" =>
         "你是 sebas 仓库的 Verifier（只读，禁改任何文件 / issue / milestone）。" \
         "跑 `ruby tools/sebas-process verify docs <路径>`，按需再跑 `verify anchors` / `verify merge`；" \
-        "结论分阻断 / 应修 / 可留，跑不了写“未实测”及原因，不许编证据。",
-      "reviewer" =>
-        "你是 sebas 仓库的 Reviewer（只读）。读 Verifier 报告后跑 " \
-        "`ruby tools/sebas-process review <verification.json> --fixes <fixes.json>`；" \
-        "未独立复跑只能给“有条件通过”；结论分通过 / 有条件通过 / 打回。",
+        "终验阶段跑 `verify merge <pr> <issue> --final --fixes <fixes.json>`，must_fix 逐项复跑 checker；" \
+        "核验结论分阻断 / 应修 / 可留，终验结论分通过 / 有条件通过 / 打回，跑不了写“未实测”及原因，不许编证据。",
       "triager" =>
         "你是 sebas 仓库的 Triager（只写 issue 元数据，禁改源码、禁 commit/push）。" \
         "先跑 `ruby tools/sebas-process triage <issue> --dry-run` 看 needs_model，再用 " \
@@ -185,7 +176,7 @@ module SebasAgents
         "## 停止条件",
         "- 返回 `invalid_plan`、`needs_human`、`blocked` 时停止推进，把原因回报给 Maintainer。",
         "- 元数据缺失或状态冲突时不要猜，不要绕过门禁。",
-        "- 合并前必须过 `verify merge --pre`（退出码 0）且 Verifier/Reviewer/Evidence 三关齐全；缺一停。"
+        "- 合并前必须过 `verify merge --pre`（退出码 0）且 Verifier 核验（含终验）与 Evidence 两关齐全；缺一停。"
       ]
       lines.join("\n")
     end
