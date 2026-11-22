@@ -149,6 +149,7 @@ module Sebas
           SQL
         "CREATE TABLE IF NOT EXISTS expectations (" \
         "id             TEXT PRIMARY KEY, " \
+        "members_final  INTEGER NOT NULL DEFAULT 0, " \
         "fork_id        TEXT NOT NULL, " \
         "parent_task_id TEXT NOT NULL REFERENCES tasks(id), " \
         "parent_session TEXT NOT NULL, " \

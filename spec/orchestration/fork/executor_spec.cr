@@ -39,8 +39,9 @@ module Sebas
         task: "parallel research", count: 1, window: 20, include: nil,
         tools: nil, role: nil, mode: "allSettled", deadline: 3600
       )
+      frozen = store.transcripts(parent_key)
       messages = ::Sebas::Orchestration::Fork::SnapshotBuilder.build(
-        store, parent_key, "parent persona", "## Skills\nskill-text", input, 1
+        frozen, "parent persona", "## Skills\nskill-text", input, 1
       )
       messages.size.should eq(22) # system + 20 窗口行 + task user
       messages[0].role.should eq("system")
@@ -55,13 +56,37 @@ module Sebas
       # N=3：窗口 10 行 → 每成员 12 条消息
       store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
       input3 = input.copy_with(window: 10, count: 3)
+      frozen = store.transcripts(parent_key)
       [1, 2, 3].each do |member|
         messages = ::Sebas::Orchestration::Fork::SnapshotBuilder.build(
-          store, parent_key, "p", "", input3, member
+          frozen, "p", "", input3, member
         )
         messages.size.should eq(12)
         messages[0].content.should contain("fork member #{member} of 3")
       end
+      store.close
+
+      # assistant 角色转换 + include 白名单 + role 注入
+      store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
+      store.append_transcript(parent_key, "agent", "prior reply")
+      frozen = store.transcripts(parent_key)
+      messages = ::Sebas::Orchestration::Fork::SnapshotBuilder.build(
+        frozen, "p", "", input3, 1
+      )
+      agent_msgs = messages.select(&.content.==("prior reply"))
+      agent_msgs.size.should eq(1)
+      agent_msgs.first.role.should eq("assistant") # agent → assistant 转换
+      included = ::Sebas::Orchestration::Fork::SnapshotBuilder.build(
+        frozen, "p", "skills-text", input3.copy_with(include: %w[transcripts]), 1
+      )
+      included[0].content.should contain("fork member") # system 恒有身份行，但无 persona/skills
+      included[0].content.should_not contain("skills-text")
+      excluded = ::Sebas::Orchestration::Fork::SnapshotBuilder.build(
+        frozen, "p", "", input.copy_with(window: 10, count: 1, role: "researcher", include: %w[system_prompt skills]), 1
+      )
+      excluded.any?(&.content.==("prior reply")).should be_false
+      excluded[0].content.should contain("Role card: researcher")
+      store.close
       store.close
     end
 
@@ -97,8 +122,10 @@ module Sebas
       )
       results = executor.run("parent-1", "agent:main:test-acc:email:p", "main", "persona", "", input)
       results.first.state.should eq("failed")
-      row = store.expectations_by_status("settled").first
+      fork_id = results.first.task_id.split(":")[0...2].join(":")
+      row = store.expectation(fork_id)
       row.status.should eq("settled")
+      row.settled_count.should eq(1)
       store.close
     end
   end

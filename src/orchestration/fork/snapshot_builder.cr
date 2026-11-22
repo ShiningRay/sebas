@@ -27,25 +27,29 @@ module Sebas
           deadline : Int32
 
         # 组装单个分身的消息数组。member_index 从 1 起。
-        def self.build(store : ::Sebas::Platform::Store::Store,
-                       parent_session_key : String,
+        # frozen_transcripts：调用方在首成员执行前读好的固定窗口（全成员同源）。
+        # include 白名单（semantics §1.2）：缺省 ["transcripts","system_prompt","skills"]；
+        # 逐项控制注入面——白名单不含 secrets 项（§5.3）。
+        def self.build(frozen_transcripts : Array(::Sebas::Platform::Store::TranscriptRow),
                        parent_persona : String, skills_text : String,
-                       input : Input, member_index : Int,
-                       default_window : Int32 = DEFAULT_WINDOW) : Array(Providers::Message)
+                       input : Input, member_index : Int) : Array(Providers::Message)
+          includes = input.include || %w[transcripts system_prompt skills]
           messages = [] of Providers::Message
-          # system prompt = 父 persona + skills 注入 + 分身身份行
           system = String.build do |io|
-            io << parent_persona
-            io << "\n\n" << skills_text unless skills_text.empty?
+            io << parent_persona if includes.includes?("system_prompt")
+            io << "\n\n" << skills_text if includes.includes?("skills") && !skills_text.empty?
+            role_note = input.role ? " Role card: #{input.role}." : ""
             io << "\n\n[You are fork member #{member_index} of #{input.count} for this task. "
-            io << "You run with forked capability set; irreversible actions require approval.]"
+            io << "You run with forked capability set; irreversible actions require approval.#{role_note}]"
           end
           messages << Providers::Message.new("system", system)
-          # transcripts 窗口：只读已落库（在途消息天然不在）；include 白名单缺省
-          # ["transcripts","system_prompt","skills"]——本版三项恒注入（无 secrets 项可选）。
-          window = input.window || default_window
-          store.transcripts(parent_session_key).last(window).each do |row|
-            messages << Providers::Message.new(row.role, row.content)
+          if includes.includes?("transcripts")
+            window = input.window || DEFAULT_WINDOW
+            frozen_transcripts.last(window).each do |row|
+              # 存储角色 agent → provider 角色 assistant（gateway.agent_turn 同款转换）
+              role = row.role == "agent" ? "assistant" : row.role
+              messages << Providers::Message.new(role, row.content)
+            end
           end
           # 任务描述兜底为 user 消息（父会话无 transcripts 时任务仍可执行）
           messages << Providers::Message.new("user", input.task)
