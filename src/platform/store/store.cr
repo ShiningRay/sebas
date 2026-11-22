@@ -133,7 +133,7 @@ module Sebas
           )
           SQL
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_session_batch_members_order ON session_batch_members(batch_id, position)",
-        <<-SQL
+        <<-SQL,
           CREATE TABLE IF NOT EXISTS session_steers (
             steer_id         TEXT PRIMARY KEY,
             session_key      TEXT NOT NULL,
@@ -146,6 +146,20 @@ module Sebas
             updated_at       TEXT NOT NULL
           )
           SQL
+        "CREATE TABLE IF NOT EXISTS expectations (" \
+        "id             TEXT PRIMARY KEY, " \
+        "fork_id        TEXT NOT NULL, " \
+        "parent_task_id TEXT NOT NULL REFERENCES tasks(id), " \
+        "parent_session TEXT NOT NULL, " \
+        "mode           TEXT NOT NULL, " \
+        "deadline       TEXT NOT NULL, " \
+        "members        TEXT NOT NULL, " \
+        "settled_count  INTEGER NOT NULL DEFAULT 0, " \
+        "status         TEXT NOT NULL DEFAULT 'open', " \
+        "result         TEXT, " \
+        "created_at     TEXT NOT NULL, " \
+        "updated_at     TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id)",
       ]
 
       class Store
@@ -341,6 +355,8 @@ module Sebas
 
         TASK_COLUMNS = "id, parent_id, kind, status, phase, restart_count, owner_task_id"
 
+        EXPECTATION_COLUMNS = "id, fork_id, parent_task_id, parent_session, mode, deadline, members, settled_count, status, result, created_at, updated_at"
+
         private def query_tasks(where : String) : Array(TaskRow)
           rows = [] of TaskRow
           @db.query("SELECT #{TASK_COLUMNS} FROM tasks WHERE #{where}") do |result_set|
@@ -366,6 +382,60 @@ module Sebas
         end
 
         # ---- 决策级幂等：memo first-write-wins（§7.3）----
+
+        # --- expectations（M4.1-WP2：join 汇聚点落库面） ---
+
+        def insert_expectation(row : ::Sebas::Orchestration::Fork::ExpectationRow) : Nil
+          @db.exec(
+            "INSERT INTO expectations (id, fork_id, parent_task_id, parent_session, mode, deadline, members, settled_count, status, result, created_at, updated_at) " \
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row.id, row.fork_id, row.parent_task_id, row.parent_session, row.mode, row.deadline,
+            row.members, row.settled_count, row.status, row.result, row.created_at, row.updated_at
+          )
+        end
+
+        def expectation(fork_id : String) : ::Sebas::Orchestration::Fork::ExpectationRow
+          e = expectation?(fork_id)
+          raise StoreError.new("unknown expectation fork #{fork_id}") if e.nil?
+          e
+        end
+
+        def expectation?(fork_id : String) : ::Sebas::Orchestration::Fork::ExpectationRow?
+          row = @db.query_one?("SELECT #{EXPECTATION_COLUMNS} FROM expectations WHERE fork_id = ?", fork_id) do |result_set|
+            read_expectation(result_set)
+          end
+          row
+        end
+
+        def expectations_by_status(status : String) : Array(::Sebas::Orchestration::Fork::ExpectationRow)
+          rows = [] of ::Sebas::Orchestration::Fork::ExpectationRow
+          @db.query("SELECT #{EXPECTATION_COLUMNS} FROM expectations WHERE status = ? ORDER BY created_at", status) do |result_set|
+            result_set.each { rows << read_expectation(result_set) }
+          end
+          rows
+        end
+
+        # 状态机迁移（guarded：from 不符即拒绝，防止并发/重复迁移破坏状态机）。
+        def transition_expectation(id : String, from : String, to : String,
+                                   settled_count : Int32? = nil, result : String? = nil) : Nil
+          changed = if settled_count.nil?
+                      @db.exec("UPDATE expectations SET status = ?, result = COALESCE(?, result), updated_at = ? " \
+                               "WHERE id = ? AND status = ?", to, result, now, id, from).rows_affected
+                    else
+                      @db.exec("UPDATE expectations SET status = ?, settled_count = ?, result = COALESCE(?, result), updated_at = ? " \
+                               "WHERE id = ? AND status = ?", to, settled_count, result, now, id, from).rows_affected
+                    end
+          raise StoreError.new("expectation #{id} 状态迁移失败：期望 from=#{from}，当前非该状态") if changed == 0
+        end
+
+        private def read_expectation(rs) : ::Sebas::Orchestration::Fork::ExpectationRow
+          ::Sebas::Orchestration::Fork::ExpectationRow.new(
+            id: rs.read(String), fork_id: rs.read(String), parent_task_id: rs.read(String),
+            parent_session: rs.read(String), mode: rs.read(String), deadline: rs.read(String),
+            members: rs.read(String), settled_count: rs.read(Int32), status: rs.read(String),
+            result: rs.read(String?), created_at: rs.read(String), updated_at: rs.read(String)
+          )
+        end
 
         def memo_put(key : String, value : String) : String
           @db.exec("INSERT OR IGNORE INTO memos (key, value, created_at) VALUES (?, ?, ?)", key, value, now)
