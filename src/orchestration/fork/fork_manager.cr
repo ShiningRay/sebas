@@ -37,8 +37,9 @@ module Sebas
         end
 
         # 成员会话键：五段结构不动（channel_type 枚举值 "fork"），
-        # peer 段 = fork_id:member_index——与 subagent 键先例同构
-        # （subagent.cr:44：(agent_id, "internal", "subagent", key)）。
+        # peer 段 = 完整 fork_id + ":" + member_index（semantics §1.3：peer 段
+        # 原样承载 fork_id 不剥前缀，从键反推 fork_id 无需拼装）——与
+        # subagent 键先例同构（subagent.cr:44：(agent_id, "internal", "subagent", key)）。
         # 经 Agents.session_key 构造，保证与 Pool 分片 / transcripts 键 /
         # 调度 admission 三处键口径同源。
         def member_session_key(parent_agent_id : String, fork_id : String, member_index : Int) : String
@@ -51,13 +52,9 @@ module Sebas
           "fork:#{member_peer(fork_id, member_index)}"
         end
 
-        # 分身会话键的 peer 段：fork_id 去前缀 + 成员序号。
+        # 分身会话键的 peer 段：完整 fork_id + 成员序号。
         private def member_peer(fork_id : String, member_index : Int) : String
-          "#{member_peer_short(fork_id, member_index)}:#{member_index}"
-        end
-
-        private def member_peer_short(fork_id : String, _member_index : Int) : String
-          fork_id.lchop(FORK_ID_PREFIX)
+          "#{fork_id}:#{member_index}"
         end
       end
     end

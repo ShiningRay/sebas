@@ -72,10 +72,10 @@ module Sebas
       key1 = fm.member_session_key("main", fork_id, 1)
       key2 = fm.member_session_key("main", fork_id, 2)
       # 成员级独立会话：同次 fork 的两个成员键不同，且五段结构同源（Agents.session_key 构造）
-      key1.should eq(Agents.session_key("main", "internal", "fork", "#{fork_id.lchop("fork:")}:1"))
-      key2.should eq(Agents.session_key("main", "internal", "fork", "#{fork_id.lchop("fork:")}:2"))
+      key1.should eq(Agents.session_key("main", "internal", "fork", "#{fork_id}:1"))
+      key2.should eq(Agents.session_key("main", "internal", "fork", "#{fork_id}:2"))
       key1.should_not eq(key2)
-      fm.member_task_id(fork_id, 1).should eq("fork:#{fork_id.lchop("fork:")}:1")
+      fm.member_task_id(fork_id, 1).should eq("fork:#{fork_id}:1")
     end
 
     it "builds the join memo idempotency key and reflects written state" do
