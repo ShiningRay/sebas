@@ -25,8 +25,11 @@ crystal build -o bin/ameba lib/ameba/bin/ameba.cr && ./bin/ameba   # 0 issues
 ruby tools/check_docs.rb            # FAIL=0（WARN 可接受，仅限 docs/design/review/ 存档）
 ```
 
-CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + release build + docs-check。
+CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + verify + release build + docs-check。
 `make check` 跑 format-check + spec + lint（不含 docs-check）；`make docs-check` 单独跑文档门禁。
+`verify` 是确定性的第五项必检：跑 `verify docs`（行号锚/行数）与
+`verify anchors`（文档声称的 `file:line` 内容是否对得上源码），入口详见
+`docs/design/process/quickstart.md` 的 Verifier 节。
 
 ## 目录结构
 

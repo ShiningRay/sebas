@@ -165,11 +165,19 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 
 ```sh
 ruby tools/sebas-process verify docs docs/design/process/*.md
-ruby tools/sebas-process verify anchors anchors.json
+ruby tools/anchors_extract.rb --output /tmp/anchors.json docs/**/*.md   # 生成锚点清单
+ruby tools/sebas-process verify anchors /tmp/anchors.json
 ruby tools/sebas-process verify merge 95 87
 ```
 
 三条命令全部只读，结论为 `blocker` / `must_fix` / `acceptable` / `unverified`。
+
+`anchors_extract` 抽取文档里的 `src/x.cr:123` 形态引用，取该行实际内容生成
+`anchors.json`（派生物，不入库）。它会跳过两类不应报错的引用：本仓库不存在的
+路径（如研究笔记引用的外部项目源码）与指向空行的锚点。行号越界是硬错误，
+直接拒绝生成。
+
+CI 的 `verify` job 在每次 PR 上重跑这两步（必检，与 spec×3 + ameba 并列）。
 
 ### Reviewer
 
