@@ -1,0 +1,171 @@
+# LLM 语义核验的可行性评估（#123）
+
+> 结论先行：**评估不通过——不落地 LLM 核验 job**。理由见三件问题的逐条结论。
+> 本文是 #123 的交付物；本卡范围内的「不做」同样是有效交付（见卡面「若评估不通过」）。
+
+## 背景
+
+#122 已把确定性核验自动化（证据收集 + 规则汇总），产出 `verification.json` 供
+`sebas-process review` 消费。缺的一块是「这段实现是否真的满足验收意图」——需要语义判断。
+
+本评估回答卡面列出的三个硬问题。任一不成立就不该做。
+
+## 问题 1：结论的可复现性 —— 不成立
+
+**卡面判据**：若接受「LLM 结论只作为建议，blocker 仍由确定性检查裁定」→ 可做；
+若要求 LLM 结论也必须是门禁 → 不可做。
+
+**实际结论：现有管线的实现口径排除了「建议」这一档。**
+
+依据（`verification.json` 的消费方 `Reviewer.final_verification`，见
+`tools/agents/lib/sebas_agents/reviewer.rb`）：
+
+> `verifier_report.blockers.any?` → 记 blocker；应修项未修复 → 记 blocker；
+> 无证据的未实测项 → 记 blocker（`unverified` 分支：`item.evidence.to_s.empty?`
+> 时 `report.blocker(...)`）。
+
+也就是说这个格式目前在管线里的位置是**门禁输入**，没有「仅供参考不参与判定」的通道。
+注意：这是**实现口径**（代码如此），不是「验收纪律明文禁止建议档」——纪律层面
+`docs/design/process/development-workflow.md` §5 并未禁止新增一种非阻断结论。判断
+不做的理由是下面两条路都不划算。
+
+两条路都不通：
+
+1. 让 LLM 结论进 `verification.json` 参与判定 → 违反可复现性——同一 PR 两次运行
+   可能给出不同分级，不可复现的门禁等于噪音。
+2. 给 LLM 结论新开一条「非阻断建议」通道 → 需要新增通道语义、新消费逻辑、
+   与现有两级裁定的关系定义。这已经不是本卡（0.5 pd 评估 + 1–2 pd 实现）的范围，
+   而且**没有证据表明人工 Verifier 的语义核验在当前节奏下是瓶颈**：
+   从 #112 起的全部 PR 都走了人工 Verifier + Reviewer 两关且未出现「漏验」事故。
+
+**可复现性的边界**：有人会说「锁定 seed + temperature=0 就能复现」。这不成立——
+模型版本漂移、服务端推理栈变更都不在仓库控制内；即使同一二进制两次输出一致，
+也无法像 `verify anchors` 那样「任何人 clone 后重跑得到同一结果」。
+
+**这条判据的来源要说清**：仓库现有文档（`AGENTS.md` 的「## 验收」与
+`docs/design/process/development-workflow.md` §5）只要求「结论锚到命令输出 / 行号 /
+API 返回」，**没有**明文要求第三方复现。因此这里采用的标准是本评估**自设的**：
+「任何人可复现」而非「同一进程内稳定」。之所以自设这条，是因为
+`verification.json` 的输出要进入 `sebas-process review` 的**门禁判定**——
+门禁一旦不可复现，它给出的打回就没有可争辩的依据（Implementer 无法自证清白）。
+这是本评估据以判断的理由，不是引用现有规则。
+
+## 问题 2：上下文独立性 —— 成立，但不构成做的理由
+
+**卡面判据**：Actions 里的 LLM 看不到 Implementer 的对话与假设，这一点比人工起
+Harness 更容易保证独立性。
+
+**实际结论：独立性确实更容易保证，但这条只说明「如果做，独立性问题好解决」，
+不说明「值得做」。**
+
+- 独立性：Actions job 天然是干净上下文，确实优于人工 Harness（人工起 Harness 时
+  Implementer 的对话可能被顺带带进去）。
+- 但**无法像人工 Verifier 那样自己跑命令验证**——除非再给 LLM 一套工具调用 Harness。
+  这就把「0.5 pd 评估」推向一个带工具权限、沙箱、超时、成本上限的子系统，
+  与本仓库「确定性层优先」的取向相反：**能枚举成规则的就不交给模型**（卡面第 1、2 层
+  的划分已经确立这个原则，第 3 层要破这个例需要更强的理由）。
+- 工具权限风险：给 LLM 只读工具集写入 Actions 意味着每次核验都要构造 prompt、
+  选择文件子集、限制命令白名单。当前仓库没有这套基础设施，`quickstart.md` §7 的
+  「只读角色的 Harness 不要给写工具」是一条**约束**，不是已建成的能力。
+
+## 问题 3：成本与噪音 —— 不成立
+
+**卡面判据**：本轮实证 CodeRabbit 在 #112–#120 共提 30+ 条意见，其中约 1/3 是重复变体。
+再叠加 LLM 核验，噪音可能翻倍。
+
+**实测数据**（复核于 2026-11-22，GraphQL `reviewThreads.totalCount`）：
+
+| PR | review thread 数 | 备注 |
+|---|---|---|
+| #112 | 14 | |
+| #117 | 14 | |
+| #118 | 4 | |
+| #119 | 1 | |
+| #120 | 3 | |
+| #127 | 8 | 本轮 |
+| #128 | 8 | 本轮 |
+| #129 | 15 | 本轮 |
+
+合计 67 条（卡面说的「30+」是保守表述）。按 #129 的路径分布看，意见高度集中在
+workflow 与工具脚本本身（`.github/workflows/verify.yml` 8 条、`tools/verify_*.rb` 5 条），
+这正是**新增基础设施类 PR 的特征**，不是实现质量问题。
+
+`#129` 的 15 条里，前两轮 7 条 + 5 条 + 3 条，其中确实有重复变体（如「不得吞错误」
+在 `verify_merge_reports.rb` 与 `verify_reviewer_verdict.rb` 各报一次）。
+
+**数据能说明什么、不能说明什么**：上表描述的是 **CodeRabbit 的既有意见规模**——
+它证明 review 噪音已是实际负担，但**不**描述 LLM 核验的假阳性率或收益
+（两者是不同系统，不能外推）。
+
+**可以推的因果链**（基于现有判定口径，非实测）：`verification.json` 进入判定后，
+`blocker` 与无证据的 `unverified` 都转为阻断。这层口径在两条消费路径上宽严不同：
+
+- **CLI `sebas-process review`**（`--fixes` + `Reviewer.final_verification`）：
+  未修复的应修项转为阻断；已修复的应修项降为 `unverified`——CLI 不注入
+  `checker`，`passed=true` 且有 commit 时记「自报已修复、Reviewer 未独立复跑」
+  （`evidence` 为空），结论为有条件通过，**不输出 `ok`**（`ok` 仅在调用方注入
+  `checker` 并复跑通过时产生）。Reviewer 输出的 `must_fix`（来自可留项理由
+  失效或未复核）同样计入阻断判定。
+- **Actions reviewer gate**（`verify.yml` 的 reviewer job，
+  `tools/verify_reviewer_verdict.rb`）：不读取 `--fixes`，输入报告中
+  **任一 `must_fix` 即打回**，`unverified` 且无间接证据同样打回——CLI 自报
+  已修复的条目无 `evidence`，在这层仍会打回。阻断范围比 CLI 更宽。
+
+两条路径上，新增一个核验层必然新增分级条目，其中若有假阳性，就会带来额外的
+打回；一次假阳性打回要走一轮 Implementer 修复。**LLM 核验的假阳性率与收益均
+未测量**，所以「净成本为正」是风险判断（依据：判定口径 + 本仓库对假阳性的
+敏感度），不是实测结论。
+
+**「只输出结构化 JSON、不发 inline 评论」不足以免除这层风险**：卡面提出的这条缓解
+只避免了「与 CodeRabbit 抢同一代码行」，但判定噪音来自分级条目本身进入门禁判定
+（无论 CLI `review` 还是 Actions reviewer gate），不来自评论形态。
+
+## 结论
+
+| 问题 | 结论 | 依据 |
+|---|---|---|
+| 1. 可复现性 | **不成立** | 现有管线把 `verification.json` 当门禁输入，没有「仅建议」通道；让不可复现的结论进门禁无法与 Implementer 对账（本评估自设判据，见问题 1） |
+| 2. 上下文独立性 | 成立（独立性问题好解决） | Actions 天然干净上下文优于人工 Harness；但要让 LLM 自己跑命令验证需一套工具调用 Harness，与「确定性优先」取向相反 |
+| 3. 成本与噪音 | **风险不划算（判断，非实测）** | 实测数据（8 个 PR 合计 67 条意见、#129 四轮往返）只说明既有 review 噪音规模；据现有判定口径（CLI `review`：blocker、无证据 unverified、未修复应修项均转阻断；Actions reviewer gate：输入报告任一 `must_fix` 即打回，阻断范围比 CLI 更宽），新增分级条目**可以**增加打回次数。**LLM 核验的假阳性率与收益均未测量**，本评估未做对照实验 |
+
+**不做。** 三个问题里两个不成立；第三个（独立性）只说明「如果做，能做对」，
+不构成值得做的理由。
+
+**关于问题 3 的措辞纪律**：67 条 thread 与 4 轮往返描述的是 **CodeRabbit 的意见数量**，
+不能直接外推为 LLM 核验的假阳性率——两者是不同的系统。上表因此把它标为
+「判断，非实测」：判断的依据是现有判定口径（任何新增条目都可能阻断）与本仓库
+对假阳性的敏感度（一个假阳性打回要走一轮修复），而不是对 LLM 核验本身的测量。
+若要把它变成事实结论，需要一次对照实验（同一 PR 上人工 Verifier 与 LLM 核验的
+分级对比），这本身又是一卡的工作量。
+
+## 什么情况下应该重新评估
+
+给出可复查的复查条件（不是永久否决）：
+
+1. **人工 Verifier 成为瓶颈**：出现「因人工核验排队而阻塞合并」的可观测证据
+   （如连续 N 个 PR 的合并等待主要来自 verifier 排期，而非 CI 或 review 往返）。
+2. **确定性层已穷尽**：出现「多起漏验事故，且根因是确定性规则无法表达」的复盘记录。
+   当前无此类事故。
+3. **工具 Harness 已具备**：仓库已有受控的只读工具调用基础设施（当前没有）。
+   此时 LLM 核验的成本结构会变，值得重算。
+
+上述任一条出现时，重新开卡评估，不必引用本文作为否决依据。
+
+## 对 #122 产物的影响
+
+无需改动。`verification.json` 的 schema、`sebas-process review` 的判定口径、
+`.github/workflows/verify.yml` 的三个 job 都保持现状。本评估不落地任何代码。
+
+## 附：本评估的证据可复查方式
+
+```sh
+# thread 数复核
+gh api graphql -f query='query { repository(owner: "ShiningRay", name: "sebas") {
+  pullRequest(number: 129) { reviewThreads(first: 60) { totalCount } } } }'
+
+# 角色提示词（若实现，应使用的提示词来源）
+ruby tools/sebas-process roles verifier --prompt-only
+
+# 只读约束
+sed -n '/## 7. 安全边界/,/^## /p' docs/design/process/quickstart.md
+```
