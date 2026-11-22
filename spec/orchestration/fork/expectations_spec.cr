@@ -136,7 +136,7 @@ end
 def seed_done_at(store, fork_id : String, order : Hash(String, Time), parent_task_id : String = "parent-1") : Array(String)
   store.create_task(parent_task_id, "fork_parent") unless store.task_status?(parent_task_id)
   members = [] of String
-  order.keys.each_with_index do |task_id, i|
+  order.keys.each do |task_id|
     store.create_task(task_id, "fork_child", parent_id: parent_task_id, owner_task_id: parent_task_id)
     members << task_id
     store.complete_task(task_id)

@@ -36,3 +36,4 @@ data/
 # Python bytecode from tools/ doc checker
 __pycache__/
 *.pyc
+store
