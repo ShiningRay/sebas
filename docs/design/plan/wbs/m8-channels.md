@@ -39,7 +39,7 @@
 - 目标：跑通 Slack 多账号收发。
 - 范围：
   - `src/channels/slack/` 目录：adapter.cr / socket_mode.cr / web_api.cr / markdown.cr；
-  - Socket Mode 连接：`apps.connections.open` 换 WSS endpoint → 建立 WebSocket → 收 `events_api` envelope → 按 `envelope_id` 立即 ACK → 落库 + 入总线（沿用 §5.2「回调 fiber 只验签+落库+入总线」纪律）；
+  - Socket Mode 连接：`apps.connections.open` 换 WSS endpoint → 建立 WebSocket → 收 `events_api` envelope → **先落库（含 envelope 原文与 `event_id` 唯一索引）→ 再按 `envelope_id` 发 ACK → 再入总线**（沿用 §5.2「回调 fiber 只验签+落库+入总线」纪律；顺序修正原因：若 ACK 早于落库，进程在 ACK 后、落库前崩溃会静默丢消息——Slack 已收到确认不再重推，本地无记录）；
   - 排重：`event_id` 唯一索引；
   - 发送：`chat.postMessage` + token bucket（按 `(account_id, method, channel)` 建桶，Slack Tier 2 起步 ~1 msg/s）；
   - TokenProvider 退化为「从 keyring 读取缓存」（无 refresh）；
@@ -51,15 +51,17 @@
   - 两账号同时 online，互不串扰（A 收的 message 不会进 B 的 session）；
   - 同账号同 `event_id` 重推被排重；
   - 发送触发 429 后按 `Retry-After` 退避，不丢消息；
-  - 进程强杀重启后 offset 恢复，未 ACK 的 envelope 重推可被消费。
+  - 进程强杀重启后 offset 恢复，未 ACK 的 envelope 重推可被消费；
+  - **ACK 后、入总线前强杀进程**：用 fault-injection 在 ACK 帧发出后立即 `kill -9`，重启后从持久化记录恢复该事件并入总线（不依赖 Slack 重推，因为 Slack 已收到 ACK）——验证「先落库再 ACK」顺序真的挡住了静默丢失窗口。
 - 风险：Crystal `HTTP::WebSocket` 客户端长连接稳定性——若发现 keepalive 不足，退化为「心跳超时后主动断线重连」。[推演]
 
 **M8.1-WP3 Telegram 适配器：long-poll 接收 + Bot API 发送**（2.5–3.5 pd）
 - 目标：跑通 Telegram 多账号收发。
 - 范围：
   - `src/channels/telegram/` 目录：adapter.cr / long_poll.cr / bot_api.cr；
-  - long-poll：`getUpdates(offset, timeout=50)` 循环；offset 落 store 持久化，启动时读；
-  - 排重：`update_id` 单调递增推进即排重；
+  - long-poll：`getUpdates(offset, timeout=50)` 循环；offset 落 store 持久化，启动时读；**活跃窗口/空闲双模**——`last_update_at` 距今 ≥6 天进入重置模式（详见 [proposals/m8-channel-expansion-slack-telegram.md §4.2](../../proposals/m8-channel-expansion-slack-telegram.md)「Telegram 空闲后 `update_id` 重置策略」）；
+  - 排重：活跃窗口内 `update_id` 单调递增推进；重置模式下用内容指纹（`update_id + chat_id + message_id + text hash`）查重，不靠 offset 比较；
+  - store 表新增 `telegram_accounts.last_update_at` 与 `telegram_updates(content_fingerprint, account_id)` 唯一索引；
   - 发送：`sendMessage` + token bucket（按 `(account_id, chat_id)` 建桶，1 msg/s；全局 30 msg/s 桶）；
   - TokenProvider 同 Slack 退化形态；
   - 多账号：每账号一 long-poll fiber；
@@ -70,7 +72,9 @@
   - 两账号同时 online，互不串扰；
   - 重启后 offset 续接，未消费 update 不丢；
   - 单 chat 限流触发时排队而非丢弃；
-  - `api_base_url` 指向 mock server 时收发全通（CI 用此路径，无需公网）。
+  - `api_base_url` 指向 mock server 时收发全通（CI 用此路径，无需公网）；
+  - **空闲重置场景**：mock server 模拟「bot 空闲 ≥1 周后，下一条 update 的 `update_id` 小于持久化 offset」——适配器进入重置模式，**不丢弃该消息**（内容指纹查重落库 + 入总线），并把 `persisted_offset` 重置为新值；同一条 update 重推时按内容指纹排重，不重复入总线；
+  - **拒绝旧 offset 确认**：在重置模式下，任何 `getUpdates` 调用不得因为「新 `update_id` < persisted_offset」而直接 ACK 跳过——必须在内容指纹查重后才决定是否消费。
 - 风险：long-poll 在 NAT/反代后容易被中间设备掐空闲连接——`timeout=50` 是官方推荐值，不低于 30 不高于 60。[推演]
 
 **M8.2-WP1 管理面与运维闭环**（1.5–2 pd）

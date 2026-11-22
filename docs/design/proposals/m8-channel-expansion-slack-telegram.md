@@ -20,11 +20,11 @@ Sebas 本期已规划三类渠道（design.md §2.1）：
 
 ### 1.2 对标差距
 
-Hermes Agent 官方 messaging gateway 覆盖 **21+ 平台**（[research/hermes-agent.md:9](../research/hermes-agent.md)）：
+Hermes Agent 官方 messaging gateway 覆盖 **21+ 平台**（[research/hermes-agent.md §消歧定案](../research/hermes-agent.md)）：
 
 > telegram、discord、slack、whatsapp、whatsapp_cloud、signal、email（IMAP/SMTP）、sms、matrix、line、teams（插件）、google_chat、msgraph-webhook、wecom、wecom-callback、feishu、dingtalk、qqbot、weixin、webhooks
 
-OpenClaw 官方渠道目录 2026-11 版共 **33 项**（[research/openclaw.md:48](../research/openclaw.md)）：
+OpenClaw 官方渠道目录 2026-11 版共 **33 项**（[research/openclaw.md §2.1 官方渠道目录](../research/openclaw.md)）：
 
 > bundled：Telegram、WebChat、A2A、Reef、X/Twitter；
 > official plugin：Discord、Feishu(Lark)、Google Chat、iMessage、IRC、LINE、Matrix、Mattermost、Microsoft Teams、Nextcloud Talk、Nostr、QQ bot、Signal、Slack、SMS(Twilio)、Synology Chat、Tlon、Twitch、WhatsApp、Zalo、…；
@@ -119,10 +119,22 @@ channels:
 
 | 渠道 | 形态 | 心跳/重连 | 排重 |
 |---|---|---|---|
-| Slack | Socket Mode（WSS 长连接，Endpoint 由 `apps.connections.open` 换取） | 服务端 ping；断线指数退避 5s→60s（沿用 §5.1） | `event_id` 排重；`envelope_id` ACK |
-| Telegram | `getUpdates` long-poll（HTTPS 长轮询，默认 timeout=50s） | 轮询循环 + 指数退避 | `update_id` 单调递增，offset 推进即排重 |
+| Slack | Socket Mode（WSS 长连接，Endpoint 由 `apps.connections.open` 换取） | 服务端 ping；断线指数退避 5s→60s（沿用 §5.1） | `event_id` 排重；`envelope_id` ACK；**ACK 顺序：先落库 → 再 ACK → 再入总线**（防 ACK 后崩溃丢消息） |
+| Telegram | `getUpdates` long-poll（HTTPS 长轮询，默认 timeout=50s） | 轮询循环 + 指数退避 | `update_id` 在活跃窗口内单调递增，**空闲 ≥1 周后可能被 Telegram 重置为随机值**（见下方专门策略） |
 
 每账号一条监督 fiber（§5.1 生命周期状态机：connecting→online⇄backoff→disabled/degraded）。
+
+#### Telegram 空闲后 `update_id` 重置策略（官方语义）
+
+Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 update 后不再保证单调递增**，下一个 `update_id` 会从随机位置重新开始，可能小于持久化 offset。若沿用「`getUpdates(offset=last+1)` 确认旧值」的活跃期策略，会把重置后的新消息确认跳过、静默丢失。本设计采用「**活跃/空闲双模 + 重置检测**」：
+
+1. **活跃窗口内**：沿用单调排重——`update_id > persisted_offset` 才接收，每收到一条就把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 确认旧值。`last_update_at` 同步落库。
+2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
+3. **重置模式首轮**：调用 `getUpdates()` **不传 offset**（拉取未确认的全集）；对返回的每条 update，按内容指纹（`update_id + chat_id + message_id + text/caption hash`）在本地 `telegram_updates` 表里查重——命中即跳过、不命中才落库 + 入总线。首轮结束后把 `persisted_offset` 重置为本轮最大 `update_id`，回到活跃窗口逻辑。
+4. **拒绝跳过新消息**：任何路径下，`getUpdates` 的 `offset` 参数都必须 ≥ 已确认的 `persisted_offset+1`，不允许因为「新值比旧值小」就跳过；重置模式通过内容指纹而非 offset 比较保证幂等。
+5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）、`telegram_updates(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重）。
+
+> 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m8-channels.md §M8.1-WP3 验收](../plan/wbs/m8-channels.md) 落地为可测验收条目。
 
 ### 4.3 TokenProvider 与凭据
 
