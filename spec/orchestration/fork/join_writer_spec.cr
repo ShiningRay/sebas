@@ -95,7 +95,7 @@ module Sebas
       data = JSON.parse(store.transcripts(parent_session).last.content)
       # any 只合并选定的先成功者（同秒并列按 members 遍历序取首个——确定性规则）；
       # 两成员 updated_at 同秒 → 选 member 1（声明序首）
-      conclusions = data["members"].as_a.compact_map { |m| m["conclusion"]?.try(&.as_s) }
+      conclusions = data["members"].as_a.compact_map(&.["conclusion"]?.try(&.as_s))
       conclusions.size.should eq(1)
       conclusions.first.should eq("conclusion of member 1")
       store.close
