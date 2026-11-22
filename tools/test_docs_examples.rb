@@ -17,7 +17,7 @@ class DocsExamplesTest < Minitest::Test
     "Policy::Milestones" => SebasAgents::Policy::Milestones,
     "Triager" => SebasAgents::Triager,
     "Verifier" => SebasAgents::Verifier,
-    "Reviewer" => SebasAgents::Reviewer,
+    "VerifyChecks" => SebasAgents::VerifyChecks,
     "Release" => SebasAgents::Release,
     "GithubGateway" => SebasAgents::GithubGateway
   }.freeze

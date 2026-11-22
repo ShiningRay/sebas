@@ -157,7 +157,7 @@ Agent 自动修复 workflow 已内置此逻辑。
 |---|---|---|
 | CI 确定性门禁 | spec / ameba / format / release build | 脚本（已在 CI 跑） |
 | LLM 独立核验 | 锚点实证、一致性对账、算术闭合、行为实测 | Verifier agent（只读、独立上下文） |
-| 终验复核 | 对Verifier的"应修"项做收口确认 | Reviewer agent（只读、独立上下文） |
+| 终验收口 | 对Verifier的"应修"项复跑确认（独立进程阶段） | Verifier agent 的终验阶段（只读、独立上下文，#124 起 Reviewer 并入） |
 | 意图裁决 | 冻结口径 / No-Go / 产品方向 | 人（Maintainer角色） |
 
 ### 验收纪律
@@ -174,7 +174,7 @@ Agent 自动修复 workflow 已内置此逻辑。
   → 门禁卡开工，Verifier跑 B.3 五项 + 本期特有验收条目
   → 写 docs/design/review/mX-gate.md，逐条贴证据
   → 外部依赖未就绪项走冻结口径裁断（三条件缺一不可）
-  → Reviewer复核应修项收口
+  → Verifier终验阶段复跑应修项收口
   → 人终审签字
   → 打 tag 触发 release
 ```
@@ -225,8 +225,7 @@ docker run --rm -v $PWD:/assets ubuntu:24.04 \
 |---|---|---|
 | Maintainer | [maintainer.md](maintainer.md) | 拍板：排期裁决、范围决策、冻结口径裁断、发版终审 |
 | Implementer | [implementer.md](implementer.md) | 执行：实现工作包、修 review 意见、修 CI、提 PR |
-| Verifier | [verifier.md](verifier.md) | 独立核验：锚点实证、一致性对账、行为实测、分级结论 |
-| Reviewer | [reviewer.md](reviewer.md) | 终验复核：对Verifier的应修项做收口确认 |
+| Verifier | [verifier.md](verifier.md) | 独立核验与终验：锚点实证、一致性对账、行为实测、分级结论；终验阶段对应修项复跑收口（#124 起 Reviewer 并入） |
 | Triager | [triager.md](triager.md) | issue 研判：六判定、定 type/label/assignee、milestone 归属建议 |
 | Scribe | [scribe.md](scribe.md) | 文档与记忆：设计文档维护、记忆库存取、CHANGELOG 维护 |
 | Release Manager | [release-manager.md](release-manager.md) | 发版执行：版本号 bump、tag 管理、产物校验、auto-release 运维 |
@@ -240,9 +239,7 @@ docker run --rm -v $PWD:/assets ubuntu:24.04 \
   │    │
   │    ├─ Implementer ───────── 实现（AI，可写代码）
   │    │    │
-  │    │    ├─ Verifier ── 独立核验（AI，只读，独立上下文）
-  │    │    │    │
-  │    │    │    └─ Reviewer ─ 终验复核（AI，只读，独立上下文）
+  │    │    ├─ Verifier ── 独立核验与终验（AI，只读，独立上下文，两阶段分离进程）
   │    │    │
   │    │    └─ Scribe ── 文档与记忆（AI，可写文档）
   │    │
@@ -253,5 +250,5 @@ docker run --rm -v $PWD:/assets ubuntu:24.04 \
   └─ 直接干预 ────────── 任何角色都可被人直接接管
 ```
 
-核心原则：**执行与验收分离**。Implementer做的东西由Verifier验，Verifier的应修项由Reviewer复核，
+核心原则：**执行与验收分离**。Implementer做的东西由Verifier验，Verifier的应修项由终验阶段复跑收口（#124 起 Reviewer 并入 Verifier，核验与终验两阶段由独立进程承载），
 Maintainer始终是最终裁决者。任何 AI 角色的结论都可被人推翻。

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# verify_merge_reports / verify_reviewer_verdict 单测（#122）。
+# verify_merge_reports / verify_final_verdict 单测（#122；#124 改名 final-verdict）。
 #
 # 重点覆盖 CodeRabbit 在 PR #129 报的 CWE-636：工具异常被吞掉后放行。
 require "minitest/autorun"
@@ -8,7 +8,7 @@ require "json"
 require "tmpdir"
 require "fileutils"
 require_relative "verify_merge_reports"
-require_relative "verify_reviewer_verdict"
+require_relative "verify_final_verdict"
 
 class VerifyMergeReportsTest < Minitest::Test
   VMR = VerifyMergeReports
@@ -55,6 +55,23 @@ class VerifyMergeReportsTest < Minitest::Test
       assert_equal 1, report["counts"]["must_fix"]
       assert_equal 1, report["counts"]["acceptable"]
       assert_equal "打回", VMR.conclusion(report["counts"])
+    end
+  end
+
+  # #124：阶段一条目里的可复跑 evidence 必须原样进汇总，终验 checker 靠它复跑。
+  # 断言完整命令字符串（CodeRabbit）：阈值或退出码表达式任何一处改动都不得静默通过。
+  def test_evidence_from_phase_one_is_preserved
+    expected = "ruby -e 'exit(File.readlines(ARGV.fetch(0)).length <= 400 ? 0 : 1)' doc.md"
+    with_out do |dir|
+      base_evidence(dir)
+      report_file(dir, "docs_report_1.json", [
+        {"id" => "must_fix-1", "level" => "must_fix", "message" => "超行数", "evidence" => expected}
+      ])
+
+      report = VMR.run(dir, base_sha: "b", head_sha: "h")
+      item = report["items"].find { |i| i["level"] == "must_fix" }
+      refute_nil item, "must_fix 条目应进汇总"
+      assert_equal expected, item["evidence"].to_s, "evidence 命令必须原样保留"
     end
   end
 
@@ -285,8 +302,8 @@ class VerifyMergeReportsTest < Minitest::Test
   end
 end
 
-class VerifyReviewerVerdictTest < Minitest::Test
-  VRV = VerifyReviewerVerdict
+class VerifyFinalVerdictTest < Minitest::Test
+  VRV = VerifyFinalVerdict
 
   def decide(items)
     VRV.decide({"items" => items})

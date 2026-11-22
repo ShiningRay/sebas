@@ -63,8 +63,7 @@ Maintainer 不主动执行任务，而是**响应两种输入**：
 |---|---|---|
 | Implementer | Maintainer → Implementer | 下达工作包、指定验收标准 |
 | Implementer | Implementer → Maintainer | needsHuman 上报（卡住 / 连续 2 轮无进展） |
-| Verifier | Verifier → Maintainer | 核验报告（阻断 / 应修 / 可留） |
-| Reviewer | Reviewer → Maintainer | 终验结论（通过 / 有条件通过 / 打回） |
+| Verifier | Verifier → Maintainer | 核验报告（阻断 / 应修 / 可留）与终验结论（通过 / 有条件通过 / 打回） |
 | Triager | Triager → Maintainer | issue 研判结果 + escalate 上报 |
 | Release Manager | Maintainer → Release Manager | 发版指令（minor/major） |
 | Scribe | Maintainer → Scribe | 文档维护指令 |

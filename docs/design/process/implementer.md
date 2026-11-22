@@ -54,7 +54,7 @@ ruby tools/sebas-process next              # 确定唯一动作，别自己挑
   → 提 PR，body 写 "Fixes #<issue号>"
   → 处理 CodeRabbit review：逐条修 → reply → resolve
   → 循环直到 unresolved=0 且 mergeStateStatus=CLEAN
-  → Verifier 核验 + Reviewer 终验 + Evidence 回填（缺一不合并）
+  → Verifier 核验 + Verifier 终验（独立进程阶段） + Evidence 回填（缺一不合并）
   → squash 合并
   → 回 issue 填「证据」节
 ```
@@ -162,13 +162,14 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
 
 1. `verify merge --pre` 返回 `ok: true` 且退出码 0。
 2. Verifier 核验结论无 `blocker` / `must_fix`。
-3. Reviewer 终验结论为 `通过`（`有条件通过` 需 Maintainer 裁决，Implementer 不得自行合并）。
+3. Verifier 终验阶段结论为 `通过`（`有条件通过` 需 Maintainer 裁决，Implementer 不得自行合并）。
+   终验用 `verify merge <pr> <issue> --final --fixes <fixes.json>`，must_fix 由 checker 逐项复跑。
 4. issue 有有效 `Evidence` 块（`source` 为 `maintainer` 或 `workflow`），`status=accepted`。
    两阶段登记（#126）下合并前的块是 `merged_into_main: false`、`merge_commit: null`，
    门禁接受这种形态；若块已声称 `merged_into_main: true` 而 PR 未合并，一律判伪造并阻断。
 5. `mergeStateStatus=CLEAN` 且未解决 review thread 为 0。
 
-Implementer **不能自己验收**：Verifier 与 Reviewer 必须是独立上下文。
+Implementer **不能自己验收**：核验与终验两阶段必须在与实现者不同的独立上下文中运行（#124 起 Reviewer 并入 Verifier，两阶段分离进程）。
 `gh pr merge` 是写操作，没有 dry-run；执行前必须先跑上面的 `--pre`。
 
 **不传 `--pre` 的 `verify merge` 是合并后核验**（要求 PR 已合并、issue 已 completed）。

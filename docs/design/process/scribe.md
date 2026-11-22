@@ -101,6 +101,5 @@ rsrs remember "<正文>" --title "<标题>" --parent <挂点id>
 |---|---|---|
 | Maintainer | Maintainer → Scribe | 文档维护指令 |
 | Implementer | Implementer → Scribe | PR 合并后的文档同步需求 |
-| Verifier | Verifier → Scribe | 核验结论存入记忆库 |
-| Reviewer | Reviewer → Scribe | 终验结论存入记忆库 |
+| Verifier | Verifier → Scribe | 核验结论与终验结论存入记忆库 |
 | Release Manager | Scribe → Release Manager | CHANGELOG 就绪状态 |
