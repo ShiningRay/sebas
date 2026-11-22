@@ -113,9 +113,13 @@ module EvidenceRegister
 
     # 合并后升级：把既有合并前块改写为合并后证据。
     # 先改评论再改正文：评论失败时正文仍是 false，两者一致（都是合并前）。
+    #
+    # 授权要点（CodeRabbit CWE-345）：untested 必须来自登记评论，不能取 issue 正文副本。
+    # 正文可被任何有写权限者编辑；若采信正文，把 untested 改成 [] 并保留 source_ref，
+    # 升级就会把 [] 写进受信 bot 的评论，之后 registration_matches? 比对到两份一致的 []
+    # → 未实测项被抹除，合并前自检被绕过。
     def upgrade_after_merge(repo:, issue:, issue_number:, pr_number:, merge_commit:, checks_url:, out:)
-      body = issue["body"].to_s
-      block = EvidenceRegister.parse_block(body)
+      block = EvidenceRegister.parse_block(issue["body"].to_s)
       if block.nil?
         warn "::error::issue ##{issue_number} 的 Evidence 块无法解析，需人工修复"
         return 1
@@ -131,8 +135,11 @@ module EvidenceRegister
         return 1
       end
 
-      # untested 保持登记期的冻结值：重新读卡面会让「合并前已冻结的清单」在升级时漂移。
-      upgraded = block.merge(
+      registered = fetch_registered_comment(repo, issue_number, comment_id, block, out)
+      return 1 if registered.nil?
+
+      # untested 以登记评论为唯一权威；正文副本只用于结构校验（上面 parse_block）。
+      upgraded = registered.merge(
         "pr" => pr_number,
         "merge_commit" => merge_commit,
         "merged_into_main" => true,
@@ -152,6 +159,54 @@ module EvidenceRegister
     def comment_id_from(url)
       match = COMMENT_ID.match(url.strip)
       match && match[1].to_i
+    end
+
+    # 读回 source_ref 指向的登记评论，并核对身份与内容。
+    # 返回 comments API 的评论体（含 user.login）解析出的 evidence 块，或 nil（表示拒绝）。
+    #
+    # 三道核对，任一失败即拒绝：
+    #   1. 评论属于本仓库、本 issue（防跨 issue 引用）。
+    #   2. 作者在 .github/agents.yml 的 trusted_bots 内。
+    #   3. 评论正文自带的 evidence 块与正文副本同 subject。
+    def fetch_registered_comment(repo, issue_number, comment_id, body_block, out)
+      comment = EvidenceRegister.gh_json("repos/#{repo}/issues/comments/#{comment_id}")
+      author = comment.dig("user", "login").to_s
+
+      unless trusted_bot?(author)
+        warn "::error::issue ##{issue_number} 的登记评论作者 #{author.inspect} 不在 trusted_bots 内，拒绝升级"
+        return nil
+      end
+
+      unless comment["issue_url"].to_s.end_with?("/issues/#{issue_number}")
+        warn "::error::issue ##{issue_number} 的 source_ref 指向其它 issue（#{comment["issue_url"]}），拒绝升级"
+        return nil
+      end
+
+      registered = EvidenceRegister.parse_block(comment["body"].to_s)
+      if registered.nil?
+        warn "::error::登记评论 #{comment_id} 内没有可解析的 evidence 块，拒绝升级"
+        return nil
+      end
+
+      subject = "issue:#{issue_number}"
+      unless registered["subject"].to_s == subject && body_block["subject"].to_s == subject
+        warn "::error::登记评论与正文块的 subject 不一致（#{registered["subject"].inspect} / #{body_block["subject"].inspect}），拒绝升级"
+        return nil
+      end
+
+      registered
+    end
+
+    def trusted_bot?(login)
+      path = File.join(Dir.pwd, ".github", "agents.yml")
+      return false unless File.exist?(path)
+
+      require "yaml"
+      data = YAML.safe_load_file(path)
+      Array(data && data["trusted_bots"]).map(&:to_s).reject(&:empty?).include?(login)
+    rescue StandardError => e
+      warn "::error::读取 .github/agents.yml 失败（#{e.message}），按不可信处理"
+      false
     end
   end
 end

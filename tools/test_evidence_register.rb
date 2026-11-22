@@ -694,11 +694,19 @@ class EvidenceRegisterTest < Minitest::Test
   end
 
   def test_after_merge_upgrades_pre_block
+    registered = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "https://gh/c/9", untested: ["真机验证"],
+      source_ref: "https://github.com/o/r/issues/42#issuecomment-7", merged_into_main: false)
     fake = FakeGh.new(
       "GET repos/o/r/pulls/99" => BASE_RESPONSES["GET repos/o/r/pulls/99"],
       "GET repos/o/r/issues/42" => {
         "state" => "closed", "state_reason" => "completed",
         "body" => pre_block_body(merged: false, commit: nil, untested: ["真机验证"])
+      },
+      "GET repos/o/r/issues/comments/7" => {
+        "id" => 7, "user" => {"login" => "github-actions[bot]"},
+        "issue_url" => "https://api.github.com/repos/o/r/issues/42",
+        "body" => "```json evidence\n#{JSON.generate(registered)}\n```\n"
       },
       "PATCH repos/o/r/issues/comments/7" => {},
       "PATCH repos/o/r/issues/42" => {}
@@ -712,25 +720,116 @@ class EvidenceRegisterTest < Minitest::Test
   end
 
   # 升级必须保留登记期冻结的 untested，不能重新从卡面读取。
+  # CodeRabbit（Minor）：旧版断言 `captured = body` 是原输入字符串，测不到实际写出内容。
+  # 这里直接捕获评论与正文两处 PATCH body，分别解析后断言。
   def test_after_merge_preserves_frozen_untested
-    captured = nil
-    body = pre_block_body(merged: false, commit: nil, untested: ["冻结项"])
+    # 正文副本被篡改成空数组，登记评论仍是 ["冻结项"]。
+    # 升级必须以登记评论为准，不能采信正文。
+    body = pre_block_body(merged: false, commit: nil, untested: [])
+    registered = ER.evidence_block(issue_number: 42, pr_number: 99, merge_commit: nil,
+      checks: "https://gh/c/9", untested: ["冻结项"],
+      source_ref: "https://github.com/o/r/issues/42#issuecomment-7", merged_into_main: false)
+
+    written = {}
     fake = FakeGh.new(lambda do |key, _calls|
       case key
       when "GET repos/o/r/pulls/99" then BASE_RESPONSES["GET repos/o/r/pulls/99"]
       when "GET repos/o/r/issues/42" then {"state" => "closed", "state_reason" => "completed", "body" => body}
+      when "GET repos/o/r/issues/comments/7"
+        {
+          "id" => 7, "user" => {"login" => "github-actions[bot]"},
+          "issue_url" => "https://api.github.com/repos/o/r/issues/42",
+          "body" => "```json evidence\n#{JSON.generate(registered)}\n```\n"
+        }
       when "PATCH repos/o/r/issues/comments/7" then {}
       when "PATCH repos/o/r/issues/42" then {}
+      else raise "unexpected #{key}"
       end
     end)
+    original = fake.method(:call)
+    fake.define_singleton_method(:call) do |path, method: "GET", body: nil|
+      if method == "PATCH"
+        written[path] = body && body["body"].to_s
+      end
+      original.call(path, method: method, body: body)
+    end
+
     ER.runner = fake
     ER.git_runner = ->(*_a) { true }
-    ER.run(env: BASE_ENV, out: StringIO.new)
-    captured = body
-    assert_includes captured, "冻结项"
+    out = StringIO.new
+    code = ER.run(env: BASE_ENV, out: out)
+
+    assert_equal 0, code, out.string
+
+    comment_body = written["repos/o/r/issues/comments/7"]
+    refute_nil comment_body, "必须 PATCH 登记评论，written=#{written.keys.inspect}"
+    from_comment = ER.parse_block(comment_body)
+    assert_equal ["冻结项"], from_comment["untested"], "升级必须采信登记评论而非正文副本"
+    assert_equal true, from_comment["merged_into_main"]
+
+    issue_body = written["repos/o/r/issues/42"]
+    refute_nil issue_body, "必须 PATCH issue 正文"
+    from_issue = ER.parse_block(issue_body)
+    assert_equal ["冻结项"], from_issue["untested"], "正文回填也必须携带登记值"
   ensure
     ER.runner = nil
     ER.git_runner = nil
+  end
+
+  # 登记评论作者不在 trusted_bots → 拒绝升级，零写入。
+  def test_after_merge_rejects_untrusted_comment_author
+    body = pre_block_body(merged: false, commit: nil, untested: [])
+    fake = FakeGh.new(lambda do |key, _calls|
+      case key
+      when "GET repos/o/r/pulls/99" then BASE_RESPONSES["GET repos/o/r/pulls/99"]
+      when "GET repos/o/r/issues/42" then {"state" => "closed", "state_reason" => "completed", "body" => body}
+      when "GET repos/o/r/issues/comments/7"
+        {"id" => 7, "user" => {"login" => "attacker"},
+         "issue_url" => "https://api.github.com/repos/o/r/issues/42", "body" => body}
+      when "PATCH repos/o/r/issues/comments/7" then {}
+      when "PATCH repos/o/r/issues/42" then {}
+      else raise "unexpected #{key}"
+      end
+    end)
+    code = nil
+    captured = StringIO.new
+    orig = $stderr
+    $stderr = captured
+    begin
+      code, calls, _ = run_with(fake, BASE_ENV)
+      assert_equal 1, code, "非受信作者必须 fail-closed"
+      assert(calls.none? { |m, _| m == "PATCH" }, "不得写入，calls=#{calls.inspect}")
+    ensure
+      $stderr = orig
+    end
+    assert_includes captured.string, "不在 trusted_bots 内"
+  end
+
+  # source_ref 指向别的 issue → 拒绝，防跨 issue 冒用。
+  def test_after_merge_rejects_comment_from_other_issue
+    body = pre_block_body(merged: false, commit: nil, untested: [])
+    fake = FakeGh.new(lambda do |key, _calls|
+      case key
+      when "GET repos/o/r/pulls/99" then BASE_RESPONSES["GET repos/o/r/pulls/99"]
+      when "GET repos/o/r/issues/42" then {"state" => "closed", "state_reason" => "completed", "body" => body}
+      when "GET repos/o/r/issues/comments/7"
+        {"id" => 7, "user" => {"login" => "github-actions[bot]"},
+         "issue_url" => "https://api.github.com/repos/o/r/issues/999", "body" => body}
+      when "PATCH repos/o/r/issues/comments/7" then {}
+      when "PATCH repos/o/r/issues/42" then {}
+      else raise "unexpected #{key}"
+      end
+    end)
+    captured = StringIO.new
+    orig = $stderr
+    $stderr = captured
+    begin
+      code, calls, _ = run_with(fake, BASE_ENV)
+      assert_equal 1, code
+      assert(calls.none? { |m, _| m == "PATCH" })
+    ensure
+      $stderr = orig
+    end
   end
 
   def test_after_merge_idempotent_on_true_block
