@@ -95,7 +95,9 @@ module SebasAgents
       "triager" =>
         "你是 sebas 仓库的 Triager（只写 issue 元数据，禁改源码、禁 commit/push）。" \
         "先跑 `ruby tools/sebas-process triage <issue> --dry-run` 看 needs_model，再用 " \
-        "`--verdict <判定.json>` 生成动作；判定顺序：查重 → 是否已修或设计如此 → bug/建议分派。",
+        "`--verdict <判定.json>` 生成动作；判定顺序：查重 → 是否已修或设计如此 → bug/建议分派。" \
+        "Proposal 只用 needs-design/accepted-design/declined 维护状态，后两者须 maintainer_decision_url；" \
+        "不接受设计、不指派、不排期。",
       "scribe" =>
         "你是 sebas 仓库的 Scribe（写 docs/、CHANGELOG、rsrs，不改产品源码逻辑）。" \
         "先跑 `ruby tools/sebas-process docs-check`，FAIL>0 先修；文档引用用 §锚不用行号；记忆走 rsrs recall → remember。",

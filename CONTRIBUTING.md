@@ -91,9 +91,25 @@ guarantee where it stops running. The boundary is enforced in repository setting
 
 ## Design-first changes
 
-Large behavioral changes go through a design note under `docs/design/` (see existing
-`design.md` chapters and milestone gate records). A PR that changes architecture should
-link that note.
+Start with a **Proposal issue** for a significant behavior, architecture, configuration,
+or DSL change. A short issue describing the problem, desired outcome, alternatives, and
+impact is enough; do not start with a full design document or work breakdown. Small,
+uncontroversial improvements can use the Feature request template instead.
+
+Maintainers decide whether to accept the direction, request more design, or decline the
+proposal. When a proposal needs a design document, the Scribe can turn the issue's
+conclusions into a note under `docs/design/proposals/` and submit the PR. Contributors
+may also volunteer a fork-based PR, but write access and a documentation PR are not
+prerequisites for proposing an idea. Discussions are for open-ended exploration; use a
+Proposal issue once a specific decision is needed.
+
+The original issue remains the public discussion record. The merged document records the
+accepted design, with a link back to that issue. **Accepting a design does not commit to
+a milestone or implementation**; maintainers make that scheduling decision separately
+before creating `plan` work-package issues.
+
+[Development workflow](docs/design/process/development-workflow.md) defines the proposal
+lifecycle and the boundaries between triage, design acceptance, and scheduling.
 
 Documentation is split by topic under `docs/design/`: `spec/` holds the design chapters,
 `plan/` holds the WBS, schedule and gates. [docs/design/README.md](docs/design/README.md)
@@ -108,7 +124,7 @@ drift on every edit — cite `§section` or a file path instead), and warns when
 Markdown file exceeds 400 lines. Never let a file grow into a thousand-line monolith
 again; split it by chapter or section and link the pieces.
 
-*中文要点：架构级改动先在 docs/design 下留设计说明，并在 PR 中链接。文档按主题分在 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `ruby tools/check_docs.rb`：死链与行号锚报错（行号随每次编辑漂移，一律改用 §节号 或文件路径），单文件超 400 行告警。*
+*中文要点：重大行为、架构、配置或 DSL 变更先开 Proposal issue；简短写清问题、目标、备选与影响即可，不要求先写完整设计文档或提交 PR。开放式想法先在 Discussions 讨论，形成具体待裁决建议后转 Proposal issue。Maintainer 决定接受方向、要求补设计或拒绝；需要设计文档时由 Scribe 依据 Issue 共识整理并代提 PR，贡献者也可自愿 fork 提 PR。原 Issue 保留公开讨论，入库文档回链原 Issue。接受设计不等于承诺排期或实现；Maintainer 另行决定排期后才拆 `plan` 工作包。文档分 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `ruby tools/check_docs.rb`：死链与行号锚报错，引用用 §节号或文件路径，单文件超 400 行告警。*
 
 ## Security
 

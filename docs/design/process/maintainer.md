@@ -5,11 +5,15 @@
 
 ## 职责范围
 
-### 1. 排期裁决
+### 1. Proposal 设计与排期裁决
 
-- 决定哪个 milestone 是 active（主线），哪个是并行轨
+- 对 Proposal issue 分别决定：拒绝、要求补设计、接受设计；结论和理由留在原 issue
+- `accepted-design` 只表示设计原则可接受，不等于批准排期、实现或版本交付
+- 需要设计文档时，指令 Scribe 整理 Issue 共识并提交归档 PR；重大设计以文档定稿后再确认
 - 决定外部 feature issue 的四种归宿（塞入 milestone / backlog / 独立小修 / 不做）
+- 决定哪个 milestone 是 active（主线），哪个是并行轨
 - 决定 milestone 内容量置换——塞进一张新卡就要换出一张等量的卡
+- 排期批准后才创建 `plan` 工作包；禁止把 Proposal 直接交给 Implementer 开工
 
 ### 2. 范围决策
 
