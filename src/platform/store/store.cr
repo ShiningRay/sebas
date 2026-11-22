@@ -420,7 +420,7 @@ module Sebas
               session_key, "system", content, created)
             conn.exec("INSERT INTO memos (key, value, created_at) VALUES (?, ?, ?) " \
                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", memo_key, memo_value, created)
-            append_jsonl(session_key, content, created)
+            append_jsonl(session_key, "system", content, created)
           end
         end
 
