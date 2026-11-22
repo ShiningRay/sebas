@@ -194,12 +194,11 @@ module Sebas
           # 存量库列迁移：CREATE TABLE IF NOT EXISTS 不改既有表。新库 SCHEMA 已含
           # 全部列，ALTER 撞 duplicate 属预期（幂等静默）；只有存量旧库会真正补列。
           MIGRATIONS.each do |sql|
-            begin
-              @db.exec(sql)
-            rescue ex : SQLite3::Exception
-              # duplicate column = 列已在（新库 SCHEMA 建过），幂等跳过
-              raise ex unless ex.message.to_s.includes?("duplicate column")
-            end
+            @db.exec(sql)
+          rescue ex : SQLite3::Exception
+            # do-end 块后不能直接挂 rescue；SQLite3::Exception 不继承 DB::Error，
+            # 必须显式捕获该类型。duplicate = 列已在（新库 SCHEMA 建过），幂等跳过。
+            raise ex unless ex.message.to_s.includes?("duplicate column")
           end
           Sebas::Log.info { "store opened: #{@path} (journal_mode=#{@db.scalar("PRAGMA journal_mode")})" }
         end
