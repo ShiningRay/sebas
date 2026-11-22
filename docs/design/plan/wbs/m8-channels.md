@@ -77,6 +77,8 @@
   - **空闲重置场景**：mock server 模拟「bot 空闲 ≥1 周后，下一条 update 的 `update_id` 小于持久化 offset」——适配器进入重置模式，**不丢弃该消息**（内容指纹查重落库 + 入总线），并把 `persisted_offset` 重置为新值；同一条 update 重推时按内容指纹排重，不重复入总线；
   - **拒绝旧 offset 确认**：在重置模式下，任何 `getUpdates` 调用不得因为「新 `update_id` < persisted_offset」而直接 ACK 跳过——必须在内容指纹查重后才决定是否消费；
   - **活跃窗口持久化优先**：fault-injection 在「Step 1 落库后、Step 2 推进 offset 前」`kill -9`，重启后扫 `dispatched=false` 行重投入总线，不丢消息；再注入「Step 2 推进 offset 后、Step 3 入总线前」`kill -9`，同样靠 `dispatched=false` 扫描恢复；
+  - **唯一索引冲突不阻塞 offset 推进**：mock server 让进程在 Step 1 后、Step 2 前崩溃，重启并恢复后 mock server 再次返回同一条 `update_id`——适配器在 Step 1 命中唯一索引冲突时**不视为失败**，继续 Step 2 推进 `persisted_offset`；该行的 `dispatched` 已为 `true`，Step 3 跳过不重复入总线。验证轮询不停滞、消息不重复入总线；
+  - **入站 `event_id` 确定性派生**：fault-injection 在「Step 3 入总线成功后、`dispatched=true` 写入前」`kill -9`，重启后扫到 `dispatched=false` 行重建消息——用持久化行的 `update_id` 按提案 §4.2 派生规则算出与原投递**同值**的 `event_id`，经非重放路径入总线，消费者按 `event_id` 命中 intent 排重——该 update 全程只被处理一次，触发的发消息动作也只执行一次；
   - **空轮询不退重置模式**：mock server 让适配器进入重置模式后，前 N 轮 `getUpdates()` 返回空数组，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——前 N 轮持续无 offset 轮询、不重置 offset；第 N+1 轮该 update 被消费，`persisted_offset` 重置为新值，下一轮回到活跃窗口。
 - 风险：long-poll 在 NAT/反代后容易被中间设备掐空闲连接——`timeout=50` 是官方推荐值，不低于 30 不高于 60。[推演]
 
