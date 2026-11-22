@@ -13,6 +13,7 @@
 | [oneline.md](oneline.md) | 一句话开工速查表：每个角色一行，直接粘进 Harness |
 | [quickstart.md](quickstart.md) | 克隆仓库后如何用 `tools/sebas-process` 在 5 分钟内启动各角色 Agent |
 | [implementer-loop.md](implementer-loop.md) | 单 Implementer 的选卡、续跑与收口契约（可执行实现见 `tools/sebas-process`） |
+| [llm-semantic-verification-evaluation.md](llm-semantic-verification-evaluation.md) | #123 评估：LLM 语义核验为什么不做（含可复查的重新评估条件） |
 
 ## Agent 角色
 
