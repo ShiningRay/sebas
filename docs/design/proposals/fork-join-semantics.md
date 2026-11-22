@@ -12,7 +12,7 @@
 
 | 裁断 | 结论（本文落实处） |
 |---|---|
-| Q1 session_key | 五段键结构不动；fork 分身键 = `agent:<父agent_id>:internal:fork:<fork_id>`（§1.3） |
+| Q1 session_key | 五段键结构不动；fork 分身键 = `agent:<父agent_id>:internal:fork:<fork_id>:<member_index>`（fork 级 + 成员序号两段后缀，成员级独立会话；§1.3） |
 | Q2 join 落库 | 新建 `expectations` 表（store 新增表），不复用 tasks kind 扩展；分身任务挂 `TaskRow.parent_id/owner_task_id` 树（§4） |
 | Q3 触发路径 | M4.1/M4.2 仅用户显式 + DSL 声明，不动生产 `agent_turn`；ReAct 工具循环是 M4.3 独立前置工作包（§6） |
 | Q4 装配欠账 | 「生产装配补齐」独立工作包，全线前置，排 M4.1 首包（架构文档 §3） |
@@ -56,7 +56,7 @@ fork 调用（DSL action / IPC / HTTP 显式命令，M4.1；对话流内自然�
 ### 1.3 分身键与任务树（Q1 裁断）
 
 - **session_key 五段结构不动** [来源: design.md §3.3]：`agent:<agent_id>:<account_id>:<channel_type>:<peer>`。
-- fork 分身五段取值：**agent 段 = 父 agent_id**（分身以父人格运行）；**account 段 = `"internal"`**；**channel_type 段新增枚举值 `"fork"`**；**peer 段 = fork_id**。即 `agent:<父agent_id>:internal:fork:<fork_id>`。
+- fork 分身五段取值：**agent 段 = 父 agent_id**（分身以父人格运行）；**account 段 = `"internal"`**；**channel_type 段新增枚举值 `"fork"`**；**peer 段 = `fork_id:member_index`**（fork_id 标识一次 fork 调用，member_index 标识同次 fork 内的成员序号 1..N——成员级独立会话与 transcript，是 §3 分层回写按成员记录 session/行数范围的前提）。成员完整键 = `agent:<父agent_id>:internal:fork:<fork_id>:<member_index>`；成员 task_id 与之一一对应（§1.4 成员列表、§3 members[].session）。
 - 先例对齐：subagent 已用 `(agent_id, "internal", "subagent", subtask_key)` 四参数先例 [来源: 仓库:src/agents/subagent.cr:44,56]——fork 与之同构，仅 channel_type 枚举值不同，Pool 分片、transcripts 键、调度 admit 三处无需新机制 [来源: analysis.md §3.1]。
 - fork_id 格式：`fork:<uuid4 短码>`（[推演]：循 subagent `task_id="sub:#{subtask_key}"` 可读前缀先例 [来源: 仓库:src/agents/subagent.cr:33]）。
 - **任务树登记**：每个分身一行 tasks，`kind="fork_child"`，`parent_id = owner_task_id = 父任务 id`——直接复用现成 `TaskRow(id,parent_id,kind,status,phase,restart_count,owner_task_id)` 字段，不加列 [来源: 仓库:src/platform/store/store.cr:23-25]。

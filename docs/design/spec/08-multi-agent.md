@@ -29,7 +29,7 @@
 
 **fork 原语**：从父会话快照派生 N 个并行分身（N=1 合法），父 agent 等待汇聚（join）。快照 = 父会话 transcripts 窗口 + system prompt + skills 注入的只读拷贝；**不含 secrets、不含在途消息、不含其他会话内容**。
 
-- **分身键（五段结构不动）**：`agent:<父agent_id>:internal:fork:<fork_id>`——与 subagent 的 `(agent_id, "internal", "subagent", key)` 同构，仅 channel_type 枚举值不同；Pool 分片、transcripts 键、调度 admission 三处复用现有机制。每个分身一行 tasks（`kind="fork_child"`、`parent_id=owner_task_id=父任务 id`），复用现有任务树字段。
+- **分身键（五段结构不动，成员级独立）**：`agent:<父agent_id>:internal:fork:<fork_id>:<member_index>`——与 subagent 的 `(agent_id, "internal", "subagent", key)` 同构（channel_type 枚举值不同）；fork_id 标识一次 fork 调用、member_index 标识同次内的成员序号，**成员各自独立会话与 transcript**（分层回写按成员记录 session/行数范围的前提）；Pool 分片、transcripts 键、调度 admission 三处复用现有机制。每个分身一行 tasks（`kind="fork_child"`、`parent_id=owner_task_id=父任务 id`），复用现有任务树字段。
 - **expectations 表（join 汇聚点）**：store 新增表承载 mode（`all`/`any`/`allSettled`）、deadline、成员列表与状态机 `open → settling → settled`（旁路 `cancelled`/`expired`）；成员终态不冗余，判定器读 tasks 聚合（单一事实源）。持久化保证父崩溃恢复续判，回写以 memo 键 `join:<fork_id>:written` 幂等。
 - **Join 语义矩阵**：分身副作用按工具注册表 `risk` 字段分四级（L0 只读 / L1 文件写 / L2 网络写 / L3 不可逆），× Join 时机（正常/超时/失败/取消）16 格逐格有策略。三通则：①副作用已发生不隐瞒（清单必回写）；②文件冲突**不自动 merge**，列入父裁决清单（CONFLICT）；③不完整回写必带 `partial` 成员终态标注。回写分三层：L1 结构化结论进父上下文、L2 全量 transcript 落分身会话（引用不搬运）、L3 可检索三元组索引。
 - **能力衰减（默认只读）**：未声明 `tools` 的分身运行在默认只读档（无写副作用工具、不携带 secrets、无 fork 工具）；显式声明时生效集 = 声明 ∩ 父 `tools.allow`，越界声明静默剔除并在回执列明。L3 不可逆操作无论声明与否均叠加 Approvals::Center 审批链（声明≠免审批，fail-closed）。

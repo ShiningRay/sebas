@@ -70,8 +70,9 @@
                每分身一行 tasks：kind="fork_child"，
                parent_id=owner_task_id=父任务 id                    [store.cr:23-25]
                expectations 行插入（mode/deadline/members）           [semantics §4.1 DDL]
- 4. 分身键      Agents.session_key(父agent_id, "internal", "fork", fork_id)
-               五段键 = agent:<父>:internal:fork:<fork_id>           [Q1；subagent.cr:44 先例]
+ 4. 分身键      Agents.session_key(父agent_id, "internal", "fork", fork_id + ":" + member_index)
+               成员键 = agent:<父>:internal:fork:<fork_id>:<member_index>   [Q1；subagent.cr:44 先例]
+               （fork_id 标识一次 fork 调用，member_index 标识成员序号——成员级独立会话/transcript）
  5. 派发        分身 turn 入队：
                · #9 已合 → scheduler.admit(ForkEnvelope)（新输入类型：无渠道入站消息、
                  无 sender/peer；policy 走 fork 专用档）

@@ -14,4 +14,4 @@
 
 排期依据：热更新排 **M1**——「加账号」本身就是热更新组件矩阵的一行（账号增删=监督体 fiber 启停，§11.3），M1 核心验收要求账号数组「加了就生效」，四正交件必须同期落地（Hermes 无热重载的教训是「账号体系与重载割裂则用户必烦」）。插件层排 **M3**——可选模块后置：M0-M2 的扩展需求由 SKILL.md（A7）承接（§12.1 分工），主链路先稳。fork/join 排 **M4**——依赖 §8 协作层既有件（subagent 键先例、信号量、busy-interrupt 取消通道）与调度输入接口冻结（M4.1 开工条件 = 调度 WP1/WP2 已合或 admission/envelope 接口冻结，Q5 裁断）；语义定稿已随 M4.0 完成（[fork-join-semantics.md](../proposals/fork-join-semantics.md) 九问裁断 Q1–Q9）。
 
-各期共同门禁：`crystal spec` + `./bin/ameba`（质量门禁现行权威为 [CONTRIBUTING.md](../../../CONTRIBUTING.md) 质量门禁节 + `Makefile` + `.github/workflows/ci.yml`；M4 期统一改用「调度四条」= `make format-check` + `make spec` + `make lint` + `make release`，Q7 裁断）。
+各期共同门禁：`crystal spec` + `./bin/ameba`（质量门禁现行权威为 [CONTRIBUTING.md](../../../CONTRIBUTING.md) 质量门禁节 + `Makefile` + `.github/workflows/ci.yml`；M4.1–M4.4 统一改用「调度四条」= `make format-check` + `make spec` + `make lint` + `make release`，Q7 裁断；M4.0 纯文档包以评审通过替代命令门禁，见 [gates.md](../plan/schedule/gates.md) B.3）。
