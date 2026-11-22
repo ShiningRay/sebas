@@ -38,7 +38,7 @@ module Sebas
             id: "join:#{fork_id}", fork_id: fork_id, parent_task_id: parent_task_id,
             parent_session: parent_session, mode: mode, deadline: deadline.to_rfc3339,
             members: members.to_json, settled_count: 0, status: "open",
-            result: nil, created_at: now, updated_at: now
+            result: nil, created_at: now, updated_at: now, members_final: 1
           )
           @store.insert_expectation(row)
           row
@@ -51,9 +51,13 @@ module Sebas
 
         # 判定器：读成员终态聚合（tasks 权威），按 mode 落状态机迁移。
         # 返回迁移后的行；未到 settle 条件时原样返回（open）。
+        # ameba:disable Metrics/CyclomaticComplexity — 三 mode 分支语义直译，拆函数反而伤可读性
         def judge(fork_id : String, now : ::Time = ::Time.utc) : ExpectationRow
           row = @store.expectation(fork_id)
-          return row unless {"open", "settling"}.includes?(row.status)
+          return row unless %w[open settling].includes?(row.status)
+          # 派发未完成（members_final=0）：members 只是预登记集合，部分成员任务
+          # 可能尚未 create——此时判定会误报成员缺失，交由派发完成后的终判收口。
+          return row if row.members_final == 0
 
           member_ids = Array(String).from_json(row.members)
           statuses = member_ids.map do |id|
@@ -156,7 +160,8 @@ module Sebas
       record ExpectationRow,
         id : String, fork_id : String, parent_task_id : String, parent_session : String,
         mode : String, deadline : String, members : String, settled_count : Int32,
-        status : String, result : String?, created_at : String, updated_at : String
+        status : String, result : String?, created_at : String, updated_at : String,
+        members_final : Int32 = 0
     end
   end
 end
