@@ -7,6 +7,11 @@ module Sebas
   module Platform
     module CLI
       module GatewayDispatch
+        # 词法作用域提示：module 内 Log 按定义处解析，看不到 Gateway 类的
+        # Log 常量——须显式声明同源 logger，保迁移后 admission/批次/消费日志
+        # 仍挂 sebas.gateway 来源（CodeRabbit PRRT_kwDOVzNPQM66vjmM）。
+        Log = Sebas::Log.for("sebas.gateway")
+
         # 池内执行：payload 为批次派发 JSON（{batch_id, session_key}）。成员 turn 逐条
         # 执行（queue 模式单成员），全部落库后按 intent 终态收敛批次并派发下一批。
         # 派发权威在 scheduler（每会话同时在途 ≤1），本方法只做执行与完成回调。
