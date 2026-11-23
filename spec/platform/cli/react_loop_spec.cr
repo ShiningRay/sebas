@@ -35,7 +35,7 @@ module Sebas
       smtp = FakeSmtpServer.new
       smtp.serve
       provider = ScriptedProvider.new("fake/scripted", [
-        %(checking memory\n```json\n{"tool": "memory.save", "args": {"key": "react-e2e", "body": "react round ran"}}\n```),
+        "checking memory\n```json\n{\"tool\": \"memory.save\", \"args\": {\"key\": \"react-e2e\", \"body\": \"react round ran\"}}\n```",
         "final answer after tool round",
       ])
       gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |_agent, _key|

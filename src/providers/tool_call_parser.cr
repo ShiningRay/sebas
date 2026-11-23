@@ -15,16 +15,19 @@ module Sebas
     module ToolCallParser
       record Call, tool : String, args : JSON::Any
 
+      # 协议约束（CodeRabbit DUuZ）：围栏内必须是完整 JSON 值（顶层对象、
+      # 无尾随内容——对象后藏料即无效）；args 字符串值不得含 ``` 序列
+      # （字符串内的 } 与 ``` 不构成边界——括号平衡扫描跟踪字符串状态）。
       def self.parse(text : String) : Call?
-        start = text.index("```json")
-        return if start.nil?
-        # 从 ```json 之后按括号平衡扫描提取完整 JSON 值（字符串内的 }
-        # 与 ``` 序列不构成边界——args 含反引号/花括号时朴素正则会提前截断）
-        body_start = start + "```json".size
-        json_text = balanced_json(text, body_start)
+        json_text, content_end, closing = extract_block(text)
         return if json_text.nil?
+        # JSON 之后（含末 } 的下一字符起）到闭合围栏之间不得有非空白内容
+        # （对象后藏料即无效）；无闭合围栏 = 残缺协议，同样拒绝。
+        return unless text[content_end...closing].strip.empty?
         begin
-          data = JSON.parse(json_text).as_h
+          parsed = JSON.parse(json_text)
+          return unless parsed.as_h?
+          data = parsed.as_h
           tool = data["tool"]?.try(&.as_s?)
           args = data["args"]? || JSON::Any.new({} of String => JSON::Any)
           return if tool.nil? || tool.empty? || args.as_h?.nil?
@@ -34,15 +37,23 @@ module Sebas
         end
       end
 
-      # 括号平衡扫描：从 pos 起提取第一个完整 JSON 对象（跟踪字符串状态与
-      # 转义——字符串内的 } / ``` 不计入深度）。无完整对象返回 nil。
-      private def self.balanced_json(text : String, pos : Int32) : String?
+      # 括号平衡扫描（单遍、统一字符坐标系）：从开栏 ```json 起提取完整
+      # JSON 对象，定位闭合围栏。字符串内的 } / ``` 不构成边界（跟踪字符串
+      # 状态与转义）。返回 {json_text, 内容结束位, 闭合围栏位}；无完整对象
+      # 返回 {nil, 0, 0}。
+      # JSON 扫描状态机天然分支密度高（字符串/转义/括号三态），拆分反而
+      # 增加状态传递——行内豁免。
+      private def self.extract_block(text : String) : Tuple(String?, Int32, Int32) # ameba:disable Metrics/CyclomaticComplexity
+        start = text.index("```json")
+        return {nil, 0, 0} if start.nil?
+        body_start = start + "```json".size
         depth = 0
         in_string = false
         escaped = false
         start_idx = -1
-        text.each_char_with_index do |char, pos_idx|
-          next if pos_idx < pos
+        end_idx = -1
+        text.each_char_with_index do |char, pos|
+          next if pos < body_start
           if escaped
             escaped = false
             next
@@ -53,16 +64,23 @@ module Sebas
             next
           end
           case char
-          when '"' then in_string = true
+          when '"'  then in_string = true
+          when '\\' then escaped = true
           when '{'
-            start_idx = pos_idx if depth.zero?
+            start_idx = pos if depth.zero?
             depth += 1
           when '}'
             depth -= 1
-            return text[start_idx..pos_idx] if depth.zero? && start_idx >= 0
+            if depth.zero? && start_idx >= 0
+              end_idx = pos
+              break
+            end
           end
         end
-        nil
+        return {nil, 0, 0} if end_idx < 0
+        closing = text.index("```", end_idx + 1)
+        return {nil, 0, 0} if closing.nil?
+        {text[start_idx..end_idx], end_idx + 1, closing}
       end
     end
   end
