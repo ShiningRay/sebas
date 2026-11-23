@@ -138,7 +138,7 @@ module Sebas
             next [] of JSON::Any unless effects_array
             effects_array
           end
-          sorted = effects.sort_by { |e| e.as_h["at"].as_s }
+          sorted = effects.sort_by(&.as_h.[]("at").as_s)
           files_declared = sorted.any? do |e|
             e.as_h["side_effect"].as_s == "file_write" && !e.as_h["pre_digest"].as_s.empty?
           end
