@@ -89,6 +89,15 @@ runs:
         # 教训。失败只降级为 warning，继续走下方 fail-closed 明确报错。
         if [ -z "$openssl_prefix" ] || ! command -v pkg-config >/dev/null 2>&1; then
           export HOMEBREW_NO_AUTO_UPDATE=1
+          # brew 可执行文件是靠上面的候选列表硬定位的，PATH 未必含其 bin——
+          # 自举后 pkg-config 会装到同一目录：当前 step 与后续 step（守卫 +
+          # crystal 构建期版本检测）都要能找到，故同时补本 step PATH 与
+          # GITHUB_PATH（GITHUB_PATH 对后续 step 是 prepend 语义）。
+          brew_bin_dir="$(dirname "$brew_bin")"
+          case ":$PATH:" in
+            *":$brew_bin_dir:"*) ;;
+            *) export PATH="$brew_bin_dir:$PATH" ;;
+          esac
           if [ -z "$openssl_prefix" ]; then
             echo "bootstrapping: brew install openssl@3"
             "$brew_bin" install openssl@3 || echo "::warning::brew install openssl@3 failed; explicit error below if still missing"
@@ -99,6 +108,9 @@ runs:
           fi
           hash -r
           openssl_prefix="$(scan_kegs || true)"
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            echo "$brew_bin_dir" >> "$GITHUB_PATH"
+          fi
         fi
 
         if [ -z "$openssl_prefix" ]; then
