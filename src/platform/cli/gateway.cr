@@ -22,6 +22,7 @@ require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
 require "../../orchestration/fork/executor"
 require "../../orchestration/fork/expectations"
+require "../../orchestration/fork/capability"
 require "../../orchestration/fork/join_writer"
 require "../../orchestration/fork/snapshot_builder"
 require "../../admin/ipc/server"
@@ -126,6 +127,27 @@ module Sebas
         # + JoinWriter 在终态判定后落父会话（默认父会话 = 命令指定或 "agent:main:internal:main:fork-cli"）。
         def handle_fork_command(payload : JSON::Any) : JSON::Any # payload = frame.data 包裹为 JSON::Any.new(hash)
           data = payload.as_h? || {} of String => JSON::Any
+          input, parent_session = parse_fork_input(data)
+          main_agent = @config.agents["main"]?
+          raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 main agent 配置") if main_agent.nil?
+          parent_allow = main_agent.tools.try(&.allow) || ["*"]
+          executor = Orchestration::Fork::Executor.new(@store, Orchestration::Fork::Expectations.new(@store),
+            -> { @providers.for_agent("main") { @provider_factory.call(main_agent, nil) } })
+          results = executor.run(
+            "cli-fork", parent_session, "main", "", "", input, parent_allow
+          )
+          grant = executor.last_grant
+          JSON.parse({
+            "fork_id"         => results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s,
+            "tools_effective" => (grant.try(&.effective) || [] of String).to_json,
+            "tools_removed"   => (grant.try(&.removed) || [] of String).to_json,
+            "members"         => results.map { |result| {"task_id" => result.task_id, "state" => result.state}.to_json },
+          }.to_json)
+        end
+
+        # payload 字段解析（task/count/mode/deadline/window/role/tools）→
+        # SnapshotBuilder::Input；独立成方法控 handle_fork_command 圈复杂度。
+        private def parse_fork_input(data : Hash(String, JSON::Any)) : Tuple(Orchestration::Fork::SnapshotBuilder::Input, String)
           task = data["task"]?.try(&.as_s?) || ""
           raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 task") if task.empty?
           # 区分缺失与类型错误（CodeRabbit）：缺失用默认 1；存在但非整数
@@ -144,22 +166,22 @@ module Sebas
           mode = data["mode"]?.try(&.as_s?) || "allSettled"
           deadline = data["deadline"]?.try(&.as_i?) || 3600
           parent_session = data["parent_session"]?.try(&.as_s?) || "agent:main:internal:main:fork-cli"
+          # 工具声明（M4.2-WP1 §5.2）：缺失 = 默认只读档；类型错（非字符串数组）
+          # 整体拒绝，不被默认值吞掉。
+          tools = if raw_tools = data["tools"]?
+                    unless raw_tools.as_a?.try(&.all?(&.as_s?))
+                      raise ::Sebas::Platform::Store::StoreError.new(
+                        "tools 必须为字符串数组，实际：#{raw_tools}")
+                    end
+                    raw_tools.as_a.map(&.as_s)
+                  end
 
           input = Orchestration::Fork::SnapshotBuilder::Input.new(
             task: task, count: count, window: data["window"]?.try(&.as_i?),
-            include: nil, tools: nil, role: data["role"]?.try(&.as_s?),
+            include: nil, tools: tools, role: data["role"]?.try(&.as_s?),
             mode: mode, deadline: deadline
           )
-          main_agent = @config.agents["main"]?
-          raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 main agent 配置") if main_agent.nil?
-          results = Orchestration::Fork::Executor.new(@store, Orchestration::Fork::Expectations.new(@store),
-            -> { @providers.for_agent("main") { @provider_factory.call(main_agent, nil) } }).run(
-            "cli-fork", parent_session, "main", "", "", input
-          )
-          JSON.parse({
-            "fork_id" => results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s,
-            "members" => results.map { |result| {"task_id" => result.task_id, "state" => result.state}.to_json },
-          }.to_json)
+          {input, parent_session}
         end
 
         def reload_result_payload(result : Config::ReloadResult) : Hash(String, JSON::Any)
