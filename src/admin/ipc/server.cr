@@ -68,11 +68,23 @@ module Sebas
         @server : TCPServer?
         @running = Atomic(Bool).new(false)
 
+        # fork/join 触发面（M4.1-WP5，Q3：用户显式命令，不动生产 agent_turn）；
+        # nil 时 fork/join 命令回 not available（gateway 未装配 fork 组件的旧链路）。
+        @fork_handler : (JSON::Any -> JSON::Any)?
+        # 已认证连接（hello token 匹配）——持有 socket 引用本身（防 object_id
+        # 内存地址复用导致匿名连接继承认证，CWE-613），连接结束即撤销。
+        @authenticated_connections = Set(TCPSocket).new
+
         def initialize(@store : Platform::Store::Store, data_dir : Path,
                        @host : String = "127.0.0.1", @port : Int32 = DEFAULT_PORT,
                        @token : String = Random::Secure.hex(16),
                        @runs_view : ::Sebas::Orchestration::RunsView? = nil,
                        &@on_reload : -> Hash(String, JSON::Any))
+          # IPC 明文 TCP（CWE-319）：仅允许回环绑定——远程部署须经认证加密传输
+          # （TLS 另卡），否则可观察链路的攻击者可截获可复用 token。
+          unless {"127.0.0.1", "::1", "localhost"}.includes?(@host)
+            raise ArgumentError.new("IPC host 必须为回环地址（127.0.0.1/::1/localhost），实际：#{@host}；远程 IPC 需加密传输（另卡）")
+          end
           discovery_dir = data_dir / "ipc"
           Dir.mkdir_p(discovery_dir)
           @discovery_path = discovery_dir / "discovery.json"
@@ -123,46 +135,51 @@ module Sebas
           io.sync = true
           hello = handshake(io)
           return unless hello
-          subscriber_id = Random::Secure.hex(8)
-          io.puts({type: "hello_ack", protocol: PROTOCOL, version: VERSION, caps: CAPABILITIES}.to_json)
+          mark_authenticated(io, hello)
+          # 握手后的清理作用域覆盖认证后的首次响应（hello_ack 写失败也撤销
+          # 认证，CodeRabbit CWE-613 补充）：begin 从此处开始到连接结束。
+          begin
+            io.puts({type: "hello_ack", protocol: PROTOCOL, version: VERSION, caps: CAPABILITIES}.to_json)
+            subscriber_id = Random::Secure.hex(8)
 
-          frames = Channel(Frame?).new
-          spawn do
-            # 读帧 fiber：socket 断开/关闭时异常必须就地消化，否则炸进程
-            loop do
-              begin
-                frame = read_frame(io)
-              rescue ::Exception
-                frame = nil
+            frames = Channel(Frame?).new
+            spawn do
+              # 读帧 fiber：socket 断开/关闭时异常必须就地消化，否则炸进程
+              loop do
+                begin
+                  frame = read_frame(io)
+                rescue ::Exception
+                  frame = nil
+                end
+                frames.send(frame)
+                break if frame.nil?
               end
-              frames.send(frame)
-              break if frame.nil?
             end
-          end
-
-          if hello.caps.includes?("events.subscribe")
-            events = @tap.register(subscriber_id)
-            loop do
-              select
-              when frame = frames.receive
+            if hello.caps.includes?("events.subscribe")
+              events = @tap.register(subscriber_id)
+              loop do
+                select
+                when frame = frames.receive
+                  break if frame.nil?
+                  dispatch(io, frame)
+                when line = events.receive?
+                  io.puts(line) if line
+                end
+              end
+            else
+              loop do
+                frame = frames.receive
                 break if frame.nil?
                 dispatch(io, frame)
-              when line = events.receive?
-                io.puts(line) if line
               end
             end
-          else
-            loop do
-              frame = frames.receive
-              break if frame.nil?
-              dispatch(io, frame)
-            end
+          ensure
+            # 连接结束（正常/异常）即撤销认证——认证绑定 socket 本身，
+            # object_id 可被 GC 后的新连接复用（CWE-613）
+            @authenticated_connections.delete(io)
+            @tap.unregister(subscriber_id)
+            io.close rescue nil
           end
-          @tap.unregister(subscriber_id)
-          io.close
-        rescue ::Exception
-          @tap.unregister(subscriber_id)
-          io.close rescue nil
         end
 
         # 握手：首帧必须为合法 hello；失败回错误并断开
@@ -186,6 +203,14 @@ module Sebas
 
         private def dispatch(io : TCPSocket, frame : Frame) : Nil
           case frame.type
+          when "fork", "join"
+            # 写触发命令（CWE-306）：调用者必须在 hello 里提供匹配 token——
+            # 读命令维持匿名可用，写命令认证强制（CodeRabbit）。
+            if caller_authenticated?(io)
+              io.puts(fork_join_response(frame))
+            else
+              io.puts(error_response(frame.id, "fork/join requires an authenticated hello handshake"))
+            end
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
           when "system.health"
@@ -212,6 +237,37 @@ module Sebas
           else
             io.puts(error_response(frame.id, "unknown command: #{frame.type}"))
           end
+        end
+
+        private def fork_join_response(frame : Frame) : String
+          handler = @fork_handler
+          return error_response(frame.id, "#{frame.type} not available: fork 组件未装配") unless handler
+
+          begin
+            result = handler.call(JSON::Any.new(frame.data))
+            ok_response(frame.id, {"result" => result})
+          rescue ex : ::Sebas::Platform::Store::StoreError
+            # 校验异常（缺 task / 缺 main agent 配置）转错误响应——保留连接，
+            # 客户端拿到该请求的失败原因而非断连（CodeRabbit）
+            error_response(frame.id, ex.message.to_s)
+          end
+        end
+
+        # 注册 fork/join 命令处理器（gateway 装配后接线；handler 收 IPC 帧数据
+        # 返回结果 JSON）。
+        def fork_handler=(handler : JSON::Any -> JSON::Any) : Nil
+          @fork_handler = handler
+        end
+
+        # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。
+        # 认证绑定 socket 引用本身（非 object_id——内存地址可复用）。
+        private def mark_authenticated(io : TCPSocket, hello : Hello) : Nil
+          @authenticated_connections.add(io) if hello.token == @token
+        end
+
+        # 调用者认证：fork/join 写命令前置条件，普通读命令匿名可用。
+        private def caller_authenticated?(io : TCPSocket) : Bool
+          @authenticated_connections.includes?(io)
         end
 
         private def runs_response(frame : Frame) : String

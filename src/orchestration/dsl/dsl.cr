@@ -112,7 +112,7 @@ module Sebas
       module Validator
         extend self
 
-        KNOWN_TOOLS = %w[message.send memory.search memory.save session.read subagent.ask]
+        KNOWN_TOOLS = %w[message.send memory.search memory.save session.read subagent.ask fork join]
 
         # 纯函数校验（热更新复用口径）：返回错误列表，空=合法
         def validate(workflow : Workflow, agent_names : Enumerable(String)) : Array(String)
