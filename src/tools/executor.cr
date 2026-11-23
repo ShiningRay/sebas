@@ -162,7 +162,12 @@ module Sebas
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
+        # 越权防护（M4.3-WP1 CodeRabbit）：只可读当前会话——模型提供的
+        # session_key 与上下文不符即拒绝（跨会话 transcript 是他人隐私面）
         key = args["session_key"]?.try(&.as_s?) || ctx.session_key
+        unless key == ctx.session_key
+          return ToolResult.error("session.read 仅可读取当前会话")
+        end
         limit = args["limit"]?.try(&.as_i?) || 20
         rows = ctx.store.transcripts(key).last(limit)
         output = rows.map { |row| "[#{row.created_at}] #{row.role}: #{row.content[0, 120]}" }.join("\n")
