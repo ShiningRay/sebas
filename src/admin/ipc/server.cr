@@ -209,7 +209,7 @@ module Sebas
             if caller_authenticated?(io)
               io.puts(fork_join_response(frame))
             else
-              io.puts(error_response(frame.id, "fork/join requires authenticated hello (token)"))
+              io.puts(error_response(frame.id, "fork/join requires an authenticated hello handshake"))
             end
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
