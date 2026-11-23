@@ -16,9 +16,13 @@ module Sebas
 
       getter store : ::Sebas::Platform::Store::Store
 
+      # provider_factory：DSL fork 分身 provider 装配入口（M4.1-WP5 复审——
+      # gateway 构造 Engine 时注入；缺省抛错 fail-closed，DSL fork 明确报
+      # 「工厂未接线」而非静默跳过）。
       def initialize(@store : ::Sebas::Platform::Store::Store,
                      @executor : Tools::Executor, @account_id : String = "engine",
-                     @ledger : Ledger? = nil)
+                     @ledger : Ledger? = nil,
+                     @fork_provider_factory : -> Providers::Provider = -> { raise ::Sebas::Platform::Store::StoreError.new("engine fork provider 工厂未接线（gateway 构造时注入）") })
       end
 
       # 启动一次 workflow run：意图先落库（效应三明治第①步）→ 逐动作执行（第②步）→ 结果落库（第③步）
@@ -79,6 +83,65 @@ module Sebas
         @workflows[workflow.id] = workflow
       end
 
+      # fork/join 编排动作处理（M4.1-WP5）：登记 expectation（fork）/ 返回
+      # 汇聚状态（join）。分身执行由 ForkManager 执行体在触发面完成。
+      # fork 必填字段校验（ Validator 前置：缺字段不被运行时默认值吞掉）。
+      private def fork_arg_errors(args : JSON::Any) : Array(String)
+        errors = [] of String
+        task = args["task"]?.try(&.as_s?)
+        count = args["count"]?.try(&.as_i?)
+        mode = args["mode"]?.try(&.as_s?)
+        deadline = args["deadline"]?.try(&.as_i?)
+        errors << "缺 task" if task.nil? || task.empty?
+        errors << "缺 count（必填）" if count.nil?
+        errors << "count 必须为正整数" if count && count <= 0
+        errors << "缺 mode（必填）" if mode.nil?
+        errors << "mode 必须为 all/any/allSettled" if mode && !%w[all any allSettled].includes?(mode)
+        errors << "缺 deadline（必填）" if deadline.nil?
+        errors
+      end
+
+      # fork/join 编排动作处理（M4.1-WP5）：fork 经 Executor 实际派发分身并等
+      # 终态（JoinWriter 回写父会话在 Executor 内完成）；join 返回汇聚状态。
+      # 保存真实 run_id 与 ctx_session（CodeRabbit：父子关系与回写归属必须锚
+      # 当前 run 与调用会话，不用固定占位）。
+      private def fork_join_action(action : DSL::Action, run_id : String,
+                                   ctx_session : String) : Tools::ToolResult
+        args = ::JSON.parse(action.args)
+        case action.tool
+        when "fork"
+          validation_errors = fork_arg_errors(args)
+          unless validation_errors.empty?
+            return Tools::ToolResult.error("fork #{action.id}: #{validation_errors.join("；")}")
+          end
+
+          # 校验通过后字段必有值；从 args 重读（nil 已被 fork_arg_errors 拒绝）
+          input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
+            task: args["task"]?.try(&.as_s?) || "", count: args["count"]?.try(&.as_i?) || 0,
+            window: nil, include: nil, tools: nil, role: nil,
+            mode: args["mode"]?.try(&.as_s?) || "allSettled",
+            deadline: args["deadline"]?.try(&.as_i?) || 3600
+          )
+          executor = ::Sebas::Orchestration::Fork::Executor.new(
+            @store, ::Sebas::Orchestration::Fork::Expectations.new(@store), @fork_provider_factory
+          )
+          # 派发异常收口（CodeRabbit）：工厂抛错等异常发生时已创建的子任务与
+          # expectation 进入终态（fail_task + expired），动作失败交给引擎既有
+          # 失败处理（memo 不留 running）。
+          begin
+            fork_id, results = executor.run_with_fork_id(run_id, ctx_session, @account_id, "", "", input)
+          rescue ex : ::Sebas::Platform::Store::StoreError
+            return Tools::ToolResult.error("fork #{action.id} 派发失败：#{ex.message}")
+          end
+          ::Sebas::Orchestration::Fork::JoinWriter.new(@store).write(fork_id)
+          Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "members": #{results.size}}))
+        else # join
+          fork_id = args["fork_id"]?.try(&.as_s?) || ""
+          row = @store.expectation?(fork_id)
+          row ? Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "status": "#{row.status}"})) : Tools::ToolResult.error("join: unknown fork_id #{fork_id}")
+        end
+      end
+
       private def execute_phases(run_id : String, workflow : DSL::Workflow,
                                  ctx_session : String, from_phase : Int32 = 0) : Tools::ToolResult
         @ledger.try(&.append(run_id, "run.start", %({"workflow": "#{workflow.id}", "actions": #{workflow.actions.size}})))
@@ -95,8 +158,15 @@ module Sebas
 
           @store.memo_put(memo_key, "running")
           @ledger.try(&.append(run_id, "action.start", %({"id": "#{action.id}", "tool": "#{action.tool}"})))
-          result = @executor.run(action.tool, ::JSON.parse(action.args),
-            Tools::ToolContext.new(ctx_session, @account_id, run_id, @store))
+          # fork/join 不走默认工具注册表（不支持这两个原语）——编排处理路径：
+          # fork 经 Executor 实际派发分身并等待终态（M4.1-WP3 执行体），join 返回
+          # 汇聚状态；生产 agent_turn 不动（Q3）。
+          result = if {"fork", "join"}.includes?(action.tool)
+                     fork_join_action(action, run_id, ctx_session)
+                   else
+                     @executor.run(action.tool, ::JSON.parse(action.args),
+                       Tools::ToolContext.new(ctx_session, @account_id, run_id, @store))
+                   end
 
           if result.ok?
             # phase 尾 commit checkpoint + 结果 memo（效应三明治第②③步）
