@@ -230,7 +230,8 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 > 实现状态（M4.2-WP4，#49）：配置明文 api_key 由 `GatewaySecrets#migrate_secrets`
 > 迁 keys/ vault（EncryptedFileVault AES-256-GCM，主密钥 Windows Credential
 > Manager / 降级 0600 master.key 文件）后经 setter 抹除内存配置树——运行期
-> 配置树无明文凭据；迁移幂等可重跑（重跑 api_key 已 nil 跳过）。provider
+> 配置树无明文凭据；迁移幂等可重跑（重跑时 api_key 已 nil，跳过 vault 写入
+> 但仍从 vault 读取恢复凭据映射——provider 工厂注入不缺）。provider
 > 工厂包装按 agent 实例身份注入 vault 解析 key（`wire_secret_factory`，
 > `@agent_instances` 维护最新实例映射）——分身/父共用 provider 句柄，无凭据
 > 直读路径（快照不含凭据字段断言既有）。vault 持久化加固：master.key 先读
