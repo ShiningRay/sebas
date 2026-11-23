@@ -73,8 +73,8 @@ module Sebas
                        row.result.to_s.lchop("first success: ")
                      end
           members = build_members(row, member_ids, selected)
-          effects, written_digests = collect_member_effects(member_ids)
-          conflicts = detect_conflicts(row.fork_id, written_digests)
+          effects, written_digests, pre_digests = collect_member_effects(member_ids)
+          conflicts = detect_conflicts(row.fork_id, written_digests, pre_digests)
           # outcome 映射：all 模式「状态机 settled 但 result=failed」报告为
           # failed（§4.3 all 行）；allSettled 恒 settled。
           outcome = if row.status == "settled" && row.mode == "all" && row.result == "failed"
@@ -126,31 +126,50 @@ module Sebas
         # payload 的 effects 数组（成员 ledger 落库），保持发生序；同时提取文件
         # 写后摘要——冲突检测基线 = 成员写后状态（成员自己的合法写入不算冲突，
         # 父在其后的改动才算，§2.2 L1）。
-        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, String))
+        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, String), Hash(String, String))
           effects = member_ids.flat_map do |task_id|
             raw = @store.task_payload(task_id)
             next [] of JSON::Any unless raw
             data = JSON.parse(raw).as_h?
             next [] of JSON::Any unless data
-            Array(JSON::Any).from_json(data["effects"]?.to_json)
+            # 缺失或 null（升级前持久化的成员 payload 无 effects 键）视为空数组
+            raw_effects = data["effects"]?
+            effects_array = raw_effects.try(&.as_a?)
+            next [] of JSON::Any unless effects_array
+            effects_array
           end
           written_digests = Hash(String, String).new
+          pre_digests = Hash(String, String).new
           effects.each do |effect|
             next unless effect.as_h["side_effect"].as_s == "file_write"
-            digest = effect.as_h["post_digest"].as_s
-            written_digests[effect.as_h["target"].as_s] = digest unless digest.empty?
+            target = effect.as_h["target"].as_s
+            post = effect.as_h["post_digest"].as_s
+            pre = effect.as_h["pre_digest"].as_s
+            written_digests[target] = post unless post.empty?
+            pre_digests[target] = pre unless pre.empty?
           end
-          {effects, written_digests}
+          {effects, written_digests, pre_digests}
         end
 
-        # 指纹对比（M4.2-WP2）：基线 = 成员写后摘要；回写时现状与之不符
-        # （含被删）即父期间动过 → CONFLICT。成员新建文件（无 fork 时基线）
-        # 同样可检测——基线是写后状态，不依赖 fork 快照是否存在该文件。
-        private def detect_conflicts(fork_id : String, written_digests : Hash(String, String)) : Array(JSON::Any)
+        # 指纹对比（M4.2-WP2）双基线：①成员写后摘要（post）vs 回写时现状——
+        # 父在成员写后又动过；②fork 基线（memo 快照）vs 成员写前现状（pre）——
+        # 父在成员写前已动过、后被成员覆盖掩盖的漂移。命中任一即 CONFLICT，
+        # 只报告不合并（矩阵通则 2）。
+        private def detect_conflicts(fork_id : String, written_digests : Hash(String, String),
+                                     pre_digests : Hash(String, String)) : Array(JSON::Any)
           return [] of JSON::Any if written_digests.empty?
+          fork_baseline = fork_file_baseline(fork_id)
           written_digests.compact_map do |path, baseline|
-            current = File.file?(path) ? ::Digest::SHA256.hexdigest(File.read(path)) : "deleted"
-            next unless current != baseline
+            current = current_digest(path)
+            pre = pre_digests[path]?
+            drifted_before_write = if baseline_snapshot = fork_baseline[path]?.try(&.as_s)
+                                     !pre.nil? && pre != baseline_snapshot
+                                   else
+                                     # fork 声明了该文件但当时不存在：写前已存在即父建过
+                                     !pre.nil? && !pre.empty?
+                                   end
+            drifted_after_write = current != baseline
+            next unless drifted_before_write || drifted_after_write
             JSON::Any.new({
               "path"     => JSON::Any.new(path),
               "status"   => JSON::Any.new("CONFLICT"),
@@ -158,6 +177,22 @@ module Sebas
               "current"  => JSON::Any.new(current),
             }.as(Hash(String, JSON::Any)))
           end
+        end
+
+        # fork 时点的工作区基线（run 开始记的 memo 快照）；无快照返回空映射
+        private def fork_file_baseline(fork_id : String) : Hash(String, JSON::Any)
+          raw = @store.memo_get("fork:#{fork_id}:files")
+          return Hash(String, JSON::Any).new unless raw
+          JSON.parse(raw).as_h
+        end
+
+        # 现状摘要：存在性检查后可能被并发删除（CodeRabbit）——读取期 NotFound
+        # 与存在性否等价处理为 "deleted"；其他读取错误如实上抛（不冒充删除）。
+        private def current_digest(path : String) : String
+          return "deleted" unless File.file?(path)
+          ::Digest::SHA256.hexdigest(File.read(path))
+        rescue File::NotFoundError
+          "deleted"
         end
 
         # 成员会话键：与 Executor 派生同构——父 agent 段取自 parent_session

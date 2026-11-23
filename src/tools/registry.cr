@@ -35,7 +35,7 @@ module Sebas
     # 单条副作用记录（semantics §2.2 矩阵通则 1「副作用已发生不隐瞒」）：
     # 工具名 + 副作用级 + 目标（文件路径 / 会话键 / 内容摘要）+ 时间。
     record Effect, tool : String, side_effect : String, target : String, at : String,
-      post_digest : String = "" do
+      post_digest : String = "", pre_digest : String = "" do
       def to_json_object : Hash(String, JSON::Any)
         {
           "tool"        => JSON::Any.new(tool),
@@ -43,6 +43,7 @@ module Sebas
           "target"      => JSON::Any.new(target),
           "at"          => JSON::Any.new(at),
           "post_digest" => JSON::Any.new(post_digest),
+          "pre_digest"  => JSON::Any.new(pre_digest),
         }
       end
     end
@@ -57,9 +58,18 @@ module Sebas
       end
 
       def record(tool : String, side_effect : SideEffect, target : String,
-                 post_digest : String = "") : Nil
+                 post_digest : String = "", pre_digest : String = "") : Nil
         @entries << Effect.new(tool, side_effect.to_s.underscore, target,
-          ::Time.utc.to_rfc3339, post_digest)
+          ::Time.utc.to_rfc3339, post_digest, pre_digest)
+      end
+
+      # 各路径成员写前现状摘要（该路径最新一条 file_write 条目）——配合 fork
+      # 基线检测「父在成员写前已改动/创建」的漂移（会被成员写覆盖掩盖）。
+      def written_pre_digests : Hash(String, String)
+        @entries.select { |e| e.side_effect == "file_write" && !e.pre_digest.empty? }
+          .each_with_object(Hash(String, String).new) do |e, hash|
+            hash[e.target] = e.pre_digest
+          end
       end
 
       # L1 文件写涉及的路径集（指纹冲突检测的对比清单）
@@ -78,9 +88,11 @@ module Sebas
       end
     end
 
-    record ToolResult, ok : Bool, output : String, error : String? do
-      def self.success(output : String) : ToolResult
-        new(true, output, nil)
+    record ToolResult, ok : Bool, output : String, error : String?, digest : String? = nil do
+      # digest（M4.2-WP2）：文件写类工具随结果返回实际写入内容的摘要——
+      # 冲突检测基线必须对应写入字节，写入后重读会被并发改动污染。
+      def self.success(output : String, digest : String? = nil) : ToolResult
+        new(true, output, nil, digest)
       end
 
       def ok? : Bool

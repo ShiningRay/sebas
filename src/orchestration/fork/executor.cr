@@ -68,6 +68,10 @@ module Sebas
           grant = Capability.resolve(input.tools, parent_tools_allow)
           @last_grant = grant
           declared = (1..input.count).map { |i| fork_id + ":#{i}" }
+          # deadline 在持久化与一切快照读取前只算一次：指纹快照/transcripts
+          # 快照的耗时都计入期限（CodeRabbit——否则慢快照会把启动门槛推后到
+          # 已持久化期限之外）。
+          deadline = ::Time.utc + input.deadline.seconds
           # 工作区指纹快照（M4.2-WP2 §2.2 L1）：声明 files 在首成员执行前记
           # sha256 摘要；join 回写时对比——父期间被改的文件标 CONFLICT 进
           # 父裁决清单，不自动 merge（矩阵通则 2）。
@@ -78,9 +82,6 @@ module Sebas
             end.to_h
             @store.memo_put("fork:#{fork_id}:files", snapshot.to_json) unless snapshot.empty?
           end
-          # deadline 在持久化前只算一次：快照读取耗时计入期限（CodeRabbit——
-          # 否则慢快照会把启动门槛推后到已持久化期限之外）。
-          deadline = ::Time.utc + input.deadline.seconds
           row = @expectations.create(fork_id, parent_task_id, parent_session_key,
             input.mode, declared, deadline)
           # 预登记即声明为「派发中」：judge 对 final=0 跳过（成员任务逐个 create

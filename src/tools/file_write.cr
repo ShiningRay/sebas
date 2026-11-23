@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 
 module Sebas
   module Tools
@@ -18,8 +19,11 @@ module Sebas
         path = args["path"]?.try(&.as_s?)
         content = args["content"]?.try(&.as_s?)
         return ToolResult.error("path/content are required") unless path && content
+        # post 摘要取自实际写入字节（非写后重读，防并发改动污染）；写前现状
+        # 摘要由 Executor 在执行前统一入账（pre 基线，判「父在成员写前已动过」）。
         File.write(path, content)
-        ToolResult.success("wrote #{content.size} bytes to #{path}")
+        ToolResult.success("wrote #{content.size} bytes to #{path}",
+          digest: ::Digest::SHA256.hexdigest(content))
       rescue ex : ::Exception
         ToolResult.error("file write failed: #{ex.message}")
       end

@@ -18,19 +18,21 @@ module Sebas
         tool = @registry.find(name)
         return ToolResult.error("unknown tool: #{name}") unless tool
         Log.info { "tool #{name} args=#{Registry.redact(args)} ctx=#{ctx.session_key}" }
+        # 文件写类在执行前记现状摘要（写前基线，判「父在成员写前已动过」）
+        pre_digest = if tool.side_effect == SideEffect::FileWrite &&
+                        (target = args.as_h?.try(&.[]?("path")).try(&.as_s?)) && File.file?(target)
+                       ::Digest::SHA256.hexdigest(File.read(target))
+                     else
+                       ""
+                     end
         result = tool.run(args, ctx)
         # 副作用台账（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：执行成功且
         # 非只读时入账——target 优先取 args.path（文件类），否则 args 摘要。
-        # 文件类另记写后内容摘要（冲突检测基线 = 成员写后状态，非 fork 时状态：
-        # 成员自己的合法写入不算冲突，父在其后的改动才算，semantics §2.2 L1）。
+        # post_digest 用工具随结果返回的实际写入摘要（写入后重读会被并发
+        # 改动污染，CodeRabbit PRRT_kwDOVzNPQM664uZR）。
         if result.ok? && (ledger = ctx.ledger) && tool.side_effect != SideEffect::ReadOnly
           target = args.as_h?.try(&.[]?("path")).try(&.as_s?) || Registry.redact(args)[0, 120]
-          post_digest = if tool.side_effect == SideEffect::FileWrite && target && File.file?(target)
-                          ::Digest::SHA256.hexdigest(File.read(target))
-                        else
-                          ""
-                        end
-          ledger.record(tool.name, tool.side_effect, target, post_digest)
+          ledger.record(tool.name, tool.side_effect, target, result.digest || "", pre_digest)
         end
         result
       rescue ex : ::Exception

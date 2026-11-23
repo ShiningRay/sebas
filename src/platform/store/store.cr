@@ -2,6 +2,7 @@ require "db"
 require "sqlite3"
 require "json"
 require "./expectations_store"
+require "./task_effects_store"
 require "digest/sha256"
 require "../../log"
 require "../../sessions/scheduling/policy"
@@ -171,6 +172,7 @@ module Sebas
       ]
 
       class Store
+        include ::Sebas::Platform::TaskEffectsStoreMethods
         include ::Sebas::Platform::ExpectationStoreMethods
 
         getter db : ::DB::Database
@@ -289,21 +291,6 @@ module Sebas
         end
 
         # run task 状态（不存在返回 nil；不抛行缺失异常）
-        # 成员任务 payload 读取（M4.2-WP2）：join 回写聚合成员副作用清单用
-        def task_payload(task_id : String) : String?
-          @db.query_one?("SELECT payload FROM tasks WHERE id = ?", task_id) do |reader|
-            reader.read(String?)
-          end
-        end
-
-        # 成员任务 payload 的 effects 合并写（M4.2-WP2）：保留既有键，仅替换
-        # effects 数组——ledger 序列化的唯一落库通道。
-        def update_task_effects(task_id : String, effects : String) : Nil
-          changed = @db.exec("UPDATE tasks SET payload = json_set(payload, '$.effects', json(?)), updated_at = ? WHERE id = ?",
-            effects, now, task_id).rows_affected
-          raise StoreError.new("unknown task #{task_id}") if changed == 0
-        end
-
         def task_status?(task_id : String) : String?
           @db.query_one?("SELECT status FROM tasks WHERE id = ?", task_id, as: String)
         end
