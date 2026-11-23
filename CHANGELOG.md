@@ -12,6 +12,9 @@
   fork/join 触发面与全链 e2e（#153）。
 - **M4.2-WP1 能力衰减**：分身生效工具集 = 声明 ∩ 父 `tools.allow`；越界声明静默剔除并在回执列明，
   默认只读档不含写副作用工具与 secrets（#168）。
+- **M4.2-WP2 副作用分级与 join 冲突处理**：`SideEffect` 四值（ReadOnly/FileWrite/NetWrite/Irreversible）
+  承载副作用级、与审批 `Risk` 正交；`EffectsLedger` 随 `ToolContext` 收集并落成员任务 payload；
+  Join 以文件指纹双基线判冲突，冲突进父裁决清单、join 侧不自动 merge（#169）。
 - **会话调度**：持久 busy 队列 + per-session 调度（WP2，`e2e51c8`）、debounce 批次策略——六类 seal 条件
   与分桶结构化批次（WP3，#158）。
 - **Provider 适配层**：引入 `crystal_llm` 依赖（ruby_llm 的 Crystal 移植，走 `ShiningRay/crystal-llm`
