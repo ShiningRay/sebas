@@ -25,11 +25,12 @@ module Sebas
       gateway.vault.get("agent", "main", "api_key").should eq("sk-secret-123")
       gateway.shutdown
 
-      # 幂等可重跑：同 vault 重建 Gateway（config 已无明文）→ 不炸、vault 值稳定
-      config2 = ::Sebas::Platform::Config::Loader.from_content(yaml)
-      gateway2 = ::Sebas::Platform::CLI::Gateway.new(config2, dir) do |_agent, _key|
+      # 幂等可重跑：复用已抹除明文的同一 config 对象重建 Gateway →
+      # 从 vault 恢复凭据映射（provider 仍能拿到 key）、vault 值稳定
+      gateway2 = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |_agent, _key|
         ::Sebas::Providers::FakeProvider.new("fake", ["ok"])
       end
+      config.agents["main"].api_key.should be_nil
       gateway2.vault.get("agent", "main", "api_key").should eq("sk-secret-123")
       gateway2.shutdown
     end

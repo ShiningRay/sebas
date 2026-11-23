@@ -37,23 +37,30 @@ module Sebas
           @entries = load_entries
         end
 
-        # 主密钥来源：OS keyring（Win Credential Manager）→ 降级主密钥文件
+        # 主密钥来源：OS keyring（Win Credential Manager）→ 降级主密钥文件。
+        # 降级文件**先读后写**：重复 open 必须取回同一主密钥（M4.2-WP4 迁移
+        # 幂等验收依赖 vault 稳定——每次生成新密钥会让旧密文不可解）。
         def self.open(file : String | Path, keyring : ::Sebas::Platform::Keys::WinCredentialStore?) : EncryptedFileVault
           path = Path[file]
           scope_key = "sebas/master-key/#{path.basename}"
           key = keyring.try(&.get_raw(scope_key))
           if key.nil?
-            key = Random::Secure.random_bytes(32)
-            store = keyring
-            if store
-              store.set_raw(scope_key, key)
-              Log.info { "master key generated into OS keyring (#{scope_key})" }
+            key_file = path.parent / "master.key"
+            if File.file?(key_file)
+              key = Base64.decode(File.read(key_file).strip)
+              Log.info { "master key restored from fallback file #{key_file}" }
             else
-              # 降级：主密钥文件（0600 口径；Windows 上为用户目录文件权限近似）
-              key_file = path.parent / "master.key"
-              FileUtils.mkdir_p(path.parent) unless Dir.exists?(path.parent)
-              File.write(key_file, Base64.strict_encode(key))
-              Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
+              key = Random::Secure.random_bytes(32)
+              store = keyring
+              if store
+                store.set_raw(scope_key, key)
+                Log.info { "master key generated into OS keyring (#{scope_key})" }
+              else
+                # 降级：主密钥文件（0600 口径；Windows 上为用户目录文件权限近似）
+                FileUtils.mkdir_p(path.parent) unless Dir.exists?(path.parent)
+                File.write(key_file, Base64.strict_encode(key))
+                Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
+              end
             end
           end
           EncryptedFileVault.new(path, key)
