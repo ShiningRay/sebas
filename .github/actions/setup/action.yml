@@ -85,6 +85,18 @@ runs:
           exit 1
         fi
 
+        # pkg-config 是必需项而非可选项：Crystal 用它读取 libcrypto 版本，
+        # 缺失时把 LibCrypto::OPENSSL_VERSION 设为 "0.0.0"——CRYSTAL_LIBRARY_PATH
+        # 只管链接、不管版本检测。版本被判 < 1.1.0 会让依赖（如 openssl_ext）
+        # 走老 API 分支，在编译期报 `undefined method 'ctrl=' for
+        # LibCrypto::BioMethod`（main d7d7b3c 的 spec / macos-ci 实测）。
+        if ! command -v pkg-config >/dev/null 2>&1; then
+          echo "::error::pkg-config not found. Crystal needs it to detect the libcrypto version."
+          echo "::error::Install it on the self-hosted runner: brew install pkg-config"
+          echo "::error::Without it OPENSSL_VERSION resolves to 0.0.0 and builds fail with 'ctrl=' for LibCrypto::BioMethod."
+          exit 1
+        fi
+
         # CRYSTAL_LIBRARY_PATH 优先于 pkg-config，可绕开机器上残留的错误路径。
         {
           echo "CRYSTAL_LIBRARY_PATH=${openssl_prefix}/lib"
@@ -92,12 +104,30 @@ runs:
           echo "CPPFLAGS=-I${openssl_prefix}/include"
         } >> "$GITHUB_ENV"
 
-        # pkg-config 存在时顺带修正它的搜索路径（不安装）。
-        if command -v pkg-config >/dev/null 2>&1 && [ -d "${openssl_prefix}/lib/pkgconfig" ]; then
+        # pkg-config 搜索路径指向所选 keg（上方已保证 pkg-config 存在），
+        # 确保版本检测读到的是该 keg 的 libcrypto，而非机器上其他残留版本。
+        if [ -d "${openssl_prefix}/lib/pkgconfig" ]; then
           echo "PKG_CONFIG_PATH=${openssl_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
         else
-          echo "pkg-config unavailable; relying on CRYSTAL_LIBRARY_PATH for libssl/libcrypto."
+          echo "::warning::selected OpenSSL keg has no lib/pkgconfig; version detection may not see it"
         fi
+
+        # 自检：pkg-config 必须能解析出所选 keg 的 libcrypto 版本（≥ 3）。
+        # 解析不到即说明环境仍不满足，明确失败而非留到 crystal 编译期才报。
+        detected="$(PKG_CONFIG_PATH="${openssl_prefix}/lib/pkgconfig" pkg-config --modversion libcrypto 2>/dev/null || true)"
+        if [ -z "$detected" ]; then
+          echo "::error::pkg-config cannot resolve libcrypto under ${openssl_prefix}."
+          echo "::error::Reinstall the keg (brew reinstall openssl@3) or check pkg-config setup."
+          exit 1
+        fi
+        echo "libcrypto version detected by pkg-config: ${detected}"
+        case "${detected}" in
+          3.*|4.*) ;;
+          *)
+            echo "::error::libcrypto ${detected} is not OpenSSL 3+; Crystal 1.22 needs 3.x or newer."
+            exit 1
+            ;;
+        esac
 
         echo "clang: $(clang --version | head -1)"
         echo "openssl: ${openssl_prefix}"
