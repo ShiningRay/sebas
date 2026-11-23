@@ -93,12 +93,16 @@ module Sebas
         return if fork_id.nil?
         row = @store.expectation?(fork_id)
         return if row.nil?
-        settled = 0
+        # 终态保护与计数分离（CodeRabbit）：已终态成员保留；其余成员尝试
+        # fail_task 后重读状态，只统计实际处于终态者（fail_task 抛错不递增）。
         Array(String).from_json(row.members).each do |task_id|
           status = @store.task_status?(task_id)
-          next if %w[done failed cancelled].includes?(status) # 已终态成员不覆写
+          next if status && %w[done failed cancelled].includes?(status) # 已终态不覆写
           @store.fail_task(task_id, "fork dispatch failed") rescue nil
-          settled += 1
+        end
+        settled = Array(String).from_json(row.members).count do |task_id|
+          status = @store.task_status?(task_id)
+          status && %w[done failed cancelled].includes?(status)
         end
         @store.transition_expectation(row.id, "open", "expired",
           settled_count: settled, result: "dispatch failed")
