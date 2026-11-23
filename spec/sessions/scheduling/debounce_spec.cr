@@ -152,6 +152,7 @@ module Sebas
       all_rows = store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Queued) +
                  store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Running)
       pending = all_rows.find(&.seal_reason.==("count"))
+      raise "count 封冻批次缺失" if pending.nil?
       members = store.batch_inputs(pending.batch_id)
       members.map(&.event_id).should eq(["e-v1", "e-v2"])
       members.map(&.sender).uniq!.should eq(["judy"])
