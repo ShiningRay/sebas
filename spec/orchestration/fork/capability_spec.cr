@@ -2,6 +2,7 @@ require "spec"
 require "file_utils"
 require "../../../src/platform/store/store"
 require "../../../src/orchestration/fork/capability"
+require "../../../src/providers/providers"
 require "../../../src/orchestration/fork/snapshot_builder"
 
 module Sebas

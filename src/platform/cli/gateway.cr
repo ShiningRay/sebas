@@ -138,9 +138,11 @@ module Sebas
           )
           grant = executor.last_grant
           JSON.parse({
-            "fork_id"         => results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s,
-            "tools_effective" => (grant.try(&.effective) || [] of String).to_json,
-            "tools_removed"   => (grant.try(&.removed) || [] of String).to_json,
+            "fork_id" => results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s,
+            # 数组直接入对象，仅外层序列化一次——嵌套 to_json 会让客户端
+            # 拿到双重编码的字符串（CodeRabbit PRRT_kwDOVzNPQM662088）。
+            "tools_effective" => (grant.try(&.effective) || [] of String),
+            "tools_removed"   => (grant.try(&.removed) || [] of String),
             "members"         => results.map { |result| {"task_id" => result.task_id, "state" => result.state}.to_json },
           }.to_json)
         end
