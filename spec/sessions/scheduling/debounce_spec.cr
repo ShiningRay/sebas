@@ -28,7 +28,7 @@ def env5(event_id, session_key, sender, policy, payload = %({"t":1}))
 end
 
 def sched5(store, session_key, clock, dispatch : (Proc(String, String, Nil))? = nil)
-  handler = dispatch || ->(key : String, payload : String) { nil }
+  handler = dispatch || ->(_key : String, _payload : String) { nil }
   ::Sebas::Sessions::Scheduling::SessionScheduler.new(session_key, store, handler, clock: clock)
 end
 
@@ -104,7 +104,7 @@ module Sebas
       pending = all_rows.select(&.seal_reason.==("count"))
       pending.size.should eq(1)
       members = store.batch_inputs(pending.first.batch_id)
-      members.map(&.sender).uniq.should eq(["frank"]) # grace 不在 frank 桶内
+      members.map(&.sender).uniq!.should eq(["frank"]) # grace 不在 frank 桶内
       store.close
     end
 
@@ -119,7 +119,7 @@ module Sebas
       pending = all_rows.select(&.seal_reason.==("count"))
       pending.size.should eq(1) # 同桶 count=2 封冻
       members = store.batch_inputs(pending.first.batch_id)
-      members.map(&.sender).sort.should eq(["heidi", "ivan"]) # 跨 sender 同桶
+      members.map(&.sender).sort!.should eq(["heidi", "ivan"]) # 跨 sender 同桶
       store.close
     end
 
@@ -127,7 +127,7 @@ module Sebas
       store = db_env5
       dispatched = [] of String
       scheduler = ::Sebas::Sessions::Scheduling::SessionScheduler.new(
-        "agent:main:h:email:x", store, ->(key : String, payload : String) {
+        "agent:main:h:email:x", store, ->(_key : String, payload : String) {
         dispatched << payload
         nil
       }, clock: -> { 6_000_000_i64 })
@@ -151,11 +151,11 @@ module Sebas
       scheduler.admit(env5("e-v2", "agent:main:i:email:x", "judy", policy))
       all_rows = store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Queued) +
                  store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Running)
-      pending = all_rows.select(&.seal_reason.==("count")).first
+      pending = all_rows.find(&.seal_reason.==("count"))
       members = store.batch_inputs(pending.batch_id)
       members.map(&.event_id).should eq(["e-v1", "e-v2"])
-      members.map(&.sender).uniq.should eq(["judy"])
-      members.all? { |m| m.received_at.bytesize > 0 }.should be_true
+      members.map(&.sender).uniq!.should eq(["judy"])
+      members.all?(&.received_at.bytesize.>(0)).should be_true
       store.close
     end
 
@@ -178,7 +178,7 @@ module Sebas
       store.pending_batches("agent:main:k:email:x").size.should eq(0) # turn 未结束聚合中
       scheduler.flush_on_turn_end_buckets
       pending = store.pending_batches("agent:main:k:email:x")
-      pending.select(&.seal_reason.==("turnend")).size.should eq(1)
+      pending.count(&.seal_reason.==("turnend")).should eq(1)
       scheduler.metrics["sealed_turn_end"].should be > 0
       store.close
     end
@@ -192,7 +192,7 @@ module Sebas
       scheduler.flush_all_buckets.should eq(1)
       all_rows = store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Queued) +
                  store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Running)
-      all_rows.select(&.seal_reason.==("flush")).size.should eq(1)
+      all_rows.count(&.seal_reason.==("flush")).should eq(1)
       scheduler.metrics["sealed_flush"].should be > 0
       store.close
     end
@@ -206,7 +206,7 @@ module Sebas
       scheduler.admit(env5("e-m3", "agent:main:m:email:x", "peter", policy))
       all_rows = store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Queued) +
                  store.batches_by_status(::Sebas::Sessions::Scheduling::BatchStatus::Running)
-      all_rows.select { |row| row.seal_reason == "maxwait" }.size.should be >= 1 # 最老桶封存
+      all_rows.count { |row| row.seal_reason == "maxwait" }.should be >= 1 # 最老桶封存
       store.close
     end
 
@@ -214,7 +214,7 @@ module Sebas
       store = db_env5
       dispatched = [] of String
       scheduler = ::Sebas::Sessions::Scheduling::SessionScheduler.new(
-        "agent:main:n:email:x", store, ->(key : String, payload : String) {
+        "agent:main:n:email:x", store, ->(_key : String, payload : String) {
         dispatched << payload
         nil
       }, clock: -> { 12_000_000_i64 })
