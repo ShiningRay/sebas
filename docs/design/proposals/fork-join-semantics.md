@@ -263,7 +263,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 - 分身对 L3 不可逆操作**默认只有建议权**：工具执行前必经 `Approvals::Center.request` 批准，未批准不执行（fail-closed）。规则链现成：hardline deny > mode off > 无人值守 deny > memo 决策 > 超时 deny > 等待人工 [来源: 仓库:src/orchestration/approvals/approvals.cr:50-87]。
 - hardline 地板已含 `"fork bomb"` 模式 [来源: 仓库:src/orchestration/approvals/approvals.cr:33-38]——fork 场景天然被地板覆盖。
-- 接线语义：分身 ToolContext 携带 `unattended`（DSL 无人值守 run 默认 true → L3 自动 deny）/ `approval_mode`；人工双入口 `approve/deny` 已有 [来源: 仓库:src/orchestration/approvals/approvals.cr:91-97]。**Center 生产装配为零**（IPC 声明 approvals 能力但无 approve/deny 命令 [来源: 仓库:src/admin/ipc/server.cr:187-215]）——接线（装配+IPC 命令补齐）入 M4.2 工作包；M4.1 默认档无 L3 工具，无需接线（自然安全）。
+- 接线语义：分身 ToolContext 携带 `unattended`（DSL 无人值守 run 默认 true → L3 自动 deny）/ `approval_mode`；人工双入口 `approve/deny` API 已有 [来源: 仓库:src/orchestration/approvals/approvals.cr:91-97]。**Center 生产装配与 IPC approve/deny 命令已于 M4.2-WP3 接线**（见本节顶部实现状态；M4.1 阶段装配为零、默认档无 L3 工具，自然安全）。
 
 ---
 
