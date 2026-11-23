@@ -75,4 +75,5 @@ src/plugins/               # 可选脚本层（§12）：manifest/包校验/regi
 
 `crystal_llm` 是 ruby_llm 的 Crystal 移植：改动先落 fork，再定期向上游 `stevegeek/crystal-llm` 提 PR；
 上游出稳定 release 后改为锁定版本号并更新本表。适配层当前支持 `openai` / `anthropic` / `deepseek` /
-`openrouter` 四家，`base_url` 可覆盖，未列入的 provider 名直接抛错而非静默回落。
+`openrouter` 四家，`base_url` 可覆盖。内部 `apply_provider_config` 对未列入的 provider 名抛出异常，
+公开 `complete` 捕获该异常并返回 `Completion.error`，不向调用方抛出，也不静默回落。
