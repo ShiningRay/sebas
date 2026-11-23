@@ -104,7 +104,7 @@ Proposal issue（proposal + needs-triage）
              ├─ 小型明确改动：无需正式设计文档
              └─ 重大改动：Scribe 整理设计快照并提交 PR
   → Maintainer 另行决定排期
-  → 创建 plan 工作包；未排期的提案不进入实现选卡
+  → Scribe 按指令创建 plan 工作包；未排期的提案不进入实现选卡
 ```
 
 状态标签只有 `proposal:needs-design` / `proposal:accepted-design` / `proposal:declined`；
@@ -115,12 +115,13 @@ Proposal issue（proposal + needs-triage）
 
 - **Triager** 不裁决产品方向、不接受设计、不排期、不改仓库；结论不足时标记 `question`。
 - **Maintainer** 将方向接受、设计定稿和排期分开决定；每次裁决在原 issue 留公开理由。
-- **Scribe** 只整理已达成的共识和异议，不借写文档自行补决策；PR 回链原 issue。
+- **Scribe** 起草定稿候选但不定稿；文档 PR 合入不等于设计定稿。收到明确排期指令后，
+  才可执行 WBS、milestone 与 `plan` 工作包的机械落地；不自行决定版本、优先级或容量置换。
 - 外部贡献者可自愿 fork 提交设计 PR，但这不是参与讨论或获得裁决的条件。
 - 原 issue 持续保存讨论记录。设计文档与实现任务必须回链它，不维护两份平行讨论。
 
-**接受设计不等于批准排期，也不承诺版本交付。**只有 Maintainer 决定排期并创建 `plan`
-工作包后，Implementer 才按现有开工三闸执行。
+**接受设计不等于批准排期，也不承诺版本交付。**只有 Maintainer 决定排期，Scribe 才能按指令
+创建 `plan` 工作包；Implementer 再按现有开工三闸执行。
 
 ### 外部 issue 的研判与归宿
 

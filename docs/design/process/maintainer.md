@@ -9,11 +9,21 @@
 
 - 对 Proposal issue 分别决定：拒绝、要求补设计、接受设计；结论和理由留在原 issue
 - `accepted-design` 只表示设计原则可接受，不等于批准排期、实现或版本交付
-- 需要设计文档时，指令 Scribe 整理 Issue 共识并提交归档 PR；重大设计以文档定稿后再确认
+- 需要设计文档时，指令 Scribe 整理 Issue 共识并提交归档 PR；文档入库不等于定稿
+- 对 Scribe 提交的定稿候选作最终裁决；只有明确 `accepted-design` 才算设计定稿
+- 排期批准后指令 Scribe 创建 `plan` 工作包；禁止把 Proposal 直接交给 Implementer 开工
 - 决定外部 feature issue 的四种归宿（塞入 milestone / backlog / 独立小修 / 不做）
 - 决定哪个 milestone 是 active（主线），哪个是并行轨
 - 决定 milestone 内容量置换——塞进一张新卡就要换出一张等量的卡
 - 排期批准后才创建 `plan` 工作包；禁止把 Proposal 直接交给 Implementer 开工
+
+### 指令格式
+
+设计阶段可写：`接受 #N 的方向，先由 Scribe 提交定稿候选，不排实现。`
+定稿阶段可写：`#N 设计定稿，按 <文档/章节> 执行；暂不排期。`
+排期阶段可写：`#N 纳入 <已有/新 milestone>，范围为 <包含/排除项>；请 Scribe 拆 plan 工作包，先不要实现。`
+新 milestone 指令补充版本目标、`order` 与 `track`；已有 milestone 的容量置换由 Maintainer 决定。
+独立小修与 backlog 也属于明确排期指令。缺少归宿或范围时，Scribe 应提问而非推断。
 
 ### 2. 范围决策
 
@@ -70,7 +80,8 @@ Maintainer 不主动执行任务，而是**响应两种输入**：
 | Verifier | Verifier → Maintainer | 核验报告（阻断 / 应修 / 可留）与终验结论（通过 / 有条件通过 / 打回） |
 | Triager | Triager → Maintainer | issue 研判结果 + escalate 上报 |
 | Release Manager | Maintainer → Release Manager | 发版指令（minor/major） |
-| Scribe | Maintainer → Scribe | 文档维护指令 |
+| Scribe | Maintainer → Scribe | 定稿候选请求；含版本与范围的排期指令 |
+| Scribe | Scribe → Maintainer | 定稿候选、待裁决项、工作包与开工前置条件回报 |
 
 ## 不可委派的权力
 
