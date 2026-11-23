@@ -24,8 +24,9 @@ require "./gateway_dispatch"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
-require "../../orchestration/fork/executor"
 require "../../orchestration/fork/expectations"
+require "../../tools/fork_tool"
+require "../../orchestration/fork/executor"
 require "../../orchestration/fork/capability"
 require "../../orchestration/fork/join_writer"
 require "../../orchestration/fork/snapshot_builder"
@@ -301,6 +302,7 @@ module Sebas
             Providers::Message.new(role, row.content)
           end
           registry = attenuated_registry(agent)
+          register_dialog_fork_tool(registry, agent_name, agent)
           executor = Tools::Executor.new(registry, @channels)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
@@ -321,7 +323,10 @@ module Sebas
             # 工具调用轮：执行（衰减面）→ 结果持久化 + 回注 → checkpoint → 下一轮。
             # 每次调用独立幂等标识：入站事件 + 轮次（重放同事件同轮复用同标识）。
             messages += [Providers::Message.new("assistant", completion.text)]
-            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store)
+            # 对话上下文人工在场（unattended=false）：L3 审批走 pending 等人
+            # 工，approvals 装配使 fork 的 L3 门可达（M4.2-WP3 fail-closed）。
+            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store,
+              nil, @approvals, false, "deny")
             result = executor.run(call.tool, call.args, round_ctx)
             outcome = result.ok? ? result.output : "error: #{result.error}"
             Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }
@@ -335,54 +340,6 @@ module Sebas
           final = provider.complete(messages + [Providers::Message.new("user",
             "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")])
           final.ok? ? final.text : "(provider error: #{final.error})"
-        end
-
-        # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
-        private def finish_round(task_id : String?, round : Int32, text : String) : String
-          @store.checkpoint(task_id, round) if task_id
-          text
-        end
-
-        # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
-        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
-        private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
-          registry = Tools.default_registry(@channels)
-          allowed = agent.tools.try(&.allow) || ["*"]
-          unless allowed.includes?("*")
-            registry.names.each do |name|
-              registry.unregister(name) unless allowed.includes?(name)
-            end
-          end
-          registry
-        end
-
-        # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
-        # 模型据此发起工具调用（新会话无工具知识则循环永不触发）。
-        private def tool_protocol_prompt(registry : Tools::Registry) : String
-          String.build do |io|
-            io << "You can call tools. Available tools:\n"
-            io << registry.describe << "\n\n"
-            io << "To call a tool, respond with exactly one fenced JSON block:\n"
-            io << "```json\n{\"tool\": \"<name>\", \"args\": {<parameters>}}\n```\n"
-            io << "The tool result will be provided in the next message. Respond without such a block to give your final answer. Note: string values must not contain ``` sequences."
-          end
-        end
-
-        private def spawn_adapters : Nil
-          if email = @config.channels.email
-            email.accounts.each do |account|
-              adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
-              @channels.register(adapter)
-              @supervisor.register(adapter)
-            end
-          end
-          # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
-        end
-
-        private def build_rules(config : Config::Config) : Array(Routing::BindingRule)
-          config.bindings.map do |b|
-            Routing::BindingRule.new(b.channel, b.account || "*", b.peer || "*", b.agent)
-          end
         end
 
         private def build_pool : Agents::Pool

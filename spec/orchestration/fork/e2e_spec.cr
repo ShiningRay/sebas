@@ -25,7 +25,7 @@ module Sebas
       5.times { |i| store.append_transcript(parent_session, "user", "ctx-#{i}") }
 
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, ex,
-        -> { ::Sebas::Providers::FakeProvider.new("fake", ["e2e conclusion"]).as(Providers::Provider) })
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["e2e conclusion"]).as(Providers::Provider) }, auto_join_write: false)
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
         task: "e2e research", count: 3, window: nil, include: nil,
         tools: nil, role: nil, mode: "allSettled", deadline: 3600
