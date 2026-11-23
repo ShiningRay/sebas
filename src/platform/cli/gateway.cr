@@ -75,8 +75,14 @@ module Sebas
           spawn(name: "sebas-schedule-seal-scanner") do
             loop do
               sleep 100.milliseconds
-              break if @stopping_scan
-              @scheduling.seal_due
+              break if @stopping_scan.get
+              begin
+                @scheduling.seal_due
+              rescue ex
+                # 单次扫描异常（瞬时 SQLite 故障等）不停摆扫描协程：
+                # idle/max_wait 桶仍需后续 tick 收口（CodeRabbit）
+                Log.error(exception: ex) { "seal scan failed, next tick continues" }
+              end
             end
           end
           Config::CURRENT.set(config)
@@ -227,6 +233,7 @@ module Sebas
         end
 
         def shutdown : Nil
+          @stopping_scan.set(true) # 扫描协程先退（在 scheduling/store 关闭前，CodeRabbit）
           @reload_manager.try(&.stop_watching)
           @http.close
           @supervisor.stop_all
