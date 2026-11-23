@@ -40,7 +40,7 @@ class OnelineSheetTest < Minitest::Test
   def test_scribe_requires_human_decisions_before_scheduling
     prompt = SebasAgents::RolePrompts.oneline("scribe")
     assert_includes prompt, "Maintainer 明确 accepted-design 才算定稿"
-    assert_includes prompt, "Proposal、归宿和范围"
+    assert_includes prompt, "仅在 Maintainer 明确排期指令且含 Proposal、归宿和范围"
     assert_includes prompt, "版本目标/order/track"
     assert_includes prompt, "backlog 不拆卡"
     assert_includes prompt, "不自行定稿、排期或直接指令 Implementer 开工"

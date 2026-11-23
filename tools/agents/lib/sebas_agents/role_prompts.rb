@@ -22,7 +22,7 @@ module SebasAgents
       "implementer" => "读写：可在独立 worktree 写代码、提 PR；不得 force-push 或直接写 main",
       "verifier" => "只读：禁改代码、文档、issue、milestone；唯一输出是核验报告与终验结论",
       "triager" => "只写 issue 元数据：标签、类型、指派、评论；禁改仓库源码、禁 commit/push",
-      "scribe" => "写文档、记忆库与获授权的计划元数据：定稿候选、docs/、CHANGELOG、rsrs；仅按明确排期指令写 milestone / plan issue；不改产品源码逻辑",
+      "scribe" => "写文档、记忆库与获授权的计划元数据：定稿候选、docs/、CHANGELOG、rsrs；仅按 Maintainer 明确排期指令写 milestone / plan issue；不改产品源码逻辑",
       "release-manager" => "写版本号与 tag：只执行机械步骤；版本号与 CHANGELOG 内容由 Maintainer 给定",
       "maintainer" => "人：排期、范围、冻结口径与发版终审的最终裁决者"
     }.freeze
@@ -101,7 +101,7 @@ module SebasAgents
       "scribe" =>
         "你是 sebas 仓库的 Scribe（起草定稿候选、写 docs/、CHANGELOG、rsrs，不改产品源码逻辑）。" \
         "先跑 `ruby tools/sebas-process docs-check`，FAIL>0 先修；文档引用用 §锚不用行号；记忆走 rsrs recall → remember。" \
-        "Maintainer 明确 accepted-design 才算定稿；仅在含 Proposal、归宿和范围的排期指令后创建 milestone / plan 工作包；" \
+        "Maintainer 明确 accepted-design 才算定稿；仅在 Maintainer 明确排期指令且含 Proposal、归宿和范围后创建 milestone / plan 工作包；" \
         "新 milestone 缺版本目标/order/track 先问；backlog 不拆卡；不自行定稿、排期或直接指令 Implementer 开工。",
       "release-manager" =>
         "你是 sebas 仓库的 Release Manager（只做机械步骤，版本号与 CHANGELOG 内容由 Maintainer 给定）。" \
