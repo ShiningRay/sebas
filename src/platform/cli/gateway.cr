@@ -342,54 +342,6 @@ module Sebas
           final.ok? ? final.text : "(provider error: #{final.error})"
         end
 
-        # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
-        private def finish_round(task_id : String?, round : Int32, text : String) : String
-          @store.checkpoint(task_id, round) if task_id
-          text
-        end
-
-        # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
-        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
-        private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
-          registry = Tools.default_registry(@channels)
-          allowed = agent.tools.try(&.allow) || ["*"]
-          unless allowed.includes?("*")
-            registry.names.each do |name|
-              registry.unregister(name) unless allowed.includes?(name)
-            end
-          end
-          registry
-        end
-
-        # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
-        # 模型据此发起工具调用（新会话无工具知识则循环永不触发）。
-        private def tool_protocol_prompt(registry : Tools::Registry) : String
-          String.build do |io|
-            io << "You can call tools. Available tools:\n"
-            io << registry.describe << "\n\n"
-            io << "To call a tool, respond with exactly one fenced JSON block:\n"
-            io << "```json\n{\"tool\": \"<name>\", \"args\": {<parameters>}}\n```\n"
-            io << "The tool result will be provided in the next message. Respond without such a block to give your final answer. Note: string values must not contain ``` sequences."
-          end
-        end
-
-        private def spawn_adapters : Nil
-          if email = @config.channels.email
-            email.accounts.each do |account|
-              adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
-              @channels.register(adapter)
-              @supervisor.register(adapter)
-            end
-          end
-          # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
-        end
-
-        private def build_rules(config : Config::Config) : Array(Routing::BindingRule)
-          config.bindings.map do |b|
-            Routing::BindingRule.new(b.channel, b.account || "*", b.peer || "*", b.agent)
-          end
-        end
-
         private def build_pool : Agents::Pool
           Agents::Pool.new(8, 16) do |job|
             handler = @batch_job_handler
