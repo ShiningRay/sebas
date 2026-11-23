@@ -20,6 +20,15 @@ module Sebas
       ::Sebas::Providers::ToolCallParser.parse(%(```json\n{"tool": "", "args": {}}\n```)).should be_nil
     end
 
+    it "args 字符串含 } 与 ``` 序列不提前截断（CVnJ 回归）" do
+      text = %(```json\n{"tool": "memory.save", "args": {"key": "k", "body": "} ```"}}\n```)
+      call = ::Sebas::Providers::ToolCallParser.parse(text)
+      call.should be_a(::Sebas::Providers::ToolCallParser::Call)
+      call = call.as(::Sebas::Providers::ToolCallParser::Call)
+      call.tool.should eq("memory.save")
+      call.args["body"].as_s.should eq("} ```")
+    end
+
     it "args 缺省 → 空对象（合法）" do
       call = ::Sebas::Providers::ToolCallParser.parse(%(```json\n{"tool": "session.read"}\n```))
       call.should be_a(::Sebas::Providers::ToolCallParser::Call)

@@ -290,18 +290,17 @@ module Sebas
                                event_id : String = "") : String
           # 每 turn 取配置快照纪律（§11.2④）：M0 单配置整根即快照；M1 起 Atomic(Config).get
           history = @store.transcripts(session_key).last(agent.memory.try(&.window) || 50).map do |row|
-            role = row.role == "agent" ? "assistant" : row.role
+            # agent → assistant；tool 行转 user（内容自带 "tool:" 前缀）——
+            # HttpProvider 只序列化 role/content，tool 角色无 tool_call_id
+            # 支撑会破坏后续对话（CodeRabbit Cv3j）
+            role = case row.role
+                   when "agent" then "assistant"
+                   when "tool"  then "user"
+                   else              row.role
+                   end
             Providers::Message.new(role, row.content)
           end
-          registry = Tools.default_registry(@channels)
-          # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
-          # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
-          allowed = agent.tools.try(&.allow) || ["*"]
-          unless allowed.includes?("*")
-            registry.names.each do |name|
-              registry.unregister(name) unless allowed.includes?(name)
-            end
-          end
+          registry = attenuated_registry(agent)
           executor = Tools::Executor.new(registry, @channels)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
@@ -342,6 +341,19 @@ module Sebas
         private def finish_round(task_id : String?, round : Int32, text : String) : String
           @store.checkpoint(task_id, round) if task_id
           text
+        end
+
+        # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
+        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
+        private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
+          registry = Tools.default_registry(@channels)
+          allowed = agent.tools.try(&.allow) || ["*"]
+          unless allowed.includes?("*")
+            registry.names.each do |name|
+              registry.unregister(name) unless allowed.includes?(name)
+            end
+          end
+          registry
         end
 
         # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
