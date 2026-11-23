@@ -179,6 +179,25 @@ module Sebas
           end
           raw.as_a.map(&.as_s)
         end
+
+        # 重放未完成 intents（崩溃恢复入口，M0-WP8 演练；#49 迁入 dispatch——
+        # 与 schedule_input 同为入站消息接线）
+        def replay_unfinished : Nil
+          @store.unfinished_intents.each do |intent|
+            next unless intent.kind == "message"
+            begin
+              data = JSON.parse(intent.payload)
+              message = Bus::InboundMessage.new(
+                data["event_id"].as_s, data["channel_type"].as_s,
+                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
+              )
+              Log.info { "replaying unfinished intent #{intent.id} (#{intent.status})" }
+              process_message(message, replay: true)
+            rescue ex : ::Exception
+              Log.error(exception: ex) { "intent replay failed (#{intent.id})" }
+            end
+          end
+        end
       end
     end
   end

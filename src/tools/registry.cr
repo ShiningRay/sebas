@@ -143,6 +143,13 @@ module Sebas
       end
 
       abstract def run(args : JSON::Any, ctx : ToolContext) : ToolResult
+
+      # 副作用自记账声明（M4.2-WP2 CodeRabbit）：默认 false——Executor 通用
+      # 记账覆盖；实际写入路径只有工具自身可知时（如 file.write 的 base_dir
+      # 解析）覆写为 true 并自行入账（Executor 跳过防重复/错路径）。
+      def self_records_effects? : Bool
+        false
+      end
     end
 
     class Registry
@@ -151,6 +158,11 @@ module Sebas
 
       def register(tool : Tool) : Nil
         @mutex.synchronize { @tools[tool.name] = tool }
+      end
+
+      # 衰减过滤用（M4.3-WP1）：移除白名单外工具
+      def unregister(name : String) : Nil
+        @mutex.synchronize { @tools.delete(name) }
       end
 
       def find(name : String) : Tool?

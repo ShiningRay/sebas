@@ -9,6 +9,14 @@
 
 ## 1. 三轴总体架构
 
+> 实现状态（M4.3-WP1，#50）：生产 `agent_turn`（gateway_dispatch.cr）已升为
+> ReAct 工具循环——模型响应 → `Providers::ToolCallParser` 解析 ```json
+> {"tool","args"}``` 块 → 衰减工具面（`tools.allow` 白名单过滤注册表）执行 →
+> 结果回注 → 下一轮；轮数上限 `MAX_TOOL_ROUNDS=8`，超限强制索要终答；无工具
+> 调用 = 终答（与 M0 现状一致的回归口径）；checkpoint 复用 task phase（每轮
+> `checkpoint(round)`，崩溃重放从最后一轮续跑）。
+
+
 三轴（[positioning.md](fork-join-shadow-clone-positioning.md)）：轴① 弱 Session / 常驻 Agent；轴② 轻量 Agent 团队；轴③ Fork/Join 影分身（主线）。
 
 ### 1.1 文本组件图

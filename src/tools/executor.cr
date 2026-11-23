@@ -18,19 +18,10 @@ module Sebas
         tool = @registry.find(name)
         return ToolResult.error("unknown tool: #{name}") unless tool
         Log.info { "tool #{name} args=#{Registry.redact(args)} ctx=#{ctx.session_key}" }
-        # 文件写类在执行前记现状摘要三态（写前基线，判「父在成员写前已动过」）：
-        # 存在=digest；不存在="deleted"（父删过或本就不在——留给 join 结合 fork
-        # 基线区分）；非文件类=""（不采集）。
-        pre_digest = if tool.side_effect == SideEffect::FileWrite &&
-                        (target = args.as_h?.try(&.[]?("path")).try(&.as_s?))
-                       File.file?(target) ? ::Digest::SHA256.hexdigest(File.read(target)) : "deleted"
-                     else
-                       ""
-                     end
         deny_result, approval_reason = irreversible_gate?(tool, args, ctx)
         return deny_result if deny_result
         result = tool.run(args, ctx)
-        record_side_effect(tool, args, ctx, result, pre_digest, approval_reason)
+        record_side_effect(tool, args, ctx, result, approval_reason)
         result
       rescue ex : ::Exception
         # typed rescue 转值：工具错误不炸进程（autobot registry.cr 先例）
@@ -44,14 +35,15 @@ module Sebas
       # 污染，CodeRabbit PRRT_kwDOVzNPQM664uZR）；L3 审批凭证随清单回写
       # （semantics §7「凭证随 L1 回写」）。
       private def record_side_effect(tool : Tool, args : JSON::Any, ctx : ToolContext,
-                                     result : ToolResult, pre_digest : String, approval_reason : String) : Nil
+                                     result : ToolResult, approval_reason : String) : Nil
         return unless result.ok?
         ledger = ctx.ledger
         return unless ledger
         return if tool.side_effect == SideEffect::ReadOnly
+        return if tool.self_records_effects? # 自记账工具（file.write）自理路径与摘要
         target = args.as_h?.try(&.[]?("path")).try(&.as_s?) || Registry.redact(args)[0, 120]
         reason = tool.side_effect == SideEffect::Irreversible ? approval_reason : ""
-        ledger.record(tool.name, tool.side_effect, target, result.digest || "", pre_digest, reason)
+        ledger.record(tool.name, tool.side_effect, target, result.digest || "", "", reason)
       end
 
       # L3 不可逆门（M4.2-WP3 §7「未批不执行 fail-closed」）：返回
@@ -162,7 +154,12 @@ module Sebas
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
+        # 越权防护（M4.3-WP1 CodeRabbit）：只可读当前会话——模型提供的
+        # session_key 与上下文不符即拒绝（跨会话 transcript 是他人隐私面）
         key = args["session_key"]?.try(&.as_s?) || ctx.session_key
+        unless key == ctx.session_key
+          return ToolResult.error("session.read 仅可读取当前会话")
+        end
         limit = args["limit"]?.try(&.as_i?) || 20
         rows = ctx.store.transcripts(key).last(limit)
         output = rows.map { |row| "[#{row.created_at}] #{row.role}: #{row.content[0, 120]}" }.join("\n")

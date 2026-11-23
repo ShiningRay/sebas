@@ -16,6 +16,7 @@ require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
 require "../../providers/fake_provider"
+require "../../providers/tool_call_parser"
 require "../../sessions/scheduling/scheduler"
 require "../../sessions/scheduling/registry"
 require "../../sessions/scheduling/recovery"
@@ -259,8 +260,7 @@ module Sebas
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
-          reply = agent_turn(agent_name, agent, session_key)
-          @store.checkpoint(task.id, 1) # provider 完成 checkpoint（重放不再调 provider）
+          reply = agent_turn(agent_name, agent, session_key, task_id: task.id, event_id: message.event_id)
 
           send_args = JSON.parse({channel: message.channel_type, peer: message.peer, content: reply}.to_json)
           send_result = @executor.run("message.send", send_args,
@@ -278,35 +278,94 @@ module Sebas
           Log.error(exception: ex) { "message processing failed (event=#{message.event_id})" }
         end
 
-        # 重放未完成 intents（崩溃恢复入口，M0-WP8 演练）
-        def replay_unfinished : Nil
-          @store.unfinished_intents.each do |intent|
-            next unless intent.kind == "message"
-            begin
-              data = JSON.parse(intent.payload)
-              message = Bus::InboundMessage.new(
-                data["event_id"].as_s, data["channel_type"].as_s,
-                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
-              )
-              Log.info { "replaying unfinished intent #{intent.id} (#{intent.status})" }
-              process_message(message, replay: true)
-            rescue ex : ::Exception
-              Log.error(exception: ex) { "intent replay failed (#{intent.id})" }
-            end
-          end
-        end
+        MAX_TOOL_ROUNDS = 8
 
-        private def agent_turn(agent_name : String, agent : Config::AgentConfig, session_key : String) : String
+        # ReAct 工具循环（M4.3-WP1，Q3 裁断）：一次性 provider 调用升为
+        # 模型响应 → 工具调用解析 → 衰减工具面执行 → 结果回注 → 下一轮。
+        # 轮数上限 MAX_TOOL_ROUNDS（防无限循环）；无工具调用 = 终答（行为
+        # 与 M0 现状一致，回归口径）。checkpoint 复用 task phase：每轮结果
+        # 持久化（transcript tool 行）后 checkpoint(round)。
+        private def agent_turn(agent_name : String, agent : Config::AgentConfig,
+                               session_key : String, task_id : String? = nil,
+                               event_id : String = "") : String
           # 每 turn 取配置快照纪律（§11.2④）：M0 单配置整根即快照；M1 起 Atomic(Config).get
           history = @store.transcripts(session_key).last(agent.memory.try(&.window) || 50).map do |row|
-            role = row.role == "agent" ? "assistant" : row.role
+            # agent → assistant；tool 行转 user（内容自带 "tool:" 前缀）——
+            # HttpProvider 只序列化 role/content，tool 角色无 tool_call_id
+            # 支撑会破坏后续对话（CodeRabbit Cv3j）
+            role = case row.role
+                   when "agent" then "assistant"
+                   when "tool"  then "user"
+                   else              row.role
+                   end
             Providers::Message.new(role, row.content)
           end
+          registry = attenuated_registry(agent)
+          executor = Tools::Executor.new(registry, @channels)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
-          completion = provider.complete(history)
-          return completion.text if completion.ok?
-          Log.error { "provider error: #{completion.error}" }
-          "(provider error: #{completion.error})"
+
+          # 工具协议说明（M4.3-WP1 CodeRabbit）：模型必须知道可用工具与调用
+          # 协议才能发起调用——首条 system 消息注入清单（registry.describe）
+          # 与 fenced JSON 调用格式示例。
+          messages = [Providers::Message.new("system", tool_protocol_prompt(registry))] + history
+
+          (1..MAX_TOOL_ROUNDS).each do |round|
+            completion = provider.complete(messages)
+            unless completion.ok?
+              Log.error { "provider error: #{completion.error}" }
+              return "(provider error: #{completion.error})"
+            end
+            call = Providers::ToolCallParser.parse(completion.text)
+            return finish_round(task_id, round, completion.text) if call.nil?
+
+            # 工具调用轮：执行（衰减面）→ 结果持久化 + 回注 → checkpoint → 下一轮。
+            # 每次调用独立幂等标识：入站事件 + 轮次（重放同事件同轮复用同标识）。
+            messages += [Providers::Message.new("assistant", completion.text)]
+            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store)
+            result = executor.run(call.tool, call.args, round_ctx)
+            outcome = result.ok? ? result.output : "error: #{result.error}"
+            Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }
+            # 工具结果持久化到 transcript（role=tool）——checkpoint 语义 =
+            # 「本轮结果已落库」，崩溃重放经 history 重建消息上下文
+            @store.append_transcript(session_key, "tool", "#{call.tool}: #{outcome}")
+            messages << Providers::Message.new("user", "tool result (#{call.tool}): #{outcome}")
+            @store.checkpoint(task_id, round) if task_id
+          end
+          # 轮数上限：不再解析工具调用，要求模型给终答
+          final = provider.complete(messages + [Providers::Message.new("user",
+            "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")])
+          final.ok? ? final.text : "(provider error: #{final.error})"
+        end
+
+        # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
+        private def finish_round(task_id : String?, round : Int32, text : String) : String
+          @store.checkpoint(task_id, round) if task_id
+          text
+        end
+
+        # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
+        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
+        private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
+          registry = Tools.default_registry(@channels)
+          allowed = agent.tools.try(&.allow) || ["*"]
+          unless allowed.includes?("*")
+            registry.names.each do |name|
+              registry.unregister(name) unless allowed.includes?(name)
+            end
+          end
+          registry
+        end
+
+        # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
+        # 模型据此发起工具调用（新会话无工具知识则循环永不触发）。
+        private def tool_protocol_prompt(registry : Tools::Registry) : String
+          String.build do |io|
+            io << "You can call tools. Available tools:\n"
+            io << registry.describe << "\n\n"
+            io << "To call a tool, respond with exactly one fenced JSON block:\n"
+            io << "```json\n{\"tool\": \"<name>\", \"args\": {<parameters>}}\n```\n"
+            io << "The tool result will be provided in the next message. Respond without such a block to give your final answer. Note: string values must not contain ``` sequences."
+          end
         end
 
         private def spawn_adapters : Nil
