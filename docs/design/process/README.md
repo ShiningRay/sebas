@@ -23,7 +23,7 @@
 | [implementer.md](implementer.md) | Implementer | AI | 执行：实现工作包、修 review、修 CI、提 PR |
 | [verifier.md](verifier.md) | Verifier | AI | 独立核验与终验：锚点实证、一致性对账、行为实测；终验对应修项复跑收口（#124 起 Reviewer 并入） |
 | [triager.md](triager.md) | Triager | AI | issue 研判与 Proposal 状态维护：不替 Maintainer 接受设计或排期 |
-| [scribe.md](scribe.md) | Scribe | AI | 文档与记忆：设计文档维护、记忆库存取、CHANGELOG |
+| [scribe.md](scribe.md) | Scribe | AI | 设计定稿候选、排期与任务拆解执行、文档与记忆；不替代 Maintainer 裁决 |
 | [release-manager.md](release-manager.md) | Release Manager | AI | 发版执行：版本号 bump、tag 管理、产物校验 |
 
 ## 核心原则

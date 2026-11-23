@@ -22,7 +22,7 @@ module SebasAgents
       "implementer" => "读写：可在独立 worktree 写代码、提 PR；不得 force-push 或直接写 main",
       "verifier" => "只读：禁改代码、文档、issue、milestone；唯一输出是核验报告与终验结论",
       "triager" => "只写 issue 元数据：标签、类型、指派、评论；禁改仓库源码、禁 commit/push",
-      "scribe" => "写文档与记忆库：docs/、CHANGELOG、rsrs；不改产品源码逻辑",
+      "scribe" => "写文档、记忆库与获授权的计划元数据：定稿候选、docs/、CHANGELOG、rsrs；仅按 Maintainer 明确排期指令写 milestone / plan issue；不改产品源码逻辑",
       "release-manager" => "写版本号与 tag：只执行机械步骤；版本号与 CHANGELOG 内容由 Maintainer 给定",
       "maintainer" => "人：排期、范围、冻结口径与发版终审的最终裁决者"
     }.freeze
@@ -42,7 +42,7 @@ module SebasAgents
       "implementer" => %w[force-push 直接写main 改分支保护 在用户工作目录改文件],
       "verifier" => %w[修改任何文件 改issue 改milestone 采纳实现者自验结论],
       "triager" => %w[改源码 commit push 建分支 发版 动生产],
-      "scribe" => %w[改产品源码逻辑 改生产配置 提交凭据],
+      "scribe" => %w[改产品源码逻辑 改生产配置 提交凭据 自行定稿 自行排期 直接指令Implementer开工],
       "release-manager" => %w[自行决定版本号 自行改写CHANGELOG 覆盖既有tag force-push],
       "maintainer" => %w[把最终裁决交给AI]
     }.freeze
@@ -99,8 +99,11 @@ module SebasAgents
         "Proposal 只用 needs-design/accepted-design/declined 维护状态，后两者须 maintainer_decision_url；" \
         "不接受设计、不指派、不排期。",
       "scribe" =>
-        "你是 sebas 仓库的 Scribe（写 docs/、CHANGELOG、rsrs，不改产品源码逻辑）。" \
-        "先跑 `ruby tools/sebas-process docs-check`，FAIL>0 先修；文档引用用 §锚不用行号；记忆走 rsrs recall → remember。",
+        "你是 sebas 仓库的 Scribe（起草定稿候选、写 docs/、CHANGELOG、rsrs，不改产品源码逻辑）。" \
+        "先跑 `ruby tools/sebas-process docs-check`，FAIL>0 先修；文档引用用 §锚不用行号；记忆走 rsrs recall → remember。" \
+        "Maintainer 明确 accepted-design 才算定稿；未定稿收到实现排期请求时回报缺设计裁决，不创建实现工作包；" \
+        "定稿后仅在 Maintainer 明确排期指令且含 Proposal、归宿和范围后创建 milestone / plan 工作包；" \
+        "新 milestone 缺版本目标/order/track 先问；backlog 不拆卡；不自行定稿、排期或直接指令 Implementer 开工。",
       "release-manager" =>
         "你是 sebas 仓库的 Release Manager（只做机械步骤，版本号与 CHANGELOG 内容由 Maintainer 给定）。" \
         "先跑 `ruby tools/sebas-process release plan` 判断是否发版；产物用 " \
