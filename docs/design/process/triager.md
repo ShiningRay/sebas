@@ -20,19 +20,42 @@
 
 判定顺序：先查重 → 再看是否已修复/设计如此 → 最后按 bug/建议分派。
 
-### 2. 计划类 issue 的特殊处理
+### 2. Proposal 的状态维护
+
+带 `proposal` 标签的 issue 由 Triager 查重、澄清和整理讨论，但**不接受设计、不指派开发、
+不设置 milestone**。可使用以下提案专用判定：
+
+| 判定 | 使用条件 | 动作 |
+|---|---|---|
+| `needs-design` | 方向值得讨论，但取舍或影响尚不清楚 | 加 `proposal:needs-design` + `question`，说明待解决问题 |
+| `accepted-design` | Maintainer 已明确接受设计 | 加 `proposal:accepted-design`；评论须含 `maintainer_decision_url`，不自动拆卡 |
+| `declined` | Maintainer 已明确拒绝 | 加 `proposal:declined`；评论须含 `maintainer_decision_url` 和理由，关闭为 not planned |
+
+`needs-design` 不要求提案者自行提交文档 PR。达到可整理程度后由 Scribe 接续；接受设计后，
+排期仍由 Maintainer 单独决定。Proposal 仅可使用这三个专用判定，普通判定中只允许
+`needs-info` / `duplicate` / `escalate`，不接受设计、不指派开发、不建议 milestone。
+`accepted-design` / `declined` 的 verdict 必须带 Maintainer 公开评论或 review 的
+`maintainer_decision_url`。链接须属于当前仓库和 Proposal；设计 PR 正文须回链当前 Proposal。
+快照必须含被引用条目的真实作者、正文与父对象；作者属于 Maintainer，正文含
+`<!-- proposal-verdict: <判定> -->`，拒绝另须非空「理由：」行。缺任一项即拒绝生成计划。
+评论归属以 API 返回的 `issue_url` / `pull_request_url` 为准，不只比较 URL 编号。
+Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快照只读取当前目标 Proposal
+的裁决证据；普通 issue 的同名文本或非法 URL 不触发读取、不阻断全仓快照。
+状态标签互斥，新判定生成清理旧状态的 remove_label 动作。普通 bug / feature 继续使用既有六档判定。
+
+### 3. 计划类 issue 的特殊处理
 
 带 `plan` 标签的 issue（工作包卡）不做研判，只做一件事：
 - 无 assignee → 自动补指派 ShiningRay
 - 已有 assignee → 直接跳过，零成本
 
-### 3. Issue Type 与 Assignee 规则
+### 4. Issue Type 与 Assignee 规则
 
-- **type 按 issue 性质定**，不按判定定：报 bug 的 Bug、提需求的 Feature、文档/CI/工具的 Task
-- **assignee 唯一规则**：仅 `bug-confirmed` 或 `accepted` 才指派，其余一律不指派
+- **type 按 issue 性质定**，不按判定定：报 bug 的 Bug、提需求或 Proposal 的 Feature、文档/CI/工具的 Task
+- **assignee 唯一规则**：仅普通 issue 的 `bug-confirmed` 或 `accepted` 才指派；Proposal 三判定不指派
 - `escalate` 不指派——它需要人拍板但不是开发任务，靠飞书转告不占 assignee
 
-### 4. Bug 的 milestone 归属建议
+### 5. Bug 的 milestone 归属建议
 
 研判时多问一句"影响已发布版本吗？严重吗？"：
 

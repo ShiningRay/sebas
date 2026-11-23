@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: 2026 ShiningRay
+# SPDX-License-Identifier: MIT
+
+name: "Proposal"
+description: Propose a significant change for discussion / 提出需要设计裁决的重大变更
+title: "[proposal] "
+labels: ["proposal", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A brief issue is enough. You do **not** need repository write access, a design
+        document, or a pull request to make a proposal. Maintainers will decide whether
+        to accept the direction, request more design, or decline it.
+
+        简短描述即可。提 Proposal 不需要仓库权限、正式设计文档或 PR。接受设计不等于
+        承诺排期或实现；排期由 Maintainer 另行裁决。
+
+        For open-ended exploration, use GitHub Discussions. For a small, specific
+        improvement, use Feature request instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and current behavior
+      description: What problem should Sebas solve, and why is the current behavior insufficient?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What observable result should the change achieve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested approach
+      description: Describe a possible solution; a complete technical design is not required.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, existing workarounds, or reasons not to change Sebas.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Channels
+        - Orchestration
+        - Agents
+        - Config & hot reload
+        - Credentials
+        - Plugin layer
+        - Admin UI / API
+        - Docs & tooling
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Potential impact
+      description: Select anything that may apply; maintainers will help assess it.
+      options:
+        - label: Public behavior or user experience
+        - label: Architecture or persistence
+        - label: Configuration or DSL compatibility
+        - label: Security, privacy, or permissions
+        - label: None of these / unsure
+  - type: textarea
+    id: open_questions
+    attributes:
+      label: Risks and open questions
+      description: Known trade-offs, unresolved decisions, or relevant examples. Optional.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and design docs for this proposal.
+          required: true

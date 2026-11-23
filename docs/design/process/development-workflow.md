@@ -78,8 +78,49 @@ Agent 判定 active milestone 的算法见 [triager.md](triager.md) §3。
 | 类型 | 标签 | 处理方式 |
 |---|---|---|
 | 计划类工作包 | `plan` | 不做 agent 研判，仅跟踪；无 assignee 时自动补指派 |
+| Proposal | `proposal` | Issue 讨论 → 设计裁决 → 按需归档 → 单独排期 |
 | 外部 bug | 无 `plan` | 走完整研判 → `bug-confirmed` → 按严重度分轨 |
 | 外部 feature | 无 `plan` | 走完整研判 → `accepted` → 排期裁决 |
+
+### Proposal 生命周期
+
+重大行为、架构、配置或 DSL 变更从 **Proposal issue** 开始，不要求提案者先写设计文档、
+fork 仓库或提交 PR。开放式探索可先在 Discussions 进行；形成具体待裁决建议后开 Proposal
+issue。小型、明确的改进走 Feature request，不增加正式提案成本。
+
+| 载体 | 职责 |
+|---|---|
+| Proposal issue | 提案入口、公开讨论、开放问题与裁决理由的事实源 |
+| `docs/design/proposals/` | 需要时整理并入库的设计快照，回链原 issue；不是提提案的前置条件 |
+| `plan` issue | 排期批准后形成的工作包，链接原 Proposal issue 与设计文档 |
+
+```
+Proposal issue（proposal + needs-triage）
+  → Triager 查重、澄清、判断影响范围
+  → Maintainer 裁决
+       ├─ declined：proposal:declined，记录理由并关闭为 not planned
+       ├─ needs-design：proposal:needs-design，继续公开讨论
+       └─ accepted-design：proposal:accepted-design
+             ├─ 小型明确改动：无需正式设计文档
+             └─ 重大改动：Scribe 整理设计快照并提交 PR
+  → Maintainer 另行决定排期
+  → 创建 plan 工作包；未排期的提案不进入实现选卡
+```
+
+状态标签只有 `proposal:needs-design` / `proposal:accepted-design` / `proposal:declined`；
+初始研判沿用 `needs-triage`，补充信息沿用 `question`，重复提案沿用 `duplicate`。
+`backlog` 只表达暂不排期，不代表设计已接受；不新增另一套状态标签。
+
+责任边界：
+
+- **Triager** 不裁决产品方向、不接受设计、不排期、不改仓库；结论不足时标记 `question`。
+- **Maintainer** 将方向接受、设计定稿和排期分开决定；每次裁决在原 issue 留公开理由。
+- **Scribe** 只整理已达成的共识和异议，不借写文档自行补决策；PR 回链原 issue。
+- 外部贡献者可自愿 fork 提交设计 PR，但这不是参与讨论或获得裁决的条件。
+- 原 issue 持续保存讨论记录。设计文档与实现任务必须回链它，不维护两份平行讨论。
+
+**接受设计不等于批准排期，也不承诺版本交付。**只有 Maintainer 决定排期并创建 `plan`
+工作包后，Implementer 才按现有开工三闸执行。
 
 ### 外部 issue 的研判与归宿
 

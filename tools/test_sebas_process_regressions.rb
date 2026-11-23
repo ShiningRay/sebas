@@ -13,6 +13,108 @@ require_relative "test_sebas_process"
 class CliRobustnessTest < Minitest::Test
   include SnapshotHelpers
 
+  def test_proposal_snapshot_resolves_registered_verdict_author_and_body
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    issue = SebasAgents::Model::Issue.from_hash({
+      "number" => 8, "labels" => ["proposal"],
+      "body" => "<!-- proposal-decision: #{url} -->"
+    })
+    runner = Object.new
+    runner.define_singleton_method(:json!) do |*_args|
+      {"user" => {"login" => "ShiningRay"}, "body" => "<!-- proposal-verdict: accepted-design -->",
+        "issue_url" => "https://api.github.com/repos/o/r/issues/8"}
+    end
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    evidence = gateway.send(:proposal_decision_evidence, [issue], 8)
+    data = snapshot(issues: []).merge("proposal_evidence" => evidence)
+    snap = SebasAgents::Model::Snapshot.from_hash(data)
+    plan = SebasAgents::Triager.plan(issue, snap, verdict: {"decision" => "accepted-design", "maintainer_decision_url" => url})
+    assert plan["ok"]
+    assert_equal "ShiningRay", evidence.dig(url, "author")
+    assert_includes plan["comment"], url
+  end
+
+  def test_proposal_snapshot_rejects_comment_from_another_issue
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    issue = SebasAgents::Model::Issue.from_hash({
+      "number" => 8, "labels" => ["proposal"],
+      "body" => "<!-- proposal-decision: #{url} -->"
+    })
+    runner = Object.new
+    runner.define_singleton_method(:json!) do |*_args|
+      {"user" => {"login" => "ShiningRay"}, "body" => "<!-- proposal-verdict: accepted-design -->",
+        "issue_url" => "https://api.github.com/repos/o/r/issues/9"}
+    end
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    evidence = gateway.send(:proposal_decision_evidence, [issue], 8)
+    snap = SebasAgents::Model::Snapshot.from_hash(snapshot(issues: []).merge("proposal_evidence" => evidence))
+    error = assert_raises(SebasAgents::InvalidPlan) do
+      SebasAgents::Triager.plan(issue, snap, verdict: {"decision" => "accepted-design", "maintainer_decision_url" => url})
+    end
+    assert_includes error.message, "真实父对象"
+  end
+
+  def test_proposal_snapshot_ignores_malformed_reference_on_regular_issue
+    regular = SebasAgents::Model::Issue.from_hash({
+      "number" => 9, "body" => "<!-- proposal-decision: https://example.invalid/not-a-comment -->"
+    })
+    gateway = SebasAgents::GithubGateway.new(Object.new, repo: "o/r")
+    assert_empty gateway.send(:proposal_decision_evidence, [regular], 9)
+    assert_empty gateway.send(:proposal_decision_evidence, [regular], 8)
+  end
+
+  def test_proposal_decision_endpoints_and_pr_comment_parent
+    cases = {
+      "https://github.com/o/r/issues/8#issuecomment-1" => [
+        "repos/o/r/issues/comments/1", "issue_url", "https://api.github.com/repos/o/r/issues/8"
+      ],
+      "https://github.com/o/r/pull/9#discussion_r2" => [
+        "repos/o/r/pulls/comments/2", "pull_request_url", "https://api.github.com/repos/o/r/pulls/9"
+      ],
+      "https://github.com/o/r/pull/9#pullrequestreview-3" => [
+        "repos/o/r/pulls/9/reviews/3", "pull_request_url", "https://api.github.com/repos/o/r/pulls/9"
+      ],
+      "https://github.com/o/r/pull/9#issuecomment-4" => [
+        "repos/o/r/issues/comments/4", "issue_url", "https://api.github.com/repos/o/r/issues/9"
+      ]
+    }
+    cases.each do |url, (path, parent_field, parent)|
+      calls = []
+      runner = Object.new
+      runner.define_singleton_method(:json!) do |*args|
+        calls << args
+        {"user" => {"login" => "ShiningRay"}, "body" => "verdict", parent_field => parent}
+      end
+      issue = SebasAgents::Model::Issue.from_hash({"number" => 8, "labels" => ["proposal"], "body" => "<!-- proposal-decision: #{url} -->"})
+      gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+      evidence = gateway.send(:proposal_decision_evidence, [issue], 8)
+      assert_equal ["gh", "api", path], calls.first
+      expected_parent = parent_field == "issue_url" && url.include?("/pull/") ? parent.sub("/issues/", "/pulls/") : parent
+      assert_equal expected_parent, evidence.dig(url, "parent")
+    end
+  end
+
+  def test_proposal_snapshot_rejects_review_from_another_pr
+    url = "https://github.com/o/r/pull/9#discussion_r123"
+    issue = SebasAgents::Model::Issue.from_hash({
+      "number" => 8, "labels" => ["proposal"],
+      "body" => "<!-- proposal-decision: #{url} -->"
+    })
+    runner = Object.new
+    runner.define_singleton_method(:json!) do |*_args|
+      {"user" => {"login" => "ShiningRay"}, "body" => "<!-- proposal-verdict: accepted-design -->",
+        "pull_request_url" => "https://api.github.com/repos/o/r/pulls/10"}
+    end
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    evidence = gateway.send(:proposal_decision_evidence, [issue], 8)
+    data = snapshot(issues: [], pull_requests: [{"number" => 9, "body" => "Design #8"}]).merge("proposal_evidence" => evidence)
+    snap = SebasAgents::Model::Snapshot.from_hash(data)
+    error = assert_raises(SebasAgents::InvalidPlan) do
+      SebasAgents::Triager.plan(issue, snap, verdict: {"decision" => "accepted-design", "maintainer_decision_url" => url})
+    end
+    assert_includes error.message, "真实父对象"
+  end
+
   def run_cli(argv)
     out = StringIO.new
     err = StringIO.new

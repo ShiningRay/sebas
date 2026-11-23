@@ -39,15 +39,16 @@ module SebasAgents
       Array(raw["labels"]).any? { |item| item["name"] == label }
     end
 
-    def snapshot(gate_records: {}, external_records: {})
+    def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil)
       milestones = fetch_milestones
       issues = fetch_all_issues
-      pull_requests = fetch_pull_requests
+      pull_requests = fetch_pull_requests(proposal_evidence: !proposal_issue.nil?)
       issues = attach_blocked_by(issues)
       issues = close_over_dependencies(issues)
 
       blocks = issues.filter_map { |issue| JsonBlock.one(issue.body, "evidence", subject: "issue ##{issue.number}") }
       discovered = discover_records(blocks)
+      proposal_evidence = proposal_issue ? proposal_decision_evidence(issues, proposal_issue) : empty_proposal_evidence
       Model::Snapshot.new(
         repo: @repo,
         main_sha: main_sha,
@@ -59,7 +60,8 @@ module SebasAgents
         gates: discovered["gates"].merge(gate_records),
         externals: discovered["externals"].merge(external_records),
         trusted_bots: trusted_bots,
-        source_bodies: resolve_bodies(blocks)
+        source_bodies: resolve_bodies(blocks),
+        proposal_evidence: proposal_evidence
       )
     end
 
@@ -145,6 +147,58 @@ module SebasAgents
         end
       end
       known.values.sort_by(&:number)
+    end
+
+    # Proposal 用 HTML 注释登记已读到的裁决 URL，避免模型只给 URL 而快照未取作者与正文。
+    def proposal_decision_refs(body)
+      body.scan(/^<!-- proposal-decision: (https:\/\/\S+) -->$/).flatten
+    end
+
+    # 只解析当前目标 Proposal；普通 issue 的文本不会触发外部读取或阻断全仓快照。
+    def proposal_decision_evidence(issues, number)
+      issue = issues.find { |item| item.number == number.to_i }
+      return empty_proposal_evidence unless issue&.label?("proposal")
+
+      proposal_decision_refs(issue.body).each_with_object({}) do |ref, evidence|
+        match = Triager::DECISION_URL.match(ref)
+        next unless match
+
+        repo = match[:repo]
+        kind = match[:kind]
+        parent = match[:number]
+        next unless repo == @repo
+
+        anchor = match[:anchor]
+        raw = if anchor&.start_with?("issuecomment")
+          fetch_ref("repos/#{@repo}/issues/comments/#{match[:id]}")
+        elsif anchor&.start_with?("pullrequestreview")
+          fetch_ref("repos/#{@repo}/pulls/#{parent}/reviews/#{match[:id]}")
+        else
+          fetch_ref("repos/#{@repo}/pulls/comments/#{match[:discussion_id]}")
+        end
+        next unless raw
+
+        parent_url = if kind == "issues"
+          raw["issue_url"]
+        elsif anchor&.start_with?("issuecomment")
+          issue_url = raw["issue_url"].to_s
+          next unless issue_url == "https://api.github.com/repos/#{@repo}/issues/#{parent}"
+          "https://api.github.com/repos/#{@repo}/pulls/#{parent}"
+        else
+          raw["pull_request_url"]
+        end
+        evidence[ref] = {"author" => raw.dig("user", "login"), "body" => raw["body"].to_s, "parent" => parent_url}
+      end
+    end
+
+    def empty_proposal_evidence
+      {}
+    end
+
+    def fetch_ref(path)
+      @runner.json!("gh", "api", path)
+    rescue CommandError
+      nil
     end
 
     def resolve_authors(blocks)
@@ -246,7 +300,7 @@ module SebasAgents
       nil
     end
 
-    def fetch_pull_requests
+    def fetch_pull_requests(proposal_evidence: false)
       raw = @runner.json!("gh", "pr", "list", "--repo", @repo, "--state", "all", "--limit", "100",
         "--json", "number,headRefName,baseRefName,headRefOid,state,mergeStateStatus,statusCheckRollup,closingIssuesReferences,url,isCrossRepository")
       unless raw.is_a?(Array)
@@ -266,7 +320,14 @@ module SebasAgents
         # 已合并/关闭 PR 的快照不带这两项（检查不可判定即留痕 unverified）。
         # 详情必须属于快照记录的同一 head：两次请求间若 PR 推了新提交，
         # 门禁会拿旧 head 的 checks 配新 head 的 files 形成混合快照——fail-closed。
-        details = item["state"].to_s.casecmp?("OPEN") ? fetch_pr_details(item["number"], expected_head: item["headRefOid"]) : {}
+        details = if proposal_evidence
+          # 提案研判只需要设计 PR 正文回链，不需要变更文件或 head 混合快照。
+          {"body" => read_pr_detail(item["number"])["body"].to_s}
+        elsif item["state"].to_s.casecmp?("OPEN")
+          fetch_pr_details(item["number"], expected_head: item["headRefOid"])
+        else
+          {}
+        end
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
