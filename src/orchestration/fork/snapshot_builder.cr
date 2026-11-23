@@ -30,9 +30,13 @@ module Sebas
         # frozen_transcripts：调用方在首成员执行前读好的固定窗口（全成员同源）。
         # include 白名单（semantics §1.2）：缺省 ["transcripts","system_prompt","skills"]；
         # 逐项控制注入面——白名单不含 secrets 项（§5.3）。
+        # grant（M4.2-WP1 能力衰减）：非空时把生效工具清单注入 system prompt
+        # （§5.2「可观测」——分身对自身能力面有明确提示；剔除项由调用方在
+        # 回执列明，prompt 只列生效集）。
         def self.build(frozen_transcripts : Array(::Sebas::Platform::Store::TranscriptRow),
                        parent_persona : String, skills_text : String,
-                       input : Input, member_index : Int) : Array(Providers::Message)
+                       input : Input, member_index : Int,
+                       grant : Capability::Grant? = nil) : Array(Providers::Message)
           includes = input.include || %w[transcripts system_prompt skills]
           messages = [] of Providers::Message
           system = String.build do |io|
@@ -40,7 +44,12 @@ module Sebas
             io << "\n\n" << skills_text if includes.includes?("skills") && !skills_text.empty?
             role_note = input.role ? " Role card: #{input.role}." : ""
             io << "\n\n[You are fork member #{member_index} of #{input.count} for this task. "
-            io << "You run with forked capability set; irreversible actions require approval.#{role_note}]"
+            io << "You run with forked capability set; irreversible actions require approval."
+            unless grant.nil?
+              tools = grant.effective.empty? ? "none" : grant.effective.join(", ")
+              io << " Available tools: #{tools}."
+            end
+            io << role_note << "]"
           end
           messages << Providers::Message.new("system", system)
           if includes.includes?("transcripts")

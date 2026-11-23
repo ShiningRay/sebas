@@ -186,6 +186,13 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 ## 5. 能力衰减（Q6 裁断）
 
+> 实现状态（M4.2-WP1，#46）：`src/orchestration/fork/capability.cr` 的
+> `Capability.resolve` 承载本节裁决——未声明 `tools` 走 §5.1 默认只读档
+> （`memory.search` + `session.read`）；声明与父 `tools.allow` 求交集，`*`
+> 即全允许；白名单外剔除项经 `Grant.removed` 在成员任务 payload 与 fork
+> 回执（`tools_effective`/`tools_removed`）列明；生效清单注入分身 system
+> prompt（`Available tools`）。secrets 不随分身由 provider 句柄共享保证（§5.3）。
+
 ### 5.1 默认只读档（未声明 `tools` 时生效）
 
 | 能力 | 默认档 | 依据 |

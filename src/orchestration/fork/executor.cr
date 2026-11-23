@@ -24,6 +24,9 @@ module Sebas
         getter semaphore : ::Sebas::Agents::Semaphore
         getter max_concurrent : Int32
         getter last_fork_id : String? = nil
+        # 能力衰减裁决（M4.2-WP1）：本次 fork 的生效工具集与剔除清单，
+        # 供触发面回执列明（§5.2「可观测，不静默失败」）。
+        getter last_grant : Capability::Grant? = nil
 
         def initialize(@store : ::Sebas::Platform::Store::Store,
                        @expectations : Expectations,
@@ -53,9 +56,13 @@ module Sebas
 
         def run(parent_task_id : String, parent_session_key : String,
                 parent_agent_id : String, parent_persona : String, skills_text : String,
-                input : SnapshotBuilder::Input) : Array(MemberResult)
+                input : SnapshotBuilder::Input, parent_tools_allow : Array(String) = ["*"]) : Array(MemberResult)
           fork_id = "fork:" + ::Random::Secure.hex(4)
           @last_fork_id = fork_id
+          # 能力衰减（M4.2-WP1 §5.2）：生效集 = 声明 ∩ 父 allow；未声明走默认
+          # 只读档。剔除项随 payload 与 last_grant 回执列明。
+          grant = Capability.resolve(input.tools, parent_tools_allow)
+          @last_grant = grant
           declared = (1..input.count).map { |i| fork_id + ":#{i}" }
           # deadline 在持久化前只算一次：快照读取耗时计入期限（CodeRabbit——
           # 否则慢快照会把启动门槛推后到已持久化期限之外）。
@@ -80,7 +87,7 @@ module Sebas
             )
             @store.create_task(task_id, "fork_child", parent_id: parent_task_id,
               owner_task_id: parent_task_id,
-              payload: %({"fork": #{fork_id.inspect}, "member": #{member_index}, "task": #{input.task.inspect}}))
+              payload: %({"fork": #{fork_id.inspect}, "member": #{member_index}, "task": #{input.task.inspect}, "tools_effective": #{grant.effective.inspect}, "tools_removed": #{grant.removed.inspect}}))
 
             # any 已 settle：不再启动排队成员（首个成功即收口，§2.3）
             row = @store.expectation?(fork_id)
@@ -95,7 +102,7 @@ module Sebas
             end
 
             messages = SnapshotBuilder.build(frozen_transcripts, parent_persona,
-              skills_text, input, member_index)
+              skills_text, input, member_index, grant)
 
             acquire_slot do
               provider = @provider_factory.call
