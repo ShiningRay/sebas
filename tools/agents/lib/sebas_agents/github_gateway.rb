@@ -47,6 +47,9 @@ module SebasAgents
       issues = close_over_dependencies(issues)
 
       blocks = issues.filter_map { |issue| JsonBlock.one(issue.body, "evidence", subject: "issue ##{issue.number}") }
+      refs = blocks.filter_map { |block| block["source_ref"].to_s }
+      refs.concat(issues.flat_map { |issue| proposal_decision_refs(issue.body) })
+      refs.uniq!
       discovered = discover_records(blocks)
       Model::Snapshot.new(
         repo: @repo,
@@ -55,11 +58,11 @@ module SebasAgents
         issues: issues,
         pull_requests: pull_requests,
         maintainers: maintainers,
-        source_authors: resolve_authors(blocks),
+        source_authors: resolve_authors(refs),
         gates: discovered["gates"].merge(gate_records),
         externals: discovered["externals"].merge(external_records),
         trusted_bots: trusted_bots,
-        source_bodies: resolve_bodies(blocks)
+        source_bodies: resolve_bodies(refs)
       )
     end
 
@@ -147,9 +150,13 @@ module SebasAgents
       known.values.sort_by(&:number)
     end
 
-    def resolve_authors(blocks)
-      blocks.each_with_object({}) do |block, memo|
-        ref = block["source_ref"].to_s
+    # Proposal 用 HTML 注释登记已读到的裁决 URL，避免模型只给 URL 而快照未取作者与正文。
+    def proposal_decision_refs(body)
+      body.scan(/^<!-- proposal-decision: (https:\/\/\S+) -->$/).flatten
+    end
+
+    def resolve_authors(refs)
+      refs.each_with_object({}) do |ref, memo|
         next if ref.empty? || memo.key?(ref)
 
         memo[ref] = ref_author(ref)
@@ -158,9 +165,8 @@ module SebasAgents
 
     # 被引用评论的正文。用于把授权绑定到「登记内容」而不只是「评论作者」：
     # 只证明 bot/maintainer 写过某条评论，不能证明该评论登记了当前结论。
-    def resolve_bodies(blocks)
-      blocks.each_with_object({}) do |block, memo|
-        ref = block["source_ref"].to_s
+    def resolve_bodies(refs)
+      refs.each_with_object({}) do |ref, memo|
         next if ref.empty? || memo.key?(ref)
 
         memo[ref] = ref_body(ref)

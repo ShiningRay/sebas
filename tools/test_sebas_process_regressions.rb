@@ -13,6 +13,28 @@ require_relative "test_sebas_process"
 class CliRobustnessTest < Minitest::Test
   include SnapshotHelpers
 
+  def test_proposal_snapshot_resolves_registered_verdict_author_and_body
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    issue = SebasAgents::Model::Issue.from_hash({
+      "number" => 8, "labels" => ["proposal"],
+      "body" => "<!-- proposal-decision: #{url} -->"
+    })
+    runner = Object.new
+    runner.define_singleton_method(:json!) do |*_args|
+      {"user" => {"login" => "ShiningRay"}, "body" => "<!-- proposal-verdict: accepted-design -->"}
+    end
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    refs = gateway.send(:proposal_decision_refs, issue.body)
+    authors = gateway.send(:resolve_authors, refs)
+    bodies = gateway.send(:resolve_bodies, refs)
+    data = snapshot(issues: []).merge("source_authors" => authors, "source_bodies" => bodies)
+    snap = SebasAgents::Model::Snapshot.from_hash(data)
+    plan = SebasAgents::Triager.plan(issue, snap, verdict: {"decision" => "accepted-design", "maintainer_decision_url" => url})
+    assert plan["ok"]
+    assert_equal "ShiningRay", authors[url]
+    assert_includes plan["comment"], url
+  end
+
   def run_cli(argv)
     out = StringIO.new
     err = StringIO.new

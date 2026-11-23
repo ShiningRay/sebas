@@ -1311,10 +1311,25 @@ class CliTest < Minitest::Test
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 0, status
       actions = JSON.parse(out)["actions"]
-      assert(actions.any? { |action| action["name"] == "proposal:needs-design" })
+      assert(actions.any? { |action| action["action"] == "add_label" && action["name"] == "proposal:needs-design" })
       assert(actions.any? { |action| action["action"] == "set_type" && action["type"] == "Feature" })
       refute(actions.any? { |action| %w[add_assignee suggest_milestone close].include?(action["action"]) })
     end
+  end
+
+  def proposal_verdict(data, dir, decision: "accepted-design", url: nil)
+    url ||= "https://github.com/o/r/issues/8#issuecomment-123"
+    data["source_authors"][url] = "ShiningRay"
+    data["source_bodies"][url] = "<!-- proposal-verdict: #{decision} -->\n理由：符合设计边界。"
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({
+      "decision" => decision,
+      "body" => "Maintainer 已裁决；排期另议。",
+      "maintainer_decision_url" => url
+    }), encoding: "UTF-8")
+    [snap, verdict, url]
   end
 
   def test_triage_proposal_acceptance_requires_maintainer_evidence
@@ -1325,7 +1340,7 @@ class CliTest < Minitest::Test
       File.write(snap, JSON.generate(data), encoding: "UTF-8")
       File.write(verdict, JSON.generate({"decision" => "accepted-design", "body" => "接受"}), encoding: "UTF-8")
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
-      assert_equal 2, status
+      assert_equal 1, status
       assert_includes out, "maintainer_decision_url"
     end
   end
@@ -1333,19 +1348,15 @@ class CliTest < Minitest::Test
   def test_triage_proposal_acceptance_clears_states_without_assigning
     data = snapshot(issues: [issue(8, labels: ["proposal", "proposal:needs-design"])])
     Dir.mktmpdir do |dir|
-      snap = File.join(dir, "s.json")
-      verdict = File.join(dir, "v.json")
-      File.write(snap, JSON.generate(data), encoding: "UTF-8")
-      File.write(verdict, JSON.generate({
-        "decision" => "accepted-design",
-        "body" => "Maintainer 接受方向；排期另议。",
-        "maintainer_decision_url" => "https://github.com/ShiningRay/sebas/issues/8#issuecomment-123"
-      }), encoding: "UTF-8")
+      snap, verdict, url = proposal_verdict(data, dir)
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 0, status
-      actions = JSON.parse(out)["actions"]
+      payload = JSON.parse(out)
+      actions = payload["actions"]
       assert(actions.any? { |action| action["action"] == "add_label" && action["name"] == "proposal:accepted-design" })
       assert(actions.any? { |action| action["action"] == "remove_label" && action["name"] == "proposal:needs-design" })
+      assert_includes payload["comment"], url
+      assert_includes payload["comment_preview"], url
       refute(actions.any? { |action| %w[add_assignee suggest_milestone close].include?(action["action"]) })
     end
   end
@@ -1366,20 +1377,90 @@ class CliTest < Minitest::Test
   def test_triage_proposal_decline_records_reason_and_closes
     data = snapshot(issues: [issue(8, labels: ["proposal", "proposal:accepted-design"])])
     Dir.mktmpdir do |dir|
-      snap = File.join(dir, "s.json")
-      verdict = File.join(dir, "v.json")
-      File.write(snap, JSON.generate(data), encoding: "UTF-8")
-      File.write(verdict, JSON.generate({
-        "decision" => "declined",
-        "body" => "偏离产品定位；见 Maintainer 裁决。",
-        "maintainer_decision_url" => "https://github.com/ShiningRay/sebas/issues/8#issuecomment-123"
-      }), encoding: "UTF-8")
+      snap, verdict, = proposal_verdict(data, dir, decision: "declined")
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 0, status
       actions = JSON.parse(out)["actions"]
+      assert(actions.any? { |action| action["action"] == "add_label" && action["name"] == "proposal:declined" })
       assert(actions.any? { |action| action["action"] == "close" && action["reason"] == "not planned" })
       assert(actions.any? { |action| action["action"] == "remove_label" && action["name"] == "proposal:accepted-design" })
       refute(actions.any? { |action| %w[add_assignee suggest_milestone].include?(action["action"]) })
+    end
+  end
+
+  def test_triage_proposal_rejects_untrusted_or_unbound_verdicts
+    data = snapshot(issues: [issue(8, labels: ["proposal"])])
+    Dir.mktmpdir do |dir|
+      [
+        ["https://github.com/other/r/issues/8#issuecomment-123", "当前仓库"],
+        ["https://github.com/o/r/issues/9#issuecomment-123", "当前 Proposal"]
+      ].each do |url, message|
+        snap, verdict, = proposal_verdict(data, dir, url: url)
+        status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+        assert_equal 1, status
+        assert_includes out, message
+      end
+
+      snap, verdict, url = proposal_verdict(data, dir)
+      data["source_authors"][url] = "external-user"
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 1, status
+      assert_includes out, "Maintainer"
+
+      data["source_authors"][url] = "ShiningRay"
+      data["source_bodies"].delete(url)
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 1, status
+      assert_includes out, "裁决正文"
+    end
+  end
+
+  def test_triage_proposal_design_pr_verdict_requires_backlink
+    url = "https://github.com/o/r/pull/9#discussion_r123"
+    data = snapshot(issues: [issue(8, labels: ["proposal"])], pull_requests: [{"number" => 9, "body" => ""}])
+    Dir.mktmpdir do |dir|
+      snap, verdict, = proposal_verdict(data, dir, url: url)
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 1, status
+      assert_includes out, "回链"
+
+      data["pull_requests"][0]["body"] = "Implements #8"
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 0, status, out
+    end
+  end
+
+  def test_triage_proposal_rejects_assignment_and_scheduling_decisions
+    data = snapshot(issues: [issue(8, labels: ["proposal"])])
+    Dir.mktmpdir do |dir|
+      %w[accepted bug-confirmed rejected fixed by-design].each do |decision|
+        snap = File.join(dir, "s.json")
+        verdict = File.join(dir, "v.json")
+        File.write(snap, JSON.generate(data), encoding: "UTF-8")
+        File.write(verdict, JSON.generate({"decision" => decision}), encoding: "UTF-8")
+        status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+        assert_equal 1, status
+        assert_includes out, "Proposal 只允许"
+      end
+    end
+  end
+
+  def test_triage_proposal_preserves_clarification_duplicate_and_escalation
+    data = snapshot(issues: [issue(8, labels: ["proposal"])])
+    Dir.mktmpdir do |dir|
+      {"needs-info" => "question", "duplicate" => "close", "escalate" => "notify_maintainer"}.each do |decision, expected|
+        snap = File.join(dir, "s.json")
+        verdict = File.join(dir, "v.json")
+        File.write(snap, JSON.generate(data), encoding: "UTF-8")
+        File.write(verdict, JSON.generate({"decision" => decision, "body" => "说明"}), encoding: "UTF-8")
+        _status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+        actions = JSON.parse(out)["actions"]
+        assert(actions.any? { |action| action["action"] == expected || action["name"] == expected })
+        refute(actions.any? { |action| %w[add_assignee suggest_milestone].include?(action["action"]) })
+      end
     end
   end
 

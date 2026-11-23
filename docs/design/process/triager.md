@@ -32,9 +32,14 @@
 | `declined` | Maintainer 已明确拒绝 | 加 `proposal:declined`；评论须含 `maintainer_decision_url` 和理由，关闭为 not planned |
 
 `needs-design` 不要求提案者自行提交文档 PR。达到可整理程度后由 Scribe 接续；接受设计后，
-排期仍由 Maintainer 单独决定。`accepted-design` / `declined` 的 verdict 必须带 Maintainer
-公开评论或 review 的 `maintainer_decision_url`，缺链接时工具拒绝生成状态变更。状态标签互斥，
-新判定生成清理旧状态的 remove_label 动作。普通 bug / feature 继续使用既有六档判定。
+排期仍由 Maintainer 单独决定。Proposal 仅可使用这三个专用判定，普通判定中只允许
+`needs-info` / `duplicate` / `escalate`，不接受设计、不指派开发、不建议 milestone。
+`accepted-design` / `declined` 的 verdict 必须带 Maintainer 公开评论或 review 的
+`maintainer_decision_url`。链接须属于当前仓库和 Proposal；设计 PR 正文须回链当前 Proposal。
+快照必须含被引用条目的真实作者与正文；作者属于 Maintainer，正文含
+`<!-- proposal-verdict: <判定> -->`，拒绝另须非空「理由：」行。缺任一项即拒绝生成计划。
+Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快照据此读取裁决证据。
+状态标签互斥，新判定生成清理旧状态的 remove_label 动作。普通 bug / feature 继续使用既有六档判定。
 
 ### 3. 计划类 issue 的特殊处理
 
