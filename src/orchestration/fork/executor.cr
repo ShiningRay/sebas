@@ -72,15 +72,16 @@ module Sebas
           # 快照的耗时都计入期限（CodeRabbit——否则慢快照会把启动门槛推后到
           # 已持久化期限之外）。
           deadline = ::Time.utc + input.deadline.seconds
-          # 工作区指纹快照（M4.2-WP2 §2.2 L1）：声明 files 在首成员执行前记
-          # sha256 摘要；join 回写时对比——父期间被改的文件标 CONFLICT 进
-          # 父裁决清单，不自动 merge（矩阵通则 2）。
+          # 工作区指纹快照（M4.2-WP2 §2.2 L1）：声明 files 即写 memo（declared
+          # 标记 + 各文件 sha256；全不存在时 digests 为空——声明状态独立持久化，
+          # 不得由 join 侧从 pre_digest 反推）；join 回写时对比——父期间被动过
+          # 的文件标 CONFLICT 进父裁决清单，不自动 merge（矩阵通则 2）。
           unless (files = input.files).nil?
-            snapshot = files.compact_map do |path|
+            digests = files.compact_map do |path|
               next unless File.file?(path)
               {path, ::Digest::SHA256.hexdigest(File.read(path))}
             end.to_h
-            @store.memo_put("fork:#{fork_id}:files", snapshot.to_json) unless snapshot.empty?
+            @store.memo_put("fork:#{fork_id}:files", %({"declared": true, "digests": #{digests.to_json}}))
           end
           row = @expectations.create(fork_id, parent_task_id, parent_session_key,
             input.mode, declared, deadline)

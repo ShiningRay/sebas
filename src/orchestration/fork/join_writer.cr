@@ -73,8 +73,9 @@ module Sebas
                        row.result.to_s.lchop("first success: ")
                      end
           members = build_members(row, member_ids, selected)
-          effects, written_digests, pre_digests = collect_member_effects(member_ids)
-          conflicts = detect_conflicts(row.fork_id, written_digests, pre_digests)
+          effects, write_chains = collect_member_effects(member_ids)
+          declared, fork_baseline = fork_file_baseline(row.fork_id)
+          conflicts = detect_conflicts(write_chains, declared, fork_baseline)
           # outcome 映射：all 模式「状态机 settled 但 result=failed」报告为
           # failed（§4.3 all 行）；allSettled 恒 settled。
           outcome = if row.status == "settled" && row.mode == "all" && row.result == "failed"
@@ -126,7 +127,7 @@ module Sebas
         # payload 的 effects 数组（成员 ledger 落库），保持发生序；同时提取文件
         # 写后摘要——冲突检测基线 = 成员写后状态（成员自己的合法写入不算冲突，
         # 父在其后的改动才算，§2.2 L1）。
-        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, Array(Tuple(String, String))), Bool)
+        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, Array(Tuple(String, String))))
           effects = member_ids.flat_map do |task_id|
             raw = @store.task_payload(task_id)
             next [] of JSON::Any unless raw
@@ -139,9 +140,6 @@ module Sebas
             effects_array
           end
           sorted = effects.sort_by(&.as_h.[]("at").as_s)
-          files_declared = sorted.any? do |e|
-            e.as_h["side_effect"].as_s == "file_write" && !e.as_h["pre_digest"].as_s.empty?
-          end
           write_chains = Hash(String, Array(Tuple(String, String))).new
           sorted.each do |effect|
             next unless effect.as_h["side_effect"].as_s == "file_write"
@@ -149,7 +147,7 @@ module Sebas
             chain = write_chains[target] ||= Array(Tuple(String, String)).new
             chain << {effect.as_h["pre_digest"].as_s, effect.as_h["post_digest"].as_s}
           end
-          {sorted, write_chains, files_declared}
+          {sorted, write_chains}
         end
 
         # 指纹对比（M4.2-WP2）按写入链逐环检测：fork 基线 vs 首写 pre（父在
@@ -157,11 +155,9 @@ module Sebas
         # post vs 回写时现状（父在最后写后动过）。命中任一环即 CONFLICT，
         # 只报告不合并（矩阵通则 2）。files 未声明的 fork 无基线可比，跳过
         # pre/fork 对比（区分「fork 时不存在」与「无基线」两态）。
-        private def detect_conflicts(fork_id : String,
-                                     write_chains : Hash(String, Array(Tuple(String, String))),
-                                     files_declared : Bool) : Array(JSON::Any)
+        private def detect_conflicts(write_chains : Hash(String, Array(Tuple(String, String))),
+                                     files_declared : Bool, fork_baseline : Hash(String, JSON::Any)) : Array(JSON::Any)
           return [] of JSON::Any if write_chains.empty?
-          fork_baseline = fork_file_baseline(fork_id)
           write_chains.compact_map do |path, chain|
             next if chain.empty?
             drifted = false
@@ -188,11 +184,14 @@ module Sebas
           end
         end
 
-        # fork 时点的工作区基线（run 开始记的 memo 快照）；无快照返回空映射
-        private def fork_file_baseline(fork_id : String) : Hash(String, JSON::Any)
+        # fork 时点的工作区基线（run 开始记的 memo 快照）：{declared, digests}。
+        # 无 memo = 未声明 files（declared=false，无基线可比）；有 memo 但
+        # digests 空 = 声明了且 fork 时全不存在（declared=true 仍可判父建过）。
+        private def fork_file_baseline(fork_id : String) : Tuple(Bool, Hash(String, JSON::Any))
           raw = @store.memo_get("fork:#{fork_id}:files")
-          return Hash(String, JSON::Any).new unless raw
-          JSON.parse(raw).as_h
+          return {false, Hash(String, JSON::Any).new} unless raw
+          parsed = JSON.parse(raw).as_h
+          {parsed["declared"]?.try(&.as_bool) || false, parsed["digests"]?.try(&.as_h) || Hash(String, JSON::Any).new}
         end
 
         # 现状摘要：存在性检查后可能被并发删除（CodeRabbit）——读取期 NotFound
