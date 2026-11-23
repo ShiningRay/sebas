@@ -112,15 +112,24 @@ runs:
           echo "::warning::selected OpenSSL keg has no lib/pkgconfig; version detection may not see it"
         fi
 
-        # 自检：pkg-config 必须能解析出所选 keg 的 libcrypto 版本（≥ 3）。
-        # 解析不到即说明环境仍不满足，明确失败而非留到 crystal 编译期才报。
-        detected="$(PKG_CONFIG_PATH="${openssl_prefix}/lib/pkgconfig" pkg-config --modversion libcrypto 2>/dev/null || true)"
-        if [ -z "$detected" ]; then
-          echo "::error::pkg-config cannot resolve libcrypto under ${openssl_prefix}."
-          echo "::error::Reinstall the keg (brew reinstall openssl@3) or check pkg-config setup."
+        # 自检：pkg-config 必须解析出【所选 keg 内】的 libcrypto.pc（≥ 3）。
+        # PKG_CONFIG_PATH 只增优先目录、不排除默认目录——若所选 keg 缺 .pc
+        # 而系统目录有残留元数据，朴素 --modversion 会误判通过。故先要求
+        # libcrypto.pc 在所选 keg 内存在，再用 pcfiledir 校验解析来源，
+        # 最后验版本，三重确认选中的就是该 keg。
+        if [ ! -f "${openssl_prefix}/lib/pkgconfig/libcrypto.pc" ]; then
+          echo "::error::${openssl_prefix}/lib/pkgconfig/libcrypto.pc not found."
+          echo "::error::Reinstall the keg: brew reinstall openssl@3"
           exit 1
         fi
-        echo "libcrypto version detected by pkg-config: ${detected}"
+        detected="$(PKG_CONFIG_PATH="${openssl_prefix}/lib/pkgconfig" pkg-config --modversion libcrypto 2>/dev/null || true)"
+        resolved_dir="$(PKG_CONFIG_PATH="${openssl_prefix}/lib/pkgconfig" pkg-config --variable=pcfiledir libcrypto 2>/dev/null || true)"
+        if [ -z "$detected" ] || [ "$resolved_dir" != "${openssl_prefix}/lib/pkgconfig" ]; then
+          echo "::error::pkg-config resolved libcrypto from '${resolved_dir:-none}', not the selected keg ${openssl_prefix}."
+          echo "::error::Check for conflicting PKG_CONFIG_PATH entries."
+          exit 1
+        fi
+        echo "libcrypto version detected by pkg-config: ${detected} (${resolved_dir})"
         case "${detected}" in
           3.*|4.*) ;;
           *)
