@@ -85,6 +85,21 @@ module Sebas
 
       # fork/join 编排动作处理（M4.1-WP5）：登记 expectation（fork）/ 返回
       # 汇聚状态（join）。分身执行由 ForkManager 执行体在触发面完成。
+      # 派发异常收口：已创建的 fork_child 任务 fail 落终态、expectation 置
+      # expired（members_final=0 行 judge 跳过，须直接 transition）。
+      private def close_dispersed_fork(executor : ::Sebas::Orchestration::Fork::Executor,
+                                       run_id : String) : Nil
+        row = @store.expectation?(executor.last_fork_id) if executor.last_fork_id
+        return if row.nil?
+        Array(String).from_json(row.members).each do |task_id|
+          @store.fail_task(task_id, "fork dispatch failed") rescue nil
+        end
+        @store.transition_expectation(row.id, "open", "expired",
+          settled_count: row.settled_count, result: "dispatch failed")
+      rescue
+        nil # 收口本身失败不掩盖原始异常
+      end
+
       # fork 必填字段校验（ Validator 前置：缺字段不被运行时默认值吞掉）。
       private def fork_arg_errors(args : JSON::Any) : Array(String)
         errors = [] of String
@@ -115,10 +130,14 @@ module Sebas
             return Tools::ToolResult.error("fork #{action.id}: #{validation_errors.join("；")}")
           end
 
-          # 校验通过后字段必有值；从 args 重读（nil 已被 fork_arg_errors 拒绝）
+          # 校验通过后字段必有值；从 args 重读（nil 已被 fork_arg_errors 拒绝）。
+          # snapshot.window/include 透传 DSL 显式声明（缺失用默认，不覆盖声明）
           input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
             task: args["task"]?.try(&.as_s?) || "", count: args["count"]?.try(&.as_i?) || 0,
-            window: nil, include: nil, tools: nil, role: nil,
+            window: args.dig?("snapshot", "window").try(&.as_i?),
+            include: args.dig?("snapshot", "include").try(&.as_a?)
+              .try(&.map { |item| item.as_s? || "" }),
+            tools: nil, role: nil,
             mode: args["mode"]?.try(&.as_s?) || "allSettled",
             deadline: args["deadline"]?.try(&.as_i?) || 3600
           )
