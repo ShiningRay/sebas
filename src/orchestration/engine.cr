@@ -109,6 +109,7 @@ module Sebas
       end
 
       # fork 必填字段校验（ Validator 前置：缺字段不被运行时默认值吞掉）。
+      # ameba:disable Metrics/CyclomaticComplexity — 字段逐项校验直译卡面规则
       private def fork_arg_errors(args : JSON::Any) : Array(String)
         errors = [] of String
         task = args["task"]?.try(&.as_s?)
