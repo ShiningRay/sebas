@@ -119,7 +119,8 @@ Slack Socket Mode 的「先落库 → 再 ACK → 再入总线」顺序防的是
 
 - **持久化表**：`slack_events(event_id, account_id, envelope_id, raw_payload, dispatched, created_at)`——落库时 `dispatched=false`，入总线后消费者 `record_intent` 成功回调置 `dispatched=true`。
 - **启动恢复**：每次启动 Socket Mode 连接前，先扫 `slack_events.dispatched=false` 的行，按 `created_at` 升序经 `Bus#publish` 重投（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束）。
-- **与 Telegram 恢复机制同构**：`dispatched` 标记、消费者确认回调、启动扫描重投——两渠道共用同一恢复模式。
+- **运行期恢复（admission 失败重投）**：若 `admit` 因会话积压已满而拒绝事件，`dispatched` 保持 `false`——适配器**运行期持续重投** `dispatched=false` 的记录（每 60s 扫描一次，与 Telegram 周期扫描同构），使临时 admission 拒绝的事件在容量恢复后无需重启即可重新进入正常 admission → dispatch 流程。
+- **与 Telegram 恢复机制同构**：`dispatched` 标记、消费者确认回调、启动扫描 + 运行期扫描重投——两渠道共用同一恢复模式。
 
 ### 4.2 接收侧形态归并（沿用 §5.2）
 
@@ -138,7 +139,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
 
 1. **活跃窗口内（持久化优先于 offset 推进）**：对收到的每条 update，按以下顺序处理：
    - **Step 1 · 持久化**：先把 update 原文 + 内容指纹落 `telegram_updates` 表（含 `dispatched: false` 标记）。**唯一索引冲突处理**：若 INSERT 触发 `(content_fingerprint, account_id)` 唯一索引冲突，说明该 update 之前已持久化（典型场景：上一次进程在 Step 1 后、Step 2 前崩溃，重启后 Telegram 再次返回同一条 update）——**不视为失败**，继续执行 Step 2 推进 `persisted_offset`；同时查一次该行的 `dispatched` 标记，`dispatched=true` 则 Step 3 跳过（不重复入总线），`dispatched=false` 则 Step 3 照常执行。
-   - **Step 2 · 推进 offset**：持久化成功（含唯一索引冲突被视为已持久化）后，才把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 才确认旧值。**绝不在持久化前推进 offset**——否则崩溃后 Telegram 已确认、本地无记录，静默丢消息。
+   - **Step 2 · 推进 offset**：持久化成功（含唯一索引冲突被视为已持久化）后，才把 `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 才确认旧值。**绝不在持久化前推进 offset**——否则崩溃后 Telegram 已确认、本地无记录，静默丢消息。**空闲计时起点**：`last_update_at` 在**收到 `getUpdates` 响应时**（处理批次前）记录，而非 Step 2 落库时——这样批次内 Step 1–3 的处理延迟不会推迟空闲计时起点，避免「A 的 Step 3 阻塞超 1 天导致 B 的 `last_update_at` 推迟、本地空闲时间不足 6 天」的窗口。
    - **Step 3 · 入总线 + 消费者确认**：把该 update 投递到 bus。**`Bus#publish` 成功返回 ≠ 处理完成**——`Bus#publish` 只把事件写入进程内存 Channel，没有落盘或确认机制；消费者在接收事件后才调用 `record_intent` 把 intent 写入 intents 表。因此 `dispatched=true` 的置位必须由**消费者侧**发起：
      - 消费者 `process_message` 在 `record_intent` 落库成功后，回调 Telegram adapter 把对应 `telegram_updates.dispatched` 置 `true`；
      - **已有 intent 分支也要确认**：若消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent（`INSERT OR IGNORE` 返回 false）而提前返回，**也必须**回调把对应 `telegram_updates.dispatched` 置 `true`——否则启动恢复会重投该行，消费者又走「已有 intent」分支提前返回，永远卡在 `dispatched=false`，每次启动都被重复重投。
@@ -154,7 +155,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
    - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 且 `status != 'dead_letter'` 的行，按 update_id 升序重建消息（`event_id` 按上述含指纹规则派生）、经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束）。这样「Step 1 落库后崩溃、Step 2/3 未执行」「Step 3 入总线成功但消费者尚未 `record_intent` 就崩溃」两个窗口都能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。intent 落库之后的崩溃由既有重放规则覆盖。
    - **已有 admission 的恢复记录补确认**：若进程在 `record_intent` 成功后、确认回调前崩溃，重投会在正常 admission 的 `session_inputs` 查重处返回 `duplicate`，不会进入 `process_message` 的已有 intent 分支；既有 intent 重放使用 `replay=true`，也不执行该分支。此时 `dispatched` 可能一直为 `false`。补确认路径：**在 `admit` 返回 `duplicate` 的分支中，先检查该 `event_id` 对应的 intent 是否已持久化**——`intents` 表中存在该 `event_id` 且状态为 `done` 或 `dispatched` 才置 `telegram_updates.dispatched=true`；**不存在时保留 `dispatched=false`**，由调度器扩展的恢复路径处理（不提前确认，避免 `record_intent` 失败后无法被扫描恢复）。此操作在 `admit` 内部完成，不绕过会话串行约束（`admit` 本身就在调度器上下文中执行）。同时，在 `replay_unfinished` 完成后的 `recover_dispatch` 中，对 replay 涉及的所有 `event_id` 统一检查 intent 持久化状态后补置 `telegram_updates.dispatched=true`。
    - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
-   - `last_update_at` 在 Step 2 同步落库。
+   - `last_update_at` 在**收到 `getUpdates` 响应时**（处理批次前）同步落库。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
 3. **重置模式轮询（持续到收到新 update 才退出）**：调用 `getUpdates()` **不传 offset**（拉取未确认的全集）。对返回的每条 update 走「活跃窗口 Step 1–3」（持久化 → 入总线，暂不推进 offset）。**只有满足下述退出条件才离开重置模式**：
    - **退出条件**：本轮**至少收到 1 条 update 且全部持久化 + 入总线成功**后，才把 `persisted_offset` 重置为本轮最大 `update_id`，把 `last_update_at` 更新为当前时刻，下一轮回到活跃窗口逻辑（带 offset 轮询）。
@@ -170,7 +171,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
 Telegram 适配器的「`record_intent` 失败的运行期恢复」依赖 SessionScheduler 支持 `failed → queued` 状态迁移与重派触发器。这些属于**调度器本身的设计演进**，不在 M8 渠道接入范围内。M8 开工前，以下调度器扩展必须已完成（由独立 issue 跟踪，建议挂在 M4x 并行轨或 M5 主线）：
 
 - **扩展点 1 · `SessionScheduler#retry_failed_batch(batch_id)`**：批次内所有成员都是「无 intent 失败」（`intents` 表中无该 `event_id` 行）时，允许 `failed → queued` 迁移；`retry_failed_batch` 只在 `@running_batch.nil?` 且同会话无 `running` 批次时执行（保持会话串行约束）。**混合批次处理**：若批次中部分成员已有 intent、部分成员无 intent 失败，`retry_failed_batch` 只迁移无 intent 失败的成员回 `queued`，已有 intent 的成员保持原状态（由 `replay_unfinished` 覆盖）；批次状态迁移以「所有无 intent 失败成员已迁回 queued」为准。
-- **扩展点 2 · 重试成员状态流转**：无 intent 失败成员从 `failed` 重新排队后，由 `dispatch_locked` 推进至 `dispatched`，`batch_done` 能结算其成功完成或再次失败的结果。
+- **扩展点 2 · 重试成员状态流转**：无 intent 失败成员从 `failed` 重新排队后，由 `dispatch_locked` 推进至 `dispatched`，`batch_done` 能结算其成功完成或再次失败的结果。**混合批次执行体过滤**：`run_batch_job` 只处理本次迁回 `queued` 的无 intent 失败成员——已有 intent 的成员（`intents` 表中该 `event_id` 状态为 `done` 或 `dispatched`）**不纳入本次执行体**，避免其被重复计为失败；`batch_done` 结算也仅依据这些待重试成员的结果，已有 intent 成员通过 `replay_unfinished` 独立恢复。
 - **扩展点 3 · queued 批次重派触发器**：`dispatch_locked` 在 `@dispatch.call` 抛异常后把批次回退为 `queued` 时，需要显式重派触发器（周期扫描调用调度器派发入口，或仅依赖后续事件/启动恢复）。
 - **扩展点 4 · 启动屏障**：`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前设置 `@replay_completed = true`；扫描器在屏障前跳过 dispatch 触发，避免旧重放与新派发并发执行。
 
