@@ -108,9 +108,10 @@ runs:
           fi
           hash -r
           openssl_prefix="$(scan_kegs || true)"
-          if ! command -v pkg-config >/dev/null 2>&1; then
-            echo "$brew_bin_dir" >> "$GITHUB_PATH"
-          fi
+          # 无条件写入：安装成功时最需要把 brew bin 传给后续 step（守卫 +
+          # crystal 构建期版本检测），条件化会恰好漏掉这个场景；重复目录
+          # 项对 PATH 无害。
+          echo "$brew_bin_dir" >> "$GITHUB_PATH"
         fi
 
         if [ -z "$openssl_prefix" ]; then
