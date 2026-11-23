@@ -111,7 +111,8 @@ module Sebas
         # （经衰减/并发闸/一级限制/L3 审批四重闸）；分身面不注册（一级限制）。
         private def register_dialog_fork_tool(registry : Tools::Registry,
                                               agent_name : String, agent : Config::AgentConfig) : Nil
-          return unless (main_agent = @config.agents[agent_name]?)
+          main_agent = @config.agents[agent_name]?
+          return unless main_agent
           registry.register(Tools::ForkTool.new(@store,
             Orchestration::Fork::Expectations.new(@store),
             -> { @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) } },
