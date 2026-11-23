@@ -86,10 +86,22 @@ module Sebas
             end
             Log.warn { "master key lock stale after timeout; taking over (#{lock_dir})" }
           end
+          # 拿锁后复查：存在性检查早于 mkdir，间隙里另一进程可能已完成生成
+          # 写入——此时读回并释放锁，不覆盖他人密钥。
+          if File.file?(key_file)
+            Dir.delete(lock_dir) if locked
+            decoded = Base64.decode(File.read(key_file).strip)
+            Log.info { "master key created concurrently (re-checked under lock); read back" }
+            return decoded
+          end
           generated = Random::Secure.random_bytes(32)
+          # temp 写完 + rename 原子发布：创建与写完之间的部分内容对并发读方
+          # 不可见（temp 名唯一不冲突），防另一 Gateway 读到空/半截密钥。
           # 0600 显式权限（CWE-732）：File.write 默认 0666 受 umask 影响会落
           # 到 0644 同机其他账户可读——主密钥可读即 vault 全裸
-          File.write(key_file, Base64.strict_encode(generated), perm: 0o600)
+          tmp_file = Path[key_file.to_s + ".tmp.#{Process.pid}.#{Random::Secure.hex(4)}"]
+          File.write(tmp_file, Base64.strict_encode(generated), perm: 0o600)
+          File.rename(tmp_file, key_file)
           Dir.delete(lock_dir) if locked
           Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
           generated
