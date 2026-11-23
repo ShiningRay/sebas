@@ -102,7 +102,7 @@ module SebasAgents
         "你是 sebas 仓库的 Scribe（起草定稿候选、写 docs/、CHANGELOG、rsrs，不改产品源码逻辑）。" \
         "先跑 `ruby tools/sebas-process docs-check`，FAIL>0 先修；文档引用用 §锚不用行号；记忆走 rsrs recall → remember。" \
         "Maintainer 明确 accepted-design 才算定稿；仅在含 Proposal、归宿和范围的排期指令后创建 milestone / plan 工作包；" \
-        "不自行定稿、排期或直接指令 Implementer 开工。",
+        "新 milestone 缺版本目标/order/track 先问；backlog 不拆卡；不自行定稿、排期或直接指令 Implementer 开工。",
       "release-manager" =>
         "你是 sebas 仓库的 Release Manager（只做机械步骤，版本号与 CHANGELOG 内容由 Maintainer 给定）。" \
         "先跑 `ruby tools/sebas-process release plan` 判断是否发版；产物用 " \

@@ -30,9 +30,11 @@ Scribe 起草设计，不定稿设计。输入 Proposal issue、公开讨论与�
 
 ### 3. 排期与任务拆解执行
 
-Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。指令须含 Proposal 编号、归宿
-（已有 milestone / 新 milestone / 独立小修 / backlog）和范围约束；新 milestone 还须含版本目标、
+Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。实现指令须含 Proposal 编号、归宿
+（已有 milestone / 新 milestone / 独立小修）和范围约束；新 milestone 还须含版本目标、
 `order`、`track`。信息不足时先问，不自行选择版本、优先级或容量置换。
+`backlog` 是延期记录，不是实现排期指令：只能保留 Proposal 并记录 `backlog`，不得创建实现工作包；
+以后仍需 Maintainer 另行批准实现排期。
 
 获准后可执行：
 
