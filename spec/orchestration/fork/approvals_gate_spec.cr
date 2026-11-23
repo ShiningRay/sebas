@@ -103,7 +103,7 @@ module Sebas
       center = ::Sebas::Orchestration::Approvals::Center.new(store)
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
         -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) },
-        approvals: center)
+        approvals: center, auto_join_write: false)
       parent_session = "agent:main:internal:main:fork-cli"
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
         task: "deploy", count: 1, window: nil, include: nil,

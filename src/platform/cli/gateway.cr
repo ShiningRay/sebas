@@ -24,8 +24,9 @@ require "./gateway_dispatch"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
-require "../../orchestration/fork/executor"
 require "../../orchestration/fork/expectations"
+require "../../tools/fork_tool"
+require "../../orchestration/fork/executor"
 require "../../orchestration/fork/capability"
 require "../../orchestration/fork/join_writer"
 require "../../orchestration/fork/snapshot_builder"
@@ -301,6 +302,7 @@ module Sebas
             Providers::Message.new(role, row.content)
           end
           registry = attenuated_registry(agent)
+          register_dialog_fork_tool(registry, agent_name, agent)
           executor = Tools::Executor.new(registry, @channels)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
@@ -321,7 +323,10 @@ module Sebas
             # 工具调用轮：执行（衰减面）→ 结果持久化 + 回注 → checkpoint → 下一轮。
             # 每次调用独立幂等标识：入站事件 + 轮次（重放同事件同轮复用同标识）。
             messages += [Providers::Message.new("assistant", completion.text)]
-            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store)
+            # 对话上下文人工在场（unattended=false）：L3 审批走 pending 等人
+            # 工，approvals 装配使 fork 的 L3 门可达（M4.2-WP3 fail-closed）。
+            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store,
+              nil, @approvals, false, "deny")
             result = executor.run(call.tool, call.args, round_ctx)
             outcome = result.ok? ? result.output : "error: #{result.error}"
             Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }

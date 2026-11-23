@@ -107,6 +107,18 @@ module Sebas
           Log.info { "bus consumer started" }
         end
 
+        # 对话流内自然 fork（M4.3-WP2 §6.1）：fork 工具进父 agent ReAct 面
+        # （经衰减/并发闸/一级限制/L3 审批四重闸）；分身面不注册（一级限制）。
+        private def register_dialog_fork_tool(registry : Tools::Registry,
+                                              agent_name : String, agent : Config::AgentConfig) : Nil
+          return unless (main_agent = @config.agents[agent_name]?)
+          registry.register(Tools::ForkTool.new(@store,
+            Orchestration::Fork::Expectations.new(@store),
+            -> { @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) } },
+            @approvals, agent_name,
+            main_agent.tools.try(&.allow) || ["*"]))
+        end
+
         # IPC fork 命令处理（M4.1-WP5）：payload 字段 task/count/mode/deadline/
         # window；路由到当前装配的 ForkManager/Executor，join 回写由 Expectations
         # + JoinWriter 在终态判定后落父会话（默认父会话 = 命令指定或 "agent:main:internal:main:fork-cli"）。

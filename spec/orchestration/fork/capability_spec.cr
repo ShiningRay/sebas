@@ -34,6 +34,12 @@ module Sebas
       grant.effective.includes?("message.send").should be_false
       grant.effective.includes?("memory.save").should be_false
     end
+
+    it "一级限制：分身显式声明 fork 一律剔除列明（即使父 allow 含 *）" do
+      grant = ::Sebas::Orchestration::Fork::Capability.resolve(%w[fork memory.search], ["*"])
+      grant.effective.should eq(%w[memory.search])
+      grant.removed.should eq(%w[fork])
+    end
   end
 
   describe "SnapshotBuilder 工具清单注入（M4.2-WP1 §5.2 可观测）" do

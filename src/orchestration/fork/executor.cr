@@ -36,9 +36,13 @@ module Sebas
                        @expectations : Expectations,
                        @provider_factory : -> Providers::Provider,
                        max_concurrent : Int32 = DEFAULT_MAX_CONCURRENT,
-                       @approvals : ::Sebas::Orchestration::Approvals::Center? = nil)
+                       @approvals : ::Sebas::Orchestration::Approvals::Center? = nil,
+                       @auto_join_write : Bool = true)
           @semaphore = ::Sebas::Agents::Semaphore.new(max_concurrent)
           @max_concurrent = max_concurrent
+          # join 回写本体（M4.3-WP2）：join.report 自动回写父会话——此前
+          # JoinWriter.write 生产链路零调用（M4.1 依赖外部触发缺口）。
+          @join_writer = ::Sebas::Orchestration::Fork::JoinWriter.new(@store)
         end
 
         # 分身工具上下文（M4.2-WP3 §7）：unattended 固定 true（无人值守 deny
@@ -153,6 +157,10 @@ module Sebas
           # 派发完成标记后终判：all/allSettled 在此收口；any 已在成员终态时判过
           @store.expectations_mark_dispensed("join:#{fork_id}")
           @expectations.judge(fork_id)
+          # join.report 自动回写父会话（M4.3-WP2 §6.1 对话一等公民——对话内
+          # fork 的 join 结果自然可见；幂等 memo 防重复，四时机语义不变）。
+          # auto_join_write=false 供 spec 验证 JoinWriter 本身（手动触发）。
+          @join_writer.write(fork_id) if @auto_join_write
           results
         end
 
