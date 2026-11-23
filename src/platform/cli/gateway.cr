@@ -16,6 +16,7 @@ require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
 require "../../providers/fake_provider"
+require "../../providers/tool_call_parser"
 require "../../sessions/scheduling/scheduler"
 require "../../sessions/scheduling/registry"
 require "../../sessions/scheduling/recovery"
@@ -259,8 +260,7 @@ module Sebas
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
-          reply = agent_turn(agent_name, agent, session_key)
-          @store.checkpoint(task.id, 1) # provider 完成 checkpoint（重放不再调 provider）
+          reply = agent_turn(agent_name, agent, session_key, task_id: task.id)
 
           send_args = JSON.parse({channel: message.channel_type, peer: message.peer, content: reply}.to_json)
           send_result = @executor.run("message.send", send_args,
@@ -296,17 +296,55 @@ module Sebas
           end
         end
 
-        private def agent_turn(agent_name : String, agent : Config::AgentConfig, session_key : String) : String
+        MAX_TOOL_ROUNDS = 8
+
+        # ReAct 工具循环（M4.3-WP1，Q3 裁断）：一次性 provider 调用升为
+        # 模型响应 → 工具调用解析 → 衰减工具面执行 → 结果回注 → 下一轮。
+        # 轮数上限 MAX_TOOL_ROUNDS（防无限循环）；无工具调用 = 终答（行为
+        # 与 M0 现状一致，回归口径）。checkpoint 复用 task phase：每轮完成
+        # 即 checkpoint(round)，崩溃重放从最后一轮续跑（不再全量重调）。
+        private def agent_turn(agent_name : String, agent : Config::AgentConfig,
+                               session_key : String, task_id : String? = nil) : String
           # 每 turn 取配置快照纪律（§11.2④）：M0 单配置整根即快照；M1 起 Atomic(Config).get
           history = @store.transcripts(session_key).last(agent.memory.try(&.window) || 50).map do |row|
             role = row.role == "agent" ? "assistant" : row.role
             Providers::Message.new(role, row.content)
           end
+          messages = history
+          registry = Tools.default_registry(@channels)
+          # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
+          # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
+          allowed = agent.tools.try(&.allow) || ["*"]
+          unless allowed.includes?("*")
+            registry.names.each do |name|
+              registry.unregister(name) unless allowed.includes?(name)
+            end
+          end
+          executor = Tools::Executor.new(registry, @channels)
+          tool_context = Tools::ToolContext.new(session_key, "", "", @store)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
-          completion = provider.complete(history)
-          return completion.text if completion.ok?
-          Log.error { "provider error: #{completion.error}" }
-          "(provider error: #{completion.error})"
+
+          (1..MAX_TOOL_ROUNDS).each do |round|
+            @store.checkpoint(task_id, round) if task_id
+            completion = provider.complete(messages)
+            unless completion.ok?
+              Log.error { "provider error: #{completion.error}" }
+              return "(provider error: #{completion.error})"
+            end
+            call = Providers::ToolCallParser.parse(completion.text)
+            return completion.text if call.nil? # 无工具调用 = 终答（回归口径）
+
+                                      # 工具调用轮：执行（衰减面）→ 结果回注 → 下一轮
+            messages += [Providers::Message.new("assistant", completion.text)]
+            result = executor.run(call.tool, call.args, tool_context)
+            outcome = result.ok? ? result.output : "error: #{result.error}"
+            Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }
+            messages << Providers::Message.new("user", "tool result (#{call.tool}): #{outcome}")
+          end
+          # 轮数上限：不再解析工具调用，要求模型给终答
+          final = provider.complete(messages + [Providers::Message.new("user",
+            "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")])
+          final.ok? ? final.text : "(provider error: #{final.error})"
         end
 
         private def spawn_adapters : Nil

@@ -153,6 +153,11 @@ module Sebas
         @mutex.synchronize { @tools[tool.name] = tool }
       end
 
+      # 衰减过滤用（M4.3-WP1）：移除白名单外工具
+      def unregister(name : String) : Nil
+        @mutex.synchronize { @tools.delete(name) }
+      end
+
       def find(name : String) : Tool?
         @mutex.synchronize { @tools[name]? }
       end
