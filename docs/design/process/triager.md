@@ -36,9 +36,11 @@
 `needs-info` / `duplicate` / `escalate`，不接受设计、不指派开发、不建议 milestone。
 `accepted-design` / `declined` 的 verdict 必须带 Maintainer 公开评论或 review 的
 `maintainer_decision_url`。链接须属于当前仓库和 Proposal；设计 PR 正文须回链当前 Proposal。
-快照必须含被引用条目的真实作者与正文；作者属于 Maintainer，正文含
+快照必须含被引用条目的真实作者、正文与父对象；作者属于 Maintainer，正文含
 `<!-- proposal-verdict: <判定> -->`，拒绝另须非空「理由：」行。缺任一项即拒绝生成计划。
-Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快照据此读取裁决证据。
+评论归属以 API 返回的 `issue_url` / `pull_request_url` 为准，不只比较 URL 编号。
+Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快照只读取当前目标 Proposal
+的裁决证据；普通 issue 的同名文本或非法 URL 不触发读取、不阻断全仓快照。
 状态标签互斥，新判定生成清理旧状态的 remove_label 动作。普通 bug / feature 继续使用既有六档判定。
 
 ### 3. 计划类 issue 的特殊处理

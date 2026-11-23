@@ -107,26 +107,37 @@ module SebasAgents
       evidence = verdict["maintainer_decision_url"].to_s
       match = DECISION_URL.match(evidence)
       raise InvalidPlan, "#{decision} 需要有效的 maintainer_decision_url" unless match
-      repo, kind, number = match.captures.compact
+      repo, kind, number = match.captures
       raise InvalidPlan, "裁决链接必须属于当前仓库" unless repo == snapshot.repo
+      record = snapshot.proposal_evidence[evidence]
+      raise InvalidPlan, "快照缺裁决的真实作者、正文或父对象" unless record
+      api_kind = kind == "pull" ? "pulls" : kind
+      unless record["parent"].to_s == "https://api.github.com/repos/#{snapshot.repo}/#{api_kind}/#{number}"
+        raise InvalidPlan, "裁决的真实父对象必须匹配当前 Proposal 或其设计 PR"
+      end
       if kind == "issues"
         raise InvalidPlan, "裁决评论必须属于当前 Proposal" unless number.to_i == issue.number
       else
         pr = snapshot.pull_request(number.to_i)
-        unless pr && pr.body.to_s.match?(/(?:^|[^\d])##{issue.number}(?:[^\d]|$)/)
+        unless pr && proposal_backlink?(pr.body.to_s, snapshot.repo, issue.number)
           raise InvalidPlan, "设计 PR 必须存在且正文回链当前 Proposal"
         end
       end
-      unless snapshot.maintainers.include?(snapshot.source_authors[evidence])
+      unless snapshot.maintainers.include?(record["author"])
         raise InvalidPlan, "裁决作者必须属于 Maintainer，且快照必须含其真实身份"
       end
-      body = snapshot.source_bodies[evidence].to_s
+      body = record["body"].to_s
       unless body.include?("#{PROPOSAL_VERDICT_MARKER}#{decision} -->")
         raise InvalidPlan, "裁决正文必须登记 #{PROPOSAL_VERDICT_MARKER}#{decision} -->"
       end
       if decision == "declined" && body.scan(/^理由[：:](.+)$/).flatten.all? { |reason| reason.strip.empty? }
         raise InvalidPlan, "拒绝裁决必须含非空「理由：」行"
       end
+    end
+
+    def proposal_backlink?(body, repo, number)
+      body.match?(/(?:^|[^\d])##{number}(?:[^\d]|$)/) ||
+        body.match?(%r{https://github\.com/#{Regexp.escape(repo)}/issues/#{number}(?:[/?#]|\z)})
     end
 
     def actions_for(decision, verdict)

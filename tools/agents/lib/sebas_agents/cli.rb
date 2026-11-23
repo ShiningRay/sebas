@@ -71,12 +71,12 @@ module SebasAgents
       CommandRunner.new(dry_run: !options[:apply])
     end
 
-    def snapshot(options)
+    def snapshot(options, proposal_issue: nil)
       return load_snapshot(options[:snapshot]) if options[:snapshot]
 
       repo = options[:repo] || default_repo
       gateway = GithubGateway.new(runner(options), repo: repo)
-      gateway.snapshot
+      gateway.snapshot(proposal_issue: proposal_issue)
     end
 
     # 快照是唯一事实源：结构不全就拒绝，绝不把缺失当成「没有工作」。
@@ -483,8 +483,9 @@ module SebasAgents
 
       options, (number,) = Argv.parse(argv, required: ["issue"])
       verdict = options[:verdict] ? load_verdict(options[:verdict]) : nil
-      snap = snapshot(options)
-      issue = snap.issue(parse_number(number, "issue"))
+      issue_number = parse_number(number, "issue")
+      snap = snapshot(options, proposal_issue: issue_number)
+      issue = snap.issue(issue_number)
       raise UsageError, "issue ##{number} 不在快照内" unless issue
 
       plan = Triager.plan(issue, snap, verdict: verdict)

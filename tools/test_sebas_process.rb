@@ -1319,8 +1319,18 @@ class CliTest < Minitest::Test
 
   def proposal_verdict(data, dir, decision: "accepted-design", url: nil)
     url ||= "https://github.com/o/r/issues/8#issuecomment-123"
-    data["source_authors"][url] = "ShiningRay"
-    data["source_bodies"][url] = "<!-- proposal-verdict: #{decision} -->\n理由：符合设计边界。"
+    match = SebasAgents::Triager::DECISION_URL.match(url)
+    parent = if match[2] == "pull"
+      "https://api.github.com/repos/o/r/pulls/#{match[3]}"
+    else
+      "https://api.github.com/repos/o/r/issues/#{match[3]}"
+    end
+    data["proposal_evidence"] ||= {}
+    data["proposal_evidence"][url] = {
+      "author" => "ShiningRay",
+      "body" => "<!-- proposal-verdict: #{decision} -->\n理由：符合设计边界。",
+      "parent" => parent
+    }
     snap = File.join(dir, "s.json")
     verdict = File.join(dir, "v.json")
     File.write(snap, JSON.generate(data), encoding: "UTF-8")
@@ -1402,14 +1412,14 @@ class CliTest < Minitest::Test
       end
 
       snap, verdict, url = proposal_verdict(data, dir)
-      data["source_authors"][url] = "external-user"
+      data["proposal_evidence"][url]["author"] = "external-user"
       File.write(snap, JSON.generate(data), encoding: "UTF-8")
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 1, status
       assert_includes out, "Maintainer"
 
-      data["source_authors"][url] = "ShiningRay"
-      data["source_bodies"].delete(url)
+      data["proposal_evidence"][url]["author"] = "ShiningRay"
+      data["proposal_evidence"][url].delete("body")
       File.write(snap, JSON.generate(data), encoding: "UTF-8")
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 1, status
@@ -1426,10 +1436,28 @@ class CliTest < Minitest::Test
       assert_equal 1, status
       assert_includes out, "回链"
 
-      data["pull_requests"][0]["body"] = "Implements #8"
+      data["pull_requests"][0]["body"] = "Design: https://github.com/o/r/issues/8"
       File.write(snap, JSON.generate(data), encoding: "UTF-8")
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 0, status, out
+
+      data["pull_requests"][0]["body"] = "Design: https://github.com/other/r/issues/8"
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 1, status
+      assert_includes out, "回链"
+    end
+  end
+
+  def test_triage_proposal_decline_requires_nonempty_reason
+    data = snapshot(issues: [issue(8, labels: ["proposal"])])
+    Dir.mktmpdir do |dir|
+      snap, verdict, url = proposal_verdict(data, dir, decision: "declined")
+      data["proposal_evidence"][url]["body"] = "<!-- proposal-verdict: declined -->"
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 1, status
+      assert_includes out, "理由"
     end
   end
 
