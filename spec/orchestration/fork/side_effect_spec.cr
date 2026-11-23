@@ -187,6 +187,46 @@ module Sebas
       store.close
     end
 
+    it "未声明 files：链内断点仍检出（成员写 A→B、父写 C、成员写 D）" do
+      dir = Path[Dir.tempdir, "sebas-chainbreak-spec", Random::Secure.hex(4)]
+      FileUtils.mkdir_p(dir)
+      work = dir / "m.txt"
+      File.write(work, "A")
+
+      store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
+      store.create_task("parent-1", "fork_parent")
+      expectations = ::Sebas::Orchestration::Fork::Expectations.new(store)
+      executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) })
+      parent_session = "agent:main:internal:main:fork-cli"
+      input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
+        task: "edit file", count: 1, window: nil, include: nil,
+        tools: %w[file.write], role: nil, mode: "allSettled", deadline: 3600
+      )
+      results = executor.run("parent-1", parent_session, "main", "", "", input, ["*"])
+      fork_id = results[0].task_id.split(":")[0...2].join(":")
+
+      ledger = executor.member_ledgers[results[0].session_key]
+      member_ctx = ::Sebas::Tools::ToolContext.new(results[0].session_key, "internal", "evt-m",
+        store, ledger)
+      tools_exec = ::Sebas::Tools::Executor.new(
+        ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new),
+        ::Sebas::Channels::Registry.new)
+      # 成员写 A→B；父写 C；成员再写 D——链 (A,B),(C,D) 的 B≠C 断点须检出
+      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), member_ctx)
+      File.write(work, "C")
+      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "D"})), member_ctx)
+      executor.flush_member_effects(results)
+
+      join_writer = ::Sebas::Orchestration::Fork::JoinWriter.new(store)
+      join_writer.write(fork_id)
+      report = JSON.parse(store.transcripts(parent_session).last.content)
+      conflicts = report["conflicts"].as_a
+      conflicts.size.should eq(1)
+      conflicts[0]["status"].as_s.should eq("CONFLICT")
+      store.close
+    end
+
     it "无冲突路径：成员写文件但父未改 → 回写 conflicts 为空" do
       dir = Path[Dir.tempdir, "sebas-noconflict-spec", Random::Secure.hex(4)]
       FileUtils.mkdir_p(dir)

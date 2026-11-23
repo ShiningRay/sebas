@@ -161,16 +161,20 @@ module Sebas
           write_chains.compact_map do |path, chain|
             next if chain.empty?
             drifted = false
+            # 首写 pre vs fork 基线仅在声明 files 时可比（无声明无基线，跳过）
             if files_declared
               fork_digest = fork_baseline[path]?.try(&.as_s)
               first_pre, _ = chain.first
               # fork 时不存在（无基线记录）→ 写前非 deleted 即父建过
               drifted ||= fork_digest ? first_pre != fork_digest : first_pre != "deleted"
-              chain.each_with_index do |(pre, _), i|
-                next if i.zero?
-                prev_post = chain[i - 1][1]
-                drifted ||= pre != prev_post # 链内断点 = 父在两次写之间动过
-              end
+            end
+            # 链内断点检测不依赖 fork 基线：相邻两环 post→pre 不连续即父在
+            # 两次写之间动过（成员写 A→B、父写 C、成员写 D 链 (A,B),(C,D)
+            # 的 B≠C 断点，声明与否都须检出）。
+            chain.each_with_index do |(pre, _), i|
+              next if i.zero?
+              prev_post = chain[i - 1][1]
+              drifted ||= pre != prev_post
             end
             _, last_post = chain.last
             drifted ||= current_digest(path) != last_post # 父在最后写后动过
