@@ -36,7 +36,9 @@ src/orchestration/
 src/tools/
   registry.cr              # 注册表【A9 升级：replay/risk 类型级字段、allowlist、脱敏】
   executor.cr              # ReAct ToolExecutor + Observer【A6】
-src/providers/             # Provider 实例池 + 规格表【A1/A2】
+src/providers/             # Provider 实例池 + 规格表【A1/A2】；crystal_llm_provider.cr 为
+                           # crystal_llm 适配层（每实例复制独立 CrystalLLM::Context，多 agent
+                           # 的 api_key/base_url 互不污染，LLM 异常统一转 Completion.error）
 src/admin/
   ipc/                     # NDJSON 协议（hello/caps/8MiB 帧，autobot 713ed632 模式）+ reload 命令【§11】
   http/                    # HTTP API + 回调面 + SSE
@@ -59,3 +61,18 @@ src/plugins/               # 可选脚本层（§12）：manifest/包校验/regi
 | A8 渠道 Markdown 转换器 | `src/channels/common/` | 直接搬（纯函数、与账号无关） |
 | A9 工具注册表骨架 | `src/tools/registry.cr` | session_key 含账号；加 replay/risk 字段 |
 | A10 cron 三态调度 | `src/orchestration/triggers/` | owner 加账号维度（B7）；投递进对应 worker |
+
+### 13.1 外部依赖（`shard.yml`）
+
+运行时依赖只有四项，全部按「来源 + 版本策略」显式登记，新增依赖须回写本表：
+
+| 依赖 | 来源 | 版本策略 | 用途 |
+|---|---|---|---|
+| `db` | `crystal-lang/crystal-db` | `~> 0.15` | 持久层抽象 |
+| `sqlite3` | `crystal-lang/crystal-sqlite3` | `~> 0.24` | SQLite(WAL) + FTS5 驱动 |
+| `file_watcher` | `naqvis/file_watcher` | `branch: main`（上游无 tag） | 配置热更新的文件监听（§11） |
+| `crystal_llm` | `ShiningRay/crystal-llm`（fork） | 不锁版本（上游无稳定 release） | Provider 适配层（`src/providers/crystal_llm_provider.cr`） |
+
+`crystal_llm` 是 ruby_llm 的 Crystal 移植：改动先落 fork，再定期向上游 `stevegeek/crystal-llm` 提 PR；
+上游出稳定 release 后改为锁定版本号并更新本表。适配层当前支持 `openai` / `anthropic` / `deepseek` /
+`openrouter` 四家，`base_url` 可覆盖，未列入的 provider 名直接抛错而非静默回落。

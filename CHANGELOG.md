@@ -5,6 +5,51 @@
 
 ## [Unreleased]
 
+### Added
+
+- **M4.1 fork/join 影分身最小闭环**：生产装配补齐与入队键一致性（#135）、expectations 表 + mode 判定器 +
+  恢复扫描（#136）、fork 快照组装与分身执行体（#150）、JoinWriter 分层回写 + 四时机语义（#152）、
+  fork/join 触发面与全链 e2e（#153）。
+- **M4.2-WP1 能力衰减**：分身生效工具集 = 声明 ∩ 父 `tools.allow`；越界声明静默剔除并在回执列明，
+  默认只读档不含写副作用工具与 secrets（#168）。
+- **会话调度**：持久 busy 队列 + per-session 调度（WP2，`e2e51c8`）、debounce 批次策略——六类 seal 条件
+  与分桶结构化批次（WP3，#158）。
+- **Provider 适配层**：引入 `crystal_llm` 依赖（ruby_llm 的 Crystal 移植，走 `ShiningRay/crystal-llm`
+  fork）与 `CrystalLLMProvider`；每实例复制独立 `CrystalLLM::Context`，多 agent 的 api_key/base_url 互不污染（#157）。
+- **流程工具 sebas-process**：可执行 Agent 工具链与 Ruby 文档门禁（#96）、认领写远端锁并引导流程标签（#99）、
+  元数据缺口可见化（#118）、以 trusted bot 身份自动登记 Evidence（#117）、两阶段 Evidence 登记解合并前死锁（#127）、
+  确定性核验作 CI 第五项必检（#128）、Verifier 独立 job（#129）、路径联动/安全不变量/CWE 汇总三类检查（#133）。
+
+### Changed
+
+- Gateway 的调度适配与批次执行拆分为 `GatewayDispatch` module（#165）。
+- Verifier 与 Reviewer 合并为单一角色并真接入 checker（#132）。
+- Ruby 版本钉至 3.4.13，守卫改从 `.ruby-version` 推导下限，不再写死常量（#104）。
+
+### Fixed
+
+- `cli/gateway.cr` 补齐 fork 组件 require，修复三平台 release build 与 drill 编译（#167）。
+- fork 常量引用补 `::Sebas` 全限定，修复 main release build（#156）。
+- 调度准入按生效配置快照解析（`96ae049`）、`admit_new_batch` 守卫路径显式 `DB::Rollback`（`94f8798`）、
+  容量拒绝日志升 error 以避免事件被静默丢弃（`fef2a89`）、按 code review 十三条加固准入/恢复/路径（`be61096`）。
+- sebas-process 重试瞬时 GitHub API 失败（#98）、从真实 GitHub payload 解析 Automation 块（#97）、
+  一次性关闭 #106 的五个流程缺口（#112）。
+
+### Documentation
+
+- `design.md` 按章拆为 `spec/` 与 `plan/`，新增索引与文档门禁（#94）。
+- fork/join 影分身分析与 M4 计划（#59）、源码锚点重校（#60）。
+- commitments 与日历集成提案（#61）、M5–M7 计划（#62）。
+- M4.0-WP2 定稿吸收回写与失效引用修正（#134）、M8 渠道扩展（Slack + Telegram）提案与 WBS（#137）、
+  Agent 分类与标签元数据模型提案（#151）、设计提案走 issue 治理（#155）。
+- 流程工具验收报告（#100）、合并前门禁口径改为 `verify merge --pre`（#119）、
+  LLM 语义核验可行性评估——结论不做（#131）。
+
+### CI
+
+- macOS runner 缺 `openssl@3`/`pkg-config` 时幂等自举安装（#166）、OpenSSL 定位排除无版本后缀软链（#164）。
+- 新增 `.coderabbit.yaml` 注入仓库约定（#120）。
+
 ## [0.1.0] - 2026-11-19
 
 首个公开版本。里程碑口径以 `README` 与 `docs/design/review/*-gate.md` 为准。
