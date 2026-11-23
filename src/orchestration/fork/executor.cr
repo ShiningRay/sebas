@@ -35,9 +35,20 @@ module Sebas
         def initialize(@store : ::Sebas::Platform::Store::Store,
                        @expectations : Expectations,
                        @provider_factory : -> Providers::Provider,
-                       max_concurrent : Int32 = DEFAULT_MAX_CONCURRENT)
+                       max_concurrent : Int32 = DEFAULT_MAX_CONCURRENT,
+                       @approvals : ::Sebas::Orchestration::Approvals::Center? = nil)
           @semaphore = ::Sebas::Agents::Semaphore.new(max_concurrent)
           @max_concurrent = max_concurrent
+        end
+
+        # 分身工具上下文（M4.2-WP3 §7）：unattended 固定 true（无人值守 deny
+        # 语义）+ approvals 装配引用 + 该成员的副作用台账——分身工具回路
+        # （后续 WP）经此构造 ToolContext，L3 未批不执行由 Tools::Executor 门执行。
+        def member_context(session_key : String, event_id : String = "fork") : ::Sebas::Tools::ToolContext
+          ::Sebas::Tools::ToolContext.new(session_key, "internal", event_id, @store,
+            @member_ledgers[session_key]? || ::Sebas::Tools::EffectsLedger.new.tap do |new_ledger|
+              @member_ledgers[session_key] = new_ledger
+            end, @approvals, true, "deny")
         end
 
         record MemberResult,

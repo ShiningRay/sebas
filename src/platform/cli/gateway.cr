@@ -96,12 +96,17 @@ module Sebas
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
+          # Approvals::Center 生产装配（M4.2-WP3）：先于 IPC 构造——IPC
+          # approvals.approve/deny/pending 命令直接引用；规则链（hardline >
+          # off > 无人值守 deny > memo > 超时 deny > 等待人工）现成。
+          @approvals = Orchestration::Approvals::Center.new(@store)
           # IPC host 固定回环（#153 复审）：不继承 http.bind——bind: 0.0.0.0
           # 会撞 IPC 回环白名单令 gateway 启动失败；IPC 明文 TCP 只应本机可达。
           @ipc = Admin::IPC::Server.new(@store, @data_dir,
             host: "127.0.0.1",
             port: @config.gateway.ipc.port,
             &->trigger_reload)
+          @ipc.approvals_center = @approvals
           # fork/join 用户显式触发面接线（M4.1-WP5，Q3：不动生产 agent_turn）：
           # IPC payload → Executor 执行 → 结果 JSON（回执 + expectation 终态）。
           @ipc.fork_handler = ->(payload : JSON::Any) { handle_fork_command(payload) }
@@ -116,7 +121,6 @@ module Sebas
           # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
           # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
           @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
-          @approvals = Orchestration::Approvals::Center.new(@store)
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
           @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters
@@ -132,7 +136,8 @@ module Sebas
           raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 main agent 配置") if main_agent.nil?
           parent_allow = main_agent.tools.try(&.allow) || ["*"]
           executor = Orchestration::Fork::Executor.new(@store, Orchestration::Fork::Expectations.new(@store),
-            -> { @providers.for_agent("main") { @provider_factory.call(main_agent, nil) } })
+            -> { @providers.for_agent("main") { @provider_factory.call(main_agent, nil) } },
+            approvals: @approvals)
           results = executor.run(
             "cli-fork", parent_session, "main", "", "", input, parent_allow
           )
