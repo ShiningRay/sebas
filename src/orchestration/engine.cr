@@ -88,14 +88,18 @@ module Sebas
       # 派发异常收口：已创建的 fork_child 任务 fail 落终态、expectation 置
       # expired（members_final=0 行 judge 跳过，须直接 transition）。
       private def close_dispersed_fork(executor : ::Sebas::Orchestration::Fork::Executor,
-                                       run_id : String) : Nil
+                                       _run_id : String) : Nil
         row = @store.expectation?(executor.last_fork_id) if executor.last_fork_id
         return if row.nil?
+        settled = 0
         Array(String).from_json(row.members).each do |task_id|
+          status = @store.task_status?(task_id)
+          next if %w[done failed cancelled].includes?(status) # 已终态成员不覆写
           @store.fail_task(task_id, "fork dispatch failed") rescue nil
+          settled += 1
         end
         @store.transition_expectation(row.id, "open", "expired",
-          settled_count: row.settled_count, result: "dispatch failed")
+          settled_count: settled, result: "dispatch failed")
       rescue
         nil # 收口本身失败不掩盖原始异常
       end
@@ -157,15 +161,16 @@ module Sebas
           executor = ::Sebas::Orchestration::Fork::Executor.new(
             @store, ::Sebas::Orchestration::Fork::Expectations.new(@store), @fork_provider_factory
           )
-          # 派发异常收口（CodeRabbit）：工厂抛错等异常发生时已创建的子任务与
-          # expectation 进入终态（fail_task + expired），动作失败交给引擎既有
-          # 失败处理（memo 不留 running）。
+          # 派发异常收口（CodeRabbit）：任何异常（工厂/provider/存储）发生时，
+          # 已创建子任务与 expectation 进入终态（fail_task + expired），动作
+          # 失败交给引擎既有失败处理（memo 不留 running，重放重跑动作）。
           begin
             # 分身 agent 段 = 父会话键首段（五段键 agent:...），非 account_id
             # （CodeRabbit：执行与回写须用同一会话键 agent 段）
             parent_agent_id = ctx_session.split(":")[1]? || @account_id
             fork_id, results = executor.run_with_fork_id(run_id, ctx_session, parent_agent_id, "", "", input)
-          rescue ex : ::Sebas::Platform::Store::StoreError
+          rescue ex
+            close_dispersed_fork(executor, run_id)
             return Tools::ToolResult.error("fork #{action.id} 派发失败：#{ex.message}")
           end
           ::Sebas::Orchestration::Fork::JoinWriter.new(@store).write(fork_id)
