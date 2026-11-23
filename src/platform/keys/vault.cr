@@ -108,6 +108,10 @@ module Sebas
             File.rename(tmp_file, key_file)
             sync_directory_entry(path.parent)
           rescue ex : ::Exception
+            # 目录项同步失败 = master.key 目录项未确认持久化——回滚删除该
+            # 文件：后续 open 重新生成，不留「文件在而目录项未落盘」的坏状态
+            # （掉电丢失目录项 → 新密钥 → 已写密文不可解）。
+            File.delete(key_file) if File.file?(key_file)
             raise VaultError.new("master key persistence failed: #{ex.message}")
           end
           Dir.delete(lock_dir) if locked
