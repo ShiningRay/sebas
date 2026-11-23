@@ -64,6 +64,11 @@ Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。实现�
 - 每个 PR 往 `CHANGELOG.md` 的 `[Unreleased]` 段落写一行
 - 发版时转正：`[Unreleased]` → `[X.Y.Z] - 日期`
 - 遵循 Keep a Changelog 格式 + semver
+- **`[Unreleased]` 只能人工/Agent 手写**：`auto-release.yml` 的 Promote 步骤只做转正，
+  不生成条目——漏写就会产出一个空版本段。发版前必须确认该段非空。
+- 补账基线取上一版**实际发布的提交**，再运行 `git log <commit>..HEAD`。优先以 GitHub Release
+  对应 tag 解出的 commit 为准；annotated tag 须解到 commit。tag 获取失败时改查 Release 记录或
+  发版工作流，不得改用「写上一版 CHANGELOG 段的提交」——两者可能不同，后者会把已发布提交重复纳入。
 
 ### 6. 文档质量门禁
 
