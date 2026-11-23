@@ -89,7 +89,9 @@ module Sebas
       # expired（members_final=0 行 judge 跳过，须直接 transition）。
       private def close_dispersed_fork(executor : ::Sebas::Orchestration::Fork::Executor,
                                        _run_id : String) : Nil
-        row = @store.expectation?(executor.last_fork_id) if executor.last_fork_id
+        fork_id = executor.last_fork_id
+        return if fork_id.nil?
+        row = @store.expectation?(fork_id)
         return if row.nil?
         settled = 0
         Array(String).from_json(row.members).each do |task_id|
