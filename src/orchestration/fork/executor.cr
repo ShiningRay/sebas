@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 
 module Sebas
   module Orchestration
@@ -27,6 +28,9 @@ module Sebas
         # 能力衰减裁决（M4.2-WP1）：本次 fork 的生效工具集与剔除清单，
         # 供触发面回执列明（§5.2「可观测，不静默失败」）。
         getter last_grant : Capability::Grant? = nil
+        # 成员副作用台账（M4.2-WP2 §2.2）：session_key → ledger；成员执行
+        # 期间的 effectful 工具调用入账，run 收尾序列化进成员任务 payload。
+        getter member_ledgers : Hash(String, ::Sebas::Tools::EffectsLedger) = Hash(String, ::Sebas::Tools::EffectsLedger).new
 
         def initialize(@store : ::Sebas::Platform::Store::Store,
                        @expectations : Expectations,
@@ -64,9 +68,21 @@ module Sebas
           grant = Capability.resolve(input.tools, parent_tools_allow)
           @last_grant = grant
           declared = (1..input.count).map { |i| fork_id + ":#{i}" }
-          # deadline 在持久化前只算一次：快照读取耗时计入期限（CodeRabbit——
-          # 否则慢快照会把启动门槛推后到已持久化期限之外）。
+          # deadline 在持久化与一切快照读取前只算一次：指纹快照/transcripts
+          # 快照的耗时都计入期限（CodeRabbit——否则慢快照会把启动门槛推后到
+          # 已持久化期限之外）。
           deadline = ::Time.utc + input.deadline.seconds
+          # 工作区指纹快照（M4.2-WP2 §2.2 L1）：声明 files 即写 memo（declared
+          # 标记 + 各文件 sha256；全不存在时 digests 为空——声明状态独立持久化，
+          # 不得由 join 侧从 pre_digest 反推）；join 回写时对比——父期间被动过
+          # 的文件标 CONFLICT 进父裁决清单，不自动 merge（矩阵通则 2）。
+          unless (files = input.files).nil?
+            digests = files.compact_map do |path|
+              next unless File.file?(path)
+              {path, ::Digest::SHA256.hexdigest(File.read(path))}
+            end.to_h
+            @store.memo_put("fork:#{fork_id}:files", %({"declared": true, "digests": #{digests.to_json}}))
+          end
           row = @expectations.create(fork_id, parent_task_id, parent_session_key,
             input.mode, declared, deadline)
           # 预登记即声明为「派发中」：judge 对 final=0 跳过（成员任务逐个 create
@@ -87,7 +103,8 @@ module Sebas
             )
             @store.create_task(task_id, "fork_child", parent_id: parent_task_id,
               owner_task_id: parent_task_id,
-              payload: %({"fork": #{fork_id.inspect}, "member": #{member_index}, "task": #{input.task.inspect}, "tools_effective": #{grant.effective.inspect}, "tools_removed": #{grant.removed.inspect}}))
+              payload: %({"fork": #{fork_id.inspect}, "member": #{member_index}, "task": #{input.task.inspect}, "tools_effective": #{grant.effective.inspect}, "tools_removed": #{grant.removed.inspect}, "effects": []}))
+            @member_ledgers[session_key] = ::Sebas::Tools::EffectsLedger.new
 
             # any 已 settle：不再启动排队成员（首个成功即收口，§2.3）
             row = @store.expectation?(fork_id)
@@ -121,10 +138,24 @@ module Sebas
             # 成员进终态即判：any 首个成功即刻 settle（后续成员在闸口被拒）
             @expectations.judge(fork_id)
           end
+          flush_member_effects(results)
           # 派发完成标记后终判：all/allSettled 在此收口；any 已在成员终态时判过
           @store.expectations_mark_dispensed("join:#{fork_id}")
           @expectations.judge(fork_id)
           results
+        end
+
+        # 副作用清单落库（M4.2-WP2 矩阵通则 1）：ledger 条目合并进成员任务
+        # payload 的 effects 数组——join 回写经 build_report 聚合。可重入：
+        # run 收尾调用一次；成员工具回路（后续 WP）在每次工具调用后亦可调。
+        def flush_member_effects(results : Array(MemberResult)) : Nil
+          @member_ledgers.each do |session_key, ledger|
+            next if ledger.entries.empty?
+            member_task = results.find { |res| res.session_key == session_key }
+            next unless member_task
+            effects_json = ledger.entries.map(&.to_json_object).to_json
+            @store.update_task_effects(member_task.task_id, effects_json)
+          end
         end
 
         private def acquire_slot(&block)

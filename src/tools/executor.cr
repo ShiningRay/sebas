@@ -1,5 +1,6 @@
 require "json"
 require "./registry"
+require "./file_write"
 require "../channels/registry"
 require "../platform/store/store"
 
@@ -17,7 +18,25 @@ module Sebas
         tool = @registry.find(name)
         return ToolResult.error("unknown tool: #{name}") unless tool
         Log.info { "tool #{name} args=#{Registry.redact(args)} ctx=#{ctx.session_key}" }
-        tool.run(args, ctx)
+        # 文件写类在执行前记现状摘要三态（写前基线，判「父在成员写前已动过」）：
+        # 存在=digest；不存在="deleted"（父删过或本就不在——留给 join 结合 fork
+        # 基线区分）；非文件类=""（不采集）。
+        pre_digest = if tool.side_effect == SideEffect::FileWrite &&
+                        (target = args.as_h?.try(&.[]?("path")).try(&.as_s?))
+                       File.file?(target) ? ::Digest::SHA256.hexdigest(File.read(target)) : "deleted"
+                     else
+                       ""
+                     end
+        result = tool.run(args, ctx)
+        # 副作用台账（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：执行成功且
+        # 非只读时入账——target 优先取 args.path（文件类），否则 args 摘要。
+        # post_digest 用工具随结果返回的实际写入摘要（写入后重读会被并发
+        # 改动污染，CodeRabbit PRRT_kwDOVzNPQM664uZR）。
+        if result.ok? && (ledger = ctx.ledger) && tool.side_effect != SideEffect::ReadOnly
+          target = args.as_h?.try(&.[]?("path")).try(&.as_s?) || Registry.redact(args)[0, 120]
+          ledger.record(tool.name, tool.side_effect, target, result.digest || "", pre_digest)
+        end
+        result
       rescue ex : ::Exception
         # typed rescue 转值：工具错误不炸进程（autobot registry.cr 先例）
         Log.error(exception: ex) { "tool #{name} crashed" }
@@ -29,7 +48,7 @@ module Sebas
     class MessageSendTool < Tool
       def initialize(@channels : Channels::Registry)
         super("message.send", "Send a message to a peer via a channel account (requires idempotency_key)",
-          ReplaySemantics::Effectful, Risk::High)
+          ReplaySemantics::Effectful, Risk::High, SideEffect::NetWrite)
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
@@ -74,7 +93,7 @@ module Sebas
     # 内置工具：记忆检索（Safe，FTS5，§6.2）
     class MemorySearchTool < Tool
       def initialize
-        super("memory.search", "Full-text search over indexed memory (FTS5)", ReplaySemantics::Safe, Risk::Low)
+        super("memory.search", "Full-text search over indexed memory (FTS5)", ReplaySemantics::Safe, Risk::Low, SideEffect::ReadOnly)
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
@@ -89,7 +108,8 @@ module Sebas
     # 内置工具：记忆写入（Effectful but retryable? 整文件写=Safe 口径，§7.3 工具级）
     class MemorySaveTool < Tool
       def initialize
-        super("memory.save", "Index a memory entry (first-write-wins by key)", ReplaySemantics::Safe, Risk::Medium)
+        # 共享写状态（semantics §5.1）：归 L2 走清单回写，不走 L1 文件指纹
+        super("memory.save", "Index a memory entry (first-write-wins by key)", ReplaySemantics::Safe, Risk::Medium, SideEffect::NetWrite)
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
@@ -106,7 +126,7 @@ module Sebas
     # 内置工具：会话转录读取（Safe）
     class SessionReadTool < Tool
       def initialize
-        super("session.read", "Read recent transcript entries for a session", ReplaySemantics::Safe, Risk::Low)
+        super("session.read", "Read recent transcript entries for a session", ReplaySemantics::Safe, Risk::Low, SideEffect::ReadOnly)
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
@@ -118,13 +138,15 @@ module Sebas
       end
     end
 
-    # 默认工具面（M0-WP6 交付：发消息/读邮件替代=记忆+会话）
+    # 默认工具面（M0-WP6 交付：发消息/读邮件替代=记忆+会话；M4.2-WP2 增
+    # file.write 最小文件写示例，L1 副作用归属与冲突检测的 e2e 载体）
     def self.default_registry(channels : Channels::Registry) : Registry
       registry = Registry.new
       registry.register(MessageSendTool.new(channels))
       registry.register(MemorySearchTool.new)
       registry.register(MemorySaveTool.new)
       registry.register(SessionReadTool.new)
+      registry.register(FileWriteTool.new)
       registry
     end
   end

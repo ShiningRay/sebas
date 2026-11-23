@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 
 module Sebas
   module Orchestration
@@ -71,7 +72,33 @@ module Sebas
           selected = if row.mode == "any" && row.result.to_s.starts_with?("first success: ")
                        row.result.to_s.lchop("first success: ")
                      end
-          members = member_ids.map do |task_id|
+          members = build_members(row, member_ids, selected)
+          effects, write_chains = collect_member_effects(member_ids)
+          declared, fork_baseline = fork_file_baseline(row.fork_id)
+          conflicts = detect_conflicts(write_chains, declared, fork_baseline)
+          # outcome 映射：all 模式「状态机 settled 但 result=failed」报告为
+          # failed（§4.3 all 行）；allSettled 恒 settled。
+          outcome = if row.status == "settled" && row.mode == "all" && row.result == "failed"
+                      "failed"
+                    else
+                      row.status
+                    end
+          JSON.parse({
+            "type"      => "join.report",
+            "fork_id"   => row.fork_id,
+            "mode"      => row.mode,
+            "outcome"   => outcome,
+            "result"    => row.result.to_s,
+            "effects"   => effects,
+            "conflicts" => conflicts,
+            "members"   => members,
+          }.to_json)
+        end
+
+        # 成员三元组数组（M4.1-WP4）：task_id/会话键/终态/行数 + any 选中者结论
+        private def build_members(row : ExpectationRow, member_ids : Array(String),
+                                  selected : String?) : Array(JSON::Any)
+          member_ids.map do |task_id|
             session_key = member_session_key(row, task_id)
             lines = @store.transcripts(session_key).size
             raw = @store.task_status?(task_id)
@@ -94,24 +121,90 @@ module Sebas
             end
             JSON::Any.new(member.as(Hash(String, JSON::Any)))
           end
-          # M4.1 默认只读档：副作用清单结构先行、恒空数组（M4.2 副作用分级填充）
-          effects = [] of JSON::Any
-          # outcome 映射：all 模式「状态机 settled 但 result=failed」报告为
-          # failed（§4.3 all 行）；allSettled 恒 settled。
-          outcome = if row.status == "settled" && row.mode == "all" && row.result == "failed"
-                      "failed"
-                    else
-                      row.status
-                    end
-          JSON.parse({
-            "type"    => "join.report",
-            "fork_id" => row.fork_id,
-            "mode"    => row.mode,
-            "outcome" => outcome,
-            "result"  => row.result.to_s,
-            "effects" => effects,
-            "members" => members,
-          }.to_json)
+        end
+
+        # 副作用清单聚合（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：各成员
+        # payload 的 effects 数组（成员 ledger 落库），保持发生序；同时提取文件
+        # 写后摘要——冲突检测基线 = 成员写后状态（成员自己的合法写入不算冲突，
+        # 父在其后的改动才算，§2.2 L1）。
+        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, Array(Tuple(String, String))))
+          effects = member_ids.flat_map do |task_id|
+            raw = @store.task_payload(task_id)
+            next [] of JSON::Any unless raw
+            data = JSON.parse(raw).as_h?
+            next [] of JSON::Any unless data
+            # 缺失或 null（升级前持久化的成员 payload 无 effects 键）视为空数组
+            raw_effects = data["effects"]?
+            effects_array = raw_effects.try(&.as_a?)
+            next [] of JSON::Any unless effects_array
+            effects_array
+          end
+          sorted = effects.sort_by(&.as_h.[]("at").as_s)
+          write_chains = Hash(String, Array(Tuple(String, String))).new
+          sorted.each do |effect|
+            next unless effect.as_h["side_effect"].as_s == "file_write"
+            target = effect.as_h["target"].as_s
+            chain = write_chains[target] ||= Array(Tuple(String, String)).new
+            chain << {effect.as_h["pre_digest"].as_s, effect.as_h["post_digest"].as_s}
+          end
+          {sorted, write_chains}
+        end
+
+        # 指纹对比（M4.2-WP2）按写入链逐环检测：fork 基线 vs 首写 pre（父在
+        # 首写前动过）、链内前环 post vs 后环 pre（父在两次写之间动过）、尾环
+        # post vs 回写时现状（父在最后写后动过）。命中任一环即 CONFLICT，
+        # 只报告不合并（矩阵通则 2）。files 未声明的 fork 无基线可比，跳过
+        # pre/fork 对比（区分「fork 时不存在」与「无基线」两态）。
+        private def detect_conflicts(write_chains : Hash(String, Array(Tuple(String, String))),
+                                     files_declared : Bool, fork_baseline : Hash(String, JSON::Any)) : Array(JSON::Any)
+          return [] of JSON::Any if write_chains.empty?
+          write_chains.compact_map do |path, chain|
+            next if chain.empty?
+            drifted = false
+            # 首写 pre vs fork 基线仅在声明 files 时可比（无声明无基线，跳过）
+            if files_declared
+              fork_digest = fork_baseline[path]?.try(&.as_s)
+              first_pre, _ = chain.first
+              # fork 时不存在（无基线记录）→ 写前非 deleted 即父建过
+              drifted ||= fork_digest ? first_pre != fork_digest : first_pre != "deleted"
+            end
+            # 链内断点检测不依赖 fork 基线：相邻两环 post→pre 不连续即父在
+            # 两次写之间动过（成员写 A→B、父写 C、成员写 D 链 (A,B),(C,D)
+            # 的 B≠C 断点，声明与否都须检出）。
+            chain.each_with_index do |(pre, _), i|
+              next if i.zero?
+              prev_post = chain[i - 1][1]
+              drifted ||= pre != prev_post
+            end
+            _, last_post = chain.last
+            drifted ||= current_digest(path) != last_post # 父在最后写后动过
+            next unless drifted
+            JSON::Any.new({
+              "path"     => JSON::Any.new(path),
+              "status"   => JSON::Any.new("CONFLICT"),
+              "baseline" => JSON::Any.new(chain.first[1]),
+              "current"  => JSON::Any.new(current_digest(path)),
+            }.as(Hash(String, JSON::Any)))
+          end
+        end
+
+        # fork 时点的工作区基线（run 开始记的 memo 快照）：{declared, digests}。
+        # 无 memo = 未声明 files（declared=false，无基线可比）；有 memo 但
+        # digests 空 = 声明了且 fork 时全不存在（declared=true 仍可判父建过）。
+        private def fork_file_baseline(fork_id : String) : Tuple(Bool, Hash(String, JSON::Any))
+          raw = @store.memo_get("fork:#{fork_id}:files")
+          return {false, Hash(String, JSON::Any).new} unless raw
+          parsed = JSON.parse(raw).as_h
+          {parsed["declared"]?.try(&.as_bool) || false, parsed["digests"]?.try(&.as_h) || Hash(String, JSON::Any).new}
+        end
+
+        # 现状摘要：存在性检查后可能被并发删除（CodeRabbit）——读取期 NotFound
+        # 与存在性否等价处理为 "deleted"；其他读取错误如实上抛（不冒充删除）。
+        private def current_digest(path : String) : String
+          return "deleted" unless File.file?(path)
+          ::Digest::SHA256.hexdigest(File.read(path))
+        rescue File::NotFoundError
+          "deleted"
         end
 
         # 成员会话键：与 Executor 派生同构——父 agent 段取自 parent_session

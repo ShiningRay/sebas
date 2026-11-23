@@ -21,9 +21,78 @@ module Sebas
       High
     end
 
-    record ToolResult, ok : Bool, output : String, error : String? do
-      def self.success(output : String) : ToolResult
-        new(true, output, nil)
+    # 副作用四级（M4.2-WP2，semantics §2.1 Q6 矩阵行维度）：join 回写策略
+    # 按成员执行期间发生过的最高级别选格——L0 只读结论直并；L1 文件写触发
+    # 指纹冲突检测；L2 共享/网络写清单回写（幂等键防重复）；L3 不可逆叠加
+    # §7 审批链（M2-WP4 接）。与 Risk（审批分层）正交：两维度独立声明。
+    enum SideEffect
+      ReadOnly
+      FileWrite
+      NetWrite
+      Irreversible
+    end
+
+    # 单条副作用记录（semantics §2.2 矩阵通则 1「副作用已发生不隐瞒」）：
+    # 工具名 + 副作用级 + 目标（文件路径 / 会话键 / 内容摘要）+ 时间。
+    record Effect, tool : String, side_effect : String, target : String, at : String,
+      post_digest : String = "", pre_digest : String = "" do
+      def to_json_object : Hash(String, JSON::Any)
+        {
+          "tool"        => JSON::Any.new(tool),
+          "side_effect" => JSON::Any.new(side_effect),
+          "target"      => JSON::Any.new(target),
+          "at"          => JSON::Any.new(at),
+          "post_digest" => JSON::Any.new(post_digest),
+          "pre_digest"  => JSON::Any.new(pre_digest),
+        }
+      end
+    end
+
+    # 副作用台账（M4.2-WP2）：成员执行期间经由 ToolContext.ledger 收集，
+    # join 回写时并入 join.report.effects（只读工具不入账）。
+    class EffectsLedger
+      getter entries : Array(Effect)
+
+      def initialize
+        @entries = [] of Effect
+      end
+
+      def record(tool : String, side_effect : SideEffect, target : String,
+                 post_digest : String = "", pre_digest : String = "") : Nil
+        @entries << Effect.new(tool, side_effect.to_s.underscore, target,
+          ::Time.utc.to_rfc3339, post_digest, pre_digest)
+      end
+
+      # 各路径成员写前现状摘要（该路径最新一条 file_write 条目）——配合 fork
+      # 基线检测「父在成员写前已改动/创建」的漂移（会被成员写覆盖掩盖）。
+      def written_pre_digests : Hash(String, String)
+        @entries.select { |e| e.side_effect == "file_write" && !e.pre_digest.empty? }
+          .each_with_object(Hash(String, String).new) do |e, hash|
+            hash[e.target] = e.pre_digest
+          end
+      end
+
+      # L1 文件写涉及的路径集（指纹冲突检测的对比清单）
+      def written_paths : Array(String)
+        paths = @entries.select { |e| e.side_effect == "file_write" }.map(&.target)
+        paths.uniq!
+      end
+
+      # 各路径成员写后的内容摘要（该路径最新一条 file_write 条目）——
+      # 冲突检测基线：成员写后状态 vs 回写时现状（semantics §2.2 L1）。
+      def written_digests : Hash(String, String)
+        @entries.select { |e| e.side_effect == "file_write" && !e.post_digest.empty? }
+          .each_with_object(Hash(String, String).new) do |e, hash|
+            hash[e.target] = e.post_digest
+          end
+      end
+    end
+
+    record ToolResult, ok : Bool, output : String, error : String?, digest : String? = nil do
+      # digest（M4.2-WP2）：文件写类工具随结果返回实际写入内容的摘要——
+      # 冲突检测基线必须对应写入字节，写入后重读会被并发改动污染。
+      def self.success(output : String, digest : String? = nil) : ToolResult
+        new(true, output, nil, digest)
       end
 
       def ok? : Bool
@@ -40,20 +109,27 @@ module Sebas
       end
     end
 
-    # 工具运行上下文：会话/账号维度 + 持久层句柄（scope 由构造器保证，Hermes contextvar 教训反面）
+    # 工具运行上下文：会话/账号维度 + 持久层句柄（scope 由构造器保证，Hermes contextvar 教训反面）。
+    # ledger（M4.2-WP2）：副作用台账可选挂载——nil 时 effectful 工具执行
+    # 只返回结果不入账（非分身调用路径行为不变）。
     record ToolContext,
       session_key : String,
       account_id : String,
       event_id : String,
-      store : Platform::Store::Store
+      store : Platform::Store::Store,
+      ledger : EffectsLedger? = nil
 
     abstract class Tool
       getter name : String
       getter description : String
       getter replay : ReplaySemantics
       getter risk : Risk
+      # 副作用四级归属（M4.2-WP2 §2.1）：默认只读——写类工具显式声明，
+      # 防新增工具漏标静默按只读处理。
+      getter side_effect : SideEffect
 
-      def initialize(@name : String, @description : String, @replay : ReplaySemantics, @risk : Risk)
+      def initialize(@name : String, @description : String, @replay : ReplaySemantics, @risk : Risk,
+                     @side_effect : SideEffect = SideEffect::ReadOnly)
       end
 
       abstract def run(args : JSON::Any, ctx : ToolContext) : ToolResult
