@@ -204,13 +204,9 @@ module Sebas
         private def dispatch(io : TCPSocket, frame : Frame) : Nil
           case frame.type
           when "fork", "join"
-            # 写触发命令（CWE-306）：调用者必须在 hello 里提供匹配 token——
-            # 读命令维持匿名可用，写命令认证强制（CodeRabbit）。
-            if caller_authenticated?(io)
-              io.puts(fork_join_response(frame))
-            else
-              io.puts(error_response(frame.id, "fork/join requires an authenticated hello handshake"))
-            end
+            io.puts(authenticated_response(io, frame) { fork_join_response(frame) })
+          when "approvals.approve", "approvals.deny", "approvals.pending"
+            io.puts(approvals_dispatch(io, frame))
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
           when "system.health"
@@ -239,6 +235,57 @@ module Sebas
           end
         end
 
+        # 写命令认证包装（CWE-306）：调用者须在 hello 里提供匹配 token——
+        # 读命令维持匿名可用，写命令认证强制（CodeRabbit）。
+        private def authenticated_response(io : TCPSocket, frame : Frame, &block : Frame -> String) : String
+          if caller_authenticated?(io)
+            block.call(frame)
+          else
+            error_response(frame.id, "#{frame.type} requires an authenticated hello handshake")
+          end
+        end
+
+        # approvals 命令路由：approve/deny 是写操作（与 fork/join 同级认证，
+        # CWE-306 口径）；pending 清单是读命令，匿名可用。
+        private def approvals_dispatch(io : TCPSocket, frame : Frame) : String
+          needs_auth = frame.type != "approvals.pending"
+          if needs_auth && !caller_authenticated?(io)
+            return error_response(frame.id, "#{frame.type} requires an authenticated hello handshake")
+          end
+          frame.type == "approvals.pending" ? approvals_pending_response(frame) : approvals_response(frame)
+        end
+
+        # approvals.approve/deny：data.id 必带，data.by 可选；决策写 memo +
+        # 唤醒等待中的 request（Center.decide）。返回决策结果或错误原因。
+        private def approvals_response(frame : Frame) : String
+          center = @approvals_center
+          return error_response(frame.id, "#{frame.type} not available: approvals 组件未装配") unless center
+
+          id = frame.data["id"]?.try(&.as_s?)
+          return error_response(frame.id, "id is required") unless id
+          by = frame.data["by"]?.try(&.as_s?) || "operator"
+          ok = frame.type == "approvals.approve" ? center.approve(id, by) : center.deny(id, by)
+          ok ? ok_response(frame.id, {"id"       => JSON::Any.new(id),
+                                      "decision" => JSON::Any.new(frame.type == "approvals.approve" ? "approved" : "denied")}) : error_response(frame.id, "no pending approval #{id}")
+        end
+
+        # approvals.pending：待决清单（读命令匿名可用）——id/tool/args/run/deadline
+        private def approvals_pending_response(frame : Frame) : String
+          center = @approvals_center
+          return error_response(frame.id, "approvals.pending not available: approvals 组件未装配") unless center
+
+          items = center.pending_requests.map do |req|
+            JSON::Any.new({
+              "id"       => JSON::Any.new(req.id),
+              "tool"     => JSON::Any.new(req.tool),
+              "args"     => JSON::Any.new(req.args_summary),
+              "run_id"   => JSON::Any.new(req.run_id),
+              "deadline" => JSON::Any.new(req.deadline.to_rfc3339),
+            }.as(Hash(String, JSON::Any)))
+          end
+          ok_response(frame.id, {"pending" => JSON::Any.new(items)})
+        end
+
         private def fork_join_response(frame : Frame) : String
           handler = @fork_handler
           return error_response(frame.id, "#{frame.type} not available: fork 组件未装配") unless handler
@@ -258,6 +305,10 @@ module Sebas
         def fork_handler=(handler : JSON::Any -> JSON::Any) : Nil
           @fork_handler = handler
         end
+
+        # 审批装配接线（M4.2-WP3）：approvals.approve/deny/pending 命令的处理体。
+        setter approvals_center
+        getter approvals_center : ::Sebas::Orchestration::Approvals::Center?
 
         # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。
         # 认证绑定 socket 引用本身（非 object_id——内存地址可复用）。
