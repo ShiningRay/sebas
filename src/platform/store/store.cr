@@ -2,6 +2,7 @@ require "db"
 require "sqlite3"
 require "json"
 require "./expectations_store"
+require "./task_effects_store"
 require "digest/sha256"
 require "../../log"
 require "../../sessions/scheduling/policy"
@@ -171,6 +172,7 @@ module Sebas
       ]
 
       class Store
+        include ::Sebas::Platform::TaskEffectsStoreMethods
         include ::Sebas::Platform::ExpectationStoreMethods
 
         getter db : ::DB::Database

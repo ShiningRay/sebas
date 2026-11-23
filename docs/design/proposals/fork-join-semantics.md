@@ -73,6 +73,16 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 
 ## 2. Join 语义矩阵
 
+> 实现状态（M4.2-WP2，#47）：副作用四级由 `src/tools/registry.cr` 的
+> `SideEffect` 枚举承载（`ReadOnly`/`FileWrite`/`NetWrite`/`Irreversible`，
+> 与审批分层 `Risk` 正交）；逐工具归属定案——`memory.search`/`session.read`
+> 为 L0，`memory.save`（共享写状态）与 `message.send` 为 L2，`file.write`
+> （最小文件写示例）为 L1，L3 暂无实例（审批链 M2-WP4 接）。副作用清单经
+> `EffectsLedger` 随 `ToolContext.ledger` 收集、由成员任务 payload 的
+> `effects` 数组落库、聚合进 join.report；文件指纹冲突检测以**成员写后
+> 内容摘要**为基线（成员自己的合法写入不算冲突），父在其后的改动（含删除）
+> 标 `CONFLICT` 进 report.conflicts 父裁决清单，join 侧不自动 merge。
+
 ### 2.1 副作用四级定义
 
 | 级 | 名称 | 判定 | 工具映射 |

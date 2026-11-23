@@ -170,20 +170,28 @@ module Sebas
           parent_session = data["parent_session"]?.try(&.as_s?) || "agent:main:internal:main:fork-cli"
           # 工具声明（M4.2-WP1 §5.2）：缺失 = 默认只读档；类型错（非字符串数组）
           # 整体拒绝，不被默认值吞掉。
-          tools = if raw_tools = data["tools"]?
-                    unless raw_tools.as_a?.try(&.all?(&.as_s?))
-                      raise ::Sebas::Platform::Store::StoreError.new(
-                        "tools 必须为字符串数组，实际：#{raw_tools}")
-                    end
-                    raw_tools.as_a.map(&.as_s)
-                  end
+          tools = parse_fork_string_list(data, "tools")
+          # 工作区文件清单（M4.2-WP2 §2.2 L1）：fork 开始对这些文件记指纹，
+          # join 回写对比冲突。缺失 = 无指纹快照（只读 fork 不需要）。
+          files = parse_fork_string_list(data, "files")
 
           input = Orchestration::Fork::SnapshotBuilder::Input.new(
             task: task, count: count, window: data["window"]?.try(&.as_i?),
             include: nil, tools: tools, role: data["role"]?.try(&.as_s?),
-            mode: mode, deadline: deadline
+            mode: mode, deadline: deadline, files: files
           )
           {input, parent_session}
+        end
+
+        # 可选字符串数组字段解析：缺失返回 nil；存在但非字符串数组整体拒绝
+        # （与 count 同款「区分缺失与类型错误」口径）。
+        private def parse_fork_string_list(data : Hash(String, JSON::Any), field : String) : Array(String)?
+          raw = data[field]? || return
+          unless raw.as_a?.try(&.all?(&.as_s?))
+            raise ::Sebas::Platform::Store::StoreError.new(
+              "#{field} 必须为字符串数组，实际：#{raw}")
+          end
+          raw.as_a.map(&.as_s)
         end
 
         def reload_result_payload(result : Config::ReloadResult) : Hash(String, JSON::Any)
