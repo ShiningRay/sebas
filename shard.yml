@@ -27,6 +27,10 @@ dependencies:
   file_watcher:
     github: naqvis/file_watcher
     branch: main
+  # ruby_llm 的 Crystal 移植。改动走 ShiningRay fork，定期向 stevegeek/crystal-llm
+  # 提 PR；上游尚无稳定 release，暂不锁版本。
+  crystal_llm:
+    github: ShiningRay/crystal-llm
 
 targets:
   sebas:

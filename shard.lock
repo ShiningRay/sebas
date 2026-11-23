@@ -4,13 +4,53 @@ shards:
     git: https://github.com/crystal-ameba/ameba.git
     version: 1.7.0
 
+  awscr-signer:
+    git: https://github.com/taylorfinnell/awscr-signer.git
+    version: 0.10.0
+
+  bindata:
+    git: https://github.com/spider-gazelle/bindata.git
+    version: 3.2.1
+
+  cookie_jar:
+    git: https://github.com/mamantoha/http-cookie_jar.git
+    version: 0.2.0
+
+  crest:
+    git: https://github.com/mamantoha/crest.git
+    version: 1.9.0
+
+  crystal_llm:
+    git: https://github.com/shiningray/crystal-llm.git
+    version: 1.16.0
+
   db:
     git: https://github.com/crystal-lang/crystal-db.git
     version: 0.15.0
 
+  ed25519:
+    git: https://github.com/spider-gazelle/ed25519.git
+    version: 1.1.0
+
   file_watcher:
     git: https://github.com/naqvis/file_watcher.git
     version: 0.1.0+git.commit.35cb80931798b36c4868b241cef0e8d5105b0175
+
+  http-client-digest_auth:
+    git: https://github.com/mamantoha/http-client-digest_auth.git
+    version: 0.6.0
+
+  http_proxy:
+    git: https://github.com/mamantoha/http_proxy.git
+    version: 0.17.0
+
+  jwt:
+    git: https://github.com/crystal-community/jwt.git
+    version: 1.7.2
+
+  openssl_ext:
+    git: https://github.com/spider-gazelle/openssl_ext.git
+    version: 2.8.5
 
   sqlite3:
     git: https://github.com/crystal-lang/crystal-sqlite3.git
