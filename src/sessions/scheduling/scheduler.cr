@@ -32,14 +32,30 @@ module Sebas
         @stopping = false
         @metrics : Hash(String, Int64)
 
-        def initialize(@session_key : String, @store : ::Sebas::Platform::Store::Store, @dispatch : DispatchFn)
+        # debounce 聚合桶（M4.1→WP3，#5）：bucket_key → 累积状态。
+        # 单调时钟毫秒由 @clock 注入（契约：时钟逻辑可注入，墙钟仅持久展示）。
+        @buckets = Hash(String, BatchAccumulator).new
+        @bucket_inputs = Hash(String, Array(InputEnvelope)).new
+        @bucket_batch_ids = Hash(String, String).new
+        @clock : -> Int64
+
+        def initialize(@session_key : String, @store : ::Sebas::Platform::Store::Store,
+                       @dispatch : DispatchFn, clock : (-> Int64)? = nil)
           @metrics = {
             "admitted"          => 0_i64,
             "duplicate"         => 0_i64,
             "rejected_capacity" => 0_i64,
             "dispatched"        => 0_i64,
             "completed"         => 0_i64,
+            "sealed_idle"       => 0_i64,
+            "sealed_max_wait"   => 0_i64,
+            "sealed_count"      => 0_i64,
+            "sealed_bytes"      => 0_i64,
+            "sealed_flush"      => 0_i64,
+            "sealed_turn_end"   => 0_i64,
           } of String => Int64
+          process_start = ::Time.instant
+          @clock = clock || -> { process_start.elapsed.total_milliseconds.to_i64 }
         end
 
         # ---- 可观测计数（契约 §6 指标面；IPC 暴露属后续 WP）----
@@ -85,6 +101,14 @@ module Sebas
               created_at: ::Time.utc.to_rfc3339, sealed_at: nil, seal_reason: nil
             )
             env = finalize_env(env, seq)
+
+            # debounce 模式（WP3，#5）：入聚合桶，eval_seal 即刻判定（bytes/count
+            # 立即封冻；idle/max_wait 由 seal_due 扫描器收口）。忙碌期聚合：批次
+            # 收集不依赖会话空闲，turn 运行中照常入桶。
+            if snapshot.batch_mode == "debounce"
+              return admit_debounce(batch, env, snapshot, seq)
+            end
+
             # 批次行 + 首个输入同一事务：崩溃不留孤儿空批（batch_id 序号不被占用）
             unless @store.admit_new_batch(batch, env, 0)
               # 主键守卫兜底（同 session 已互斥，理论不可达）：事务已回滚，零残留
@@ -159,6 +183,116 @@ module Sebas
               seal_and_queue(row.batch_id, SealReason::Shutdown)
             end
           end
+        end
+
+        # ---- debounce 聚合（WP3，#5）----
+
+        # debounce admission（#5）：桶已存在 → admit_session_input 追加进该桶
+        # 批次行；桶不存在 → admit_new_batch 建批（首输入）。入桶后即时判定
+        # bytes/count/max_wait；idle 由 seal_due 扫描器收口。忙碌期照常聚合
+        # （不依赖会话空闲，不饥饿）。
+        private def admit_debounce(batch : Batch, env : InputEnvelope,
+                                   snapshot : PolicySnapshot, seq : Int64) : AdmissionReceipt
+          key = ::Sebas::Sessions::Scheduling.bucket_key(
+            snapshot.group_by, @session_key, env.sender, env.source, "default")
+          env = finalize_env(env, seq)
+
+          if existing = @bucket_inputs[key]?
+            # 追加进既有桶批次行（状态守卫：桶批次仍 collecting 才接受）
+            batch_id = @bucket_batch_ids[key]?
+            batch_row = batch_id && collecting_batch_for(batch_id)
+            unless batch_row && @store.admit_session_input(env, batch_row, existing.size)
+              bump("rejected_capacity")
+              return AdmissionReceipt.new(env.event_id, batch.batch_id, "rejected", nil)
+            end
+          else
+            # 首输入建批（批次行 + 输入同一事务，崩溃不留孤儿空批）
+            unless @store.admit_new_batch(batch, env, 0)
+              bump("duplicate")
+              return AdmissionReceipt.new(env.event_id, batch.batch_id, "duplicate", nil)
+            end
+            @bucket_batch_ids[key] = batch.batch_id # 桶键 ↔ 批次行关联
+          end
+
+          now_ms = @clock.call
+          acc = @buckets[key]? || BatchAccumulator.new(now_ms, now_ms, 0, 0)
+          acc = BatchAccumulator.new(acc.first_received_ms, now_ms,
+            acc.message_count + 1, acc.byte_count + env.payload.bytesize.to_i64)
+          @buckets[key] = acc
+          (@bucket_inputs[key] ||= [] of InputEnvelope) << env
+
+          # 即时条件：bytes / count / max_wait（idle 由扫描器收口）
+          reason = ::Sebas::Sessions::Scheduling.eval_seal(acc, snapshot, now_ms)
+          if reason && {SealReason::Bytes, SealReason::Count, SealReason::MaxWait}.includes?(reason)
+            seal_bucket(key, snapshot, reason)
+          end
+          bump("admitted")
+          AdmissionReceipt.new(env.event_id, batch.batch_id, "accepted", nil)
+        end
+
+        # 桶 → collecting 批次（SessionBatchRow.policy_snapshot 反序列化重建
+        # Batch——admit_session_input 需要完整 Batch 值对象）。
+        private def collecting_batch_for(batch_id : String) : Batch?
+          row = @store.collecting_batches(@session_key).find(&.batch_id.==(batch_id))
+          return unless row
+          snapshot = ::Sebas::Sessions::Scheduling::PolicySnapshot.from_json(row.policy_snapshot)
+          Batch.new(batch_id: row.batch_id, session_key: row.session_key,
+            status: BatchStatus::Collecting, policy_snapshot: snapshot,
+            first_seq: row.first_seq, last_seq: row.last_seq,
+            created_at: "", sealed_at: nil, seal_reason: row.seal_reason)
+        end
+
+        # seal 扫描（定时器/显式调用）：idle/max_wait 到期的桶封冻入队。
+        # max_active_buckets 消费：桶数超上限时强制封存最老桶（LRU 近似：首建时间最早）。
+        def seal_due(now_ms : Int64? = nil) : Int32
+          @mutex.synchronize do
+            now = now_ms || @clock.call
+            sealed = 0
+            @buckets.reject! do |key, acc|
+              # 桶的 policy 以首条输入快照为准（同会话同策略；热换后新桶用新快照）
+              snapshot = @bucket_inputs[key]?.try(&.first?).try(&.policy_snapshot)
+              next false unless snapshot
+              reason = ::Sebas::Sessions::Scheduling.eval_seal(acc, snapshot, now)
+              if reason && {SealReason::Idle, SealReason::MaxWait}.includes?(reason)
+                bump("sealed_#{reason.to_s.downcase}")
+                seal_bucket(key, snapshot, reason)
+                sealed += 1
+                true # reject! 移除
+              else
+                false
+              end
+            end
+            # max_active_buckets：封存最老桶防桶数失控（契约 §4.3）
+            enforce_bucket_limit(snapshot_for_limit_check)
+            sealed
+          end
+        end
+
+        private def snapshot_for_limit_check : PolicySnapshot?
+          @bucket_inputs.each_value.first?.try(&.first?).try(&.policy_snapshot)
+        end
+
+        private def enforce_bucket_limit(snapshot : PolicySnapshot?) : Nil
+          return unless snapshot
+          limit = snapshot.max_active_buckets
+          while @buckets.size > limit
+            oldest = @buckets.min_by { |_, acc| acc.first_received_ms }
+            seal_bucket(oldest[0], snapshot, SealReason::MaxWait)
+            @buckets.delete(oldest[0])
+          end
+        end
+
+        # 封冻聚合桶 → collecting 批次 seal + queued（结构化成员已在批次输入里，
+        # 原始 envelope 永久可查——dispatch payload 只带 batch_id，拼接视图由
+        # 执行体按 batch_inputs 构造）。
+        private def seal_bucket(key : String, snapshot : PolicySnapshot, reason : SealReason) : Nil
+          inputs = @bucket_inputs.delete(key)
+          @buckets.delete(key)
+          batch_id = @bucket_batch_ids.delete(key)
+          return if inputs.nil? || inputs.empty? || batch_id.nil?
+
+          seal_and_queue(batch_id, reason)
+          bump("sealed_#{reason.to_s.downcase}")
         end
 
         # ---- 内部（调用方须持 @mutex）----
@@ -249,6 +383,13 @@ module Sebas
 
         def shutdown : Nil
           @mutex.synchronize { @schedulers.each_value(&.shutdown) }
+        end
+
+        # seal 扫描转发：对所有 scheduler 执行 seal_due（定时器调用入口，#5）
+        def seal_due(now_ms : Int64? = nil) : Int32
+          total = 0
+          @mutex.synchronize { @schedulers.each_value { |scheduler| total += scheduler.seal_due(now_ms) } }
+          total
         end
 
         # 测试/观测面：指定会话的 scheduler（不存在则 nil）

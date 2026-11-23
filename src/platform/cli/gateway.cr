@@ -54,6 +54,7 @@ module Sebas
         # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
         # pool handler ↔ scheduling registry 的循环引用
         @batch_job_handler : Proc(Agents::Job, Nil)? = nil
+        @stopping_scan = Atomic(Bool).new(false)
 
         def initialize(@config : Config::Config, data_dir : String | Path, config_path : String = "",
                        &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
@@ -69,6 +70,15 @@ module Sebas
           @scheduling = Sessions::Scheduling::Registry.new(@store)
           scheduling.dispatch_handler = ->(session_key : String, payload : String) { @pool.enqueue(session_key, payload) }
           @batch_job_handler = ->(job : Agents::Job) { run_batch_job(job) }
+          # debounce seal 扫描定时器（#5 WP3）：100ms 粒度扫描全部会话的
+          # collecting 桶（idle/max_wait 到期封冻入队）；进程内单调时钟。
+          spawn(name: "sebas-schedule-seal-scanner") do
+            loop do
+              sleep 100.milliseconds
+              break if @stopping_scan
+              @scheduling.seal_due
+            end
+          end
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
