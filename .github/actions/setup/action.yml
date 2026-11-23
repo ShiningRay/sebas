@@ -94,9 +94,10 @@ runs:
           # crystal 构建期版本检测）都要能找到，故同时补本 step PATH 与
           # GITHUB_PATH（GITHUB_PATH 对后续 step 是 prepend 语义）。
           brew_bin_dir="$(dirname "$brew_bin")"
+          brew_bin_dir_added=0
           case ":$PATH:" in
             *":$brew_bin_dir:"*) ;;
-            *) export PATH="$brew_bin_dir:$PATH" ;;
+            *) export PATH="$brew_bin_dir:$PATH"; brew_bin_dir_added=1 ;;
           esac
           if [ -z "$openssl_prefix" ]; then
             echo "bootstrapping: brew install openssl@3"
@@ -108,10 +109,13 @@ runs:
           fi
           hash -r
           openssl_prefix="$(scan_kegs || true)"
-          # 无条件写入：安装成功时最需要把 brew bin 传给后续 step（守卫 +
-          # crystal 构建期版本检测），条件化会恰好漏掉这个场景；重复目录
-          # 项对 PATH 无害。
-          echo "$brew_bin_dir" >> "$GITHUB_PATH"
+          # 仅当原 PATH 不含 brew bin 时写入 GITHUB_PATH（与安装结果无关）：
+          # 已存在的目录由作业环境继承、保持原优先级，重复前置会让后续
+          # step 的 pkg-config 解析到与当前 step 校验不同的可执行文件；
+          # 安装失败时守卫仍会 fail-closed，此写入无副作用。
+          if [ "$brew_bin_dir_added" -eq 1 ]; then
+            echo "$brew_bin_dir" >> "$GITHUB_PATH"
+          fi
         fi
 
         if [ -z "$openssl_prefix" ]; then
