@@ -245,6 +245,15 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 ## 6. 触发权与递归防护
 
+> 实现状态（M4.3-WP2，#51）：`Tools::ForkTool`（tools/fork_tool.cr）承载
+> 对话流内自然 fork——四重闸：①能力衰减（仅父 agent ReAct 面注册，分身面
+> 不注册）+ `Capability.resolve` 对显式声明 fork 硬编码剔除列明（即使父
+> allow 含 "*"）；②并发闸（count ≤ Executor::DEFAULT_MAX_CONCURRENT）；③
+> 一级限制（parent_session = ctx.session_key 当前对话，分身无递归入口）；
+> ④L3 审批（side_effect=Irreversible → Executor 审批门，对话上下文
+> unattended=false 走 pending 等人工）。Executor 内置 join.report 自动回写
+> 父会话（对话内 fork → join 自然可见，幂等 memo）。
+
 ### 6.1 触发权分阶段
 
 | 阶段 | 允许的触发 | 依据 |

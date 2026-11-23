@@ -180,6 +180,67 @@ module Sebas
           raw.as_a.map(&.as_s)
         end
 
+        # 对话流内自然 fork（M4.3-WP2 §6.1）：fork 工具进父 agent ReAct 面
+        # （经衰减/并发闸/一级限制/L3 审批四重闸）；分身面不注册（一级限制）。
+        private def register_dialog_fork_tool(registry : Tools::Registry,
+                                              agent_name : String, agent : Config::AgentConfig) : Nil
+          main_agent = @config.agents[agent_name]?
+          return unless main_agent
+          registry.register(Tools::ForkTool.new(@store,
+            Orchestration::Fork::Expectations.new(@store),
+            -> { @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) } },
+            @approvals, agent_name,
+            main_agent.tools.try(&.allow) || ["*"]))
+        end
+
+        private def spawn_adapters : Nil
+          if email = @config.channels.email
+            email.accounts.each do |account|
+              adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
+              @channels.register(adapter)
+              @supervisor.register(adapter)
+            end
+          end
+          # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
+        end
+
+        # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
+        private def finish_round(task_id : String?, round : Int32, text : String) : String
+          @store.checkpoint(task_id, round) if task_id
+          text
+        end
+
+        # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
+        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
+        private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
+          registry = Tools.default_registry(@channels)
+          allowed = agent.tools.try(&.allow) || ["*"]
+          unless allowed.includes?("*")
+            registry.names.each do |name|
+              registry.unregister(name) unless allowed.includes?(name)
+            end
+          end
+          registry
+        end
+
+        # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
+        # 模型据此发起工具调用（新会话无工具知识则循环永不触发）。
+        private def tool_protocol_prompt(registry : Tools::Registry) : String
+          String.build do |io|
+            io << "You can call tools. Available tools:\n"
+            io << registry.describe << "\n\n"
+            io << "To call a tool, respond with exactly one fenced JSON block:\n"
+            io << "```json\n{\"tool\": \"<name>\", \"args\": {<parameters>}}\n```\n"
+            io << "The tool result will be provided in the next message. Respond without such a block to give your final answer. Note: string values must not contain ``` sequences."
+          end
+        end
+
+        private def build_rules(config : Config::Config) : Array(Routing::BindingRule)
+          config.bindings.map do |b|
+            Routing::BindingRule.new(b.channel, b.account || "*", b.peer || "*", b.agent)
+          end
+        end
+
         # 重放未完成 intents（崩溃恢复入口，M0-WP8 演练；#49 迁入 dispatch——
         # 与 schedule_input 同为入站消息接线）
         def replay_unfinished : Nil

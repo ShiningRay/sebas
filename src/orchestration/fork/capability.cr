@@ -21,9 +21,11 @@ module Sebas
 
         def self.resolve(declared : Array(String)?, parent_allow : Array(String)) : Grant
           return Grant.new(DEFAULT_READ_ONLY.dup, [] of String) if declared.nil?
+          # 一级限制（§6.2 白名单校验直接拒绝）：显式声明 fork 一律剔除并
+          # 列明——即使父 allow 含 "*"（分身不能派分身，hops=1 最强防环形式）。
           allow_all = parent_allow.includes?("*")
-          effective = declared.select { |tool| allow_all || parent_allow.includes?(tool) }
-          removed = declared.reject { |tool| allow_all || parent_allow.includes?(tool) }
+          effective = declared.select { |tool| tool != "fork" && (allow_all || parent_allow.includes?(tool)) }
+          removed = declared.select { |tool| tool == "fork" || !(allow_all || parent_allow.includes?(tool)) }
           Grant.new(effective, removed)
         end
       end

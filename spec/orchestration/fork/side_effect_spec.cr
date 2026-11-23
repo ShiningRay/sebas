@@ -67,7 +67,7 @@ module Sebas
       store.create_task("parent-1", "fork_parent")
       expectations = ::Sebas::Orchestration::Fork::Expectations.new(store)
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
-        -> { ::Sebas::Providers::FakeProvider.new("fake", ["member done"]).as(Providers::Provider) })
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["member done"]).as(Providers::Provider) }, auto_join_write: false)
       parent_session = "agent:main:internal:main:fork-cli"
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
         task: "edit file", count: 1, window: nil, include: nil,
@@ -124,7 +124,7 @@ module Sebas
       store.create_task("parent-1", "fork_parent")
       expectations = ::Sebas::Orchestration::Fork::Expectations.new(store)
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
-        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) })
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) }, auto_join_write: false)
       parent_session = "agent:main:internal:main:fork-cli"
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
         task: "edit file", count: 1, window: nil, include: nil,
@@ -169,7 +169,7 @@ module Sebas
       store.create_task("parent-1", "fork_parent")
       expectations = ::Sebas::Orchestration::Fork::Expectations.new(store)
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
-        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) })
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) }, auto_join_write: false)
       parent_session = "agent:main:internal:main:fork-cli"
       # files 不声明（nil）→ fork 无快照
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
@@ -207,7 +207,7 @@ module Sebas
       store.create_task("parent-1", "fork_parent")
       expectations = ::Sebas::Orchestration::Fork::Expectations.new(store)
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
-        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) })
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) }, auto_join_write: false)
       parent_session = "agent:main:internal:main:fork-cli"
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
         task: "edit file", count: 1, window: nil, include: nil,
@@ -249,7 +249,7 @@ module Sebas
       store.create_task("parent-1", "fork_parent")
       expectations = ::Sebas::Orchestration::Fork::Expectations.new(store)
       executor = ::Sebas::Orchestration::Fork::Executor.new(store, expectations,
-        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) })
+        -> { ::Sebas::Providers::FakeProvider.new("fake", ["done"]).as(Providers::Provider) }, auto_join_write: false)
       parent_session = "agent:main:internal:main:fork-cli"
       input = ::Sebas::Orchestration::Fork::SnapshotBuilder::Input.new(
         task: "edit file", count: 1, window: nil, include: nil,
