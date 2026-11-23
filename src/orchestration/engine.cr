@@ -107,12 +107,14 @@ module Sebas
         count = args["count"]?.try(&.as_i?)
         mode = args["mode"]?.try(&.as_s?)
         deadline = args["deadline"]?.try(&.as_i?)
+        window = args.dig?("snapshot", "window").try(&.as_i?)
         errors << "缺 task" if task.nil? || task.empty?
         errors << "缺 count（必填）" if count.nil?
         errors << "count 必须为正整数" if count && count <= 0
         errors << "缺 mode（必填）" if mode.nil?
         errors << "mode 必须为 all/any/allSettled" if mode && !%w[all any allSettled].includes?(mode)
         errors << "缺 deadline（必填）" if deadline.nil?
+        errors << "snapshot.window 必须为非负整数" if window && window < 0
         errors
       end
 
