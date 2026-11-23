@@ -78,9 +78,25 @@ module Sebas
           end
         end
         return {nil, 0, 0} if end_idx < 0
-        closing = text.index("```", end_idx + 1)
+        closing = valid_closing_fence(text, end_idx + 1)
         return {nil, 0, 0} if closing.nil?
         {text[start_idx..end_idx], end_idx + 1, closing}
+      end
+
+      # 闭合围栏行整行校验：``` 须行首或前是空白（行内 ``` 是内容不是闭栏），
+      # 其后到行尾仅空白。返回闭栏 ``` 的字符位置；不合规则返回 nil。
+      private def self.valid_closing_fence(text : String, from : Int32) : Int32?
+        scan_from = from
+        while found = text.index("```", scan_from)
+          line_start = text.rindex('\n', found) || -1
+          line_start += 1
+          line_end = text.index('\n', found + 3) || text.size
+          before_ok = found == line_start || text[line_start...found].strip.empty?
+          after_ok = text[(found + 3)...line_end].strip.empty?
+          return found if before_ok && after_ok
+          scan_from = found + 3
+        end
+        nil
       end
     end
   end
