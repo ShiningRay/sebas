@@ -59,14 +59,19 @@ runs:
         brew_prefix="$("$brew_bin" --prefix)"
 
         # 直接扫 keg 目录，不调用 brew（避免任何隐式升级）。
+        #
+        # **只认带版本后缀的 keg（@3 / @4），排除无后缀的 `openssl` 软链**：
+        # 该软链可能指向陈旧 keg——macos-ci 实测它指向 openssl@1.1/1.1.1g
+        # （2020 年版本），Crystal 1.22.x 的 LibCrypto 绑定按 OpenSSL 3+ 声明，
+        # 链接 1.1 会在编译期报 `undefined method 'ctrl=' for
+        # LibCrypto::BioMethod`（main d7d7b3c 的 spec / macos-ci 实测）。
+        # 宁可明确报错指引安装，也不静默落到错误版本。
         openssl_prefix=""
         for dir in \
-          "$brew_prefix/opt/openssl@4" \
           "$brew_prefix/opt/openssl@3" \
-          "$brew_prefix/opt/openssl" \
-          /usr/local/opt/openssl@4 \
+          "$brew_prefix/opt/openssl@4" \
           /usr/local/opt/openssl@3 \
-          /usr/local/opt/openssl; do
+          /usr/local/opt/openssl@4; do
           if [ -f "$dir/lib/libssl.dylib" ] || [ -f "$dir/lib/libssl.a" ]; then
             openssl_prefix="$dir"
             break
@@ -74,7 +79,9 @@ runs:
         done
 
         if [ -z "$openssl_prefix" ]; then
-          echo "::error::No OpenSSL keg with libssl found. Install one on the self-hosted runner: brew install openssl@3"
+          echo "::error::No OpenSSL 3+ keg found (openssl@3 / openssl@4)."
+          echo "::error::Install one on the self-hosted runner: brew install openssl@3"
+          echo "::error::Note: an unversioned 'openssl' symlink pointing at an old keg (e.g. 1.1) is deliberately not accepted."
           exit 1
         fi
 
