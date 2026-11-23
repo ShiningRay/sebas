@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 
 module Sebas
   module Orchestration
@@ -71,7 +72,32 @@ module Sebas
           selected = if row.mode == "any" && row.result.to_s.starts_with?("first success: ")
                        row.result.to_s.lchop("first success: ")
                      end
-          members = member_ids.map do |task_id|
+          members = build_members(row, member_ids, selected)
+          effects, written_digests = collect_member_effects(member_ids)
+          conflicts = detect_conflicts(row.fork_id, written_digests)
+          # outcome 映射：all 模式「状态机 settled 但 result=failed」报告为
+          # failed（§4.3 all 行）；allSettled 恒 settled。
+          outcome = if row.status == "settled" && row.mode == "all" && row.result == "failed"
+                      "failed"
+                    else
+                      row.status
+                    end
+          JSON.parse({
+            "type"      => "join.report",
+            "fork_id"   => row.fork_id,
+            "mode"      => row.mode,
+            "outcome"   => outcome,
+            "result"    => row.result.to_s,
+            "effects"   => effects,
+            "conflicts" => conflicts,
+            "members"   => members,
+          }.to_json)
+        end
+
+        # 成员三元组数组（M4.1-WP4）：task_id/会话键/终态/行数 + any 选中者结论
+        private def build_members(row : ExpectationRow, member_ids : Array(String),
+                                  selected : String?) : Array(JSON::Any)
+          member_ids.map do |task_id|
             session_key = member_session_key(row, task_id)
             lines = @store.transcripts(session_key).size
             raw = @store.task_status?(task_id)
@@ -94,24 +120,44 @@ module Sebas
             end
             JSON::Any.new(member.as(Hash(String, JSON::Any)))
           end
-          # M4.1 默认只读档：副作用清单结构先行、恒空数组（M4.2 副作用分级填充）
-          effects = [] of JSON::Any
-          # outcome 映射：all 模式「状态机 settled 但 result=failed」报告为
-          # failed（§4.3 all 行）；allSettled 恒 settled。
-          outcome = if row.status == "settled" && row.mode == "all" && row.result == "failed"
-                      "failed"
-                    else
-                      row.status
-                    end
-          JSON.parse({
-            "type"    => "join.report",
-            "fork_id" => row.fork_id,
-            "mode"    => row.mode,
-            "outcome" => outcome,
-            "result"  => row.result.to_s,
-            "effects" => effects,
-            "members" => members,
-          }.to_json)
+        end
+
+        # 副作用清单聚合（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：各成员
+        # payload 的 effects 数组（成员 ledger 落库），保持发生序；同时提取文件
+        # 写后摘要——冲突检测基线 = 成员写后状态（成员自己的合法写入不算冲突，
+        # 父在其后的改动才算，§2.2 L1）。
+        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, String))
+          effects = member_ids.flat_map do |task_id|
+            raw = @store.task_payload(task_id)
+            next [] of JSON::Any unless raw
+            data = JSON.parse(raw).as_h?
+            next [] of JSON::Any unless data
+            Array(JSON::Any).from_json(data["effects"]?.to_json)
+          end
+          written_digests = Hash(String, String).new
+          effects.each do |effect|
+            next unless effect.as_h["side_effect"].as_s == "file_write"
+            digest = effect.as_h["post_digest"].as_s
+            written_digests[effect.as_h["target"].as_s] = digest unless digest.empty?
+          end
+          {effects, written_digests}
+        end
+
+        # 指纹对比（M4.2-WP2）：基线 = 成员写后摘要；回写时现状与之不符
+        # （含被删）即父期间动过 → CONFLICT。成员新建文件（无 fork 时基线）
+        # 同样可检测——基线是写后状态，不依赖 fork 快照是否存在该文件。
+        private def detect_conflicts(fork_id : String, written_digests : Hash(String, String)) : Array(JSON::Any)
+          return [] of JSON::Any if written_digests.empty?
+          written_digests.compact_map do |path, baseline|
+            current = File.file?(path) ? ::Digest::SHA256.hexdigest(File.read(path)) : "deleted"
+            next unless current != baseline
+            JSON::Any.new({
+              "path"     => JSON::Any.new(path),
+              "status"   => JSON::Any.new("CONFLICT"),
+              "baseline" => JSON::Any.new(baseline),
+              "current"  => JSON::Any.new(current),
+            }.as(Hash(String, JSON::Any)))
+          end
         end
 
         # 成员会话键：与 Executor 派生同构——父 agent 段取自 parent_session

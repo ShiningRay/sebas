@@ -24,7 +24,10 @@ module Sebas
           tools : Array(String)?,
           role : String?,
           mode : String,
-          deadline : Int32
+          deadline : Int32,
+          # 工作区相关文件清单（M4.2-WP2 §2.2 L1）：fork 开始时对这些文件
+          # 记指纹摘要，回写时对比——不一致标 CONFLICT 进父裁决清单。
+          files : Array(String)? = nil
 
         # 组装单个分身的消息数组。member_index 从 1 起。
         # frozen_transcripts：调用方在首成员执行前读好的固定窗口（全成员同源）。
