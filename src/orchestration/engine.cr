@@ -100,6 +100,14 @@ module Sebas
         nil # 收口本身失败不掩盖原始异常
       end
 
+      # snapshot.window 解析：as_i64? 先查 Int32 范围再转换——越界值返回 nil
+      # 交由校验错误通路（不在字段校验前抛 OverflowError 绕过 ToolResult 通路）。
+      private def parse_window(args : JSON::Any) : Int32?
+        args.dig?("snapshot", "window").try(&.as_i64?).try do |value|
+          value.in?(Int32::MIN..Int32::MAX) ? value.to_i32 : nil
+        end
+      end
+
       # fork 必填字段校验（ Validator 前置：缺字段不被运行时默认值吞掉）。
       private def fork_arg_errors(args : JSON::Any) : Array(String)
         errors = [] of String
@@ -107,19 +115,15 @@ module Sebas
         count = args["count"]?.try(&.as_i?)
         mode = args["mode"]?.try(&.as_s?)
         deadline = args["deadline"]?.try(&.as_i?)
-        # as_i64? 先查范围：越界值（超 Int32）在字段校验前抛 OverflowError 会绕过
-        # ToolResult.error 通路（CodeRabbit）。
-        window = args.dig?("snapshot", "window").try(&.as_i64?).try do |value|
-          value.in?(Int32::MIN..Int32::MAX) ? value.to_i32 : nil
-        end
+        window = parse_window(args)
         errors << "缺 task" if task.nil? || task.empty?
         errors << "缺 count（必填）" if count.nil?
         errors << "count 必须为正整数" if count && count <= 0
         errors << "缺 mode（必填）" if mode.nil?
         errors << "mode 必须为 all/any/allSettled" if mode && !%w[all any allSettled].includes?(mode)
         errors << "缺 deadline（必填）" if deadline.nil?
-        if raw_window = args.dig?("snapshot", "window")
-          errors << "snapshot.window 必须为非负整数（Int32 范围内）" if window.nil? || window < 0
+        if args.dig?("snapshot", "window") && (window.nil? || window < 0)
+          errors << "snapshot.window 必须为非负整数（Int32 范围内）"
         end
         errors
       end
