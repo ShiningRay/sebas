@@ -50,12 +50,38 @@ module Sebas
           )
         end
 
+        # 前台 admission（M4.3-WP3）：复用 Scheduler.admit 同一事务路径——
+        # 会话键用前台专用前缀（匿名/临时包装），agent 固定前台配置。
+        private def admit_to_front_desk(event : Bus::InboundMessage) : Nil
+          agent_name = ::Sebas::Agents::Reception::FRONT_DESK_AGENT
+          agent = @config.agents[agent_name]?
+          return unless agent # 理论不可达（调用方已判）
+          session_key = ::Sebas::Agents::Reception.session_key_for(
+            event.channel_type, event.account_id, event.peer
+          )
+          snapshot = Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
+          envelope = Sessions::Scheduling::InputEnvelope.new(
+            event.event_id, session_key, event.channel_type, event.peer, 0,
+            ::Time.utc.to_rfc3339, nil, event.to_json, snapshot
+          )
+          receipt = scheduling.admit(envelope)
+          Log.info { "reception admitted (session=#{session_key} event=#{event.event_id} status=#{receipt.status})" } if receipt.status == "accepted"
+        end
+
         # admission 前置解析（契约 §4.2：Router 在 admission 前完成 agent/session 解析；
         # 无 binding 仍 fail-closed 丢弃并审计，不能先占队列）→ Scheduler.admit，
         # SQLite 事务成功才接受；重复投递幂等；容量超限拒绝并计数。
         private def schedule_input(event : Bus::InboundMessage) : Nil
           agent_name = Routing::Table.resolve(@rules, event.channel_type, event.account_id, event.peer)
           unless agent_name
+            # 前台接待（M4.3-WP3 §1.1）：配置了前台 agent 时，无 binding 消息
+            # 改投前台（匿名/临时会话包装，Session 藏而不删）；原 fail-closed
+            # 审计保留——无前台配置时行为与 M0 一致（丢弃 + 审计）。
+            if @config.agents[::Sebas::Agents::Reception::FRONT_DESK_AGENT]?
+              Log.info { "reception: inbound without binding routed to front desk (channel=#{event.channel_type} peer=#{event.peer} event=#{event.event_id})" }
+              admit_to_front_desk(event)
+              return
+            end
             Log.warn { "audit: inbound dropped without matching binding (channel=#{event.channel_type} account=#{event.account_id} peer=#{event.peer} event=#{event.event_id})" }
             return
           end
@@ -225,6 +251,14 @@ module Sebas
 
         # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
         # 模型据此发起工具调用（新会话无工具知识则循环永不触发）。
+        # 前台默认档（M4.3-WP3）：只读工具面——移除全部非只读工具
+        # （写副作用/网络写/不可逆均不出前台）
+        private def restrict_registry_to_read_only(registry : Tools::Registry) : Nil
+          registry.names.reject { |name| ::Sebas::Agents::Reception::READ_ONLY_TOOLS.includes?(name) }.each do |name|
+            registry.unregister(name)
+          end
+        end
+
         private def tool_protocol_prompt(registry : Tools::Registry) : String
           String.build do |io|
             io << "You can call tools. Available tools:\n"

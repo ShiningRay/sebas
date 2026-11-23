@@ -12,6 +12,7 @@ require "../bus/bus"
 require "../store/store"
 require "../../agents/pool"
 require "../../agents/agents"
+require "../../agents/reception/reception"
 require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
@@ -303,13 +304,17 @@ module Sebas
           end
           registry = attenuated_registry(agent)
           register_dialog_fork_tool(registry, agent_name, agent)
+          front_desk = agent_name == ::Sebas::Agents::Reception::FRONT_DESK_AGENT
+          restrict_registry_to_read_only(registry) if front_desk
           executor = Tools::Executor.new(registry, @channels)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
           # 工具协议说明（M4.3-WP1 CodeRabbit）：模型必须知道可用工具与调用
           # 协议才能发起调用——首条 system 消息注入清单（registry.describe）
-          # 与 fenced JSON 调用格式示例。
-          messages = [Providers::Message.new("system", tool_protocol_prompt(registry))] + history
+          # 与 fenced JSON 调用格式示例；前台会话追加转介建议（M4.3-WP3）。
+          system_text = tool_protocol_prompt(registry)
+          system_text += "\n\n" + ::Sebas::Agents::Reception.referral_prompt if front_desk
+          messages = [Providers::Message.new("system", system_text)] + history
 
           (1..MAX_TOOL_ROUNDS).each do |round|
             completion = provider.complete(messages)
