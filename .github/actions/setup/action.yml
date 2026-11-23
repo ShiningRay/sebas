@@ -66,17 +66,57 @@ runs:
         # 链接 1.1 会在编译期报 `undefined method 'ctrl=' for
         # LibCrypto::BioMethod`（main d7d7b3c 的 spec / macos-ci 实测）。
         # 宁可明确报错指引安装，也不静默落到错误版本。
-        openssl_prefix=""
-        for dir in \
-          "$brew_prefix/opt/openssl@3" \
-          "$brew_prefix/opt/openssl@4" \
-          /usr/local/opt/openssl@3 \
-          /usr/local/opt/openssl@4; do
-          if [ -f "$dir/lib/libssl.dylib" ] || [ -f "$dir/lib/libssl.a" ]; then
-            openssl_prefix="$dir"
-            break
+        scan_kegs() {
+          for dir in \
+            "$brew_prefix/opt/openssl@3" \
+            "$brew_prefix/opt/openssl@4" \
+            /usr/local/opt/openssl@3 \
+            /usr/local/opt/openssl@4; do
+            if [ -f "$dir/lib/libssl.dylib" ] || [ -f "$dir/lib/libssl.a" ]; then
+              printf '%s' "$dir"
+              return 0
+            fi
+          done
+          return 1
+        }
+
+        openssl_prefix="$(scan_kegs || true)"
+
+        # 自举（Maintainer 2026-11-23 批准，issue #5/#45 解锁路径）：keg 或
+        # pkg-config 缺失时就地安装，免手工登机。install 对已装 formula 是
+        # no-op（幂等）；HOMEBREW_NO_AUTO_UPDATE=1 压掉隐式 brew update——
+        # 上方注释记录过裸 install 顺带升级 git 拉 gettext 网络失败两次的
+        # 教训。失败只降级为 warning，继续走下方 fail-closed 明确报错。
+        if [ -z "$openssl_prefix" ] || ! command -v pkg-config >/dev/null 2>&1; then
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          # brew 可执行文件是靠上面的候选列表硬定位的，PATH 未必含其 bin——
+          # 自举后 pkg-config 会装到同一目录：当前 step 与后续 step（守卫 +
+          # crystal 构建期版本检测）都要能找到，故同时补本 step PATH 与
+          # GITHUB_PATH（GITHUB_PATH 对后续 step 是 prepend 语义）。
+          brew_bin_dir="$(dirname "$brew_bin")"
+          brew_bin_dir_added=0
+          case ":$PATH:" in
+            *":$brew_bin_dir:"*) ;;
+            *) export PATH="$brew_bin_dir:$PATH"; brew_bin_dir_added=1 ;;
+          esac
+          if [ -z "$openssl_prefix" ]; then
+            echo "bootstrapping: brew install openssl@3"
+            "$brew_bin" install openssl@3 || echo "::warning::brew install openssl@3 failed; explicit error below if still missing"
           fi
-        done
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            echo "bootstrapping: brew install pkg-config"
+            "$brew_bin" install pkg-config || echo "::warning::brew install pkg-config failed; explicit error below if still missing"
+          fi
+          hash -r
+          openssl_prefix="$(scan_kegs || true)"
+          # 仅当原 PATH 不含 brew bin 时写入 GITHUB_PATH（与安装结果无关）：
+          # 已存在的目录由作业环境继承、保持原优先级，重复前置会让后续
+          # step 的 pkg-config 解析到与当前 step 校验不同的可执行文件；
+          # 安装失败时守卫仍会 fail-closed，此写入无副作用。
+          if [ "$brew_bin_dir_added" -eq 1 ]; then
+            echo "$brew_bin_dir" >> "$GITHUB_PATH"
+          fi
+        fi
 
         if [ -z "$openssl_prefix" ]; then
           echo "::error::No OpenSSL 3+ keg found (openssl@3 / openssl@4)."
