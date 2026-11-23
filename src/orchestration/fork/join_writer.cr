@@ -126,7 +126,7 @@ module Sebas
         # payload 的 effects 数组（成员 ledger 落库），保持发生序；同时提取文件
         # 写后摘要——冲突检测基线 = 成员写后状态（成员自己的合法写入不算冲突，
         # 父在其后的改动才算，§2.2 L1）。
-        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, String), Hash(String, String))
+        private def collect_member_effects(member_ids : Array(String)) : Tuple(Array(JSON::Any), Hash(String, Array(Tuple(String, String))), Bool)
           effects = member_ids.flat_map do |task_id|
             raw = @store.task_payload(task_id)
             next [] of JSON::Any unless raw
@@ -138,43 +138,52 @@ module Sebas
             next [] of JSON::Any unless effects_array
             effects_array
           end
-          written_digests = Hash(String, String).new
-          pre_digests = Hash(String, String).new
-          effects.each do |effect|
+          sorted = effects.sort_by { |e| e.as_h["at"].as_s }
+          files_declared = sorted.any? do |e|
+            e.as_h["side_effect"].as_s == "file_write" && !e.as_h["pre_digest"].as_s.empty?
+          end
+          write_chains = Hash(String, Array(Tuple(String, String))).new
+          sorted.each do |effect|
             next unless effect.as_h["side_effect"].as_s == "file_write"
             target = effect.as_h["target"].as_s
-            post = effect.as_h["post_digest"].as_s
-            pre = effect.as_h["pre_digest"].as_s
-            written_digests[target] = post unless post.empty?
-            pre_digests[target] = pre unless pre.empty?
+            chain = write_chains[target] ||= Array(Tuple(String, String)).new
+            chain << {effect.as_h["pre_digest"].as_s, effect.as_h["post_digest"].as_s}
           end
-          {effects, written_digests, pre_digests}
+          {sorted, write_chains, files_declared}
         end
 
-        # 指纹对比（M4.2-WP2）双基线：①成员写后摘要（post）vs 回写时现状——
-        # 父在成员写后又动过；②fork 基线（memo 快照）vs 成员写前现状（pre）——
-        # 父在成员写前已动过、后被成员覆盖掩盖的漂移。命中任一即 CONFLICT，
-        # 只报告不合并（矩阵通则 2）。
-        private def detect_conflicts(fork_id : String, written_digests : Hash(String, String),
-                                     pre_digests : Hash(String, String)) : Array(JSON::Any)
-          return [] of JSON::Any if written_digests.empty?
+        # 指纹对比（M4.2-WP2）按写入链逐环检测：fork 基线 vs 首写 pre（父在
+        # 首写前动过）、链内前环 post vs 后环 pre（父在两次写之间动过）、尾环
+        # post vs 回写时现状（父在最后写后动过）。命中任一环即 CONFLICT，
+        # 只报告不合并（矩阵通则 2）。files 未声明的 fork 无基线可比，跳过
+        # pre/fork 对比（区分「fork 时不存在」与「无基线」两态）。
+        private def detect_conflicts(fork_id : String,
+                                     write_chains : Hash(String, Array(Tuple(String, String))),
+                                     files_declared : Bool) : Array(JSON::Any)
+          return [] of JSON::Any if write_chains.empty?
           fork_baseline = fork_file_baseline(fork_id)
-          written_digests.compact_map do |path, baseline|
-            current = current_digest(path)
-            pre = pre_digests[path]?
-            drifted_before_write = if baseline_snapshot = fork_baseline[path]?.try(&.as_s)
-                                     !pre.nil? && pre != baseline_snapshot
-                                   else
-                                     # fork 声明了该文件但当时不存在：写前已存在即父建过
-                                     !pre.nil? && !pre.empty?
-                                   end
-            drifted_after_write = current != baseline
-            next unless drifted_before_write || drifted_after_write
+          write_chains.compact_map do |path, chain|
+            next if chain.empty?
+            drifted = false
+            if files_declared
+              fork_digest = fork_baseline[path]?.try(&.as_s)
+              first_pre, _ = chain.first
+              # fork 时不存在（无基线记录）→ 写前非 deleted 即父建过
+              drifted ||= fork_digest ? first_pre != fork_digest : first_pre != "deleted"
+              chain.each_with_index do |(pre, _), i|
+                next if i.zero?
+                prev_post = chain[i - 1][1]
+                drifted ||= pre != prev_post # 链内断点 = 父在两次写之间动过
+              end
+            end
+            _, last_post = chain.last
+            drifted ||= current_digest(path) != last_post # 父在最后写后动过
+            next unless drifted
             JSON::Any.new({
               "path"     => JSON::Any.new(path),
               "status"   => JSON::Any.new("CONFLICT"),
-              "baseline" => JSON::Any.new(baseline),
-              "current"  => JSON::Any.new(current),
+              "baseline" => JSON::Any.new(chain.first[1]),
+              "current"  => JSON::Any.new(current_digest(path)),
             }.as(Hash(String, JSON::Any)))
           end
         end

@@ -14,10 +14,12 @@ module Sebas
       end
 
       # 成员任务 payload 的 effects 合并写（M4.2-WP2）：保留既有键，仅替换
-      # effects 数组——ledger 序列化的唯一落库通道。
+      # effects 数组——ledger 序列化的唯一落库通道。**不更新 updated_at**：
+      # any 模式获胜成员按 tasks.updated_at 最小值判定（expectations.cr），
+      # 副作用落库刷新时间戳会扰动先后证据。
       def update_task_effects(task_id : String, effects : String) : Nil
-        changed = @db.exec("UPDATE tasks SET payload = json_set(payload, '$.effects', json(?)), updated_at = ? WHERE id = ?",
-          effects, now, task_id).rows_affected
+        changed = @db.exec("UPDATE tasks SET payload = json_set(payload, '$.effects', json(?)) WHERE id = ?",
+          effects, task_id).rows_affected
         raise ::Sebas::Platform::Store::StoreError.new("unknown task #{task_id}") if changed == 0
       end
     end

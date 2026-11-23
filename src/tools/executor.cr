@@ -18,10 +18,12 @@ module Sebas
         tool = @registry.find(name)
         return ToolResult.error("unknown tool: #{name}") unless tool
         Log.info { "tool #{name} args=#{Registry.redact(args)} ctx=#{ctx.session_key}" }
-        # 文件写类在执行前记现状摘要（写前基线，判「父在成员写前已动过」）
+        # 文件写类在执行前记现状摘要三态（写前基线，判「父在成员写前已动过」）：
+        # 存在=digest；不存在="deleted"（父删过或本就不在——留给 join 结合 fork
+        # 基线区分）；非文件类=""（不采集）。
         pre_digest = if tool.side_effect == SideEffect::FileWrite &&
-                        (target = args.as_h?.try(&.[]?("path")).try(&.as_s?)) && File.file?(target)
-                       ::Digest::SHA256.hexdigest(File.read(target))
+                        (target = args.as_h?.try(&.[]?("path")).try(&.as_s?))
+                       File.file?(target) ? ::Digest::SHA256.hexdigest(File.read(target)) : "deleted"
                      else
                        ""
                      end
