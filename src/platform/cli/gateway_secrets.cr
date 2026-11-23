@@ -45,7 +45,7 @@ module Sebas
               vault.set("agent", name, "api_key", key)
               @provider_keys[name] = key
               agent.api_key = nil # 配置树抹除明文（setter）
-              Log.info { "api_key migrated to vault for agent #{name} (plaintext removed from config tree)" }
+              Log.info { "credential migrated to vault for agent #{name} (plaintext removed from config tree)" }
             else
               # 配置无明文（重建/重跑路径）：从 vault 恢复凭据映射——wrapped
               # factory 依赖 @provider_keys 注入，缺失会让 provider 拿到 nil
