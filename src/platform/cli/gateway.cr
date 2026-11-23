@@ -2,7 +2,10 @@ require "json"
 require "../../routing/binding"
 require "../config/loader"
 require "../config/reload"
+require "../keys/vault"
+require "../keys/win_credential_manager"
 require "../supervisor/supervisor"
+require "./gateway_secrets"
 require "../../channels/email/adapter"
 require "../../admin/http/server"
 require "../bus/bus"
@@ -38,6 +41,7 @@ module Sebas
     module CLI
       class Gateway
         include GatewayDispatch
+        include GatewaySecrets
 
         Log = Sebas::Log.for("sebas.gateway")
 
@@ -65,10 +69,16 @@ module Sebas
         @stopping_scan = Atomic(Bool).new(false)
 
         def initialize(@config : Config::Config, data_dir : String | Path, config_path : String = "",
-                       &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
+                       &original_factory : Config::AgentConfig, String? -> Providers::Provider)
           @config_path = config_path
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
+          # secrets 收敛（M4.2-WP4 §5.3）：配置明文 api_key 迁 vault（幂等），
+          # 配置树抹除明文；provider 构造按 agent 名从 vault 取回（factory
+          # 包装由 GatewaySecrets#wire_secret_factory 提供）。
+          @vault = Keys::EncryptedFileVault.open(@data_dir / "secrets.vault", platform_keyring)
+          migrate_secrets(@config)
+          @provider_factory = wire_secret_factory(original_factory)
           @bus = Bus::Bus.new
           @channels = Channels::Registry.new
           @providers = Providers::Pool.new
@@ -126,79 +136,6 @@ module Sebas
           spawn_adapters
         end
 
-        # IPC fork 命令处理（M4.1-WP5）：payload 字段 task/count/mode/deadline/
-        # window；路由到当前装配的 ForkManager/Executor，join 回写由 Expectations
-        # + JoinWriter 在终态判定后落父会话（默认父会话 = 命令指定或 "agent:main:internal:main:fork-cli"）。
-        def handle_fork_command(payload : JSON::Any) : JSON::Any # payload = frame.data 包裹为 JSON::Any.new(hash)
-          data = payload.as_h? || {} of String => JSON::Any
-          input, parent_session = parse_fork_input(data)
-          main_agent = @config.agents["main"]?
-          raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 main agent 配置") if main_agent.nil?
-          parent_allow = main_agent.tools.try(&.allow) || ["*"]
-          executor = Orchestration::Fork::Executor.new(@store, Orchestration::Fork::Expectations.new(@store),
-            -> { @providers.for_agent("main") { @provider_factory.call(main_agent, nil) } },
-            approvals: @approvals)
-          results = executor.run(
-            "cli-fork", parent_session, "main", "", "", input, parent_allow
-          )
-          grant = executor.last_grant
-          JSON.parse({
-            "fork_id" => results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s,
-            # 数组直接入对象，仅外层序列化一次——嵌套 to_json 会让客户端
-            # 拿到双重编码的字符串（CodeRabbit PRRT_kwDOVzNPQM662088）。
-            "tools_effective" => (grant.try(&.effective) || [] of String),
-            "tools_removed"   => (grant.try(&.removed) || [] of String),
-            "members"         => results.map { |result| {"task_id" => result.task_id, "state" => result.state}.to_json },
-          }.to_json)
-        end
-
-        # payload 字段解析（task/count/mode/deadline/window/role/tools）→
-        # SnapshotBuilder::Input；独立成方法控 handle_fork_command 圈复杂度。
-        private def parse_fork_input(data : Hash(String, JSON::Any)) : Tuple(Orchestration::Fork::SnapshotBuilder::Input, String)
-          task = data["task"]?.try(&.as_s?) || ""
-          raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 task") if task.empty?
-          # 区分缺失与类型错误（CodeRabbit）：缺失用默认 1；存在但非整数
-          # （字符串/浮点）拒绝，不被默认值吞掉。
-          count = if raw_count = data["count"]?
-                    raw_count.as_i? ||
-                      raise ::Sebas::Platform::Store::StoreError.new(
-                        "count 必须为整数，实际：#{raw_count}")
-                  else
-                    1
-                  end
-          raise ::Sebas::Platform::Store::StoreError.new("count 必须为正整数，实际：#{count}") if count <= 0
-          max_concurrent = ::Sebas::Orchestration::Fork::Executor::DEFAULT_MAX_CONCURRENT
-          raise ::Sebas::Platform::Store::StoreError.new(
-            "count #{count} 超过分身并发闸 #{max_concurrent}（超限整体拒绝，不排队）") if count > max_concurrent
-          mode = data["mode"]?.try(&.as_s?) || "allSettled"
-          deadline = data["deadline"]?.try(&.as_i?) || 3600
-          parent_session = data["parent_session"]?.try(&.as_s?) || "agent:main:internal:main:fork-cli"
-          # 工具声明（M4.2-WP1 §5.2）：缺失 = 默认只读档；类型错（非字符串数组）
-          # 整体拒绝，不被默认值吞掉。
-          tools = parse_fork_string_list(data, "tools")
-          # 工作区文件清单（M4.2-WP2 §2.2 L1）：fork 开始对这些文件记指纹，
-          # join 回写对比冲突。缺失 = 无指纹快照（只读 fork 不需要）。
-          files = parse_fork_string_list(data, "files")
-
-          input = Orchestration::Fork::SnapshotBuilder::Input.new(
-            task: task, count: count, window: data["window"]?.try(&.as_i?),
-            include: nil, tools: tools, role: data["role"]?.try(&.as_s?),
-            mode: mode, deadline: deadline, files: files
-          )
-          {input, parent_session}
-        end
-
-        # 可选字符串数组字段解析：缺失返回 nil；存在但非字符串数组整体拒绝
-        # （与 count 同款「区分缺失与类型错误」口径）。
-        private def parse_fork_string_list(data : Hash(String, JSON::Any), field : String) : Array(String)?
-          raw = data[field]? || return
-          unless raw.as_a?.try(&.all?(&.as_s?))
-            raise ::Sebas::Platform::Store::StoreError.new(
-              "#{field} 必须为字符串数组，实际：#{raw}")
-          end
-          raw.as_a.map(&.as_s)
-        end
-
         def reload_result_payload(result : Config::ReloadResult) : Hash(String, JSON::Any)
           {
             "accepted"         => JSON::Any.new(result.accepted),
@@ -252,7 +189,8 @@ module Sebas
           # 路由 binding（数据类：换引用即生效）
           @rules = build_rules(new_config)
 
-          # provider key 热换（下个 turn 生效）
+          # provider key 热换（下个 turn 生效）；热更新带入的明文同样收敛
+          migrate_secrets(new_config)
           new_config.agents.each do |name, agent|
             @providers.replace(name, @provider_factory.call(agent, nil))
           end
