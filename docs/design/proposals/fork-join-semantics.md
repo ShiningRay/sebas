@@ -251,6 +251,16 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 ## 7. 不可逆副作用：仅建议权 + Approvals::Center 接线
 
+> 实现状态（M4.2-WP3，#48）：`Tools::Executor` 的 L3 不可逆门承载本节
+> fail-closed——side_effect=Irreversible 工具执行前必经
+> `Approvals::Center.request`（无审批装配一律拒绝 = 装配为零时 L3 不可达）；
+> `ToolContext` 携 `approvals`/`unattended`（默认 true = 无人值守 deny，分身
+> 固定）/`approval_mode`；批准执行的 decision reason 经 `Effect.approval`
+> 随副作用清单回写进 join.report（凭证随 L1 回写）。生产装配：gateway 构造
+> Center（先于 IPC）+ `approvals_center` setter；IPC 补齐 approvals.approve/
+> deny（写命令认证强制）/approvals.pending（读匿名）。decide 拒绝 deadline
+> 已过的批准（超时 deny 与人工 approve 竞态窗口内过期决策不生效）。
+
 - 分身对 L3 不可逆操作**默认只有建议权**：工具执行前必经 `Approvals::Center.request` 批准，未批准不执行（fail-closed）。规则链现成：hardline deny > mode off > 无人值守 deny > memo 决策 > 超时 deny > 等待人工 [来源: 仓库:src/orchestration/approvals/approvals.cr:50-87]。
 - hardline 地板已含 `"fork bomb"` 模式 [来源: 仓库:src/orchestration/approvals/approvals.cr:33-38]——fork 场景天然被地板覆盖。
 - 接线语义：分身 ToolContext 携带 `unattended`（DSL 无人值守 run 默认 true → L3 自动 deny）/ `approval_mode`；人工双入口 `approve/deny` 已有 [来源: 仓库:src/orchestration/approvals/approvals.cr:91-97]。**Center 生产装配为零**（IPC 声明 approvals 能力但无 approve/deny 命令 [来源: 仓库:src/admin/ipc/server.cr:187-215]）——接线（装配+IPC 命令补齐）入 M4.2 工作包；M4.1 默认档无 L3 工具，无需接线（自然安全）。
