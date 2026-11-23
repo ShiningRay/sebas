@@ -43,29 +43,56 @@ module Sebas
         def self.open(file : String | Path, keyring : ::Sebas::Platform::Keys::WinCredentialStore?) : EncryptedFileVault
           path = Path[file]
           scope_key = "sebas/master-key/#{path.basename}"
-          key = keyring.try(&.get_raw(scope_key))
-          if key.nil?
-            key_file = path.parent / "master.key"
-            if File.file?(key_file)
-              key = Base64.decode(File.read(key_file).strip)
-              Log.info { "master key restored from fallback file #{key_file}" }
-            else
-              key = Random::Secure.random_bytes(32)
-              store = keyring
-              if store
-                store.set_raw(scope_key, key)
-                Log.info { "master key generated into OS keyring (#{scope_key})" }
-              else
-                # 降级：主密钥文件（0600 口径；Windows 上为用户目录文件权限近似）
-                FileUtils.mkdir_p(path.parent) unless Dir.exists?(path.parent)
-                # 0600 显式权限（CWE-732）：File.write 默认 0666 受 umask 影响
-                # 会落到 0644 同机其他账户可读——主密钥可读即 vault 全裸
-                File.write(key_file, Base64.strict_encode(key), perm: 0o600)
-                Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
-              end
-            end
-          end
+          key = keyring.try(&.get_raw(scope_key)) || resolve_fallback_key(path, keyring, scope_key)
           EncryptedFileVault.new(path, key)
+        end
+
+        # 无 keyring 主密钥时的回退解析：master.key 存在读回（先读后写，重复
+        # open 取同一密钥）；不存在则 O_EXCL 独占创建（CWE-362 竞态防护：并发
+        # 启动的两个 Gateway 只有一个创建成功，失败方重读胜者密钥）。
+        # 0600 显式权限（CWE-732：File.write 默认 0666 受 umask 影响会落到
+        # 0644 同机其他账户可读——主密钥可读即 vault 全裸）。
+        private def self.resolve_fallback_key(path : Path, keyring : ::Sebas::Platform::Keys::WinCredentialStore?, scope_key : String) : Bytes
+          key_file = path.parent / "master.key"
+          if File.file?(key_file)
+            decoded = Base64.decode(File.read(key_file).strip)
+            Log.info { "master key restored from fallback file #{key_file}" }
+            return decoded
+          end
+          generated = Random::Secure.random_bytes(32)
+          if keyring
+            keyring.set_raw(scope_key, generated)
+            Log.info { "master key generated into OS keyring (#{scope_key})" }
+            return generated
+          end
+          FileUtils.mkdir_p(path.parent) unless Dir.exists?(path.parent)
+          # mkdir 原子锁（CWE-362）：并发启动的 Gateway 只有一个拿到锁生成
+          # 密钥，另一方等待 master.key 出现后读回——保证全体取到同一主密钥。
+          # 锁目录残留（持有方崩溃）：等待超时后接管重写（损坏状态止损）。
+          lock_dir = Path[key_file.to_s + ".lock"]
+          locked = false
+          begin
+            Dir.mkdir(lock_dir)
+            locked = true
+          rescue File::AlreadyExistsError
+            wait_deadline = Time.instant + 10.seconds
+            while Time.instant < wait_deadline
+              if File.file?(key_file)
+                decoded = Base64.decode(File.read(key_file).strip)
+                Log.info { "master key created concurrently; waited and read back" }
+                return decoded
+              end
+              sleep 50.milliseconds
+            end
+            Log.warn { "master key lock stale after timeout; taking over (#{lock_dir})" }
+          end
+          generated = Random::Secure.random_bytes(32)
+          # 0600 显式权限（CWE-732）：File.write 默认 0666 受 umask 影响会落
+          # 到 0644 同机其他账户可读——主密钥可读即 vault 全裸
+          File.write(key_file, Base64.strict_encode(generated), perm: 0o600)
+          Dir.delete(lock_dir) if locked
+          Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
+          generated
         end
 
         def set(channel_type : String, account_id : String, name : String, secret : String) : Nil
