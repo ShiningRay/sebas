@@ -136,24 +136,25 @@ module Sebas
           hello = handshake(io)
           return unless hello
           mark_authenticated(io, hello)
-          subscriber_id = Random::Secure.hex(8)
-          io.puts({type: "hello_ack", protocol: PROTOCOL, version: VERSION, caps: CAPABILITIES}.to_json)
-
-          frames = Channel(Frame?).new
-          spawn do
-            # 读帧 fiber：socket 断开/关闭时异常必须就地消化，否则炸进程
-            loop do
-              begin
-                frame = read_frame(io)
-              rescue ::Exception
-                frame = nil
-              end
-              frames.send(frame)
-              break if frame.nil?
-            end
-          end
-
+          # 握手后的清理作用域覆盖认证后的首次响应（hello_ack 写失败也撤销
+          # 认证，CodeRabbit CWE-613 补充）：begin 从此处开始到连接结束。
           begin
+            io.puts({type: "hello_ack", protocol: PROTOCOL, version: VERSION, caps: CAPABILITIES}.to_json)
+            subscriber_id = Random::Secure.hex(8)
+
+            frames = Channel(Frame?).new
+            spawn do
+              # 读帧 fiber：socket 断开/关闭时异常必须就地消化，否则炸进程
+              loop do
+                begin
+                  frame = read_frame(io)
+                rescue ::Exception
+                  frame = nil
+                end
+                frames.send(frame)
+                break if frame.nil?
+              end
+            end
             if hello.caps.includes?("events.subscribe")
               events = @tap.register(subscriber_id)
               loop do

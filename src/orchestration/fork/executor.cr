@@ -23,6 +23,7 @@ module Sebas
         getter store : ::Sebas::Platform::Store::Store
         getter semaphore : ::Sebas::Agents::Semaphore
         getter max_concurrent : Int32
+        getter last_fork_id : String? = nil
 
         def initialize(@store : ::Sebas::Platform::Store::Store,
                        @expectations : Expectations,
@@ -40,10 +41,21 @@ module Sebas
         # 成员终态即判（any 首个成功即刻 settle 并停止派发剩余）→
         # deadline 到期停止启动排队成员（已落库 transcript 保留，迟到结果
         # 不覆盖 expired）。返回已派发成员的结果数组（§1.4 回执素材）。
+        # 返回 {fork_id, members}：fork_id 独立于成员结果（空结果数组 ≠ 无
+        # expectation——deadline 在快照期耗尽时成员全取消，报告仍需回写）。
+        def run_with_fork_id(parent_task_id : String, parent_session_key : String,
+                             parent_agent_id : String, parent_persona : String, skills_text : String,
+                             input : SnapshotBuilder::Input) : Tuple(String, Array(MemberResult))
+          members = run(parent_task_id, parent_session_key, parent_agent_id,
+            parent_persona, skills_text, input)
+          {last_fork_id || "", members}
+        end
+
         def run(parent_task_id : String, parent_session_key : String,
                 parent_agent_id : String, parent_persona : String, skills_text : String,
                 input : SnapshotBuilder::Input) : Array(MemberResult)
           fork_id = "fork:" + ::Random::Secure.hex(4)
+          @last_fork_id = fork_id
           declared = (1..input.count).map { |i| fork_id + ":#{i}" }
           # deadline 在持久化前只算一次：快照读取耗时计入期限（CodeRabbit——
           # 否则慢快照会把启动门槛推后到已持久化期限之外）。

@@ -16,9 +16,13 @@ module Sebas
 
       getter store : ::Sebas::Platform::Store::Store
 
+      # provider_factory：DSL fork 分身 provider 装配入口（M4.1-WP5 复审——
+      # gateway 构造 Engine 时注入；缺省抛错 fail-closed，DSL fork 明确报
+      # 「工厂未接线」而非静默跳过）。
       def initialize(@store : ::Sebas::Platform::Store::Store,
                      @executor : Tools::Executor, @account_id : String = "engine",
-                     @ledger : Ledger? = nil)
+                     @ledger : Ledger? = nil,
+                     @fork_provider_factory : -> Providers::Provider = -> { raise ::Sebas::Platform::Store::StoreError.new("engine fork provider 工厂未接线（gateway 构造时注入）") })
       end
 
       # 启动一次 workflow run：意图先落库（效应三明治第①步）→ 逐动作执行（第②步）→ 结果落库（第③步）
@@ -118,14 +122,17 @@ module Sebas
             mode: args["mode"]?.try(&.as_s?) || "allSettled",
             deadline: args["deadline"]?.try(&.as_i?) || 3600
           )
-          # engine 场景分身 provider 工厂未接线（gateway 装配面另卡）：fail-closed
-          # 显式报错，不静默跳过分身。
           executor = ::Sebas::Orchestration::Fork::Executor.new(
-            @store, ::Sebas::Orchestration::Fork::Expectations.new(@store),
-            -> { raise ::Sebas::Platform::Store::StoreError.new("engine 场景 provider 工厂未接线（gateway 装配面另卡）") }
+            @store, ::Sebas::Orchestration::Fork::Expectations.new(@store), @fork_provider_factory
           )
-          results = executor.run(run_id, ctx_session, @account_id, "", "", input)
-          fork_id = results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s
+          # 派发异常收口（CodeRabbit）：工厂抛错等异常发生时已创建的子任务与
+          # expectation 进入终态（fail_task + expired），动作失败交给引擎既有
+          # 失败处理（memo 不留 running）。
+          begin
+            fork_id, results = executor.run_with_fork_id(run_id, ctx_session, @account_id, "", "", input)
+          rescue ex : ::Sebas::Platform::Store::StoreError
+            return Tools::ToolResult.error("fork #{action.id} 派发失败：#{ex.message}")
+          end
           ::Sebas::Orchestration::Fork::JoinWriter.new(@store).write(fork_id)
           Tools::ToolResult.success(%({"fork_id": "#{fork_id}", "members": #{results.size}}))
         else # join

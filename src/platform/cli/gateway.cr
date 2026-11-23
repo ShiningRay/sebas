@@ -72,8 +72,10 @@ module Sebas
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
+          # IPC host 固定回环（#153 复审）：不继承 http.bind——bind: 0.0.0.0
+          # 会撞 IPC 回环白名单令 gateway 启动失败；IPC 明文 TCP 只应本机可达。
           @ipc = Admin::IPC::Server.new(@store, @data_dir,
-            host: @config.gateway.http.try(&.bind) || "127.0.0.1",
+            host: "127.0.0.1",
             port: @config.gateway.ipc.port,
             &->trigger_reload)
           # fork/join 用户显式触发面接线（M4.1-WP5，Q3：不动生产 agent_turn）：
