@@ -58,7 +58,9 @@ module Sebas
               else
                 # 降级：主密钥文件（0600 口径；Windows 上为用户目录文件权限近似）
                 FileUtils.mkdir_p(path.parent) unless Dir.exists?(path.parent)
-                File.write(key_file, Base64.strict_encode(key))
+                # 0600 显式权限（CWE-732）：File.write 默认 0666 受 umask 影响
+                # 会落到 0644 同机其他账户可读——主密钥可读即 vault 全裸
+                File.write(key_file, Base64.strict_encode(key), perm: 0o600)
                 Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
               end
             end
