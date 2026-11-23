@@ -129,7 +129,10 @@ module Sebas
           # expectation 进入终态（fail_task + expired），动作失败交给引擎既有
           # 失败处理（memo 不留 running）。
           begin
-            fork_id, results = executor.run_with_fork_id(run_id, ctx_session, @account_id, "", "", input)
+            # 分身 agent 段 = 父会话键首段（五段键 agent:...），非 account_id
+            # （CodeRabbit：执行与回写须用同一会话键 agent 段）
+            parent_agent_id = ctx_session.split(":")[1]? || @account_id
+            fork_id, results = executor.run_with_fork_id(run_id, ctx_session, parent_agent_id, "", "", input)
           rescue ex : ::Sebas::Platform::Store::StoreError
             return Tools::ToolResult.error("fork #{action.id} 派发失败：#{ex.message}")
           end
