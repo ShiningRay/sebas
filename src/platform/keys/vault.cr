@@ -101,10 +101,32 @@ module Sebas
           # 到 0644 同机其他账户可读——主密钥可读即 vault 全裸
           tmp_file = Path[key_file.to_s + ".tmp.#{Process.pid}.#{Random::Secure.hex(4)}"]
           File.write(tmp_file, Base64.strict_encode(generated), perm: 0o600)
-          File.rename(tmp_file, key_file)
+          # 持久性顺序（掉电安全）：temp 内容 fsync → rename 原子发布 → 目录
+          # 项 fsync。任何同步失败抛 VaultError（宁启动失败不留解不开的密文）。
+          begin
+            File.open(tmp_file, "r+", &.fsync)
+            File.rename(tmp_file, key_file)
+            sync_directory_entry(path.parent)
+          rescue ex : ::Exception
+            raise VaultError.new("master key persistence failed: #{ex.message}")
+          end
           Dir.delete(lock_dir) if locked
           Log.warn { "OS keyring unavailable; master key file fallback at #{key_file}" }
           generated
+        end
+
+        # 目录项 fsync（POSIX）：rename 后同步父目录，保证掉电后 master.key
+        # 目录项已在盘上。Windows 无此语义（NTFS 元数据日志自行保证）。
+        private def self.sync_directory_entry(dir : Path) : Nil
+          {% if flag?(:windows) %}
+            # Windows：跳过（NTFS 日志式文件系统，rename 元数据持久化由系统保证）
+          {% else %}
+            fd = LibC.open(dir.to_s, LibC::O_RDONLY)
+            raise VaultError.new("directory open for fsync failed") if fd < 0
+            ret = LibC.fsync(fd)
+            LibC.close(fd)
+            raise VaultError.new("directory fsync failed") if ret != 0
+          {% end %}
         end
 
         def set(channel_type : String, account_id : String, name : String, secret : String) : Nil
