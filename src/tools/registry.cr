@@ -1,6 +1,7 @@
 require "json"
 require "../platform/store/store"
 require "../channels/base"
+require "../orchestration/approvals/approvals"
 
 # 工具注册表（M0-WP6，A9 升级）：replay/risk 为类型级字段（design.md §7.3/§10.3）；
 # 决策级幂等走 memo（first-write-wins）；日志全程脱敏（A9）。
@@ -35,7 +36,7 @@ module Sebas
     # 单条副作用记录（semantics §2.2 矩阵通则 1「副作用已发生不隐瞒」）：
     # 工具名 + 副作用级 + 目标（文件路径 / 会话键 / 内容摘要）+ 时间。
     record Effect, tool : String, side_effect : String, target : String, at : String,
-      post_digest : String = "", pre_digest : String = "" do
+      post_digest : String = "", pre_digest : String = "", approval : String = "" do
       def to_json_object : Hash(String, JSON::Any)
         {
           "tool"        => JSON::Any.new(tool),
@@ -44,6 +45,8 @@ module Sebas
           "at"          => JSON::Any.new(at),
           "post_digest" => JSON::Any.new(post_digest),
           "pre_digest"  => JSON::Any.new(pre_digest),
+          # L3 不可逆的审批凭证（decision reason，semantics §7「凭证随 L1 回写」）
+          "approval" => JSON::Any.new(approval),
         }
       end
     end
@@ -58,9 +61,10 @@ module Sebas
       end
 
       def record(tool : String, side_effect : SideEffect, target : String,
-                 post_digest : String = "", pre_digest : String = "") : Nil
+                 post_digest : String = "", pre_digest : String = "",
+                 approval : String = "") : Nil
         @entries << Effect.new(tool, side_effect.to_s.underscore, target,
-          ::Time.utc.to_rfc3339, post_digest, pre_digest)
+          ::Time.utc.to_rfc3339, post_digest, pre_digest, approval)
       end
 
       # 各路径成员写前现状摘要（该路径最新一条 file_write 条目）——配合 fork
@@ -112,12 +116,18 @@ module Sebas
     # 工具运行上下文：会话/账号维度 + 持久层句柄（scope 由构造器保证，Hermes contextvar 教训反面）。
     # ledger（M4.2-WP2）：副作用台账可选挂载——nil 时 effectful 工具执行
     # 只返回结果不入账（非分身调用路径行为不变）。
+    # approvals/unattended/approval_mode（M4.2-WP3 §7）：L3 不可逆工具执行前
+    # 必经 Approvals::Center.request（未批不执行 fail-closed）；unattended
+    # 默认 true（无人值守 deny），分身上下文固定 true，父 agent 交互路径可 false。
     record ToolContext,
       session_key : String,
       account_id : String,
       event_id : String,
       store : Platform::Store::Store,
-      ledger : EffectsLedger? = nil
+      ledger : EffectsLedger? = nil,
+      approvals : ::Sebas::Orchestration::Approvals::Center? = nil,
+      unattended : Bool = true,
+      approval_mode : String = "deny"
 
     abstract class Tool
       getter name : String
@@ -133,6 +143,13 @@ module Sebas
       end
 
       abstract def run(args : JSON::Any, ctx : ToolContext) : ToolResult
+
+      # 副作用自记账声明（M4.2-WP2 CodeRabbit）：默认 false——Executor 通用
+      # 记账覆盖；实际写入路径只有工具自身可知时（如 file.write 的 base_dir
+      # 解析）覆写为 true 并自行入账（Executor 跳过防重复/错路径）。
+      def self_records_effects? : Bool
+        false
+      end
     end
 
     class Registry
@@ -141,6 +158,11 @@ module Sebas
 
       def register(tool : Tool) : Nil
         @mutex.synchronize { @tools[tool.name] = tool }
+      end
+
+      # 衰减过滤用（M4.3-WP1）：移除白名单外工具
+      def unregister(name : String) : Nil
+        @mutex.synchronize { @tools.delete(name) }
       end
 
       def find(name : String) : Tool?

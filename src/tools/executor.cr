@@ -18,29 +18,53 @@ module Sebas
         tool = @registry.find(name)
         return ToolResult.error("unknown tool: #{name}") unless tool
         Log.info { "tool #{name} args=#{Registry.redact(args)} ctx=#{ctx.session_key}" }
-        # 文件写类在执行前记现状摘要三态（写前基线，判「父在成员写前已动过」）：
-        # 存在=digest；不存在="deleted"（父删过或本就不在——留给 join 结合 fork
-        # 基线区分）；非文件类=""（不采集）。
-        pre_digest = if tool.side_effect == SideEffect::FileWrite &&
-                        (target = args.as_h?.try(&.[]?("path")).try(&.as_s?))
-                       File.file?(target) ? ::Digest::SHA256.hexdigest(File.read(target)) : "deleted"
-                     else
-                       ""
-                     end
+        deny_result, approval_reason = irreversible_gate?(tool, args, ctx)
+        return deny_result if deny_result
         result = tool.run(args, ctx)
-        # 副作用台账（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：执行成功且
-        # 非只读时入账——target 优先取 args.path（文件类），否则 args 摘要。
-        # post_digest 用工具随结果返回的实际写入摘要（写入后重读会被并发
-        # 改动污染，CodeRabbit PRRT_kwDOVzNPQM664uZR）。
-        if result.ok? && (ledger = ctx.ledger) && tool.side_effect != SideEffect::ReadOnly
-          target = args.as_h?.try(&.[]?("path")).try(&.as_s?) || Registry.redact(args)[0, 120]
-          ledger.record(tool.name, tool.side_effect, target, result.digest || "", pre_digest)
-        end
+        record_side_effect(tool, args, ctx, result, approval_reason)
         result
       rescue ex : ::Exception
         # typed rescue 转值：工具错误不炸进程（autobot registry.cr 先例）
         Log.error(exception: ex) { "tool #{name} crashed" }
         ToolResult.error("tool crashed: #{ex.message}")
+      end
+
+      # 副作用台账入账（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：执行
+      # 成功且非只读时记录——target 优先 args.path（文件类），否则 args 摘要；
+      # post_digest 用工具随结果返回的实际写入摘要（写后重读会被并发改动
+      # 污染，CodeRabbit PRRT_kwDOVzNPQM664uZR）；L3 审批凭证随清单回写
+      # （semantics §7「凭证随 L1 回写」）。
+      private def record_side_effect(tool : Tool, args : JSON::Any, ctx : ToolContext,
+                                     result : ToolResult, approval_reason : String) : Nil
+        return unless result.ok?
+        ledger = ctx.ledger
+        return unless ledger
+        return if tool.side_effect == SideEffect::ReadOnly
+        return if tool.self_records_effects? # 自记账工具（file.write）自理路径与摘要
+        target = args.as_h?.try(&.[]?("path")).try(&.as_s?) || Registry.redact(args)[0, 120]
+        reason = tool.side_effect == SideEffect::Irreversible ? approval_reason : ""
+        ledger.record(tool.name, tool.side_effect, target, result.digest || "", "", reason)
+      end
+
+      # L3 不可逆门（M4.2-WP3 §7「未批不执行 fail-closed」）：返回
+      # {deny_result, approval_reason}——deny_result 非 nil 表示拒绝（未批
+      # 不执行，调用方原样返回），nil 表示已批准/非 L3 可继续执行；
+      # approval_reason 是批准凭证（随副作用清单回写，§7「凭证随 L1 回写」）。
+      # 无审批装配一律拒绝（装配为零 = L3 不可达）；有装配走规则链
+      # （hardline > off > 无人值守 deny > memo > 超时 deny > 等待人工）。
+      private def irreversible_gate?(tool : Tool, args : JSON::Any, ctx : ToolContext) : Tuple(ToolResult?, String)
+        return {nil, ""} unless tool.side_effect == SideEffect::Irreversible
+        approvals = ctx.approvals
+        unless approvals
+          return {ToolResult.error("L3 irreversible tool requires an approvals assembly; none wired"), ""}
+        end
+        decision = approvals.request(tool.name, Registry.redact(args), ctx.session_key,
+          unattended: ctx.unattended, mode: ctx.approval_mode)
+        unless decision.approved
+          return {ToolResult.error("approval denied: #{decision.reason}"), decision.reason}
+        end
+        Log.info { "L3 approved: #{tool.name} (#{decision.reason})" }
+        {nil, decision.reason}
       end
     end
 
@@ -130,7 +154,12 @@ module Sebas
       end
 
       def run(args : JSON::Any, ctx : ToolContext) : ToolResult
+        # 越权防护（M4.3-WP1 CodeRabbit）：只可读当前会话——模型提供的
+        # session_key 与上下文不符即拒绝（跨会话 transcript 是他人隐私面）
         key = args["session_key"]?.try(&.as_s?) || ctx.session_key
+        unless key == ctx.session_key
+          return ToolResult.error("session.read 仅可读取当前会话")
+        end
         limit = args["limit"]?.try(&.as_i?) || 20
         rows = ctx.store.transcripts(key).last(limit)
         output = rows.map { |row| "[#{row.created_at}] #{row.role}: #{row.content[0, 120]}" }.join("\n")

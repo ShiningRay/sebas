@@ -18,6 +18,7 @@ module Sebas
       dir = Path[Dir.tempdir, "sebas-se-spec", Random::Secure.hex(4)]
       FileUtils.mkdir_p(dir)
       registry = ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new)
+      registry.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
       expect_tool = ->(name : String, side : ::Sebas::Tools::SideEffect) do
         tool = registry.find(name) || raise "missing tool #{name}"
         tool.side_effect.should eq(side)
@@ -33,18 +34,21 @@ module Sebas
       dir = Path[Dir.tempdir, "sebas-ledger-spec", Random::Secure.hex(4)]
       FileUtils.mkdir_p(dir)
       work = dir / "work.txt"
-      registry = ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new)
+      registry = ::Sebas::Tools::Registry.new
+      registry.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
+      registry.register(::Sebas::Tools::MemorySearchTool.new)
+      registry.register(::Sebas::Tools::SessionReadTool.new)
       executor = ::Sebas::Tools::Executor.new(registry, ::Sebas::Channels::Registry.new)
       store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
       ledger = ::Sebas::Tools::EffectsLedger.new
       ctx = ::Sebas::Tools::ToolContext.new("agent:main:s:e:p", "acc", "evt-1", store, ledger)
 
-      result = executor.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), ctx)
+      result = executor.run("file.write", JSON.parse(%({"path": "work.txt", "content": "B"})), ctx)
       result.ok?.should be_true
       File.read(work).should eq("B")
       ledger.entries.size.should eq(1)
       ledger.entries[0].side_effect.should eq("file_write")
-      ledger.entries[0].target.should eq(work.to_s)
+      ledger.entries[0].target.should eq(File.expand_path("work.txt", dir.to_s))
       ledger.written_paths.should eq([work.to_s])
 
       # 只读工具执行不入账
@@ -81,9 +85,11 @@ module Sebas
       member_ctx = ::Sebas::Tools::ToolContext.new(member_session, "internal", "evt-m",
         store, ledger)
       tools_exec = ::Sebas::Tools::Executor.new(
-        ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new),
+        ::Sebas::Tools::Registry.new.tap do |reg|
+          reg.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
+        end,
         ::Sebas::Channels::Registry.new)
-      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), member_ctx)
+      tools_exec.run("file.write", JSON.parse(%({"path": "f.txt", "content": "B"})), member_ctx)
       ledger.entries.size.should eq(1)
       # 成员副作用落库（可重入 flush——真实链路由工具回路在每次调用后触发）
       executor.flush_member_effects(results)
@@ -134,9 +140,11 @@ module Sebas
       member_ctx = ::Sebas::Tools::ToolContext.new(results[0].session_key, "internal", "evt-m",
         store, ledger)
       tools_exec = ::Sebas::Tools::Executor.new(
-        ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new),
+        ::Sebas::Tools::Registry.new.tap do |reg|
+          reg.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
+        end,
         ::Sebas::Channels::Registry.new)
-      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), member_ctx)
+      tools_exec.run("file.write", JSON.parse(%({"path": "h.txt", "content": "B"})), member_ctx)
       executor.flush_member_effects(results)
 
       join_writer = ::Sebas::Orchestration::Fork::JoinWriter.new(store)
@@ -175,9 +183,11 @@ module Sebas
       member_ctx = ::Sebas::Tools::ToolContext.new(results[0].session_key, "internal", "evt-m",
         store, ledger)
       tools_exec = ::Sebas::Tools::Executor.new(
-        ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new),
+        ::Sebas::Tools::Registry.new.tap do |reg|
+          reg.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
+        end,
         ::Sebas::Channels::Registry.new)
-      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), member_ctx)
+      tools_exec.run("file.write", JSON.parse(%({"path": "k.txt", "content": "B"})), member_ctx)
       executor.flush_member_effects(results)
 
       join_writer = ::Sebas::Orchestration::Fork::JoinWriter.new(store)
@@ -210,12 +220,14 @@ module Sebas
       member_ctx = ::Sebas::Tools::ToolContext.new(results[0].session_key, "internal", "evt-m",
         store, ledger)
       tools_exec = ::Sebas::Tools::Executor.new(
-        ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new),
+        ::Sebas::Tools::Registry.new.tap do |reg|
+          reg.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
+        end,
         ::Sebas::Channels::Registry.new)
       # 成员写 A→B；父写 C；成员再写 D——链 (A,B),(C,D) 的 B≠C 断点须检出
-      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), member_ctx)
+      tools_exec.run("file.write", JSON.parse(%({"path": "m.txt", "content": "B"})), member_ctx)
       File.write(work, "C")
-      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "D"})), member_ctx)
+      tools_exec.run("file.write", JSON.parse(%({"path": "m.txt", "content": "D"})), member_ctx)
       executor.flush_member_effects(results)
 
       join_writer = ::Sebas::Orchestration::Fork::JoinWriter.new(store)
@@ -252,9 +264,11 @@ module Sebas
       member_ctx = ::Sebas::Tools::ToolContext.new(results[0].session_key, "internal", "evt-m",
         store, ledger)
       tools_exec = ::Sebas::Tools::Executor.new(
-        ::Sebas::Tools.default_registry(::Sebas::Channels::Registry.new),
+        ::Sebas::Tools::Registry.new.tap do |reg|
+          reg.register(::Sebas::Tools::FileWriteTool.new(base_dir: dir.to_s))
+        end,
         ::Sebas::Channels::Registry.new)
-      tools_exec.run("file.write", JSON.parse(%({"path": #{work.to_json}, "content": "B"})), member_ctx)
+      tools_exec.run("file.write", JSON.parse(%({"path": "g.txt", "content": "B"})), member_ctx)
       executor.flush_member_effects(results)
 
       join_writer = ::Sebas::Orchestration::Fork::JoinWriter.new(store)

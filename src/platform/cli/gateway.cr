@@ -2,7 +2,10 @@ require "json"
 require "../../routing/binding"
 require "../config/loader"
 require "../config/reload"
+require "../keys/vault"
+require "../keys/win_credential_manager"
 require "../supervisor/supervisor"
+require "./gateway_secrets"
 require "../../channels/email/adapter"
 require "../../admin/http/server"
 require "../bus/bus"
@@ -13,6 +16,7 @@ require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
 require "../../providers/fake_provider"
+require "../../providers/tool_call_parser"
 require "../../sessions/scheduling/scheduler"
 require "../../sessions/scheduling/registry"
 require "../../sessions/scheduling/recovery"
@@ -38,6 +42,7 @@ module Sebas
     module CLI
       class Gateway
         include GatewayDispatch
+        include GatewaySecrets
 
         Log = Sebas::Log.for("sebas.gateway")
 
@@ -65,10 +70,16 @@ module Sebas
         @stopping_scan = Atomic(Bool).new(false)
 
         def initialize(@config : Config::Config, data_dir : String | Path, config_path : String = "",
-                       &@provider_factory : Config::AgentConfig, String? -> Providers::Provider)
+                       &original_factory : Config::AgentConfig, String? -> Providers::Provider)
           @config_path = config_path
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
+          # secrets 收敛（M4.2-WP4 §5.3）：配置明文 api_key 迁 vault（幂等），
+          # 配置树抹除明文；provider 构造按 agent 名从 vault 取回（factory
+          # 包装由 GatewaySecrets#wire_secret_factory 提供）。
+          @vault = Keys::EncryptedFileVault.open(@data_dir / "secrets.vault", platform_keyring)
+          migrate_secrets(@config)
+          @provider_factory = wire_secret_factory(original_factory)
           @bus = Bus::Bus.new
           @channels = Channels::Registry.new
           @providers = Providers::Pool.new
@@ -96,12 +107,17 @@ module Sebas
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
+          # Approvals::Center 生产装配（M4.2-WP3）：先于 IPC 构造——IPC
+          # approvals.approve/deny/pending 命令直接引用；规则链（hardline >
+          # off > 无人值守 deny > memo > 超时 deny > 等待人工）现成。
+          @approvals = Orchestration::Approvals::Center.new(@store)
           # IPC host 固定回环（#153 复审）：不继承 http.bind——bind: 0.0.0.0
           # 会撞 IPC 回环白名单令 gateway 启动失败；IPC 明文 TCP 只应本机可达。
           @ipc = Admin::IPC::Server.new(@store, @data_dir,
             host: "127.0.0.1",
             port: @config.gateway.ipc.port,
             &->trigger_reload)
+          @ipc.approvals_center = @approvals
           # fork/join 用户显式触发面接线（M4.1-WP5，Q3：不动生产 agent_turn）：
           # IPC payload → Executor 执行 → 结果 JSON（回执 + expectation 终态）。
           @ipc.fork_handler = ->(payload : JSON::Any) { handle_fork_command(payload) }
@@ -116,82 +132,9 @@ module Sebas
           # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
           # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
           @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
-          @approvals = Orchestration::Approvals::Center.new(@store)
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
           @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters
-        end
-
-        # IPC fork 命令处理（M4.1-WP5）：payload 字段 task/count/mode/deadline/
-        # window；路由到当前装配的 ForkManager/Executor，join 回写由 Expectations
-        # + JoinWriter 在终态判定后落父会话（默认父会话 = 命令指定或 "agent:main:internal:main:fork-cli"）。
-        def handle_fork_command(payload : JSON::Any) : JSON::Any # payload = frame.data 包裹为 JSON::Any.new(hash)
-          data = payload.as_h? || {} of String => JSON::Any
-          input, parent_session = parse_fork_input(data)
-          main_agent = @config.agents["main"]?
-          raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 main agent 配置") if main_agent.nil?
-          parent_allow = main_agent.tools.try(&.allow) || ["*"]
-          executor = Orchestration::Fork::Executor.new(@store, Orchestration::Fork::Expectations.new(@store),
-            -> { @providers.for_agent("main") { @provider_factory.call(main_agent, nil) } })
-          results = executor.run(
-            "cli-fork", parent_session, "main", "", "", input, parent_allow
-          )
-          grant = executor.last_grant
-          JSON.parse({
-            "fork_id" => results.first?.try(&.task_id.split(":")[0...2].join(":")).to_s,
-            # 数组直接入对象，仅外层序列化一次——嵌套 to_json 会让客户端
-            # 拿到双重编码的字符串（CodeRabbit PRRT_kwDOVzNPQM662088）。
-            "tools_effective" => (grant.try(&.effective) || [] of String),
-            "tools_removed"   => (grant.try(&.removed) || [] of String),
-            "members"         => results.map { |result| {"task_id" => result.task_id, "state" => result.state}.to_json },
-          }.to_json)
-        end
-
-        # payload 字段解析（task/count/mode/deadline/window/role/tools）→
-        # SnapshotBuilder::Input；独立成方法控 handle_fork_command 圈复杂度。
-        private def parse_fork_input(data : Hash(String, JSON::Any)) : Tuple(Orchestration::Fork::SnapshotBuilder::Input, String)
-          task = data["task"]?.try(&.as_s?) || ""
-          raise ::Sebas::Platform::Store::StoreError.new("fork 命令缺 task") if task.empty?
-          # 区分缺失与类型错误（CodeRabbit）：缺失用默认 1；存在但非整数
-          # （字符串/浮点）拒绝，不被默认值吞掉。
-          count = if raw_count = data["count"]?
-                    raw_count.as_i? ||
-                      raise ::Sebas::Platform::Store::StoreError.new(
-                        "count 必须为整数，实际：#{raw_count}")
-                  else
-                    1
-                  end
-          raise ::Sebas::Platform::Store::StoreError.new("count 必须为正整数，实际：#{count}") if count <= 0
-          max_concurrent = ::Sebas::Orchestration::Fork::Executor::DEFAULT_MAX_CONCURRENT
-          raise ::Sebas::Platform::Store::StoreError.new(
-            "count #{count} 超过分身并发闸 #{max_concurrent}（超限整体拒绝，不排队）") if count > max_concurrent
-          mode = data["mode"]?.try(&.as_s?) || "allSettled"
-          deadline = data["deadline"]?.try(&.as_i?) || 3600
-          parent_session = data["parent_session"]?.try(&.as_s?) || "agent:main:internal:main:fork-cli"
-          # 工具声明（M4.2-WP1 §5.2）：缺失 = 默认只读档；类型错（非字符串数组）
-          # 整体拒绝，不被默认值吞掉。
-          tools = parse_fork_string_list(data, "tools")
-          # 工作区文件清单（M4.2-WP2 §2.2 L1）：fork 开始对这些文件记指纹，
-          # join 回写对比冲突。缺失 = 无指纹快照（只读 fork 不需要）。
-          files = parse_fork_string_list(data, "files")
-
-          input = Orchestration::Fork::SnapshotBuilder::Input.new(
-            task: task, count: count, window: data["window"]?.try(&.as_i?),
-            include: nil, tools: tools, role: data["role"]?.try(&.as_s?),
-            mode: mode, deadline: deadline, files: files
-          )
-          {input, parent_session}
-        end
-
-        # 可选字符串数组字段解析：缺失返回 nil；存在但非字符串数组整体拒绝
-        # （与 count 同款「区分缺失与类型错误」口径）。
-        private def parse_fork_string_list(data : Hash(String, JSON::Any), field : String) : Array(String)?
-          raw = data[field]? || return
-          unless raw.as_a?.try(&.all?(&.as_s?))
-            raise ::Sebas::Platform::Store::StoreError.new(
-              "#{field} 必须为字符串数组，实际：#{raw}")
-          end
-          raw.as_a.map(&.as_s)
         end
 
         def reload_result_payload(result : Config::ReloadResult) : Hash(String, JSON::Any)
@@ -247,7 +190,8 @@ module Sebas
           # 路由 binding（数据类：换引用即生效）
           @rules = build_rules(new_config)
 
-          # provider key 热换（下个 turn 生效）
+          # provider key 热换（下个 turn 生效）；热更新带入的明文同样收敛
+          migrate_secrets(new_config)
           new_config.agents.each do |name, agent|
             @providers.replace(name, @provider_factory.call(agent, nil))
           end
@@ -316,8 +260,7 @@ module Sebas
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
-          reply = agent_turn(agent_name, agent, session_key)
-          @store.checkpoint(task.id, 1) # provider 完成 checkpoint（重放不再调 provider）
+          reply = agent_turn(agent_name, agent, session_key, task_id: task.id, event_id: message.event_id)
 
           send_args = JSON.parse({channel: message.channel_type, peer: message.peer, content: reply}.to_json)
           send_result = @executor.run("message.send", send_args,
@@ -335,35 +278,94 @@ module Sebas
           Log.error(exception: ex) { "message processing failed (event=#{message.event_id})" }
         end
 
-        # 重放未完成 intents（崩溃恢复入口，M0-WP8 演练）
-        def replay_unfinished : Nil
-          @store.unfinished_intents.each do |intent|
-            next unless intent.kind == "message"
-            begin
-              data = JSON.parse(intent.payload)
-              message = Bus::InboundMessage.new(
-                data["event_id"].as_s, data["channel_type"].as_s,
-                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
-              )
-              Log.info { "replaying unfinished intent #{intent.id} (#{intent.status})" }
-              process_message(message, replay: true)
-            rescue ex : ::Exception
-              Log.error(exception: ex) { "intent replay failed (#{intent.id})" }
-            end
-          end
-        end
+        MAX_TOOL_ROUNDS = 8
 
-        private def agent_turn(agent_name : String, agent : Config::AgentConfig, session_key : String) : String
+        # ReAct 工具循环（M4.3-WP1，Q3 裁断）：一次性 provider 调用升为
+        # 模型响应 → 工具调用解析 → 衰减工具面执行 → 结果回注 → 下一轮。
+        # 轮数上限 MAX_TOOL_ROUNDS（防无限循环）；无工具调用 = 终答（行为
+        # 与 M0 现状一致，回归口径）。checkpoint 复用 task phase：每轮结果
+        # 持久化（transcript tool 行）后 checkpoint(round)。
+        private def agent_turn(agent_name : String, agent : Config::AgentConfig,
+                               session_key : String, task_id : String? = nil,
+                               event_id : String = "") : String
           # 每 turn 取配置快照纪律（§11.2④）：M0 单配置整根即快照；M1 起 Atomic(Config).get
           history = @store.transcripts(session_key).last(agent.memory.try(&.window) || 50).map do |row|
-            role = row.role == "agent" ? "assistant" : row.role
+            # agent → assistant；tool 行转 user（内容自带 "tool:" 前缀）——
+            # HttpProvider 只序列化 role/content，tool 角色无 tool_call_id
+            # 支撑会破坏后续对话（CodeRabbit Cv3j）
+            role = case row.role
+                   when "agent" then "assistant"
+                   when "tool"  then "user"
+                   else              row.role
+                   end
             Providers::Message.new(role, row.content)
           end
+          registry = attenuated_registry(agent)
+          executor = Tools::Executor.new(registry, @channels)
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
-          completion = provider.complete(history)
-          return completion.text if completion.ok?
-          Log.error { "provider error: #{completion.error}" }
-          "(provider error: #{completion.error})"
+
+          # 工具协议说明（M4.3-WP1 CodeRabbit）：模型必须知道可用工具与调用
+          # 协议才能发起调用——首条 system 消息注入清单（registry.describe）
+          # 与 fenced JSON 调用格式示例。
+          messages = [Providers::Message.new("system", tool_protocol_prompt(registry))] + history
+
+          (1..MAX_TOOL_ROUNDS).each do |round|
+            completion = provider.complete(messages)
+            unless completion.ok?
+              Log.error { "provider error: #{completion.error}" }
+              return "(provider error: #{completion.error})"
+            end
+            call = Providers::ToolCallParser.parse(completion.text)
+            return finish_round(task_id, round, completion.text) if call.nil?
+
+            # 工具调用轮：执行（衰减面）→ 结果持久化 + 回注 → checkpoint → 下一轮。
+            # 每次调用独立幂等标识：入站事件 + 轮次（重放同事件同轮复用同标识）。
+            messages += [Providers::Message.new("assistant", completion.text)]
+            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store)
+            result = executor.run(call.tool, call.args, round_ctx)
+            outcome = result.ok? ? result.output : "error: #{result.error}"
+            Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }
+            # 工具结果持久化到 transcript（role=tool）——checkpoint 语义 =
+            # 「本轮结果已落库」，崩溃重放经 history 重建消息上下文
+            @store.append_transcript(session_key, "tool", "#{call.tool}: #{outcome}")
+            messages << Providers::Message.new("user", "tool result (#{call.tool}): #{outcome}")
+            @store.checkpoint(task_id, round) if task_id
+          end
+          # 轮数上限：不再解析工具调用，要求模型给终答
+          final = provider.complete(messages + [Providers::Message.new("user",
+            "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")])
+          final.ok? ? final.text : "(provider error: #{final.error})"
+        end
+
+        # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
+        private def finish_round(task_id : String?, round : Int32, text : String) : String
+          @store.checkpoint(task_id, round) if task_id
+          text
+        end
+
+        # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
+        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
+        private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
+          registry = Tools.default_registry(@channels)
+          allowed = agent.tools.try(&.allow) || ["*"]
+          unless allowed.includes?("*")
+            registry.names.each do |name|
+              registry.unregister(name) unless allowed.includes?(name)
+            end
+          end
+          registry
+        end
+
+        # 工具协议提示（M4.3-WP1）：可用工具清单 + fenced JSON 调用格式——
+        # 模型据此发起工具调用（新会话无工具知识则循环永不触发）。
+        private def tool_protocol_prompt(registry : Tools::Registry) : String
+          String.build do |io|
+            io << "You can call tools. Available tools:\n"
+            io << registry.describe << "\n\n"
+            io << "To call a tool, respond with exactly one fenced JSON block:\n"
+            io << "```json\n{\"tool\": \"<name>\", \"args\": {<parameters>}}\n```\n"
+            io << "The tool result will be provided in the next message. Respond without such a block to give your final answer. Note: string values must not contain ``` sequences."
+          end
         end
 
         private def spawn_adapters : Nil

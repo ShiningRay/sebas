@@ -227,6 +227,17 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 ### 5.3 secrets 不随分身
 
+> 实现状态（M4.2-WP4，#49）：配置明文 api_key 由 `GatewaySecrets#migrate_secrets`
+> 迁 keys/ vault（EncryptedFileVault AES-256-GCM，主密钥 Windows Credential
+> Manager / 降级 0600 master.key 文件）后经 setter 抹除内存配置树——运行期
+> 配置树无明文凭据；迁移幂等可重跑（重跑时 api_key 已 nil，跳过 vault 写入
+> 但仍从 vault 读取恢复凭据映射——provider 工厂注入不缺）。provider
+> 工厂包装按 agent 实例身份注入 vault 解析 key（`wire_secret_factory`，
+> `@agent_instances` 维护最新实例映射）——分身/父共用 provider 句柄，无凭据
+> 直读路径（快照不含凭据字段断言既有）。vault 持久化加固：master.key 先读
+> 后写 + mkdir 原子锁并发防护 + temp fsync → rename → 目录项 fsync 掉电安全
+> 顺序 + 同步失败回滚。
+
 - 现状 `AgentConfig.api_key` 明文过渡 [来源: 仓库:src/platform/config/schema.cr:92]；fork 快照**不含**任何凭据字段；分身 provider 调用走 `Providers::Pool.for_agent` 取共享实例——分身持有的是 provider 句柄而非凭据 [来源: 仓库:src/providers/pool.cr:12-25]。[推演]：句柄封装使分身无凭据直读路径。
 - api_key 明文过渡收敛（迁 keyring）列入 M4.2 工作包（Q6 裁断：不留 M4.4）——排期文档承载。
 
@@ -251,9 +262,19 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 ## 7. 不可逆副作用：仅建议权 + Approvals::Center 接线
 
+> 实现状态（M4.2-WP3，#48）：`Tools::Executor` 的 L3 不可逆门承载本节
+> fail-closed——side_effect=Irreversible 工具执行前必经
+> `Approvals::Center.request`（无审批装配一律拒绝 = 装配为零时 L3 不可达）；
+> `ToolContext` 携 `approvals`/`unattended`（默认 true = 无人值守 deny，分身
+> 固定）/`approval_mode`；批准执行的 decision reason 经 `Effect.approval`
+> 随副作用清单回写进 join.report（凭证随 L1 回写）。生产装配：gateway 构造
+> Center（先于 IPC）+ `approvals_center` setter；IPC 补齐 approvals.approve/
+> deny（写命令认证强制）/approvals.pending（读匿名）。decide 拒绝 deadline
+> 已过的批准（超时 deny 与人工 approve 竞态窗口内过期决策不生效）。
+
 - 分身对 L3 不可逆操作**默认只有建议权**：工具执行前必经 `Approvals::Center.request` 批准，未批准不执行（fail-closed）。规则链现成：hardline deny > mode off > 无人值守 deny > memo 决策 > 超时 deny > 等待人工 [来源: 仓库:src/orchestration/approvals/approvals.cr:50-87]。
 - hardline 地板已含 `"fork bomb"` 模式 [来源: 仓库:src/orchestration/approvals/approvals.cr:33-38]——fork 场景天然被地板覆盖。
-- 接线语义：分身 ToolContext 携带 `unattended`（DSL 无人值守 run 默认 true → L3 自动 deny）/ `approval_mode`；人工双入口 `approve/deny` 已有 [来源: 仓库:src/orchestration/approvals/approvals.cr:91-97]。**Center 生产装配为零**（IPC 声明 approvals 能力但无 approve/deny 命令 [来源: 仓库:src/admin/ipc/server.cr:187-215]）——接线（装配+IPC 命令补齐）入 M4.2 工作包；M4.1 默认档无 L3 工具，无需接线（自然安全）。
+- 接线语义：分身 ToolContext 携带 `unattended`（DSL 无人值守 run 默认 true → L3 自动 deny）/ `approval_mode`；人工双入口 `approve/deny` API 已有 [来源: 仓库:src/orchestration/approvals/approvals.cr:91-97]。**Center 生产装配与 IPC approve/deny 命令已于 M4.2-WP3 接线**（见本节顶部实现状态；M4.1 阶段装配为零、默认档无 L3 工具，自然安全）。
 
 ---
 

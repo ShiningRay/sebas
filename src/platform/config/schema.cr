@@ -89,7 +89,10 @@ module Sebas
         getter model : String
         getter provider_ref : String?
         getter persona_file : String?
-        getter api_key : String? # M0 明文过渡；M1-WP7 迁 keyring
+        getter api_key : String? # 运行期即时抹除（迁 vault），见 Gateway#migrate_secrets
+        # 迁移抹除入口（M4.2-WP4）：Gateway#migrate_secrets 把明文写入 vault
+        # 后经此置 nil——配置树不留明文凭据（Q6 裁断：不留 M4.4）。
+        setter api_key : String?
         getter memory : MemoryConfig?
         getter tools : ToolsConfig?
         # 会话输入调度定向覆盖（session-input-scheduling.md §3.1；nil = 全继承 gateway.session）

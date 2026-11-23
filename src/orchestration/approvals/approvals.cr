@@ -114,12 +114,22 @@ module Sebas
         end
 
         private def decide(id : String, decision : Decision) : Bool
-          removed = @mutex.synchronize { !@pending.delete(id).nil? }
-          if removed
-            record_decision(memo_key(id), decision)
-            Log.info { "approval decided: #{id} -> #{decision.reason}" }
+          request = nil
+          removed = @mutex.synchronize do
+            request = @pending.delete(id)
+            !request.nil?
           end
-          removed
+          return false unless removed
+          # 超时后的批准不得生效（CodeRabbit）：wait 侧超时 deny 与人工
+          # approve 存在竞态窗口——deadline 已过即拒绝该决策（pending 已移除，
+          # 操作员从 false 返回值感知「已过期」），不写 memo 防过期决策固化。
+          if request.try(&.deadline).try { |deadline| Approvals.now >= deadline }
+            Log.warn { "approval decided after deadline, rejected: #{id}" }
+            return false
+          end
+          record_decision(memo_key(id), decision)
+          Log.info { "approval decided: #{id} -> #{decision.reason}" }
+          true
         end
 
         # 等待人工决定：轮询决策 memo；deadline 后返回 nil（调用方 deny fail-closed）
