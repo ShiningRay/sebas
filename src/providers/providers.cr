@@ -1,6 +1,7 @@
 require "log"
 require "json"
 require "http/client"
+require "crystal_llm"
 require "../log"
 
 # Provider 层（M0-WP5 骨架）：规格表（编译期常量，A2）+ 实例池（A1：单实例→实例池）。
