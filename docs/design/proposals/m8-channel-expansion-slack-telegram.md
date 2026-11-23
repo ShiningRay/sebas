@@ -113,6 +113,14 @@ channels:
 
 **session_key 五段不变**：`agent:<agent_id>:<account_id>:slack:<peer>` / `...:telegram:<peer>`。
 
+#### Slack ACK 后崩溃恢复
+
+Slack Socket Mode 的「先落库 → 再 ACK → 再入总线」顺序防的是「ACK 早于落库」的静默丢失窗口，但 **ACK 后、入总线前崩溃**仍有窗口——Slack 已收到确认不再重推，本地事件已落库但尚未入总线。恢复机制：
+
+- **持久化表**：`slack_events(event_id, account_id, envelope_id, raw_payload, dispatched, created_at)`——落库时 `dispatched=false`，入总线后消费者 `record_intent` 成功回调置 `dispatched=true`。
+- **启动恢复**：每次启动 Socket Mode 连接前，先扫 `slack_events.dispatched=false` 的行，按 `created_at` 升序经 `Bus#publish` 重投（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束）。
+- **与 Telegram 恢复机制同构**：`dispatched` 标记、消费者确认回调、启动扫描重投——两渠道共用同一恢复模式。
+
 ### 4.2 接收侧形态归并（沿用 §5.2）
 
 两渠道都属于**长连接型**（出站连接，免公网）：
@@ -144,7 +152,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
      - 消费者按 `event_id` 做提交级排重（已有先例：`src/platform/cli/gateway.cr` 与 `src/platform/store/store.cr` 的 intent 落库路径——非重放路径中已存在的 intent 直接返回，不再派发），**同一条 update 被处理一次**；
      - 出站幂等键由 `event_id` 派生（`src/tools/executor.cr` 发消息工具实现），同一条 update 触发的发消息动作也不会重复。
    - **启动恢复**：每次启动轮询循环前，先扫 `telegram_updates` 里 `dispatched=false` 且 `status != 'dead_letter'` 的行，按 update_id 升序重建消息（`event_id` 按上述含指纹规则派生）、经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束）。这样「Step 1 落库后崩溃、Step 2/3 未执行」「Step 3 入总线成功但消费者尚未 `record_intent` 就崩溃」两个窗口都能恢复，且不依赖 Telegram 重推（Telegram 在 Step 2 已确认）。intent 落库之后的崩溃由既有重放规则覆盖。
-   - **已有 admission 的恢复记录补确认**：若进程在 `record_intent` 成功后、确认回调前崩溃，重投会在正常 admission 的 `session_inputs` 查重处返回 `duplicate`，不会进入 `process_message` 的已有 intent 分支；既有 intent 重放使用 `replay=true`，也不执行该分支。此时 `dispatched` 可能一直为 `false`。补确认路径：**在 `admit` 返回 `duplicate` 的分支中，检查该 `event_id` 对应的 `telegram_updates.dispatched`——为 `false` 则直接置 `true`**（因为 intent 已持久化、事件已 admission，无需再 dispatch）。此操作在 `admit` 内部完成，不绕过会话串行约束（`admit` 本身就在调度器上下文中执行）。同时，在 `replay_unfinished` 完成后的 `recover_dispatch` 中，对 replay 涉及的所有 `event_id` 统一补置 `telegram_updates.dispatched=true`。
+   - **已有 admission 的恢复记录补确认**：若进程在 `record_intent` 成功后、确认回调前崩溃，重投会在正常 admission 的 `session_inputs` 查重处返回 `duplicate`，不会进入 `process_message` 的已有 intent 分支；既有 intent 重放使用 `replay=true`，也不执行该分支。此时 `dispatched` 可能一直为 `false`。补确认路径：**在 `admit` 返回 `duplicate` 的分支中，先检查该 `event_id` 对应的 intent 是否已持久化**——`intents` 表中存在该 `event_id` 且状态为 `done` 或 `dispatched` 才置 `telegram_updates.dispatched=true`；**不存在时保留 `dispatched=false`**，由调度器扩展的恢复路径处理（不提前确认，避免 `record_intent` 失败后无法被扫描恢复）。此操作在 `admit` 内部完成，不绕过会话串行约束（`admit` 本身就在调度器上下文中执行）。同时，在 `replay_unfinished` 完成后的 `recover_dispatch` 中，对 replay 涉及的所有 `event_id` 统一检查 intent 持久化状态后补置 `telegram_updates.dispatched=true`。
    - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
    - `last_update_at` 在 Step 2 同步落库。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
@@ -161,7 +169,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
 
 Telegram 适配器的「`record_intent` 失败的运行期恢复」依赖 SessionScheduler 支持 `failed → queued` 状态迁移与重派触发器。这些属于**调度器本身的设计演进**，不在 M8 渠道接入范围内。M8 开工前，以下调度器扩展必须已完成（由独立 issue 跟踪，建议挂在 M4x 并行轨或 M5 主线）：
 
-- **扩展点 1 · `SessionScheduler#retry_failed_batch(batch_id)`**：批次内所有成员都是「无 intent 失败」（`intents` 表中无该 `event_id` 行）时，允许 `failed → queued` 迁移；`retry_failed_batch` 只在 `@running_batch.nil?` 且同会话无 `running` 批次时执行（保持会话串行约束）。
+- **扩展点 1 · `SessionScheduler#retry_failed_batch(batch_id)`**：批次内所有成员都是「无 intent 失败」（`intents` 表中无该 `event_id` 行）时，允许 `failed → queued` 迁移；`retry_failed_batch` 只在 `@running_batch.nil?` 且同会话无 `running` 批次时执行（保持会话串行约束）。**混合批次处理**：若批次中部分成员已有 intent、部分成员无 intent 失败，`retry_failed_batch` 只迁移无 intent 失败的成员回 `queued`，已有 intent 的成员保持原状态（由 `replay_unfinished` 覆盖）；批次状态迁移以「所有无 intent 失败成员已迁回 queued」为准。
 - **扩展点 2 · 重试成员状态流转**：无 intent 失败成员从 `failed` 重新排队后，由 `dispatch_locked` 推进至 `dispatched`，`batch_done` 能结算其成功完成或再次失败的结果。
 - **扩展点 3 · queued 批次重派触发器**：`dispatch_locked` 在 `@dispatch.call` 抛异常后把批次回退为 `queued` 时，需要显式重派触发器（周期扫描调用调度器派发入口，或仅依赖后续事件/启动恢复）。
 - **扩展点 4 · 启动屏障**：`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前设置 `@replay_completed = true`；扫描器在屏障前跳过 dispatch 触发，避免旧重放与新派发并发执行。
