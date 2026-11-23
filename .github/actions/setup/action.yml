@@ -59,14 +59,19 @@ runs:
         brew_prefix="$("$brew_bin" --prefix)"
 
         # 直接扫 keg 目录，不调用 brew（避免任何隐式升级）。
+        #
+        # **只认带版本后缀的 keg（@3 / @4），排除无后缀的 `openssl` 软链**：
+        # 该软链可能指向陈旧 keg——macos-ci 实测它指向 openssl@1.1/1.1.1g
+        # （2020 年版本），Crystal 1.22.x 的 LibCrypto 绑定按 OpenSSL 3+ 声明，
+        # 链接 1.1 会在编译期报 `undefined method 'ctrl=' for
+        # LibCrypto::BioMethod`（main d7d7b3c 的 spec / macos-ci 实测）。
+        # 宁可明确报错指引安装，也不静默落到错误版本。
         openssl_prefix=""
         for dir in \
-          "$brew_prefix/opt/openssl@4" \
           "$brew_prefix/opt/openssl@3" \
-          "$brew_prefix/opt/openssl" \
-          /usr/local/opt/openssl@4 \
+          "$brew_prefix/opt/openssl@4" \
           /usr/local/opt/openssl@3 \
-          /usr/local/opt/openssl; do
+          /usr/local/opt/openssl@4; do
           if [ -f "$dir/lib/libssl.dylib" ] || [ -f "$dir/lib/libssl.a" ]; then
             openssl_prefix="$dir"
             break
@@ -74,7 +79,21 @@ runs:
         done
 
         if [ -z "$openssl_prefix" ]; then
-          echo "::error::No OpenSSL keg with libssl found. Install one on the self-hosted runner: brew install openssl@3"
+          echo "::error::No OpenSSL 3+ keg found (openssl@3 / openssl@4)."
+          echo "::error::Install one on the self-hosted runner: brew install openssl@3"
+          echo "::error::Note: an unversioned 'openssl' symlink pointing at an old keg (e.g. 1.1) is deliberately not accepted."
+          exit 1
+        fi
+
+        # pkg-config 是必需项而非可选项：Crystal 用它读取 libcrypto 版本，
+        # 缺失时把 LibCrypto::OPENSSL_VERSION 设为 "0.0.0"——CRYSTAL_LIBRARY_PATH
+        # 只管链接、不管版本检测。版本被判 < 1.1.0 会让依赖（如 openssl_ext）
+        # 走老 API 分支，在编译期报 `undefined method 'ctrl=' for
+        # LibCrypto::BioMethod`（main d7d7b3c 的 spec / macos-ci 实测）。
+        if ! command -v pkg-config >/dev/null 2>&1; then
+          echo "::error::pkg-config not found. Crystal needs it to detect the libcrypto version."
+          echo "::error::Install it on the self-hosted runner: brew install pkg-config"
+          echo "::error::Without it OPENSSL_VERSION resolves to 0.0.0 and builds fail with 'ctrl=' for LibCrypto::BioMethod."
           exit 1
         fi
 
@@ -85,12 +104,39 @@ runs:
           echo "CPPFLAGS=-I${openssl_prefix}/include"
         } >> "$GITHUB_ENV"
 
-        # pkg-config 存在时顺带修正它的搜索路径（不安装）。
-        if command -v pkg-config >/dev/null 2>&1 && [ -d "${openssl_prefix}/lib/pkgconfig" ]; then
+        # pkg-config 搜索路径指向所选 keg（上方已保证 pkg-config 存在），
+        # 确保版本检测读到的是该 keg 的 libcrypto，而非机器上其他残留版本。
+        if [ -d "${openssl_prefix}/lib/pkgconfig" ]; then
           echo "PKG_CONFIG_PATH=${openssl_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
         else
-          echo "pkg-config unavailable; relying on CRYSTAL_LIBRARY_PATH for libssl/libcrypto."
+          echo "::warning::selected OpenSSL keg has no lib/pkgconfig; version detection may not see it"
         fi
+
+        # 自检：pkg-config 必须解析出【所选 keg 内】的 libcrypto.pc（≥ 3）。
+        # PKG_CONFIG_PATH 只增优先目录、不排除默认目录——若所选 keg 缺 .pc
+        # 而系统目录有残留元数据，朴素 --modversion 会误判通过。故先要求
+        # libcrypto.pc 在所选 keg 内存在，再用 pcfiledir 校验解析来源，
+        # 最后验版本，三重确认选中的就是该 keg。
+        if [ ! -f "${openssl_prefix}/lib/pkgconfig/libcrypto.pc" ]; then
+          echo "::error::${openssl_prefix}/lib/pkgconfig/libcrypto.pc not found."
+          echo "::error::Reinstall the keg: brew reinstall openssl@3"
+          exit 1
+        fi
+        detected="$(PKG_CONFIG_PATH="${openssl_prefix}/lib/pkgconfig" pkg-config --modversion libcrypto 2>/dev/null || true)"
+        resolved_dir="$(PKG_CONFIG_PATH="${openssl_prefix}/lib/pkgconfig" pkg-config --variable=pcfiledir libcrypto 2>/dev/null || true)"
+        if [ -z "$detected" ] || [ "$resolved_dir" != "${openssl_prefix}/lib/pkgconfig" ]; then
+          echo "::error::pkg-config resolved libcrypto from '${resolved_dir:-none}', not the selected keg ${openssl_prefix}."
+          echo "::error::Check for conflicting PKG_CONFIG_PATH entries."
+          exit 1
+        fi
+        echo "libcrypto version detected by pkg-config: ${detected} (${resolved_dir})"
+        case "${detected}" in
+          3.*|4.*) ;;
+          *)
+            echo "::error::libcrypto ${detected} is not OpenSSL 3+; Crystal 1.22 needs 3.x or newer."
+            exit 1
+            ;;
+        esac
 
         echo "clang: $(clang --version | head -1)"
         echo "openssl: ${openssl_prefix}"
