@@ -63,6 +63,37 @@ class CliRobustnessTest < Minitest::Test
     assert_empty gateway.send(:proposal_decision_evidence, [regular], 8)
   end
 
+  def test_proposal_decision_endpoints_and_pr_comment_parent
+    cases = {
+      "https://github.com/o/r/issues/8#issuecomment-1" => [
+        "repos/o/r/issues/comments/1", "issue_url", "https://api.github.com/repos/o/r/issues/8"
+      ],
+      "https://github.com/o/r/pull/9#discussion_r2" => [
+        "repos/o/r/pulls/comments/2", "pull_request_url", "https://api.github.com/repos/o/r/pulls/9"
+      ],
+      "https://github.com/o/r/pull/9#pullrequestreview-3" => [
+        "repos/o/r/pulls/9/reviews/3", "pull_request_url", "https://api.github.com/repos/o/r/pulls/9"
+      ],
+      "https://github.com/o/r/pull/9#issuecomment-4" => [
+        "repos/o/r/issues/comments/4", "issue_url", "https://api.github.com/repos/o/r/issues/9"
+      ]
+    }
+    cases.each do |url, (path, parent_field, parent)|
+      calls = []
+      runner = Object.new
+      runner.define_singleton_method(:json!) do |*args|
+        calls << args
+        {"user" => {"login" => "ShiningRay"}, "body" => "verdict", parent_field => parent}
+      end
+      issue = SebasAgents::Model::Issue.from_hash({"number" => 8, "labels" => ["proposal"], "body" => "<!-- proposal-decision: #{url} -->"})
+      gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+      evidence = gateway.send(:proposal_decision_evidence, [issue], 8)
+      assert_equal ["gh", "api", path], calls.first
+      expected_parent = parent_field == "issue_url" && url.include?("/pull/") ? parent.sub("/issues/", "/pulls/") : parent
+      assert_equal expected_parent, evidence.dig(url, "parent")
+    end
+  end
+
   def test_proposal_snapshot_rejects_review_from_another_pr
     url = "https://github.com/o/r/pull/9#discussion_r123"
     issue = SebasAgents::Model::Issue.from_hash({

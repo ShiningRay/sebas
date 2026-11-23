@@ -163,16 +163,31 @@ module SebasAgents
         match = Triager::DECISION_URL.match(ref)
         next unless match
 
-        _repo, kind, parent = match.captures
-        raw = if match[4]
-          fetch_ref("repos/#{@repo}/pulls/comments/#{match[4]}")
+        repo = match[:repo]
+        kind = match[:kind]
+        parent = match[:number]
+        next unless repo == @repo
+
+        anchor = match[:anchor]
+        raw = if anchor&.start_with?("issuecomment")
+          fetch_ref("repos/#{@repo}/issues/comments/#{match[:id]}")
+        elsif anchor&.start_with?("pullrequestreview")
+          fetch_ref("repos/#{@repo}/pulls/#{parent}/reviews/#{match[:id]}")
         else
-          fetch_ref("repos/#{@repo}/issues/comments/#{match[5]}")
+          fetch_ref("repos/#{@repo}/pulls/comments/#{match[:discussion_id]}")
         end
         next unless raw
 
-        evidence[ref] = {"author" => raw.dig("user", "login"), "body" => raw["body"].to_s,
-          "parent" => kind == "issues" ? raw["issue_url"] : raw["pull_request_url"]}
+        parent_url = if kind == "issues"
+          raw["issue_url"]
+        elsif anchor&.start_with?("issuecomment")
+          issue_url = raw["issue_url"].to_s
+          next unless issue_url == "https://api.github.com/repos/#{@repo}/issues/#{parent}"
+          "https://api.github.com/repos/#{@repo}/pulls/#{parent}"
+        else
+          raw["pull_request_url"]
+        end
+        evidence[ref] = {"author" => raw.dig("user", "login"), "body" => raw["body"].to_s, "parent" => parent_url}
       end
     end
 

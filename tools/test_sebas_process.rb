@@ -1320,10 +1320,10 @@ class CliTest < Minitest::Test
   def proposal_verdict(data, dir, decision: "accepted-design", url: nil)
     url ||= "https://github.com/o/r/issues/8#issuecomment-123"
     match = SebasAgents::Triager::DECISION_URL.match(url)
-    parent = if match[2] == "pull"
-      "https://api.github.com/repos/o/r/pulls/#{match[3]}"
+    parent = if match[:kind] == "pull"
+      "https://api.github.com/repos/o/r/pulls/#{match[:number]}"
     else
-      "https://api.github.com/repos/o/r/issues/#{match[3]}"
+      "https://api.github.com/repos/o/r/issues/#{match[:number]}"
     end
     data["proposal_evidence"] ||= {}
     data["proposal_evidence"][url] = {
@@ -1424,6 +1424,17 @@ class CliTest < Minitest::Test
       status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
       assert_equal 1, status
       assert_includes out, "裁决正文"
+    end
+  end
+
+  def test_triage_proposal_rejects_cross_repo_short_backlink
+    url = "https://github.com/o/r/pull/9#discussion_r123"
+    data = snapshot(issues: [issue(8, labels: ["proposal"])], pull_requests: [{"number" => 9, "body" => "Design other/r#8"}])
+    Dir.mktmpdir do |dir|
+      snap, verdict, = proposal_verdict(data, dir, url: url)
+      status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+      assert_equal 1, status
+      assert_includes out, "回链"
     end
   end
 

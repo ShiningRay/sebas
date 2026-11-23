@@ -16,7 +16,7 @@ module SebasAgents
     PROPOSAL_STATUS_LABELS = PROPOSAL_DECISIONS.map { |decision| "proposal:#{decision}" }.freeze
     PROPOSAL_GENERAL_DECISIONS = %w[needs-info duplicate escalate].freeze
     PROPOSAL_VERDICT_MARKER = "<!-- proposal-verdict: "
-    DECISION_URL = %r{\Ahttps://github\.com/([^/]+/[^/]+)/(issues|pull)/(\d+)#(?:(?:issuecomment|pullrequestreview)-(\d+)|discussion_r(\d+))\z}
+    DECISION_URL = %r{\Ahttps://github\.com/(?<repo>[^/]+/[^/]+)/(?<kind>issues|pull)/(?<number>\d+)#(?:(?<anchor>issuecomment|pullrequestreview)-(?<id>\d+)|discussion_r(?<discussion_id>\d+))\z}
 
     # 需要模型先判断的事项；它们是判断步骤，不是判定值。
     # 结果映射到 DECISIONS：duplicate→duplicate、fixed→fixed、by-design→by-design，
@@ -107,7 +107,9 @@ module SebasAgents
       evidence = verdict["maintainer_decision_url"].to_s
       match = DECISION_URL.match(evidence)
       raise InvalidPlan, "#{decision} 需要有效的 maintainer_decision_url" unless match
-      repo, kind, number = match.captures
+      repo = match[:repo]
+      kind = match[:kind]
+      number = match[:number]
       raise InvalidPlan, "裁决链接必须属于当前仓库" unless repo == snapshot.repo
       record = snapshot.proposal_evidence[evidence]
       raise InvalidPlan, "快照缺裁决的真实作者、正文或父对象" unless record
@@ -136,7 +138,8 @@ module SebasAgents
     end
 
     def proposal_backlink?(body, repo, number)
-      body.match?(/(?:^|[^\d])##{number}(?:[^\d]|$)/) ||
+      body.match?(%r{(?:\A|[\s(])##{number}(?=\D|\z)}) ||
+        body.match?(%r{(?:\A|[\s(])#{Regexp.escape(repo)}##{number}(?=\D|\z)}) ||
         body.match?(%r{https://github\.com/#{Regexp.escape(repo)}/issues/#{number}(?:[/?#]|\z)})
     end
 
