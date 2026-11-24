@@ -129,8 +129,9 @@ module Sebas
           archive_base = @base_dir
           dir = if archive_base
                   resolved = Path[archive_dir].expand(archive_base)
-                  base_s = archive_base.to_s.chomp('/')
-                  resolved_s = resolved.to_s
+                  # 分隔符归一（Windows 反斜杠）：前缀比较跨平台一致
+                  base_s = archive_base.to_s.gsub("\\", "/").chomp('/')
+                  resolved_s = resolved.to_s.gsub("\\", "/")
                   return 0 unless resolved_s == base_s || resolved_s.starts_with?(base_s + "/")
                   resolved
                 else
