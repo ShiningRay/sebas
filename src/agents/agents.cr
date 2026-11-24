@@ -60,13 +60,28 @@ module Sebas
         @mutex.synchronize { @agents[id]? }
       end
 
-      # 目录轨 id 清单（M4.4-WP1 双轨互查用）
+      # 目录轨 id 清单（M4.4-WP1 双轨互查用）：内存实例 + 磁盘存量目录
+      # （SOUL.md 已落盘但本次进程未 get_or_create 的存量 agent——只读可见）
       def ids : Array(String)
-        @mutex.synchronize { @agents.keys }
+        memory_ids = @mutex.synchronize { @agents.keys }
+        combined = memory_ids + disk_ids
+        combined.uniq!
+        combined.sort
       end
 
       def size : Int32
-        @mutex.synchronize { @agents.size }
+        ids.size
+      end
+
+      # 磁盘存量发现：agents_root 下含 SOUL.md 的子目录即存量 agent
+      # （只读可见，不强制加载——get_or_create 时才实例化）
+      def disk_ids : Array(String)
+        return [] of String unless Dir.exists?(@root)
+        disk_ids = Dir.children(@root).select do |entry|
+          dir_path = @root / entry
+          File.directory?(dir_path) && File.exists?(dir_path / "SOUL.md")
+        end
+        disk_ids.sort!
       end
     end
 
@@ -86,7 +101,9 @@ module Sebas
       # 全量互查：每个 agent 的双轨在位情况。config 轨权威（model 必有）；
       # 目录轨缺失 = get_or_create 会建默认 SOUL.md（不强制迁移，只列明）。
       def snapshot : Array(AgentView)
-        names = (@config_agents.keys + @registry.ids).uniq.sort
+        names = @config_agents.keys + @registry.ids
+        names.uniq!
+        names.sort
         names.map do |name|
           cfg = @config_agents[name]?
           in_registry = !@registry.get(name).nil?
