@@ -66,7 +66,7 @@ module Sebas
 
         # 请求体 → JSON params（gzis）：空体 = 空对象（缺参走 handler 校验），
         # 非法 JSON/非对象 → nil（scheduling_admin_call 回 400）
-        private def body_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any?
+        private def body_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any
           raw = read_limited_body(ctx).to_s
           parsed = JSON.parse(raw.empty? ? "{}" : raw)
           parsed.as_h? || ::JSON::Any.new(Hash(String, ::JSON::Any).new) # 空体兜底空对象
