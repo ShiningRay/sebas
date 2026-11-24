@@ -33,23 +33,23 @@
 | 文件 | 行数 | 主题 |
 |---|---|---|
 | [commitments-calendar-integration.md](proposals/commitments-calendar-integration.md) | 338 | 承诺与日历整合：Calendar 作为持久意图与时间上下文层（M5–M7 输入） |
-| [fork-join-semantics.md](proposals/fork-join-semantics.md) | 390 | fork/join 影分身语义 |
-| [session-input-scheduling.md](proposals/session-input-scheduling.md) | 223 | 会话输入调度（队列/debounce/正交 steer） |
-| [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 185 | 影分身架构 |
+| [fork-join-semantics.md](proposals/fork-join-semantics.md) | 310 | fork/join 影分身语义 |
+| [session-input-scheduling.md](proposals/session-input-scheduling.md) | 216 | 会话输入调度（队列/debounce/正交 steer） |
+| [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 175 | 影分身架构 |
 | [fork-join-shadow-clone-positioning.md](proposals/fork-join-shadow-clone-positioning.md) | 161 | 影分身定位 |
-| [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 85 | 忙时插话与转向 |
+| [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 81 | 忙时插话与转向 |
 
 ## 调研 `research/`（7 篇）
 
 | 文件 | 行数 | 主题 |
 |---|---|---|
-| [channels-wecom-lark-email.md](research/channels-wecom-lark-email.md) | 310 | 企业微信 / 飞书 / email 渠道调研 |
-| [autobot-architecture.md](research/autobot-architecture.md) | 283 | autobot 架构与可复用件（A1–A10） |
-| [crystal-hot-reload.md](research/crystal-hot-reload.md) | 275 | Crystal 热重载机制 |
+| [channels-wecom-lark-email.md](research/channels-wecom-lark-email.md) | 277 | 企业微信 / 飞书 / email 渠道调研 |
+| [autobot-architecture.md](research/autobot-architecture.md) | 269 | autobot 架构与可复用件（A1–A10） |
+| [crystal-hot-reload.md](research/crystal-hot-reload.md) | 237 | Crystal 热重载机制 |
 | [openclaw.md](research/openclaw.md) | 225 | OpenClaw 旁证 |
-| [hermes-agent.md](research/hermes-agent.md) | 256 | Hermes Agent 旁证 |
-| [pi-durable.md](research/pi-durable.md) | 192 | Pi 持久化/恢复旁证 |
-| [prior-art-notes.md](research/prior-art-notes.md) | 153 | 旁证汇总 |
+| [hermes-agent.md](research/hermes-agent.md) | 218 | Hermes Agent 旁证 |
+| [pi-durable.md](research/pi-durable.md) | 145 | Pi 持久化/恢复旁证 |
+| [prior-art-notes.md](research/prior-art-notes.md) | 108 | 旁证汇总 |
 
 ## 核验与记录 `review/`（12 篇）
 
@@ -94,5 +94,4 @@
 
 - **引用一律用 `§锚` 或具体文件路径**，不用行号；`tools/check_docs.rb` 会在 CI 拦截行号锚与死链。
 - 新增设计内容写进 `spec/` 对应章并在 `spec/README.md` 登记；新增计划内容写进 `plan/` 对应节并在 [plan/README.md](plan/README.md) 登记。
-- 单文件体量三项都会告警：物理行超 400、等效屏幕行超 400（按 100 列视口、CJK 记 2 列折算）、单行显示宽度超 400 列。
-  长行不能靠回车折行解决——Markdown 软换行会渲染成空格——应拆子列表、表格或小节。口径详见 [process/scribe.md](process/scribe.md)。
+- 单文件体量按三项并列判定：物理行 ≤ 400、等效屏幕行 ≤ 400、单行显示宽度 ≤ 400 列；超过时 `check_docs.rb` 告警。长行应拆子列表、表格或小节，不要用硬折行——Markdown 软换行会渲染成空格。口径见 [process/scribe.md §体量口径](process/scribe.md)。

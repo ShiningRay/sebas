@@ -26,11 +26,7 @@
 ### Changed
 
 - Gateway 的调度适配与批次执行拆分为 `GatewayDispatch` module（[#165](https://github.com/ShiningRay/sebas/pull/165)）。
-- 文档门禁体量口径扩为三项：物理行 400、等效屏幕行 400（100 列视口、CJK 记 2 列折算）、
-  单行显示宽度 400 列。`check_docs.rb` 此前只数换行符，长段落能绕过阈值；新增
-  `--display-columns` / `--max-line-columns` 选项，传 `0` 可关闭对应检查；
-  `docs/design/review/` 存档豁免后两项。`read_lines` 改用 `lines(chomp: true)`，
-  与 `verify docs` 的行数口径对齐（不再多算末尾换行）。
+- 文档门禁体量口径扩为三项：物理行 ≤ 400、等效屏幕行 ≤ 400（100 列视口，CJK 记 2 列）、单行显示宽度 ≤ 400 列。`check_docs.rb` 此前只数换行符，长段落能绕过阈值；新增 `--display-columns` / `--max-line-columns` 选项，传 `0` 表示该项不设上限；`docs/design/review/` 存档豁免后两项。`read_lines` 改用 `lines(chomp: true)`，与 `verify docs` 的行数口径对齐（[#188](https://github.com/ShiningRay/sebas/pull/188)）。
 - Verifier 与 Reviewer 合并为单一角色并真接入 checker（[#132](https://github.com/ShiningRay/sebas/pull/132)）。
 - Ruby 版本钉至 3.4.13，守卫改从 `.ruby-version` 推导下限，不再写死常量（[#104](https://github.com/ShiningRay/sebas/pull/104)）。
 

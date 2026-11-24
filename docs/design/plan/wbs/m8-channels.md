@@ -61,13 +61,7 @@
 - 范围：
   - `src/channels/telegram/` 目录：adapter.cr / long_poll.cr / bot_api.cr；
   - long-poll：`getUpdates(offset, timeout=50)` 循环；offset 落 store 持久化，启动时读；**活跃窗口/空闲双模**——**每轮调用 `getUpdates` 前都检查 `last_update_at`**，若距今 ≥6 天进入重置模式（不重启进程，详见 [proposals/m8-channel-expansion-slack-telegram.md §4.2](../../proposals/m8-channel-expansion-slack-telegram.md)「Telegram 空闲后 `update_id` 重置策略」）；
-  - 排重：活跃窗口内 `update_id` 单调递增推进；重置模式下用内容指纹
-    （`update_id + chat_id + message_id + text hash`）查重，不靠 offset 比较。
-  - **持久化优先于 offset 推进**——每条 update 按三步走：
-    Step 1 落 `telegram_updates`（含 `dispatched=false`）→ Step 2 推进 `persisted_offset`
-    → Step 3 入总线。
-  - **`dispatched=true` 由消费者侧在 `record_intent` 落库成功后回调置位**：
-    `Bus#publish` 返回不等于处理完成。启动时扫 `dispatched=false` 重投。
+  - 排重：活跃窗口内 `update_id` 单调递增推进；重置模式下用内容指纹（`update_id + chat_id + message_id + text hash`）查重，不靠 offset 比较；**持久化优先于 offset 推进**——每条 update 按「Step 1 落 `telegram_updates`（含 `dispatched=false`）→ Step 2 推进 `persisted_offset` → Step 3 入总线」顺序；**`dispatched=true` 由消费者侧在 `record_intent` 落库成功后回调置位**，`Bus#publish` 返回不等于处理完成；启动时扫 `dispatched=false` 重投；
   - 重置模式退出条件：本轮 ≥1 条新 update 且全部持久化 + 入总线成功后才重置 `persisted_offset` 并切回活跃窗口；**空轮询继续保持重置模式**；
   - store 表新增 `telegram_accounts.last_update_at` 与 `telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, status, retry_count, bus_publish_timeout_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引；
   - 发送：`sendMessage` + token bucket（按 `(account_id, chat_id)` 建桶，1 msg/s；全局 30 msg/s 桶）；
@@ -86,62 +80,14 @@
   - **活跃窗口持久化优先**：fault-injection 在「Step 1 落库后、Step 2 推进 offset 前」`kill -9`，重启后扫 `dispatched=false` 行重投入总线，不丢消息；再注入「Step 2 推进 offset 后、Step 3 入总线前」`kill -9`，同样靠 `dispatched=false` 扫描恢复；
   - **`dispatched` 由消费者置位**：fault-injection 在「`Bus#publish` 已返回但消费者尚未 `record_intent`」`kill -9`——生产者侧 `dispatched` 仍为 `false`；重启后扫到该行重投入总线，消费者这次完成 `record_intent` 并回调置 `dispatched=true`；验证 bus 投递成功不等于处理完成、`dispatched` 不会因 bus 返回被过早置位；
   - **唯一索引冲突不阻塞 offset 推进**：mock server 让进程在 Step 1 后、Step 2 前崩溃，重启并恢复后 mock server 再次返回同一条 `update_id`——适配器在 Step 1 命中唯一索引冲突时**不视为失败**，继续 Step 2 推进 `persisted_offset`；该行的 `dispatched` 已为 `true`，Step 3 跳过不重复入总线。验证轮询不停滞、消息不重复入总线；
-  - **入站 `event_id` 确定性派生（含内容指纹）**：fault-injection 在「消费者 `record_intent` 落库成功后、
-    `dispatched` 置位前」`kill -9`。重启后扫到 `dispatched=false` 行重建消息——用持久化行的
-    `update_id` 与 `content_fingerprint` 按提案 §4.2 唯一形式
-    `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>` 算出与原投递**同值**的
-    `event_id`，经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，
-    不绕过会话调度器的串行约束）。消费者 `process_message` 被调起，`record_intent` 命中已有 intent
-    （`INSERT OR IGNORE` 返回 false）走「已有 intent」分支**也要**回调置 `dispatched=true`——
-    该 update 全程只被处理一次，触发的发消息动作也只执行一次。
-    额外验证：mock server 让适配器进入重置模式后收到两条 `update_id` 相同但内容不同的 update，
-    两条都能得到独立 `event_id`，第二条不会被消费者 intent 排重忽略；
+  - **入站 `event_id` 确定性派生（含内容指纹）**：fault-injection 在「消费者 `record_intent` 落库成功后、`dispatched` 置位前」`kill -9`，重启后扫到 `dispatched=false` 行重建消息——用持久化行的 `update_id` 与 `content_fingerprint` 按提案 §4.2 唯一形式 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>` 算出与原投递**同值**的 `event_id`；经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束），消费者 `process_message` 被调起，`record_intent` 命中已有 intent（`INSERT OR IGNORE` 返回 false）走「已有 intent」分支**也要**回调置 `dispatched=true`——该 update 全程只被处理一次，触发的发消息动作也只执行一次；额外验证：mock server 让适配器进入重置模式后收到两条 `update_id` 相同但内容不同的 update，两条都能得到独立 `event_id`，第二条不会被消费者 intent 排重忽略；
   - **空轮询不退重置模式**：mock server 让适配器进入重置模式后，前 N 轮 `getUpdates()` 返回空数组，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——前 N 轮持续无 offset 轮询、不重置 offset；第 N+1 轮该 update 被消费，`persisted_offset` 重置为新值，下一轮回到活跃窗口；
   - **不重启进程的空闲重置**：mock server 让适配器持续运行，前 N 轮 `getUpdates(offset=旧值)` 返回空数组；mock 时间推进 ≥6 天，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——适配器在**不重启进程**的情况下检测到 `last_update_at` 距今 ≥6 天，进入重置模式，该 update 被消费、`persisted_offset` 重置为新值；验证运行期空闲窗口检查生效；
-  - **批次处理延迟不改变空闲计时**：mock server 让一次 `getUpdates` 响应包含 update A 和 B，
-    并把该非空响应的到达时刻持久化为 `last_update_at`。A 的 Step 3 入总线阻塞 2 天
-    （fault-injection 挂起 bus 消费者），期间 `last_update_at` 不得因处理完成或超时再次刷新；
-    Telegram 在响应到达 7 天后返回一条 `update_id` 小于持久化 offset 的新 update。
-    适配器按响应到达时刻已空闲 7 天、而非按处理完成时刻计算，**必须进入重置模式**，
-    且**不得跳过该 update**。另注入处理中途崩溃，重启后保留崩溃前最近一次非空响应的到达时刻，
-    不得回退到退出重置模式时才刷新。
-  - **`record_intent` 失败的运行期恢复（前置依赖：调度器 failed 批次重试扩展）**：
-    fault-injection 让消费者 `record_intent` 第一次抛 SQLite 临时错误（`SQLITE_BUSY`），
-    `dispatched` 保持 `false`、入站事件已完成 admission、`session_inputs` 行已落库。
-    **前置依赖**：调度器 failed 批次重试扩展（`SessionScheduler#retry_failed_batch` +
-    failed → queued 状态迁移 + queued 批次重派触发器 + 启动屏障）已完工。
-    适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义；第二次 `record_intent`
-    成功并回调置 `dispatched=true`。再注入「连续 20 次 `record_intent` 失败」，该行 `status`
-    置为 `'dead_letter'`、上报管理面告警、**两条扫描路径都用 `status != 'dead_letter'` 显式排除**——
-    验证 dead-letter 行不再被周期扫描或启动扫描选中；
-  - **Case B · 首次 admission 前崩溃的 update**：fault-injection 在「Step 1 落库后、Step 3 入总线前」
-    `kill -9`——事件从未进入 admission、`session_inputs` 无对应行。重启后扫描器经 **`Bus#publish`**
-    重新入总线（走正常 admission 流程建立 `session_inputs` 行——含 `received_seq`、批次归属、
-    `policy_snapshot`——再经 `SessionScheduler` 按批次串行约束 dispatch）。
-    断言恢复后该事件具有完整 `session_inputs` 行、正确的 `received_seq` 与批次归属、
-    `policy_snapshot`，且**不绕过会话调度器的串行约束**（同 session 其他事件按 received_seq
-    顺序被调度）；
-  - **bus 饱和降级与两类失败分开计数**：
-    **实现方式**：在 `Bus` 中新增带超时的投递方法
-    `Bus#publish_with_timeout(event, timeout : Time::Span) : PublishResult`——内部用 Crystal
-    标准库 `select` 同时等待 `@channel.send(event)` 与 `timeout(timeout)` 两个分支
-    （`src/admin/ipc/server.cr` 已有同类写法）：发送就绪即写入返回 `PublishResult::Sent`、
-    超时先触发返回 `PublishResult::Timeout`。
-    **超时后消息未入队**——`@channel.send` 未执行，事件仍只在扫描器内存中，下一轮扫描器重试。
-    `record_intent` 与回调仅在 `PublishResult::Sent` 后由消费者正常执行；`PublishResult::Timeout`
-    时扫描器跳过本轮、`bus_publish_timeout_count` 加 1、下一轮再试，验证扫描器不被卡死。
-    再让 bus 持续饱和直到 `bus_publish_timeout_count > 20`——验证 `retry_count` **未增加**、
-    行**未转入 `dead_letter`**（bus 超时不计入消费者失败上限）。恢复 bus 容量，
-    下一轮扫描 `publish_with_timeout` 返回 `PublishResult::Sent`、消费者 `record_intent` 成功、
-    回调置 `dispatched=true`——验证 bus 恢复后健康消息无需人工重放；
-  - **启动屏障（等待 replay_unfinished 完成）**：
-    **前置依赖**：调度器启动屏障扩展（`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、
-    适配器启动前设置 `@replay_completed = true`）已完工。
-    mock Gateway 启动流程——`replay_unfinished` 期间扫描器检查 `@replay_completed = false`，
-    跳过本轮、记录 `dispatch_recovery_deferred_total`、不触发 dispatch；`replay_unfinished` 完成后
-    `@replay_completed = true`，下一轮扫描正常触发 dispatch。
-    断言旧 intent 重放期间不会有新批次被派发、两个 turn 不并发执行；再注入 `replay_unfinished`
-    超过 300s 未完成，Gateway 上报 `ReplayStuck` 告警、扫描器继续等待（不强行突破屏障）；
+  - **批次处理延迟不改变空闲计时**：mock server 让一次 `getUpdates` 响应包含 update A 和 B，并断言该非空响应到达时 `last_update_at` 即被持久化为到达时刻；A 的 Step 3 入总线阻塞 2 天（fault-injection 挂起 bus 消费者），期间 `last_update_at` 不得因处理完成或超时再次刷新；Telegram 在响应到达 7 天后返回一条 `update_id` 小于持久化 offset 的新 update——适配器按响应到达时刻已空闲 7 天计算（而非按处理完成时刻的 5 天），**必须进入重置模式**，且**不得跳过该 update**；再注入处理中途崩溃，重启后仍保留崩溃前最近一次非空响应的到达时刻，不得回退到退出重置模式时才刷新；
+  - **`record_intent` 失败的运行期恢复（前置依赖：调度器 failed 批次重试扩展）**：fault-injection 让消费者 `record_intent` 第一次抛 SQLite 临时错误（`SQLITE_BUSY`），`dispatched` 保持 `false`、入站事件已完成 admission、`session_inputs` 行已落库；**前置依赖**：调度器 failed 批次重试扩展（`SessionScheduler#retry_failed_batch` + failed → queued 状态迁移 + queued 批次重派触发器 + 启动屏障）已完工；适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义；第二次 `record_intent` 成功并回调置 `dispatched=true`；再注入「连续 20 次 `record_intent` 失败」，该行 `status` 置为 `'dead_letter'`、上报管理面告警、**两条扫描路径都用 `status != 'dead_letter'` 显式排除**——验证 dead-letter 行不再被周期扫描或启动扫描选中；
+  - **Case B · 首次 admission 前崩溃的 update**：fault-injection 在「Step 1 落库后、Step 3 入总线前」`kill -9`——事件从未进入 admission、`session_inputs` 无对应行；重启后扫描器经 **`Bus#publish`** 重新入总线（走正常 admission 流程建立 `session_inputs` 行——含 `received_seq`、批次归属、`policy_snapshot`——再经 `SessionScheduler` 按批次串行约束 dispatch）；断言恢复后该事件具有完整 `session_inputs` 行、正确的 `received_seq` 与批次归属、`policy_snapshot`，且**不绕过会话调度器的串行约束**（同 session 其他事件按 received_seq 顺序被调度）；
+  - **bus 饱和降级与两类失败分开计数**：**实现方式：在 `Bus` 中新增带超时的投递方法 `Bus#publish_with_timeout(event, timeout : Time::Span) : PublishResult`**——内部用 Crystal 标准库 `select` 同时等待 `@channel.send(event)` 与 `timeout(timeout)` 两个分支（`src/admin/ipc/server.cr` 已有同类写法）：发送就绪即写入返回 `PublishResult::Sent`、超时先触发返回 `PublishResult::Timeout`。**超时后消息未入队**——`@channel.send` 未执行，事件仍只在扫描器内存中，下一轮扫描器重试。`record_intent` 与回调仅在 `PublishResult::Sent` 后由消费者正常执行；`PublishResult::Timeout` 时扫描器跳过本轮、`bus_publish_timeout_count` 加 1、下一轮再试，验证扫描器不被卡死。再让 bus 持续饱和直到 `bus_publish_timeout_count > 20`——验证 `retry_count` **未增加**、行**未转入 `dead_letter`**（bus 超时不计入消费者失败上限）；恢复 bus 容量，下一轮扫描 `publish_with_timeout` 返回 `PublishResult::Sent`、消费者 `record_intent` 成功、回调置 `dispatched=true`——验证 bus 恢复后健康消息无需人工重放；
+  - **启动屏障（等待 replay_unfinished 完成）**：**前置依赖**：调度器启动屏障扩展（`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前设置 `@replay_completed = true`）已完工；mock Gateway 启动流程——`replay_unfinished` 期间扫描器检查 `@replay_completed = false`，跳过本轮、记录 `dispatch_recovery_deferred_total`、不触发 dispatch；`replay_unfinished` 完成后 `@replay_completed = true`，下一轮扫描正常触发 dispatch；断言旧 intent 重放期间不会有新批次被派发、两个 turn 不并发执行；再注入 `replay_unfinished` 超过 300s 未完成，Gateway 上报 `ReplayStuck` 告警、扫描器继续等待（不强行突破屏障）；
   - **已有 intent 也要确认**：消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent 而提前返回的分支，**必须**回调置 `dispatched=true`——fault-injection 让进程在「`record_intent` 成功后、回调置位前」崩溃，重启后扫到 `dispatched=false` 行重投入总线，消费者走「已有 intent」分支也置位，验证不会卡在 `dispatched=false` 被无限重投。
 - 风险：long-poll 在 NAT/反代后容易被中间设备掐空闲连接——`timeout=50` 是官方推荐值，不低于 30 不高于 60。[推演]
 
