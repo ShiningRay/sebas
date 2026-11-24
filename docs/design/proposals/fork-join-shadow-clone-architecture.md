@@ -60,7 +60,7 @@
 | JoinWriter（终态判定+分层回写） | `src/agents/fork/join_writer.cr` | 同上 |
 | expectations 判定器（mode 聚合） | `src/agents/fork/expectation.cr`，读 store.tasks + expectations | [推演]：判定器无独立状态，薄层 |
 | ReAct 工具循环 | `src/platform/cli/gateway.cr` agent_turn 改造（M4.3） | [来源: 仓库:src/platform/cli/gateway.cr:212-223] |
-| 前台接待 | `src/agents/reception/`（M4.3） | [推演]：routing binding 是渠道级接待，接待层在其上做 agent 级包装 |
+| 前台接待 | `src/agents/reception/`（M4.3，#51 已落地：Reception module + schedule_input 改投前台 + 前台只读工具面/转介 prompt；无前台配置保持 M0 fail-closed） | [推演]：routing binding 是渠道级接待，接待层在其上做 agent 级包装 |
 | sessions 生命周期 | `src/platform/store/store.cr` + `src/agents/lifecycle/`（M4.4） | [来源: analysis.md §4 M4 轴①] |
 
 ---
