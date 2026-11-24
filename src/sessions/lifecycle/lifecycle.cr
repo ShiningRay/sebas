@@ -116,23 +116,51 @@ module Sebas
         end
 
         # 回收 GC（人工确认 archive_confirm=true 才执行；非自动删）：
-        # 归档会话 transcripts 导出到 archived_path 后删除行，返回清理数
+        # 归档会话 transcripts 导出 JSON 后删除行（单事务：标记+删除原子，
+        # 防 archived_path 已写而 transcripts 残留），返回清理数。
+        # 导出序列化用 JSON.build（inspect 产生 Crystal 字面量非合法 JSON）；
+        # 导出文件名中的非法字符（含 Windows 禁用的 :）替换为 _。
         def gc_archived(archive_dir : String, archive_confirm : Bool) : Int32
           return 0 unless archive_confirm
           FileUtils.mkdir_p(archive_dir) unless Dir.exists?(archive_dir)
           cleaned = 0
           list("archived").each do |row|
             next if row.archived_path # 已回收过
-            export_path = Path[archive_dir, "#{row.session_key.gsub("/", "_")}-#{::Random::Secure.hex(4)}.json"]
-            rows = @store.transcripts(row.session_key)
-            File.write(export_path, rows.map { |entry| %({"created_at": #{entry.created_at.inspect}, "role": #{entry.role.inspect}, "content": #{entry.content.inspect}}) }.join("\n"))
-            @store.db.exec(
-              "UPDATE sessions SET archived_path = ? WHERE session_key = ?",
-              export_path.to_s, row.session_key
-            )
-            @store.db.exec("DELETE FROM transcripts WHERE session_key = ?", row.session_key)
-            cleaned += 1
-            Log.info { "archived session collected: #{row.session_key} -> #{export_path}" }
+            safe_name = row.session_key.gsub(/[^a-zA-Z0-9._-]/, "_")
+            export_path = Path[archive_dir, "#{safe_name}-#{::Random::Secure.hex(4)}.json"]
+            tmp_path = Path[archive_dir, ".tmp-#{::Random::Secure.hex(6)}.json"]
+            begin
+              # 导出先行（JSON.build 产生合法 JSON；temp 名唯一防并发互踩）
+              File.open(tmp_path, "w") do |file|
+                JSON.build(file) do |json|
+                  json.array do
+                    @store.transcripts(row.session_key).each do |entry|
+                      json.object do
+                        json.field("created_at", entry.created_at)
+                        json.field("role", entry.role)
+                        json.field("content", entry.content)
+                      end
+                    end
+                  end
+                end
+              end
+              # 单事务：标记 + 删除 transcripts 原子提交（archived_path 已写而
+              # transcripts 残留的不一致不会发生）；rename 原子发布导出文件
+              @store.db.transaction do |tx|
+                tx.connection.exec(
+                  "UPDATE sessions SET archived_path = ? WHERE session_key = ?",
+                  export_path.to_s, row.session_key
+                )
+                tx.connection.exec("DELETE FROM transcripts WHERE session_key = ?", row.session_key)
+              end
+              File.rename(tmp_path, export_path)
+              cleaned += 1
+              Log.info { "archived session collected: #{row.session_key} -> #{export_path}" }
+            rescue ex : ::Exception
+              File.delete(tmp_path) if File.exists?(tmp_path)
+              # 失败保留 archived 行与 transcripts（下次 GC 重试）；不吞异常上抛中断其余行
+              Log.error(exception: ex) { "archived session collect failed (kept for retry): #{row.session_key}" }
+            end
           end
           cleaned
         end
