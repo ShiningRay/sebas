@@ -37,9 +37,9 @@ module Sebas
         # batch→run→events 完整审计；ctx_session 持久化（hook 准入会话贯通
         # 执行上下文，恢复续跑同上下文——CodeRabbit bn4j）；逐事件保持精简
         payload = if batch_event_ids
-                    %({"workflow": "#{workflow.id}", "batch_id": "#{batch_id}", "event_ids": #{batch_event_ids.to_json}, "session": "#{ctx_session}"})
+                    {workflow: workflow.id, batch_id: batch_id, event_ids: batch_event_ids, session: ctx_session}.to_json
                   else
-                    %({"workflow": "#{workflow.id}", "session": "#{ctx_session}"})
+                    {workflow: workflow.id, session: ctx_session}.to_json
                   end
         task = @store.create_task(run_id, "run", payload: payload)
         spawn_run(task.id, workflow, trigger_event_id, ctx_session)
