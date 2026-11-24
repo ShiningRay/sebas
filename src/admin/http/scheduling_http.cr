@@ -75,7 +75,7 @@ module Sebas
         private def body_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any
           raw = read_limited_body(ctx).to_s
           parsed = JSON.parse(raw.empty? ? "{}" : raw)
-          parsed.as_h?.try { |h| ::JSON::Any.new(h) } || ::JSON::Any.new(Hash(String, ::JSON::Any).new)
+          parsed.as_h?.try { |hash_value| ::JSON::Any.new(hash_value) } || ::JSON::Any.new(Hash(String, ::JSON::Any).new)
         rescue
           ::JSON::Any.new(Hash(String, ::JSON::Any).new)
         end
