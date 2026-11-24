@@ -170,6 +170,12 @@ module Sebas
             ON session_steers (session_key, status, created_at)
           SQL
         <<-SQL,
+          CREATE TABLE IF NOT EXISTS scheduling_meta (
+            id       INTEGER PRIMARY KEY CHECK (id = 1),
+            revision INTEGER NOT NULL
+          )
+          SQL
+        <<-SQL,
           CREATE TABLE IF NOT EXISTS scheduling_overlays (
             scope       TEXT PRIMARY KEY,
             patch_yaml  TEXT NOT NULL,

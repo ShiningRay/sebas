@@ -1,4 +1,5 @@
 require "http/server"
+require "./scheduling_http"
 require "json"
 require "../../log"
 require "../../platform/bus/bus"
@@ -12,6 +13,7 @@ module Sebas
   module Admin
     module HTTP
       class Server
+        include ::Sebas::Admin::HTTP::SchedulingHTTPMethods
         Log = Sebas::Log.for("sebas.admin.http")
 
         getter port : Int32
@@ -58,28 +60,6 @@ module Sebas
           @server.try(&.close)
         end
 
-        # 调度管理面（M4.5-WP6）：handler 由 gateway 注入（IPC/HTTP 同一实现）
-        private def scheduling_admin_call(ctx : ::HTTP::Server::Context, command : String,
-                                          params : ::JSON::Any? = nil) : Nil
-          handler = @scheduling_admin_handler
-          unless handler
-            ctx.response.status_code = 503
-            ctx.response.content_type = "application/json"
-            ctx.response.print(%({"error": "scheduling admin not wired"}))
-            return
-          end
-          code, body = handler.call(command, params || ::JSON::Any.new(Hash(String, ::JSON::Any).new))
-          ctx.response.status_code = code
-          ctx.response.content_type = "application/json"
-          ctx.response.print(body)
-        end
-
-        private def query_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any
-          hash = Hash(String, ::JSON::Any).new
-          ctx.request.query_params.each { |k, v| hash[k] = ::JSON::Any.new(v) }
-          ::JSON::Any.new(hash)
-        end
-
         # hooks 请求体限读（1 MiB）；超限返回 nil 由调用方回 413
         private def read_limited_body(ctx : ::HTTP::Server::Context) : String?
           body_io = ctx.request.body
@@ -98,6 +78,7 @@ module Sebas
 
         private def route(ctx : ::HTTP::Server::Context) : Nil
           path = ctx.request.path
+          return if scheduling_routes(ctx)
           if path.starts_with?("/hooks/") && ctx.request.method == "POST"
             # webhook 会话接入（M4.5-WP5）：hooks 入口**独立强制**管理 token
             # （不随 gateway.http.auth 配置放宽——CWE-306 fail-closed）；未知
@@ -182,22 +163,6 @@ module Sebas
             ctx.response.print({templates: @templates.try(&.disk_ids) || [] of String}.to_json)
           when {"POST", "/api/v1/templates.clone"}
             serve_template_clone(ctx)
-          when {"GET", "/api/v1/config.scheduling.get"}
-            scheduling_admin_call(ctx, "config.scheduling.get", ::JSON::Any.new(Hash(String, ::JSON::Any).new))
-          when {"POST", "/api/v1/config.scheduling.validate"}
-            scheduling_admin_call(ctx, "config.scheduling.validate")
-          when {"POST", "/api/v1/config.scheduling.update"}
-            scheduling_admin_call(ctx, "config.scheduling.update")
-          when {"POST", "/api/v1/config.scheduling.reset"}
-            scheduling_admin_call(ctx, "config.scheduling.reset")
-          when {"GET", "/api/v1/sessions.queue.get"}
-            scheduling_admin_call(ctx, "sessions.queue.get", query_params_json(ctx))
-          when {"POST", "/api/v1/sessions.queue.flush"}
-            scheduling_admin_call(ctx, "sessions.queue.flush", query_params_json(ctx))
-          when {"GET", "/api/v1/sessions.steer.get"}
-            scheduling_admin_call(ctx, "sessions.steer.get", query_params_json(ctx))
-          when {"GET", "/api/v1/metrics.scheduling"}
-            scheduling_admin_call(ctx, "metrics.scheduling", ::JSON::Any.new(Hash(String, ::JSON::Any).new))
           else
             ctx.response.status_code = 404
             ctx.response.content_type = "application/json"

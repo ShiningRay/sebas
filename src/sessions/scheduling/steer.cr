@@ -119,8 +119,12 @@ module Sebas
           @store.session_steers(session_key, "accepted").each do |row|
             next unless row.target_turn_id == turn_id && row.target_generation == generation
             if steer_expired?(row)
-              @store.transition_session_steer(row.steer_id, SteerStatus::Accepted, SteerStatus::Queued,
-                "max_wait exceeded")
+              if @store.transition_session_steer(row.steer_id, SteerStatus::Accepted,
+                   SteerStatus::Queued, "max_wait exceeded")
+                emit("steer.queued", {"session_key" => ::JSON::Any.new(session_key),
+                                      "steer_id"    => ::JSON::Any.new(row.steer_id),
+                                      "reason"      => ::JSON::Any.new("max_wait exceeded")})
+              end
               next
             end
             unless @store.transition_session_steer(row.steer_id, SteerStatus::Accepted,
@@ -147,6 +151,9 @@ module Sebas
             next unless row.target_turn_id == turn_id
             if @store.transition_session_steer(row.steer_id, SteerStatus::Accepted,
                  SteerStatus::Queued, "turn ended before injection")
+              emit("steer.queued", {"session_key" => ::JSON::Any.new(session_key),
+                                    "steer_id"    => ::JSON::Any.new(row.steer_id),
+                                    "reason"      => ::JSON::Any.new("turn ended before injection")})
               downgraded << SteerDispatch.new(row.steer_id, session_key, row.payload)
             end
           end
@@ -161,6 +168,9 @@ module Sebas
             next unless steer_expired?(row)
             if @store.transition_session_steer(row.steer_id, SteerStatus::Accepted, SteerStatus::Queued,
                  "max_wait exceeded")
+              emit("steer.queued", {"session_key" => ::JSON::Any.new(row.session_key),
+                                    "steer_id"    => ::JSON::Any.new(row.steer_id),
+                                    "reason"      => ::JSON::Any.new("max_wait exceeded")})
               downgraded << SteerDispatch.new(row.steer_id, row.session_key, row.payload)
             end
           end
@@ -200,6 +210,9 @@ module Sebas
             next if marked
             if @store.transition_session_steer(entry.steer_id, SteerStatus::Injected, SteerStatus::Queued,
                  "unknown_not_injected")
+              emit("steer.queued", {"session_key" => ::JSON::Any.new(entry.session_key),
+                                    "steer_id"    => ::JSON::Any.new(entry.steer_id),
+                                    "reason"      => ::JSON::Any.new("unknown_not_injected")})
               downgraded << SteerDispatch.new(entry.steer_id, entry.session_key, entry.payload)
               Log.warn { "steer #{entry.steer_id} downgraded to queued (unknown_not_injected)" }
             end
@@ -207,6 +220,9 @@ module Sebas
           @store.steers_with_status("accepted").each do |entry|
             if @store.transition_session_steer(entry.steer_id, SteerStatus::Accepted, SteerStatus::Queued,
                  "recovery_no_active_turn")
+              emit("steer.queued", {"session_key" => ::JSON::Any.new(entry.session_key),
+                                    "steer_id"    => ::JSON::Any.new(entry.steer_id),
+                                    "reason"      => ::JSON::Any.new("recovery_no_active_turn")})
               downgraded << SteerDispatch.new(entry.steer_id, entry.session_key, entry.payload)
             end
           end

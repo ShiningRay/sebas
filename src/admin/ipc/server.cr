@@ -210,11 +210,12 @@ module Sebas
             io.puts(authenticated_response(io, frame) { fork_join_response(frame) })
           when "approvals.approve", "approvals.deny", "approvals.pending",
                "sessions.dormant", "sessions.archive", "sessions.gc", "sessions.lifecycle",
-               "sessions.steer", "templates.clone", "templates.list",
-               "sessions.queue.get", "sessions.steer.get", "metrics.scheduling"
+               "sessions.steer", "templates.clone", "templates.list"
             io.puts(admin_dispatch(io, frame))
-          when "sessions.queue.flush", "config.scheduling.get", "config.scheduling.validate",
-               "config.scheduling.update", "config.scheduling.reset"
+          when "sessions.queue.get", "sessions.steer.get", "metrics.scheduling",
+               "config.scheduling.get", "config.scheduling.validate"
+            io.puts(scheduling_dispatch(io, frame)) # 读命令匿名（语义与 HTTP 一致）
+          when "sessions.queue.flush", "config.scheduling.update", "config.scheduling.reset"
             io.puts(authenticated_response(io, frame) { scheduling_dispatch(io, frame) })
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))

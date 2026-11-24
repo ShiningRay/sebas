@@ -17,9 +17,15 @@ module Sebas
         # agents.<name>.session → agent overlay（overlay 持久表，热更新不重启）
         def effective_snapshot(session_key : String? = nil) : Sessions::Scheduling::PolicySnapshot
           config = Config::CURRENT.get
-          agent_name = session_key.try(&.split(":")[1]?) || "main"
-          agent_cfg = config.agents[agent_name]?
           gateway_overlay = overlay_config("gateway")
+          unless session_key
+            # gateway 层预览：不混入任何 agent 的 session/overlay（gzi7）
+            return Sessions::Scheduling::Policy.resolve_session_with_overlays(
+              config.gateway.try(&.session), nil, gateway_overlay, nil
+            )
+          end
+          agent_name = session_key.split(":")[1]? || "main"
+          agent_cfg = config.agents[agent_name]?
           agent_overlay = overlay_config("agent:#{agent_name}")
           Sessions::Scheduling::Policy.resolve_session_with_overlays(
             config.gateway.try(&.session), agent_cfg.try(&.session), gateway_overlay, agent_overlay
@@ -89,21 +95,18 @@ module Sebas
           JSON.parse(snapshot.to_json)
         end
 
-        # validate：patch 文本解析 + 全链生效校验（不落表）
+        # validate：patch 文本解析 + 候选 overlay 置入**实际生效链**校验
+        # （目标 agent 层 + 其它已存 overlay——gzjD；不落表）
         private def scheduling_validate(params : ::JSON::Any) : Tuple(Int32, String)
           yaml = params["yaml"]?.try(&.as_s?) || ""
           scope = params["scope"]?.try(&.as_s?) || "gateway"
           begin
             patch = Sessions::Scheduling::Policy.parse_overlay(yaml)
             cfg = Config::CURRENT.get
-            agent = scope.starts_with?("agent:") ? cfg.agents[scope.lchop("agent:")]? : nil
-            if scope.starts_with?("agent:") && agent.nil?
+            if scope.starts_with?("agent:") && cfg.agents[scope.lchop("agent:")].nil?
               return {400, %({"valid": false, "errors": ["unknown agent #{scope.lchop("agent:")}"]})}
             end
-            Sessions::Scheduling::Policy.resolve_session_with_overlays(
-              cfg.gateway.try(&.session), cfg.agents["main"]?.try(&.session),
-              scope == "gateway" ? patch : nil, scope.starts_with?("agent:") ? patch : nil
-            )
+            validate_candidate(scope, patch, cfg)
             emit_scheduling_event("config.scheduling.validated", scope)
             {200, %({"valid": true})}
           rescue ex : Sessions::Scheduling::PolicyError
@@ -111,7 +114,31 @@ module Sebas
           end
         end
 
-        # ameba:disable Metrics/CyclomaticComplexity — 校验/revision/落表直译
+        # 候选 overlay 置入实际层级链校验：gateway scope 校验 gateway+全部 agent；
+        # agent scope 校验该 agent（既有 overlays 全部保留参与合并——gzjD）
+        private def validate_candidate(scope : String, patch : Sessions::Scheduling::SessionPolicyConfig?,
+                                       cfg : Config::Config) : Nil
+          gateway_overlay = scope == "gateway" ? patch : overlay_config("gateway")
+          if scope == "gateway"
+            # gateway overlay 变化影响全部 agent：gateway 链 + 每个 agent 链都验
+            Sessions::Scheduling::Policy.resolve_session_with_overlays(
+              cfg.gateway.try(&.session), nil, gateway_overlay, nil
+            )
+            cfg.agents.keys.each do |name|
+              agent_overlay = overlay_config("agent:#{name}") || (scope.starts_with?("agent:") ? patch : nil)
+              Sessions::Scheduling::Policy.resolve_session_with_overlays(
+                cfg.gateway.try(&.session), cfg.agents[name]?.try(&.session), gateway_overlay, agent_overlay
+              )
+            end
+          else
+            agent_name = scope.lchop("agent:")
+            agent_overlay = patch
+            Sessions::Scheduling::Policy.resolve_session_with_overlays(
+              cfg.gateway.try(&.session), cfg.agents[agent_name]?.try(&.session), gateway_overlay, agent_overlay
+            )
+          end
+        end
+
         private def scheduling_update(params : ::JSON::Any) : Tuple(Int32, String)
           scope = params["scope"]?.try(&.as_s?) || "gateway"
           yaml = params["yaml"]?.try(&.as_s?) || ""
@@ -131,10 +158,7 @@ module Sebas
             unless {"gateway"}.includes?(scope) || scope.starts_with?("agent:")
               return {400, %({"error": "scope must be gateway or agent:<name>"})}
             end
-            Sessions::Scheduling::Policy.resolve_session_with_overlays(
-              cfg.gateway.try(&.session), cfg.agents["main"]?.try(&.session),
-              scope == "gateway" ? patch : nil, scope.starts_with?("agent:") ? patch : nil
-            )
+            validate_candidate(scope, patch, cfg)
           rescue ex : Sessions::Scheduling::PolicyError
             # 非法范围拒绝：旧配置继续工作（不落表）
             emit_scheduling_event("config.scheduling.rejected", scope)
@@ -142,16 +166,31 @@ module Sebas
           end
           revision = @store.upsert_scheduling_overlay(scope, yaml, operator)
           emit_scheduling_event("config.scheduling.applied", scope)
+          # 一次性 flush_on_policy_change（gzjW）：管理操作非持久配置——
+          # debounce→queue 切换后立即收敛全部 collecting 桶
+          if params["flush_on_policy_change"]?.try(&.as_bool?) == true
+            sessions = @store.session_keys
+            sessions.each { |session| @scheduling.flush_session(session) }
+          end
           {200, {revision: revision, scope: scope}.to_json}
         end
 
-        # reset：删 overlay 恢复上一层继承（非写死内置值）
+        # reset：删 overlay 恢复上一层继承（非写死内置值）。删除前校验恢复后
+        # 的完整策略（跨 overlay 交互——gzje），无效保留原 overlay 返回校验错误
         private def scheduling_reset(params : ::JSON::Any) : Tuple(Int32, String)
           scope = params["scope"]?.try(&.as_s?) || "gateway"
           expected = params["expected_revision"]?.try(&.as_i64?)
           current = @store.scheduling_revision
           if expected && expected != current
             return {409, {error: "revision conflict", expected: expected, current: current}.to_json}
+          end
+          begin
+            cfg = Config::CURRENT.get
+            nil_cfg = nil
+            validate_candidate(scope, nil_cfg, cfg) # 删除后候选 = 无该 overlay
+          rescue ex : Sessions::Scheduling::PolicyError
+            return {400, {error:  "reset would produce invalid policy",
+                          errors: ex.message.to_s.lines}.to_json}
           end
           deleted = @store.delete_scheduling_overlay(scope)
           emit_scheduling_event("config.scheduling.applied", scope)

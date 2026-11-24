@@ -122,6 +122,10 @@ module Sebas
 
             # queue 模式：每消息独立批次，admit 成功后立即 seal（flush）并入队
             seal_and_queue(batch.batch_id, SealReason::Flush)
+            # queued 事件：成功入队后、派发前（观察序 queued→started，gzkA）
+            emit("batch.queued", {"session_key" => ::JSON::Any.new(@session_key),
+                                  "batch_id"    => ::JSON::Any.new(batch.batch_id),
+                                  "event_id"    => ::JSON::Any.new(env.event_id)})
             # 空闲即派发；回执排队位 = 本批之前的 pending 批数（自身被派发则为 0）
             dispatched = dispatch_locked
             position = if dispatched == batch.batch_id
@@ -132,10 +136,6 @@ module Sebas
                          load.batches.to_i32 # 会话忙：本批排在全部 pending 之后
                        end
             bump("admitted")
-            emit(snapshot.batch_mode == "debounce" ? "batch.collecting" : "batch.queued",
-              {"session_key" => ::JSON::Any.new(@session_key),
-               "batch_id"    => ::JSON::Any.new(batch.batch_id),
-               "event_id"    => ::JSON::Any.new(env.event_id)})
             AdmissionReceipt.new(env.event_id, batch.batch_id, "accepted", position)
           end
         end
@@ -225,6 +225,10 @@ module Sebas
             @store.settle_batch(batch_id, BatchStatus::Running, BatchStatus::Failed,
               [] of ::Sebas::Platform::Store::Store::MemberMove)
             bump("completed")
+            emit("batch.settled", {"session_key" => ::JSON::Any.new(@session_key),
+                                   "batch_id"    => ::JSON::Any.new(batch_id),
+                                   "failed"      => ::JSON::Any.new(true),
+                                   "crash"       => ::JSON::Any.new(true)})
             dispatch_locked
           end
         end
@@ -360,18 +364,23 @@ module Sebas
 
           seal_and_queue(batch_id, reason)
           bump("sealed_#{reason.to_s.downcase}")
-          emit("batch.sealed", {"session_key" => ::JSON::Any.new(@session_key),
-                                "batch_id"    => ::JSON::Any.new(batch_id),
-                                "reason"      => ::JSON::Any.new(reason.to_s.downcase)})
           dispatch_locked # 空闲即扫：封存即可派发（不饥饿）
         end
 
         # ---- 内部（调用方须持 @mutex）----
 
-        # seal + 入队（受守卫迁移，竞态由状态守卫兜底）
+        # seal + 入队（受守卫迁移，竞态由状态守卫兜底）。sealed 事件在共享
+        # 路径发送（gzkQ：flush_on_turn_end/queue admission/shutdown 全覆盖，
+        # 迁移成功才发）
         private def seal_and_queue(batch_id : String, reason : SealReason) : Nil
-          @store.transition_session_batch(batch_id, BatchStatus::Collecting, BatchStatus::Sealed, reason.to_s)
+          sealed = @store.transition_session_batch(batch_id, BatchStatus::Collecting,
+            BatchStatus::Sealed, reason.to_s)
           @store.transition_session_batch(batch_id, BatchStatus::Sealed, BatchStatus::Queued)
+          if sealed
+            emit("batch.sealed", {"session_key" => ::JSON::Any.new(@session_key),
+                                  "batch_id"    => ::JSON::Any.new(batch_id),
+                                  "reason"      => ::JSON::Any.new(reason.to_s.downcase)})
+          end
         end
 
         # 空闲则派发 head：返回被派发批次 id；nil = 会话忙 / 停止中 / 无待发批 /

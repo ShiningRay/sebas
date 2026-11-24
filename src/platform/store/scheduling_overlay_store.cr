@@ -9,9 +9,11 @@ module Sebas
       record SchedulingOverlayRow, scope : String, patch_yaml : String, revision : Int64,
         operator : String, updated_at : String
 
-      # 全局当前 revision（无 overlay = 0）
+      # 全局当前 revision（单例 meta 行持久——不随 reset 回退，单调约定 gzjj）
       def scheduling_revision : Int64
-        @db.query_one?("SELECT COALESCE(MAX(revision), 0) FROM scheduling_overlays", as: Int64) || 0_i64
+        @db.query_one?(
+          "SELECT revision FROM scheduling_meta WHERE id = 1", as: Int64
+        ) || 0_i64
       end
 
       def scheduling_overlays : Array(SchedulingOverlayRow)
@@ -36,13 +38,11 @@ module Sebas
         end
       end
 
-      # upsert：revision 事务内全局自增（写锁串行天然防并发）；返回新 revision
+      # upsert：revision 事务内全局自增（单例 meta 持久，reset 不回退——gzjj）
       def upsert_scheduling_overlay(scope : String, patch_yaml : String, operator : String) : Int64
         revision = 0_i64
         @db.transaction do |tx|
-          revision = tx.connection.scalar(
-            "SELECT COALESCE(MAX(revision), 0) + 1 FROM scheduling_overlays"
-          ).as(Int64)
+          revision = bump_scheduling_revision(tx)
           tx.connection.exec(
             "INSERT INTO scheduling_overlays (scope, patch_yaml, revision, operator, updated_at) " \
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET " \
@@ -54,9 +54,25 @@ module Sebas
         revision
       end
 
-      # reset：删除 scope overlay（恢复上一层继承）；返回是否删除
+      # reset：删除 scope overlay（恢复上一层继承）+ 事务内推进版本（不回退）；
+      # 返回是否删除
       def delete_scheduling_overlay(scope : String) : Bool
-        @db.exec("DELETE FROM scheduling_overlays WHERE scope = ?", scope).rows_affected > 0
+        deleted = false
+        @db.transaction do |tx|
+          bump_scheduling_revision(tx)
+          deleted = tx.connection.exec(
+            "DELETE FROM scheduling_overlays WHERE scope = ?", scope
+          ).rows_affected > 0
+        end
+        deleted
+      end
+
+      private def bump_scheduling_revision(tx : ::DB::Transaction) : Int64
+        tx.connection.exec(
+          "INSERT INTO scheduling_meta (id, revision) VALUES (1, 1) " \
+          "ON CONFLICT(id) DO UPDATE SET revision = revision + 1"
+        )
+        tx.connection.scalar("SELECT revision FROM scheduling_meta WHERE id = 1").as(Int64)
       end
     end
   end

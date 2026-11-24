@@ -35,7 +35,10 @@
 #### 6.3.1 管理面与运营（M4.5-WP6，#8 已实施）
 
 - **双入口**：IPC `config.scheduling.get/validate/update/reset` + `sessions.queue.get/flush`、`sessions.steer.get`、`metrics.scheduling`；HTTP `/api/v1/` 同名路由——语义一致（同一 handler 实现）。
-- **effective 预览与热更新**：`Policy.resolve_session_with_overlays` 链 = builtin → gateway.session → **gateway overlay** → agents.<name>.session → **agent overlay**（overlay 为 partial YAML，持久 `scheduling_overlays` 表）；`expected_revision` 全局单调防并发覆盖（冲突 409）；update/validate 非法范围拒绝且旧配置继续工作；reset 删 overlay 恢复上一层继承。在途批次固定 admission 快照，overlay 仅对新批次生效（不重启）。
+- **effective 预览与热更新**：`Policy.resolve_session_with_overlays` 链 = builtin → gateway.session → **gateway overlay** → agents.<name>.session → **agent overlay**（overlay 为 partial YAML，持久 `scheduling_overlays` 表）。
+  - `expected_revision` 全局单调防并发覆盖（冲突 409）；update/validate 非法范围拒绝且旧配置继续工作。
+  - reset 删 overlay 恢复上一层继承。
+  - 在途批次固定 admission 快照，overlay 仅对新批次生效（不重启）。
 - **SSE 事件**（tap 可观测，事件流非权威存储——管理面重连后以持久状态为准）：`batch.collecting/sealed/started/settled/queued`、`steer.accepted/injected/queued/rejected/expired/dispatched`、`config.scheduling.applied/rejected/validated`。
 - **指标**：`metrics.scheduling` 聚合 scheduler 内存计数器（admitted/dispatched/completed/rejected_capacity…）、steer 按状态计数、recovery 批次数；批次时长/静默时长由 session_batches 时间窗与 events 可关联。
 - **debounce→queue 一次性收敛**：`sessions.queue.flush` 强制封冻 collecting 桶并立即派发（管理操作，非持久配置）。
