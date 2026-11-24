@@ -4,6 +4,7 @@ require "../../src/admin/ipc/server"
 require "../../src/admin/tui/client"
 require "../../src/platform/store/store"
 require "../../src/platform/config/schema"
+require "../../src/sessions/scheduling/steer"
 require "../../src/sessions/lifecycle/lifecycle"
 require "../../src/agents/agents"
 require "../../src/orchestration/approvals/approvals"
@@ -144,6 +145,42 @@ module Sebas
         rejected = client.request("sessions.dormant", {"older_than_days" => JSON::Any.new(-1_i64)}).should_not be_nil
         rejected["error"].as_s.should contain("non-negative")
 
+        client.close
+      ensure
+        server.close
+        store.close
+      end
+    end
+
+    it "sessions.steer（M4.5-WP4）：未装配报错 + handler 回执（写认证）" do
+      store = ipc_store
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
+      server.listen
+      begin
+        client = Admin::TUI::Client.new(server.discovery_path)
+        client.handshake
+
+        missing = client.request("sessions.steer", {
+          "session_key" => JSON::Any.new("agent:main:acc:email:st@example.com"),
+          "payload"     => JSON::Any.new("纠偏"),
+        }).should_not be_nil
+        missing["error"].as_s.should contain("steer 中心未装配")
+
+        registry = ::Sebas::Sessions::Scheduling::TurnRegistry.new
+        center = ::Sebas::Sessions::Scheduling::SteerCenter.new(store, registry,
+          ->(_session : String) { ::Sebas::Sessions::Scheduling::PolicySnapshot.new(
+            "queue", 0_i64, 5000_i64, 20_i64, 65536_i64, true, "session", 8_i64, 32_i64, 1_048_576_i64,
+            true, 300_i64, 16_i64, 30_000_i64) })
+        server.steer_handler = ->(session_key : String, payload : String, turn_id : String?, generation : Int64?) do
+          center.submit(session_key, payload, target_turn_id: turn_id, target_generation: generation)
+        end
+        receipt = client.request("sessions.steer", {
+          "session_key" => JSON::Any.new("agent:main:acc:email:st@example.com"),
+          "payload"     => JSON::Any.new("改用中文"),
+        }).should_not be_nil
+        receipt["payload"]["status"].as_s.should eq("queued") # 无活跃 turn
+        receipt["payload"]["reason"].as_s.should eq("no_active_turn")
         client.close
       ensure
         server.close

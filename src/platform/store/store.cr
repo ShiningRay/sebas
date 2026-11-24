@@ -3,6 +3,7 @@ require "sqlite3"
 require "json"
 require "./expectations_store"
 require "./task_effects_store"
+require "./steer_store"
 require "digest/sha256"
 require "../../log"
 require "../../sessions/scheduling/policy"
@@ -34,6 +35,7 @@ module Sebas
       # 为基线后新增列，ALTER TABLE 幂等补列（duplicate column 静默忽略，见 initialize）
       MIGRATIONS = [
         "ALTER TABLE expectations ADD COLUMN members_final INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE session_steers ADD COLUMN dispatch_event_id TEXT",
       ]
 
       # 逐条执行（crystal-sqlite3 prepared statement 一次只接受一条语句）
@@ -150,9 +152,21 @@ module Sebas
             payload          TEXT NOT NULL,
             status           TEXT NOT NULL DEFAULT 'accepted',
             reason           TEXT,
+            dispatch_event_id TEXT,
             created_at       TEXT NOT NULL,
             updated_at       TEXT NOT NULL
           )
+          SQL
+        # steer 查询索引（M4.5-WP4 CodeRabbit）：expire_due 100ms 轮询按
+        # status 扫描；drain/submit 按 session+status 过滤——终态行不删，
+        # 无索引则全表扫描随增长劣化（IF NOT EXISTS 对存量库生效）
+        <<-SQL,
+          CREATE INDEX IF NOT EXISTS idx_session_steers_status_created
+            ON session_steers (status, created_at)
+          SQL
+        <<-SQL,
+          CREATE INDEX IF NOT EXISTS idx_session_steers_session_status
+            ON session_steers (session_key, status, created_at)
           SQL
         "CREATE TABLE IF NOT EXISTS sessions (" \
         "session_key     TEXT PRIMARY KEY, " \
@@ -182,6 +196,7 @@ module Sebas
 
       class Store
         include ::Sebas::Platform::TaskEffectsStoreMethods
+        include ::Sebas::Platform::SteerStoreMethods
         include ::Sebas::Platform::ExpectationStoreMethods
 
         getter db : ::DB::Database
@@ -747,111 +762,13 @@ module Sebas
           status : String, batch_id : String?
 
         record SessionSteerRow, steer_id : String, session_key : String, target_turn_id : String,
-          target_generation : Int64, payload : String, status : String, reason : String?
-
-        def session_batch(batch_id : String) : SessionBatchRow?
-          @db.query_one?(
-            "SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason FROM session_batches WHERE batch_id = ?",
-            batch_id
-          ) do |result_set|
-            SessionBatchRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
-              result_set.read(String), result_set.read(Int64), result_set.read(Int64), result_set.read(String?))
-          end
-        end
-
-        # 启动恢复（契约 §5.2）：collecting → 立即按原快照 seal（recovery）；
-        # sealed/queued → 重新入队；调用方据此分流。
-        def collecting_batches(session_key : String? = nil) : Array(SessionBatchRow)
-          if session_key
-            query_batches("status = 'collecting' AND session_key = ?", session_key)
-          else
-            query_batches("status = 'collecting'")
-          end
-        end
-
-        def recoverable_batches : Array(SessionBatchRow)
-          query_batches("status IN ('sealed', 'queued')")
-        end
-
-        def batches_by_status(status : ::Sebas::Sessions::Scheduling::BatchStatus) : Array(SessionBatchRow)
-          query_batches("status = ?", status.to_s)
-        end
-
-        private def query_batches(where : String, *params) : Array(SessionBatchRow)
-          rows = [] of SessionBatchRow
-          @db.query("SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason " \
-                    "FROM session_batches WHERE #{where} ORDER BY first_seq", *params) do |result_set|
-            result_set.each do
-              rows << SessionBatchRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
-                result_set.read(String), result_set.read(Int64), result_set.read(Int64), result_set.read(String?))
-            end
-          end
-          rows
-        end
-
-        def batch_inputs(batch_id : String) : Array(SessionInputRow)
-          rows = [] of SessionInputRow
-          @db.query(
-            "SELECT i.event_id, i.session_key, i.source, i.sender, i.received_seq, i.received_at, " \
-            "i.source_occurred_at, i.payload, i.policy_snapshot, i.status, i.batch_id " \
-            "FROM session_inputs i JOIN session_batch_members m ON m.event_id = i.event_id " \
-            "WHERE m.batch_id = ? ORDER BY m.position", batch_id
-          ) do |result_set|
-            result_set.each do
-              rows << SessionInputRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
-                result_set.read(String), result_set.read(Int64), result_set.read(String), result_set.read(String?),
-                result_set.read(String), result_set.read(String), result_set.read(String), result_set.read(String?))
-            end
-          end
-          rows
-        end
-
-        # ---- busy steer 持久化（accepted ≠ injected，契约 §4.4）----
-
-        def record_session_steer(steer_id : String, session_key : String, target_turn_id : String,
-                                 target_generation : Int64, payload : String) : Bool
-          rows = @db.exec(
-            "INSERT OR IGNORE INTO session_steers (steer_id, session_key, target_turn_id, target_generation, payload, status, created_at, updated_at) " \
-            "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
-            steer_id, session_key, target_turn_id, target_generation, payload, now, now
-          ).rows_affected
-          rows > 0
-        end
-
-        def transition_session_steer(steer_id : String, from : ::Sebas::Sessions::Scheduling::SteerStatus,
-                                     to : ::Sebas::Sessions::Scheduling::SteerStatus, reason : String? = nil) : Bool
-          changed = @db.exec("UPDATE session_steers SET status = ?, reason = ?, updated_at = ? " \
-                             "WHERE steer_id = ? AND status = ?",
-            to.to_s, reason, now, steer_id, from.to_s).rows_affected
-          changed > 0
-        end
-
-        def session_steers(session_key : String, status : String? = nil) : Array(SessionSteerRow)
-          rows = [] of SessionSteerRow
-          if status
-            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason " \
-                      "FROM session_steers WHERE session_key = ? AND status = ? ORDER BY created_at",
-              session_key, status) do |result_set|
-              result_set.each { rows << read_steer(result_set) }
-            end
-          else
-            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason " \
-                      "FROM session_steers WHERE session_key = ? ORDER BY created_at", session_key) do |result_set|
-              result_set.each { rows << read_steer(result_set) }
-            end
-          end
-          rows
-        end
-
-        private def read_steer(result_set : ::DB::ResultSet) : SessionSteerRow
-          SessionSteerRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
-            result_set.read(Int64), result_set.read(String), result_set.read(String), result_set.read(String?))
-        end
+          target_generation : Int64, payload : String, status : String, reason : String?,
+          created_at : String = "", dispatch_event_id : String? = nil
 
         private def now : String
           ::Time.utc.to_rfc3339
         end
-      end
+      end # class Store（闭合迁自切分——SteerStoreMethods 段独立文件）
     end
   end
 end

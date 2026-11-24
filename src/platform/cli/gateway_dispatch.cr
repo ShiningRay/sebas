@@ -99,6 +99,13 @@ module Sebas
             return
           end
           session_key = Agents.session_key(agent_name, event.account_id, event.channel_type, event.peer)
+          # 显式 /steer 短路（M4.5-WP4）：绕过批次排序直达 steer 中心——
+          # 活跃 turn 在途时可 pending 注入（走批次会被在途批次卡到 turn 结束
+          # 之后，永远 no_active_turn，CodeRabbit PRRT_kwDOVzNPQM67PQMr）
+          if event.content.starts_with?("/steer ")
+            handle_steer_command(event, session_key, record_intent: true)
+            return
+          end
           snapshot = Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
           env = Sessions::Scheduling::InputEnvelope.new(
             event.event_id, session_key, event.channel_type, event.peer, 0,

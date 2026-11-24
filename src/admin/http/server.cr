@@ -17,6 +17,7 @@ module Sebas
         getter port : Int32
         setter lifecycle : ::Sebas::Sessions::Lifecycle::Store?
         setter templates : ::Sebas::Agents::AgentRegistry?
+        setter steer_center : ::Sebas::Sessions::Scheduling::SteerCenter?
 
         @server : ::HTTP::Server?
         @running = Atomic(Bool).new(false)
@@ -102,6 +103,8 @@ module Sebas
             serve_sessions_archive(ctx)
           when {"POST", "/api/v1/sessions.gc"}
             serve_sessions_gc(ctx)
+          when {"POST", "/api/v1/sessions.steer"}
+            serve_sessions_steer(ctx)
           when {"GET", "/api/v1/templates.list"}
             ctx.response.content_type = "application/json"
             ctx.response.print({templates: @templates.try(&.disk_ids) || [] of String}.to_json)
@@ -131,6 +134,64 @@ module Sebas
             end
           end
           ctx.response.print({sessions: entries || [] of JSON::Any}.to_json)
+        end
+
+        # busy steer 提交（M4.5-WP4）：session_key query + JSON body
+        # {payload, target_turn_id?, target_generation?}；缺参 400，未装配 503
+        # ameba:disable Metrics/CyclomaticComplexity — 参数校验直译（类型错误显式 400）
+        private def serve_sessions_steer(ctx : ::HTTP::Server::Context) : Nil
+          center = @steer_center
+          unless center
+            ctx.response.status_code = 503
+            ctx.response.content_type = "application/json"
+            ctx.response.print(%({"error": "steer center not wired"}))
+            return
+          end
+          session_key = ctx.request.query_params["session_key"]?
+          if session_key.nil? || session_key.empty?
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "session_key is required"}))
+            return
+          end
+          body = ctx.request.body.try(&.gets_to_end)
+          params = begin
+            JSON.parse(body.to_s.empty? ? "{}" : body.to_s).as_h?
+          rescue JSON::ParseException
+            nil
+          end
+          unless params
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "request body must be a JSON object"}))
+            return
+          end
+          payload = params["payload"]?.try(&.as_s?)
+          unless payload
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "payload is required"}))
+            return
+          end
+          # 显式指定但类型错误 → 400（静默当未指定会错误绑定当前活跃 turn）
+          target_turn_id = params["target_turn_id"]?
+          if target_turn_id && target_turn_id.as_s?.nil?
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "target_turn_id must be a string"}))
+            return
+          end
+          target_generation = params["target_generation"]?
+          if target_generation && target_generation.as_i64?.nil?
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "target_generation must be an integer"}))
+            return
+          end
+          target_turn_id = target_turn_id.try(&.as_s?)
+          target_generation = target_generation.try(&.as_i64?)
+          receipt = center.submit(session_key, payload, target_turn_id: target_turn_id,
+            target_generation: target_generation)
+          ctx.response.print({
+            steer_id: receipt.steer_id, status: receipt.status.to_s,
+            reason: receipt.reason || "", turn_id: receipt.target_turn_id,
+            generation: receipt.target_generation,
+          }.to_json)
         end
 
         # 与 IPC 同口径：older_than_days 负数/越界/非整数 400，缺省 14

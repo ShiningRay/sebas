@@ -8,6 +8,7 @@ require "../../src/platform/bus/bus"
 require "../../src/admin/ipc/server"
 require "../../src/platform/store/store"
 require "../../src/sessions/lifecycle/lifecycle"
+require "../../src/sessions/scheduling/steer"
 require "../../src/agents/agents"
 
 # 回调测试适配器：验签口令头不匹配 → 401（fail-closed）
@@ -222,6 +223,20 @@ module Sebas
         cloned = HTTP::Client.post("#{base}/api/v1/templates.clone", headers: headers,
           body: %({"template": "tpl-one", "new_id": "tpl-clone"}))
         JSON.parse(cloned.body)["id"].as_s.should eq("tpl-clone")
+
+        # sessions.steer（M4.5-WP4）：缺 payload 400；提交回执 queued（无活跃 turn）
+        server.steer_center = ::Sebas::Sessions::Scheduling::SteerCenter.new(store,
+          ::Sebas::Sessions::Scheduling::TurnRegistry.new,
+          ->(_session : String) { ::Sebas::Sessions::Scheduling::PolicySnapshot.new(
+            "queue", 0_i64, 5000_i64, 20_i64, 65536_i64, true, "session", 8_i64, 32_i64, 1_048_576_i64,
+            true, 300_i64, 16_i64, 30_000_i64) })
+        no_payload = HTTP::Client.post("#{base}/api/v1/sessions.steer?session_key=agent:main:acc:email:wp4@example.com",
+          headers: headers, body: "{}")
+        no_payload.status_code.should eq(400)
+        steer = HTTP::Client.post("#{base}/api/v1/sessions.steer?session_key=agent:main:acc:email:wp4@example.com",
+          headers: headers, body: %({"payload": "换成查 API"}))
+        JSON.parse(steer.body)["status"].as_s.should eq("queued")
+        JSON.parse(steer.body)["reason"].as_s.should eq("no_active_turn")
       ensure
         server.close
         bus.close
