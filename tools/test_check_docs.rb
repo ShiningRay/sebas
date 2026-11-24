@@ -152,6 +152,38 @@ class DisplayWidthTest < Minitest::Test
     assert_equal 10, CheckDocs.screen_lines(lines, 100)
   end
 
+  # CommonMark 有序列表除 `1.` 外也接受 `1)`；漏认会把整段当成一个段落累加。
+  def test_screen_lines_accepts_paren_ordered_list_marker
+    lines = Array.new(201) { "1) " + "a" * 101 } # 每项 104 列 → 2 屏
+    assert_equal 402, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_screen_lines_accepts_dot_ordered_list_marker
+    lines = Array.new(201) { "1. " + "a" * 101 }
+    assert_equal 402, CheckDocs.screen_lines(lines, 100)
+  end
+
+  # `#tag` 不是 ATX 标题，应与其他普通行合并为同一段落。
+  def test_screen_lines_does_not_treat_hashtag_as_heading
+    lines = Array.new(201) { "#tag " + "a" * 96 }
+    assert_equal 206, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_screen_lines_does_not_treat_seven_hashes_as_heading
+    lines = Array.new(201) { "####### " + "a" * 91 } # 每行 99 列，含 200 个软换行空格
+    assert_equal 201, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_screen_lines_treats_real_headings_as_blocks
+    lines = Array.new(100) { ["# 标题", "正文"] }.flatten
+    assert_equal 200, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_screen_lines_treats_atx_heading_without_text_as_block
+    lines = ["##", "正文"]
+    assert_equal 2, CheckDocs.screen_lines(lines, 100)
+  end
+
   def test_long_lines_skips_code_blocks_and_tables
     lines = ["```", "文" * 300, "```", "| " + ("文" * 300) + " |"]
     assert_empty CheckDocs.long_lines(lines, 400)

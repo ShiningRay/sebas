@@ -127,12 +127,14 @@ module CheckDocs
     marker[0] == opening[:char] && marker.length >= opening[:length]
   end
 
+  # CommonMark 有序列表接受 `.` 与 `)` 两种分隔符，无序列表为 `-` / `*` / `+`。
   def list_item?(line)
-    line.lstrip.match?(/\A(?:[-*+]|\d+\.)\s/)
+    line.lstrip.match?(/\A(?:[-*+]|\d{1,9}[.)])\s/)
   end
 
+  # CommonMark ATX 标题：1–6 个 `#` 后须为空格、制表符或行尾；`#tag` 与 7 个井号都只是普通文本。
   def heading?(line)
-    line.lstrip.start_with?("#")
+    line.lstrip.match?(/\A\#{1,6}(?:\s|\z)/)
   end
 
   # 每个文件的超长物理行：返回 [行号, 显示宽度] 列表。
