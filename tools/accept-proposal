@@ -1,0 +1,398 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# accept-proposal：让 Maintainer 一条命令完成 Proposal 的 accepted-design 裁决。
+#
+# 默认 dry-run，只打印裁决评论；--apply 才写 GitHub。
+# 复杂校验（裁决作者、verdict 标记、评论父对象、标签互斥）复用
+# SebasAgents::Triager.plan，不在本脚本另写一套判定逻辑。
+#
+# 用法见：ruby tools/accept-proposal --help
+
+require "rubygems"
+
+# 与 sebas-process 共用下限：Data.define 需要 Ruby 3.2+。
+if Gem::Version.new(RUBY_VERSION) < Gem::Version.new("3.2")
+  warn "accept-proposal 需要 Ruby >= 3.2（当前 #{RUBY_VERSION}）。仓库 .ruby-version 固定了受支持版本。"
+  exit 2
+end
+
+require "json"
+require "open3"
+require_relative "agents/lib/sebas_agents"
+
+# 脚本位于 <repo>/tools/；配置与 git remote 都从仓库根取，不依赖调用方 cwd。
+REPO_ROOT = File.expand_path("..", __dir__)
+
+module AcceptProposal
+  module_function
+
+  DECISION = "accepted-design"
+  VERDICT_MARKER = "<!-- proposal-verdict: #{DECISION} -->"
+  DECISION_PREFIX = "<!-- proposal-decision: "
+  STATUS_LABEL = "proposal:#{DECISION}"
+
+  class Failure < StandardError; end
+
+  # 裁决评论正文：verdict 标记单独成行，后面跟理由。
+  # 指定 milestone 时追加排期裁决行，保留 Maintainer 的公开理由。
+  def verdict_comment(reason, milestone: nil)
+    body = "#{VERDICT_MARKER}\n\n#{reason.strip}\n"
+    unless milestone.to_s.strip.empty?
+      body += "\n排期裁决：纳入 #{milestone}。实现工作包由 Scribe 按指令另行拆解。\n"
+    end
+    body
+  end
+
+  # 只取用于人读的标题，不让 HTML 标记影响正文。
+  def comment_title(body)
+    body.to_s.lines.reject { |line| line.strip.start_with?("<!--") }
+      .map(&:strip).reject(&:empty?).first.to_s
+  end
+
+  def decision_marker(body, url)
+    "#{DECISION_PREFIX}#{url} -->"
+  end
+
+  # 从 issue 正文读出已登记的裁决评论 URL（重试时复用，不重复发评论）。
+  def registered_decision_urls(body)
+    body.to_s.scan(/^#{Regexp.escape(DECISION_PREFIX)}(\S+) -->$/).flatten
+  end
+
+  # 判断是否已有本工具发出的 status 评论（含 verdict 状态标记与裁决链接）。
+  def status_comment_exists?(number, url, repo:)
+    page = 1
+    loop do
+      comments = gh_json("api", "repos/#{repo}/issues/#{number}/comments?per_page=100&page=#{page}")
+      return true if comments.any? do |comment|
+        body = comment["body"].to_s
+        body.include?("<!-- status: #{DECISION} -->") && body.include?(url)
+      end
+      return false if comments.length < 100
+
+      page += 1
+    end
+  end
+
+  # 在 issue 正文登记裁决证据链接（HTML 注释，渲染不可见）。
+  def with_decision_marker(body, url)
+    marker = decision_marker(body, url)
+    text = body.to_s
+    return text if text.include?(marker)
+    return "#{marker}\n" if text.strip.empty?
+
+    "#{text.rstrip}\n\n#{marker}\n"
+  end
+
+  # 统一的 gh 调用：显式失败信息，不吞 stderr。
+  def gh(*args)
+    stdout, stderr, status = Open3.capture3("gh", *args)
+    return stdout if status.success?
+
+    raise Failure, "gh #{args.join(" ")} 失败：#{stderr.strip}"
+  end
+
+  def gh_json(*args)
+    JSON.parse(gh(*args))
+  rescue JSON::ParserError => e
+    raise Failure, "gh #{args.join(" ")} 返回的不是合法 JSON：#{e.message}"
+  end
+
+  def current_login
+    gh_json("api", "user").fetch("login")
+  end
+
+  def fetch_issue(number, repo:)
+    gh_json("api", "repos/#{repo}/issues/#{number}")
+  end
+
+  # 解析 --milestone：既接受 milestone 数字，也接受标题（精确匹配优先）。
+  # 只认 open 的 milestone；找不到或有歧义一律 fail-closed。
+  def resolve_milestone(value, repo:)
+    list = gh_json("api", "repos/#{repo}/milestones?state=open&per_page=100")
+    if value.match?(/\A\d+\z/)
+      found = list.find { |m| m["number"] == value.to_i }
+      return found if found
+    else
+      exact = list.select { |m| m["title"] == value }
+      return exact.first if exact.length == 1
+      partial = list.select { |m| m["title"].to_s.downcase.include?(value.downcase) }
+      return partial.first if partial.length == 1
+      raise Failure, "milestone 标题 #{value.inspect} 匹配多个：#{partial.map { |m| m["title"] }.join("、")}" if partial.length > 1
+    end
+    raise Failure, "找不到开放的 milestone #{value.inspect}（用数字或标题）"
+  end
+
+  # 把 issue 挂到指定 milestone（Maintainer 的排期裁决）。
+  def set_milestone(number, milestone_number, repo:)
+    gh("api", "-X", "PATCH", "repos/#{repo}/issues/#{number}", "-f", "milestone=#{milestone_number}")
+  end
+
+  # 发裁决评论，直接返回 GitHub 的真实评论对象（含作者、正文和父对象）。
+  # 不用「当前登录人 + 待发正文」拼证据，否则会绕过 Triager 的真实裁决校验。
+  def post_verdict_comment(number, reason, repo:, milestone: nil)
+    body = verdict_comment(reason, milestone: milestone)
+    comment = gh_json("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{body}")
+    unless comment["html_url"].to_s.match?(%r{\Ahttps://github\.com/#{Regexp.escape(repo)}/issues/#{number}#issuecomment-\d+\z})
+      raise Failure, "GitHub 未返回当前 Proposal 的有效评论链接"
+    end
+
+    comment
+  end
+
+  # 重新读取已发布的裁决评论，只信 GitHub 返回的作者、正文与父对象。
+  def fetch_decision_evidence(url, repo:)
+    match = SebasAgents::Triager::DECISION_URL.match(url)
+    unless match && match[:repo] == repo && match[:kind] == "issues" && match[:anchor]&.start_with?("issuecomment")
+      raise Failure, "裁决链接不是当前仓库 Proposal 的 issue 评论：#{url}"
+    end
+
+    comment = gh_json("api", "repos/#{repo}/issues/comments/#{match[:id]}")
+    expected_parent = "https://api.github.com/repos/#{repo}/issues/#{match[:number]}"
+    unless comment["issue_url"].to_s == expected_parent
+      raise Failure, "裁决评论的父对象不是当前 Proposal"
+    end
+
+    {
+      "author" => comment.dig("user", "login"),
+      "body" => comment["body"].to_s,
+      "parent" => comment["issue_url"]
+    }
+  end
+
+  # 用最小快照跑 Triager.plan，复用它内置的裁决证据校验。
+  # 不调用 GithubGateway.snapshot（那会全仓拉 issue/PR，慢且易超时）：
+  # accepted-design 的判定只依赖 issue 标签、maintainers、裁决评论的作者/正文/父对象，
+  # 这四项在这里用刚拉取的数据精确构造，校验逻辑仍是 Triager.plan 本身。
+  def build_plan(number, url, repo:, issue:, evidence:)
+    issue_hash = issue.merge("labels" => Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s })
+    issue_hash["body"] = with_decision_marker(issue["body"], url)
+    model_issue = SebasAgents::Model::Issue.from_hash(issue_hash)
+
+    snapshot = SebasAgents::Model::Snapshot.from_hash({
+      "repo" => repo,
+      "main_sha" => "",
+      "milestones" => [],
+      "issues" => [issue_hash],
+      "maintainers" => read_maintainers,
+      "proposal_evidence" => {url => evidence}
+    })
+
+    verdict = {
+      "decision" => DECISION,
+      "body" => comment_title(evidence["body"]),
+      "maintainer_decision_url" => url
+    }
+    SebasAgents::Triager.plan(model_issue, snapshot, verdict: verdict)
+  end
+
+  # 执行 plan 里的元数据动作。Proposal 裁决只会产出标签动作和 set_type。
+  def execute_actions(number, actions, repo:)
+    actions.each do |action|
+      case action["action"]
+      when "add_label", "remove_label"
+        flag = action["action"] == "add_label" ? "--add-label" : "--remove-label"
+        gh("issue", "edit", number.to_s, "--repo", repo, flag, action.fetch("name").to_s)
+      when "set_type"
+        gh("api", "-X", "PATCH", "repos/#{repo}/issues/#{number}", "-f", "type=#{action.fetch("type")}")
+      when "comment", "suggest_milestone", "add_assignee", "close"
+        # Proposal 裁决不应产出这些动作；出现即拒绝，避免误指派或误关闭。
+        raise Failure, "Proposal 接受流程出现非预期动作 #{action["action"]}，已中止"
+      else
+        raise Failure, "accept-proposal 不支持的动作：#{action["action"]}"
+      end
+    end
+  end
+
+  def preflight!(issue, number, repo:, login:, maintainers:)
+    labels = Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s }
+    raise Failure, "##{number} 没有 proposal 标签，不能用本命令接受" unless labels.include?("proposal")
+    raise Failure, "##{number} 同时带 plan 标签，是工作包卡，不能按 Proposal 接受" if labels.include?("plan")
+    raise Failure, "##{number} 已关闭（#{issue["state"]}）" unless issue["state"] == "open"
+    raise Failure, "当前登录 #{login} 不在 maintainers 白名单中，无法作裁决" unless maintainers.include?(login)
+  end
+
+  def preview(number, reason, repo:, milestone: nil)
+    puts "dry-run（未写 GitHub）；确认后加 --apply"
+    puts "issue: ##{number}  repo: #{repo}"
+    if milestone
+      puts "排期：将挂到 milestone #{milestone.inspect}（需解析成功才会写）"
+    else
+      puts "排期：未指定 milestone，接受后仍需另行裁决排期"
+    end
+    puts "裁决评论："
+    puts verdict_comment(reason, milestone: milestone).lines.map { |l| "    #{l}" }.join
+    puts "随后登记证据 marker、清理旧状态标签、加 #{STATUS_LABEL}、set_type Feature，"
+    puts "并发一条 status 评论。实现工作包由 Scribe 按指令另行拆解。"
+  end
+
+  # 发 status 评论（含 status marker 与裁决链接）。
+  def post_status_comment(number, body, repo:)
+    gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{body}")
+  end
+
+  def apply(number, reason, repo:, milestone_value: nil)
+    login = current_login
+    issue = fetch_issue(number, repo: repo)
+    maintainers = read_maintainers
+    preflight!(issue, number, repo: repo, login: login, maintainers: maintainers)
+
+    # 排期裁决：先解析并确认 milestone 存在，fail-closed；裁决评论里保留公开理由。
+    milestone = milestone_value ? resolve_milestone(milestone_value, repo: repo) : nil
+    milestone_title = milestone && milestone["title"]
+
+    labels = Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s }
+    already_accepted = labels.include?(STATUS_LABEL)
+
+    if already_accepted
+      # 重试：复用已登记的裁决评论，绝不重复发评论或改标签。
+      urls = registered_decision_urls(issue["body"])
+      raise Failure, "##{number} 已接受但正文缺裁决证据 marker，无法幂等补齐" if urls.empty?
+
+      url = urls.last
+      evidence = fetch_decision_evidence(url, repo: repo)
+      # 重试也必须校验裁决作者与 verdict 标记；只校验，不重复执行标签动作。
+      plan = build_plan(number, url, repo: repo, issue: issue, evidence: evidence)
+      raise Failure, "重试的裁决证据未通过 Triager 校验：#{plan.inspect}" unless plan["ok"] && plan["decision"] == DECISION
+
+      puts "检测到已接受，补齐未完成步骤：#{url}"
+    else
+      comment = post_verdict_comment(number, reason, repo: repo, milestone: milestone_title)
+      url = comment.fetch("html_url")
+      # 评论发布期间协作者可能改过正文：写回前重读最新正文，缩短竞争窗口。
+      fresh_body = fetch_issue(number, repo: repo)["body"]
+      unless fresh_body.to_s.include?(decision_marker(fresh_body, url))
+        gh("issue", "edit", number.to_s, "--repo", repo, "--body", with_decision_marker(fresh_body, url))
+      end
+
+      evidence = fetch_decision_evidence(url, repo: repo)
+      plan = build_plan(number, url, repo: repo, issue: issue, evidence: evidence)
+      raise Failure, "triage 未生成可执行计划：#{plan.inspect}" unless plan["ok"] && plan["decision"] == DECISION
+
+      execute_actions(number, plan["actions"], repo: repo)
+    end
+
+    body = status_comment_body(evidence, url)
+    post_status_comment(number, body, repo: repo) unless status_comment_exists?(number, url, repo: repo)
+    set_milestone(number, milestone["number"], repo: repo) if milestone && issue["milestone"].to_s != milestone["number"].to_s
+
+    puts "已接受 Proposal ##{number}（#{DECISION}）"
+    puts "裁决评论：#{url}"
+    puts "状态：#{STATUS_LABEL}"
+    puts(milestone ? "排期：已挂到 milestone #{milestone_title}" : "排期：未指定 milestone，仍待另行裁决")
+  rescue SebasAgents::Error => e
+    raise Failure, e.message
+  end
+
+  # status 评论正文：status marker + arch marker + 裁决链接（与 Triager 评论同构）。
+  def status_comment_body(evidence, url)
+    title = comment_title(evidence["body"])
+    <<~MD
+      <!-- status: #{DECISION} -->
+      <!-- arch: issue-arch -->
+
+      #{title}
+
+      Maintainer 裁决：#{url}
+    MD
+  end
+
+  # 从仓库根 .github/agents.yml 读 maintainers（不引入 YAML gem）。
+  def read_maintainers(root: REPO_ROOT)
+    path = File.join(root, ".github", "agents.yml")
+    raise Failure, "缺少 #{path}，无法校验裁决人身份" unless File.file?(path)
+
+    text = File.read(path, encoding: "UTF-8")
+    section = text[/^maintainers:\s*$\n((?:[ \t]+-[^\n]*\n?)*)/, 1].to_s
+    list = section.scan(/^\s+-\s+(\S+)/).flatten
+    raise Failure, "#{path} 的 maintainers 为空" if list.empty?
+
+    list
+  end
+end
+
+# ---- CLI ----
+
+def usage
+  <<~TXT
+    用法：ruby tools/accept-proposal <issue号> --reason "理由" [--repo OWNER/NAME] [--milestone M] [--apply]
+
+    默认 dry-run，只打印裁决评论；--apply 才写 GitHub。
+
+    参数：
+      --reason TEXT      接受理由（必填，会写进公开评论）
+      --reason-file PATH 从文件读取理由（与 --reason 二选一）
+      --repo OWNER/NAME  仓库；缺省从 git origin 推断
+      --milestone M      顺带排期到该 milestone（数字或标题，须已存在且开放）
+      --apply            真正执行：发裁决评论 → 登记证据 → 更新标签 → 发 status 评论
+      --help             显示本帮助
+  TXT
+end
+
+def take_value!(argv, index, flag)
+  value = argv[index + 1]
+  raise ArgumentError, "#{flag} 需要一个值" if value.nil? || value.start_with?("--")
+
+  value
+end
+
+def parse_argv(argv)
+  options = {}
+  positional = []
+  i = 0
+  while i < argv.length
+    case argv[i]
+    when "--help", "-h" then return :help, nil
+    when "--apply" then options[:apply] = true
+    when "--reason" then options[:reason] = take_value!(argv, i, "--reason"); i += 1
+    when "--reason-file" then options[:reason_file] = take_value!(argv, i, "--reason-file"); i += 1
+    when "--repo" then options[:repo] = take_value!(argv, i, "--repo"); i += 1
+    when "--milestone" then options[:milestone] = take_value!(argv, i, "--milestone"); i += 1
+    else positional << argv[i]
+    end
+    i += 1
+  end
+
+  raise ArgumentError, "必须给出 issue 号" if positional.empty?
+  raise ArgumentError, "只能给出一个 issue 号" if positional.length > 1
+  number = Integer(positional.first, exception: false)
+  raise ArgumentError, "issue 号必须是整数：#{positional.first}" unless number
+
+  if options[:reason_file]
+    raise ArgumentError, "--reason 与 --reason-file 只能用一个" if options[:reason]
+    raise ArgumentError, "理由文件不存在：#{options[:reason_file]}" unless File.file?(options[:reason_file])
+
+    options[:reason] = File.read(options[:reason_file], encoding: "UTF-8")
+  end
+  raise ArgumentError, "必须用 --reason 或 --reason-file 提供接受理由" if options[:reason].to_s.strip.empty?
+
+  [nil, {number: number, reason: options[:reason], apply: options[:apply],
+         repo: options[:repo], milestone: options[:milestone]}]
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    mode, opts = parse_argv(ARGV)
+    if mode == :help
+      puts usage
+      exit 0
+    end
+
+    repo = opts[:repo] || begin
+      url, = Open3.capture3("git", "-C", REPO_ROOT, "remote", "get-url", "origin")
+      match = url.strip.match(%r{[:/]([^/:]+/[^/:]+?)(?:\.git)?\z})
+      raise ArgumentError, "无法从 origin 推断仓库；请用 --repo OWNER/NAME" unless match
+
+      match[1]
+    end
+
+    if opts[:apply]
+      AcceptProposal.apply(opts[:number], opts[:reason], repo: repo, milestone_value: opts[:milestone])
+    else
+      AcceptProposal.preview(opts[:number], opts[:reason], repo: repo, milestone: opts[:milestone])
+    end
+  rescue ArgumentError, AcceptProposal::Failure => e
+    warn "accept-proposal: #{e.message}"
+    exit 2
+  end
+end

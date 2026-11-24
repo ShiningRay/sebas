@@ -7,6 +7,7 @@
 
 ### Added
 
+- **流程工具 accept-proposal**：一条命令完成 Proposal 的 `accepted-design` 裁决（发公开评论、登记裁决证据、复用 `Triager.plan` 校验并落地状态标签）；`--milestone` 顺带记录排期意图，不替代 Scribe 拆 `plan` 工作包。默认 dry-run，`--apply` 才写 GitHub。
 - **M4.1 fork/join 影分身最小闭环**：生产装配补齐与入队键一致性（[#135](https://github.com/ShiningRay/sebas/pull/135)）、expectations 表 + mode 判定器 +
   恢复扫描（[#136](https://github.com/ShiningRay/sebas/pull/136)）、fork 快照组装与分身执行体（[#150](https://github.com/ShiningRay/sebas/pull/150)）、JoinWriter 分层回写 + 四时机语义（[#152](https://github.com/ShiningRay/sebas/pull/152)）、
   fork/join 触发面与全链 e2e（[#153](https://github.com/ShiningRay/sebas/pull/153)）。

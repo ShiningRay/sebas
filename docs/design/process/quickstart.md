@@ -141,6 +141,24 @@ ruby tools/sebas-process roles verifier --prompt-only > /tmp/verifier.md
 
 ## 5. 各角色最小命令
 
+### Maintainer
+
+```sh
+ruby tools/accept-proposal 159 --reason "方向成立，按建议收敛"        # dry-run：打印裁决评论
+ruby tools/accept-proposal 159 --reason-file verdict.md --apply        # 真正接受设计
+ruby tools/accept-proposal 159 --reason "排期进 v0.2.0" --milestone v0.2.0 --apply  # 接受并排期
+```
+
+`accept-proposal` 把 Maintainer 接受 Proposal 的完整动作串成一条命令：发带
+`<!-- proposal-verdict: accepted-design -->` 的公开评论 → 在 issue 正文登记裁决证据
+marker → 复用 `Triager.plan` 校验裁决作者、正文与评论父对象 → 清理旧状态标签并加
+`proposal:accepted-design` → 发 status 评论。默认 dry-run，`--apply` 才写。
+`--milestone` 接受数字或标题，须对应已开放的 milestone；指定后在裁决评论留公开排期理由，
+并把 issue 挂到该 milestone。这里挂的是排期意图记录，不是实现排期本身——Implementer 只按
+Scribe 拆出的 `plan` 卡选卡，Proposal 本身不进实现选卡。
+接受设计不等于自动拆卡——实现工作包仍由 Scribe 按指令拆解。
+不指定 milestone 时排期仍需另行裁决。测试见 `tools/test_accept_proposal.rb`。
+
 ### Implementer
 
 ```sh
