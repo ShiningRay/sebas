@@ -46,11 +46,12 @@
 | F10 | PR 已建，记录未回填 | 快照里 PR 关联本卡，分支等于租约分支 | 回填 `pr`，续做 | 细化：现在按 `closing_issues` 推断，不比对分支 |
 | F11 | 别的 PR 关联了本卡 | PR 分支不等于租约分支，或 PR 关联多张卡 | 不是本 worker 所建，`invalid_plan` | 细化：「关联多张卡」文档已要求，代码未见判定 |
 | F12 | PR 已合并，unclaim 中途失败 | PR 已合并，issue completed | 重跑 `unclaim`。标签已移除时按已释放收尾并补写记录 | 细化：现在这种情形返回 `refused`，要改成幂等 |
-| F13 | 合并后 main 上的 CI 被下一次合并取消 | 合并提交的 CI 结论为 `cancelled`，Evidence 仍是 `merged_into_main: false` | 重跑该 CI；仍失败则 dispatch 补登记；超限转人工 | 新增 |
+| F13 | 合并后 main 上的 CI 被下一次合并取消 | 合并提交的 CI 结论为 `cancelled`，Evidence 仍是 `merged_into_main: false` | 重跑被取消的那次 CI run：成功后升级自动触发，或 dispatch 补登记。重跑仍失败就转人工手工登记 | 新增 |
 | F14 | worker 越界写 | PR 的变更文件不在租约 `scope` 内 | 本租约转 `needs_human`，停止新认领 | 新增 |
 | F15 | coordinator 在合并步骤中途崩溃 | 记录 `merging` | 重读远端：已合并走 F12；仍 open 就从 `verify merge --pre` 重来；读不到则 `invalid_plan` | 新增 |
 
-F13 是从 [ci.yml](../../../.github/workflows/ci.yml) 的 `cancel-in-progress: true` 与 [evidence-register.yml](../../../.github/workflows/evidence-register.yml) 的成功条件推出来的，处置栏里的补偿路径还没有实测。
+F13 是从 [ci.yml](../../../.github/workflows/ci.yml) 的 `cancel-in-progress: true` 与 [evidence-register.yml](../../../.github/workflows/evidence-register.yml) 的成功条件推出来的。
+登记脚本的 `resolve_checks_url` 只认 merge commit 自己的成功 CI run，所以 dispatch 不能代替重跑。处置栏里的补偿路径还没有实测。
 
 ## 4. 单 coordinator 与防双实例：Q2
 

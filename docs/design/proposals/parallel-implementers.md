@@ -264,9 +264,9 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 
 - **`strict=true`**（development-workflow.md §4）：main 每前进一次，其余在途 PR 全部转 BEHIND，各需 `update-branch` 加整轮 CI。并行的 PR 越多，队尾等得越久。
 - **main 上的 CI 会取消前一次运行**：[ci.yml](../../../.github/workflows/ci.yml) 的并发组是 `ci-<ref>`，且 `cancel-in-progress: true`。上一张卡的合并提交 CI 没跑完就合入下一张，上一轮被取消。
-- **Evidence 升级只由 CI 成功触发**：[evidence-register.yml](../../../.github/workflows/evidence-register.yml) 只在 CI run 结论为 `success` 时登记。上一轮被取消，该卡的 Evidence 停在 `merged_into_main: false`，后继卡一直 `blocked`，要人工 `workflow_dispatch` 补登记。
+- **Evidence 升级只由 merge commit 自己的成功 CI 触发**：[evidence-register.yml](../../../.github/workflows/evidence-register.yml) 只在 CI run 结论为 `success` 时登记，`resolve_checks_url` 还要求触发的提交就是 merge commit。上一轮被取消，该卡的 Evidence 停在 `merged_into_main: false`，后继卡一直 `blocked`。
 
-后两条是从 workflow 定义读出的事实，尚未做并发合并的实测复现，已列入必测场景。
+补救办法是重跑被取消的那次 CI run，成功后升级自动触发，见续篇 F13。后两条是从 workflow 定义与登记脚本读出的事实，尚未做并发合并的实测复现，已列入必测场景。
 
 ### 7.3 合并串行化的强度：Q6 待裁决
 

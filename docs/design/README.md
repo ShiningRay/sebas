@@ -39,7 +39,7 @@
 | [session-input-scheduling.md](proposals/session-input-scheduling.md) | 216 | 会话输入调度（队列/debounce/正交 steer） |
 | [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 185 | 影分身架构 |
 | [fork-join-shadow-clone-positioning.md](proposals/fork-join-shadow-clone-positioning.md) | 161 | 影分身定位 |
-| [parallel-implementers-recovery.md](proposals/parallel-implementers-recovery.md) | 134 | 多任务并行开发续篇：恢复、迁移与验证（未定稿） |
+| [parallel-implementers-recovery.md](proposals/parallel-implementers-recovery.md) | 135 | 多任务并行开发续篇：恢复、迁移与验证（未定稿） |
 | [agent-category-tags.md](proposals/agent-category-tags.md) | 109 | Agent 分类与标签：元数据模型与管理面查询 |
 | [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 84 | 忙时插话与转向 |
 
