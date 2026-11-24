@@ -337,16 +337,16 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 ## 11. 管理面命令面（M4.4-WP4 补遗）
 
-生命周期与模板经 IPC/HTTP 可查可操作（复用 M1-WP9 鉴权口径——读匿名、写认证）：
+生命周期与模板经 IPC/HTTP 可查可操作。鉴权口径按传输面分：IPC 读命令匿名、写命令认证（M1-WP9 口径）；HTTP 全部 /api/v1/ 路由外层统一 Bearer token（token 模式下无匿名读）。
 
-| 命令 | IPC | HTTP | 认证 |
-|---|---|---|---|
-| sessions.lifecycle（status 过滤查询） | ✓ | GET /api/v1/sessions.lifecycle | 匿名 |
-| sessions.dormant（older_than_days 负数/越界拒绝） | ✓ | POST /api/v1/sessions.dormant | 写认证 |
-| sessions.archive | ✓ | POST /api/v1/sessions.archive | 写认证 |
-| sessions.gc（confirm 闸 + 目录限定） | ✓ | POST /api/v1/sessions.gc | 写认证 |
-| templates.list | ✓ | GET /api/v1/templates.list | 匿名 |
-| templates.clone（冲突 → error/409） | ✓ | POST /api/v1/templates.clone | 写认证 |
+| 命令 | IPC | IPC 认证 | HTTP | HTTP 认证 |
+|---|---|---|---|---|
+| sessions.lifecycle（status 过滤查询） | ✓ | 匿名 | GET /api/v1/sessions.lifecycle | token |
+| sessions.dormant（older_than_days 负数/越界拒绝） | ✓ | 写认证 | POST /api/v1/sessions.dormant | token |
+| sessions.archive | ✓ | 写认证 | POST /api/v1/sessions.archive | token |
+| sessions.gc（confirm 闸 + 目录限定） | ✓ | 写认证 | POST /api/v1/sessions.gc | token |
+| templates.list | ✓ | 匿名 | GET /api/v1/templates.list | token |
+| templates.clone（冲突 → error/409） | ✓ | 写认证 | POST /api/v1/templates.clone | token |
 
 语义要点：
 
