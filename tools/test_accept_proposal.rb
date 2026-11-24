@@ -77,7 +77,7 @@ class AcceptProposalTest < Minitest::Test
     assert_includes err.message, "proposal"
   end
 
-  def test_preflight_rejects_already_accepted
+  def test_preflight_allows_already_accepted
     issue = {"labels" => [{"name" => "proposal"}, {"name" => "proposal:accepted-design"}], "state" => "open"}
     # 已接受不再是错误：重试时走幂等补齐路径。
     AcceptProposal.preflight!(issue, 8, repo: "o/r", login: "ShiningRay", maintainers: ["ShiningRay"])
@@ -173,12 +173,11 @@ class AcceptProposalTest < Minitest::Test
   end
 
   def fake_milestones(list)
-    AcceptProposal.define_singleton_method(:gh_json) do |*_args|
-      list
-    end
+    original = AcceptProposal.method(:gh_json)
+    AcceptProposal.define_singleton_method(:gh_json) { |*_args| list }
     yield
   ensure
-    AcceptProposal.singleton_class.send(:remove_method, :gh_json)
+    AcceptProposal.define_singleton_method(:gh_json, original) if original
   end
 
   def test_resolve_milestone_by_number
@@ -239,5 +238,91 @@ class AcceptProposalTest < Minitest::Test
       AcceptProposal.build_plan(8, url, repo: "o/r", issue: sample_issue(url), evidence: evidence)
     end
     assert_includes err.message, "proposal-verdict"
+  end
+
+  def with_github_stubs(json_handler:, gh_handler: nil)
+    original_json = AcceptProposal.method(:gh_json)
+    original_gh = AcceptProposal.method(:gh)
+    calls = []
+    AcceptProposal.define_singleton_method(:gh_json) do |*args|
+      calls << [:json, args]
+      json_handler.call(*args)
+    end
+    AcceptProposal.define_singleton_method(:gh) do |*args|
+      calls << [:gh, args]
+      gh_handler ? gh_handler.call(*args) : ""
+    end
+    yield calls
+  ensure
+    AcceptProposal.define_singleton_method(:gh_json, original_json)
+    AcceptProposal.define_singleton_method(:gh, original_gh)
+  end
+
+  def test_status_comment_exists_checks_all_pages
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    filler = Array.new(100) { |i| {"body" => "comment #{i}"} }
+    match = {"body" => "<!-- status: accepted-design -->\nMaintainer 裁决：#{url}"}
+    handler = lambda do |*args|
+      page = Integer(args.last[/[?&]page=(\d+)/, 1], exception: false) || 1
+      raise "unexpected page #{page}" unless [1, 2].include?(page)
+
+      page == 1 ? filler : [match]
+    end
+    with_github_stubs(json_handler: handler) do
+      assert AcceptProposal.status_comment_exists?(8, url, repo: "o/r")
+    end
+  end
+
+  def test_retry_only_completes_missing_status_and_milestone
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    issue = sample_issue(url).merge(
+      "labels" => [{"name" => "proposal"}, {"name" => "proposal:accepted-design"}],
+      "milestone" => nil
+    )
+    evidence = sample_evidence(url: url)
+    json_handler = lambda do |*args|
+      case args
+      in ["api", "user"]
+        {"login" => "ShiningRay"}
+      in ["api", "repos/o/r/issues/8"]
+        issue
+      in ["api", "repos/o/r/milestones?state=open&per_page=100"]
+        [{"number" => 2, "title" => "v0.2.0"}]
+      in ["api", "repos/o/r/issues/comments/123"]
+        {"user" => {"login" => "ShiningRay"}, "body" => evidence["body"], "issue_url" => evidence["parent"]}
+      in ["api", /comments\?per_page=100&page=1/]
+        []
+      else
+        raise "unexpected json call: #{args.inspect}"
+      end
+    end
+    with_github_stubs(json_handler: json_handler) do |calls|
+      out, = capture_io { AcceptProposal.apply(8, "不应重复写入", repo: "o/r", milestone_value: "2") }
+      assert_includes out, "补齐未完成步骤"
+      gh_calls = calls.select { |kind,| kind == :gh }.map(&:last)
+      refute gh_calls.any? { |args| args.include?("issues/8/comments") && !args.join(" ").include?("-f") }
+      refute gh_calls.any? { |args| args.include?("--add-label") || args.include?("--remove-label") }
+      assert gh_calls.any? { |args| args.join(" ").include?("issues/8/comments") && args.join(" ").include?("-f") }
+      assert gh_calls.any? { |args| args.join(" ").include?("-f") && args.join(" ").include?("milestone=2") }
+    end
+  end
+
+  def test_retry_without_decision_marker_fails_before_writing
+    issue = {"number" => 8, "state" => "open", "body" => "no marker",
+             "labels" => [{"name" => "proposal"}, {"name" => "proposal:accepted-design"}]}
+    json_handler = lambda do |*args|
+      case args
+      in ["api", "user"] then {"login" => "ShiningRay"}
+      in ["api", "repos/o/r/issues/8"] then issue
+      else raise "unexpected json call: #{args.inspect}"
+      end
+    end
+    with_github_stubs(json_handler: json_handler) do |calls|
+      err = assert_raises(AcceptProposal::Failure) do
+        AcceptProposal.apply(8, "x", repo: "o/r")
+      end
+      assert_includes err.message, "缺裁决证据 marker"
+      assert_empty calls.select { |kind,| kind == :gh }
+    end
   end
 end

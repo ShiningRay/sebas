@@ -61,10 +61,16 @@ module AcceptProposal
 
   # 判断是否已有本工具发出的 status 评论（含 verdict 状态标记与裁决链接）。
   def status_comment_exists?(number, url, repo:)
-    comments = gh_json("api", "repos/#{repo}/issues/#{number}/comments?per_page=100")
-    comments.any? do |comment|
-      body = comment["body"].to_s
-      body.include?("<!-- status: #{DECISION} -->") && body.include?(url)
+    page = 1
+    loop do
+      comments = gh_json("api", "repos/#{repo}/issues/#{number}/comments?per_page=100&page=#{page}")
+      return true if comments.any? do |comment|
+        body = comment["body"].to_s
+        body.include?("<!-- status: #{DECISION} -->") && body.include?(url)
+      end
+      return false if comments.length < 100
+
+      page += 1
     end
   end
 
@@ -245,6 +251,10 @@ module AcceptProposal
 
       url = urls.last
       evidence = fetch_decision_evidence(url, repo: repo)
+      # 重试也必须校验裁决作者与 verdict 标记；只校验，不重复执行标签动作。
+      plan = build_plan(number, url, repo: repo, issue: issue, evidence: evidence)
+      raise Failure, "重试的裁决证据未通过 Triager 校验：#{plan.inspect}" unless plan["ok"] && plan["decision"] == DECISION
+
       puts "检测到已接受，补齐未完成步骤：#{url}"
     else
       comment = post_verdict_comment(number, reason, repo: repo, milestone: milestone_title)
