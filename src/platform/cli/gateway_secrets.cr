@@ -9,6 +9,7 @@ module Sebas
         # secrets vault（M4.2-WP4）：AES-256-GCM 静态加密（主密钥 OS keyring，
         # 降级 0600 主密钥文件）；分身执行面无凭据直读路径（provider 句柄封装）。
         getter vault : Keys::EncryptedFileVault
+        getter lifecycle_store : Sessions::Lifecycle::Store
         @provider_factory : Proc(Config::AgentConfig, String?, Providers::Provider)
         @provider_keys : Hash(String, String) = Hash(String, String).new
         # agent 名 → 最新实例（migrate_secrets 维护）：wrapped factory 按实例

@@ -65,6 +65,12 @@ module Sebas
             ::Time.utc.to_rfc3339, nil, event.to_json, snapshot
           )
           receipt = scheduling.admit(envelope)
+          begin
+            @lifecycle_store.touch(session_key, agent_name, "user") if receipt.status == "accepted"
+          rescue ex
+            # touch 失败不改 admission 结果（事件已受理可派发；仅元数据缺失）
+            Log.warn(exception: ex) { "reception lifecycle touch failed (event=#{event.event_id})" }
+          end
           Log.info { "reception admitted (session=#{session_key} event=#{event.event_id} status=#{receipt.status})" } if receipt.status == "accepted"
         end
 
@@ -99,6 +105,12 @@ module Sebas
             ::Time.utc.to_rfc3339, nil, event.to_json, snapshot
           )
           receipt = scheduling.admit(env)
+          begin
+            @lifecycle_store.touch(session_key, agent_name, "user") if receipt.status == "accepted"
+          rescue ex
+            # touch 失败不改 admission 结果（同上）
+            Log.warn(exception: ex) { "lifecycle touch failed (event=#{event.event_id})" }
+          end
           case receipt.status
           when "accepted"
             Log.info { "admitted (session=#{session_key} event=#{event.event_id} batch=#{receipt.batch_id} position=#{receipt.queue_position})" }
