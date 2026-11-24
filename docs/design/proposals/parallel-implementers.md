@@ -43,7 +43,7 @@
 | I3 | 等待不占算力：某卡等 CI 或 review 时，coordinator 继续处理其他租约 |
 | I4 | 合并串行：每个 PR 独立经过 `verify merge --pre`、独立核验与终验；worker 不执行合并 |
 | I5 | 崩溃、写入未确认、worker 失联均可对账恢复；无法确定所有权即 fail-closed，不接管，不重复开工 |
-| I6 | 容量为 1 时行为与现状等价：`plan` 的首选候选恒等于 `next` 的选择 |
+| I6 | 容量为 1 且没有暂停卡时，`plan` 的首选候选恒等于 `next` 的选择。暂停语义是唯一的有意差异，见 Q9 |
 
 ### 2.2 非目标
 
@@ -102,19 +102,19 @@ ruby tools/sebas-process plan --capacity 2   # 只读：不写 GitHub，也不�
 
 ### 4.1 每张租约的动作
 
-把 `select_action` 里「全局只看一张」的分支，改成对单张租约求值。条件按序判定。
+把 `select_action` 里「全局只看一张」的分支，改成对单张租约求值。条件按序判定，归属校验排在一切动作之前：记录与远端认领对不上，或 PR 不是本租约的 PR，一律 `invalid_plan`，不看检查是否全绿。
 
 | 条件 | 动作 | 与现状的差异 |
 |---|---|---|
 | 记录 `phase=aborted` | `invalid_plan`；`label_written=true` 时需人工核对远端 | 无 |
+| 记录与远端认领不是同一张卡 | `invalid_plan` | 无 |
+| PR 的分支不是租约分支，或 PR 关联多张卡 | `invalid_plan` | 分支比对是新增；「关联多张卡」implementer-loop.md §3.1 已要求，`policy/selection.rb` 未见对应判定 |
 | 本卡带 `needs:human` 与 `agent:resume` | `resume_issue`：核验说明后移除两标签 | 无 |
 | 本卡带 `needs:human` | `needs_human`，只作用于本卡 | 不再阻塞其他租约 |
 | 无 PR，记录与远端认领一致 | `resume_issue`，沿用原 worktree | 无 |
 | 有 PR：失败检查、未解决 thread、BEHIND | `resume_pr` | 无 |
 | 有 PR：检查未完成或状态未知 | `wait`：本卡等待，释放其算力 | 不再是全局停止 |
 | 有 PR：CLEAN 且 thread 清零 | `merge_ready`，进入合并队列 | 新动作，替代现有「已 CLEAN；核验后再合并」的 `resume_pr` |
-| 记录与远端认领不是同一张卡 | `invalid_plan` | 无 |
-| PR 的分支不是租约分支，或 PR 关联多张卡 | `invalid_plan` | 分支比对是新增；「关联多张卡」implementer-loop.md §3.1 已要求，`policy/selection.rb` 未见对应判定 |
 
 ### 4.2 输出
 
@@ -192,6 +192,8 @@ A 与 B 的凭据内容相同：`lease_id`、`issue`、`branch`、`base_sha`、`
 
 评论先于标签：崩溃在两者之间时留下的是「有评论、无标签」，不会出现人类可见的「进行中」却没有所有权凭据。恢复按记录里的评论 id 续做，不重复发评论。
 
+评论已发出、评论 id 还没记入记录时崩溃，记录里没有可供续做的 id。这时先按 `lease_id` 检索该 issue 的租约评论：找到就复用那条评论并补记 id，确认没有才重发。直接重发会留下两份有效凭据。
+
 选 B 的代价有三项：`ALLOWED_WRITES` 新增 `post_comment` 与 `update_comment` 意图及命令形态，这是写守卫面的变更，要补 dry-run 守卫测试；`.github/agents.yml` 新增可登记租约的身份白名单，属安全边界变更，口径同 `trusted_bots`；每次对账多读认领卡的评论列表。
 
 ## 6. 隔离开发与冲突预算
@@ -251,10 +253,11 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 
 ```
 取队首（按进入 merge_ready 的先后）
-→ 重读远端：PR 仍 open，租约与 PR 归属一致，head 与核验时一致
+→ 归属校验：PR 仍 open，租约与 PR 归属一致，head 与核验时一致
 → verify merge <pr> <issue> --pre，退出码 0
 → Verifier 核验与终验（独立进程），结论为「通过」
 → BEHIND 则 update-branch，等 CI 与 verify.yml 重跑
+→ head 因此改变时：§7.5 未获裁决，或无法证明只多了同步提交，就回到核验一步重做
 → squash 合并，远端复核 MERGED
 → 等 main 上该合并提交的 CI 成功，Evidence 升级为 merged_into_main=true
 → unclaim，租约置为 released，下一张
@@ -288,7 +291,7 @@ Evidence 登记本身按 issue 与 PR 各写各的：登记脚本只改本 issue
 
 ### 7.5 核验结论与 head 的绑定：新子项
 
-`update-branch` 会改变 head。若规定「head 变则结论失效」，main 每前进一次都要重做语义核验，队列更长。建议规则，未裁决：结论绑定 PR 自有提交。新 head 相对旧 head 只多出同步 main 的合并提交时结论仍有效，但 CI 与 verify.yml 必须重跑；出现冲突解决提交或任何非同步提交即失效。无法证明只是同步提交时，按失效处理。
+`update-branch` 会改变 head。若规定「head 变则结论失效」，main 每前进一次都要重做语义核验，队列更长。建议规则，未裁决：结论绑定 PR 自有提交。新 head 相对旧 head 只多出同步 main 的合并提交时结论仍有效，但 CI 与 verify.yml 必须重跑；出现冲突解决提交或任何非同步提交即失效。无法证明只是同步提交时，按失效处理。裁决之前，合并队列按「head 变了就重做核验」执行，见 §7.2。
 
 ## 8. 分阶段启用
 
@@ -330,11 +333,11 @@ Evidence 登记本身按 issue 与 PR 各写各的：登记脚本只改本 issue
 
 | 编号 | 问题 | 建议默认值 |
 |---|---|---|
-| Q2 | 单 coordinator 是否足够 | 首期足够；防双实例见续篇 §4 |
+| Q2 | 单 coordinator 是否足够 | 首期足够；首期只允许一台机器担任 coordinator，启动时校验，见续篇 §4 |
 | Q3 | 容量默认值与上限 | 默认 1；上限由 Maintainer 在仓库配置里显式设置，未配置即 1 |
 | Q5 | 依赖冻结与降级 | 某卡失败只停止其后继，不撤销同批其他未提交的工作 |
 | Q6 | 合并串行化的强度 | 试点期串行到 Evidence 升级完成；补偿路径验证后再放宽 |
-| Q9 | 暂停语义 | `needs:human` 作用于单卡；全仓 pause 的触发条件由 Maintainer 定义 |
+| Q9 | 暂停语义 | `needs:human` 作用于单卡，容量为 1 时也如此；这是 `plan` 与 `next` 在候选选择之外唯一的差异。全仓 pause 的触发条件由 Maintainer 定义 |
 | 并行轨 | 并行轨如何纳入调度 | 容量按轨声明，未声明的轨不调度；启用方式待定 |
 
 ### 10.3 细化中新出现的子项
