@@ -118,13 +118,32 @@ module Sebas
             end
             subgroups << current unless current.empty?
 
+            # 已标记组（历史 E）先查原事件是否已入批：已入批按原输入恢复
+            # 确认（不重发，CodeRabbit SM7E 后半）；未入批才重拆子组新 id
+            marked_event = group.first.dispatch_event_id
+            if marked_event && @store.session_input?(marked_event)
+              group.each do |row|
+                @store.transition_session_steer(row.steer_id,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
+                  "recovered confirm (input exists: #{marked_event})")
+              end
+              next
+            end
             subgroups.each do |sub|
               head = sub.first
               parts = session_key.split(":", 5) # 第五段保留完整 peer（分身 peer 含冒号）
-              event_id = head.dispatch_event_id || "steer-dispatch-#{head.steer_id}"
+              # 重拆子组（原标记组）用新独立 id：head.steer_id 唯一 + 序号防撞
+              # 原组头同 id；mark 覆盖行标记为子组新 id（恢复按新 id 幂等）
+              event_id = if marked_event
+                           "steer-dispatch-#{head.steer_id}-r#{subgroups.index(sub)}"
+                         else
+                           head.dispatch_event_id || "steer-dispatch-#{head.steer_id}"
+                         end
               # 新组：事务内原子写全组标记（部分命中=并发确认过，本轮跳过）
-              unless head.dispatch_event_id
-                next unless @store.mark_steer_dispatch_group(sub.map(&.steer_id), event_id)
+              is_new_group = !head.dispatch_event_id || !marked_event.nil?
+              if is_new_group && !@store.mark_steer_dispatch_group(sub.map(&.steer_id), event_id)
+                next
               end
               content = sub.map { |row| "[steer replay #{row.steer_id}] #{row.payload}" }.join("\n")
               envelope = Sessions::Scheduling::InputEnvelope.new(
@@ -144,10 +163,11 @@ module Sebas
                 end
                 Log.info { "queued steer group dispatched (session=#{session_key} count=#{sub.size} admission=#{receipt.status})" }
               else
-                # 容量满等拒绝：整组保持 queued（标记已在），下轮同 event_id 重试；
-                # blocked 防本轮同会话后项抢先进批（CodeRabbit QWvI）
+                # 容量满等拒绝：整组保持 queued，下轮同 event_id 重试；blocked
+                # + break 防本轮后续子组越过未入批前项（CodeRabbit SM7O/QWvI）
                 blocked << session_key
                 Log.warn { "queued steer dispatch deferred (session=#{session_key} count=#{sub.size} admission=#{receipt.status})" }
+                break
               end
             end
           end

@@ -8,6 +8,14 @@ module Sebas
   module Platform
     # Store include 本 module 获得 steer 读写方法（include 行在 store.cr class Store 内）
     module SteerStoreMethods
+      # 合成事件是否已入批（六轮 SM7E：已标记组恢复确认依据——E 存在于
+      # session_inputs = 原事件已 admitted，按原输入恢复确认而非重发）
+      def session_input?(event_id : String) : Bool
+        @db.query_one?(
+          "SELECT 1 FROM session_inputs WHERE event_id = ? LIMIT 1", event_id
+        ) { true } || false
+      end
+
       def session_batch(batch_id : String) : ::Sebas::Platform::Store::Store::SessionBatchRow?
         @db.query_one?(
           "SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason FROM session_batches WHERE batch_id = ?",
