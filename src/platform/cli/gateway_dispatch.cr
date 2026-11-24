@@ -99,6 +99,13 @@ module Sebas
             return
           end
           session_key = Agents.session_key(agent_name, event.account_id, event.channel_type, event.peer)
+          # 显式 /steer 短路（M4.5-WP4）：绕过批次排序直达 steer 中心——
+          # 活跃 turn 在途时可 pending 注入（走批次会被在途批次卡到 turn 结束
+          # 之后，永远 no_active_turn，CodeRabbit PRRT_kwDOVzNPQM67PQMr）
+          if event.content.starts_with?("/steer ")
+            handle_steer_command(event, session_key, record_intent: true)
+            return
+          end
           snapshot = Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
           env = Sessions::Scheduling::InputEnvelope.new(
             event.event_id, session_key, event.channel_type, event.peer, 0,
@@ -244,14 +251,52 @@ module Sebas
 
         # 显式 /steer 命令（M4.5-WP4）：明确 correction 语义入口——普通
         # 聊天正文不靠关键词/LLM 猜测纠偏意图；回执经提交状态落库。
+        # steer_id 派生自 event_id：重放（intent dispatched 崩溃兜底）时
+        # INSERT OR IGNORE 主键相同，不产生第二行（CodeRabbit PQMw）。
         # 返回 true = 已按 steer 处理（调用方直接返回）。
-        private def handle_steer_command(message : Bus::InboundMessage, session_key : String) : Bool
+        private def handle_steer_command(message : Bus::InboundMessage, session_key : String,
+                                         record_intent : Bool = false) : Bool
           return false unless message.content.starts_with?("/steer ")
+          if record_intent
+            unless @store.record_intent(message.event_id, "message", message.to_json)
+              @store.finish_intent(message.event_id, "done") # 重复投递：原提交已在，只收口
+              return true
+            end
+          end
+          if @lifecycle_store.archived?(session_key)
+            Log.warn { "audit: steer rejected for archived session #{session_key} (event=#{message.event_id})" }
+            @store.finish_intent(message.event_id, "failed")
+            return true
+          end
           steer_payload = message.content[7..].to_s.strip
-          receipt = @steer_center.submit(session_key, steer_payload)
+          receipt = @steer_center.submit(session_key, steer_payload,
+            steer_id: "steer-#{message.event_id}")
           Log.info { "steer submitted (event=#{message.event_id} id=#{receipt.steer_id} status=#{receipt.status} reason=#{receipt.reason})" }
+          # 提交即降级（queued：无活跃 turn/turn_mismatch/generation_mismatch）
+          # → 立即合成投递组后续批次；accepted 才等 drain（CodeRabbit PQNV）
+          if receipt.status.to_s == "queued"
+            dispatch_queued_steer(Sessions::Scheduling::SteerCenter::SteerDispatch.new(
+              receipt.steer_id, session_key, steer_payload))
+          end
           @store.finish_intent(message.event_id, "done")
           true
+        end
+
+        # queued steer 消费（M4.5-WP4）：降级清单合成入站事件重走 admission
+        # ——正常进 debounce 桶/队列组后续批次（多条按接收序成批，不丢消息）。
+        # event_id 派生自 steer_id：重放幂等（admission duplicate 不重排）。
+        private def dispatch_queued_steer(dispatch : Sessions::Scheduling::SteerCenter::SteerDispatch) : Nil
+          parts = dispatch.session_key.split(":")
+          account_id = parts[2]? || ""
+          channel_type = parts[3]? || ""
+          peer = parts[4]? || ""
+          @bus.publish(Bus::InboundMessage.new(
+            "steer-dispatch-#{dispatch.steer_id}", channel_type, account_id, peer,
+            "[steer replay] #{dispatch.payload}"
+          ))
+          Log.info { "queued steer dispatched for replay (session=#{dispatch.session_key} steer=#{dispatch.steer_id})" }
+        rescue ex
+          Log.error(exception: ex) { "queued steer dispatch failed (steer=#{dispatch.steer_id})" }
         end
 
         # steer 策略快照（SteerCenter 过期扫描/drain 判定用）：沿用调度链

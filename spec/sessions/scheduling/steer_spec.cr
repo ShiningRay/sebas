@@ -17,7 +17,7 @@ def steer_env(max_wait_ms : Int64 = 30_000)
   store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
   registry = ::Sebas::Sessions::Scheduling::TurnRegistry.new
   center = ::Sebas::Sessions::Scheduling::SteerCenter.new(store, registry,
-    -> { steer_test_policy(max_wait_ms) })
+    ->(_session : String) { steer_test_policy(max_wait_ms) })
   {store, registry, center, dir}
 end
 
@@ -46,7 +46,7 @@ module Sebas
     it "submit：steer 禁用 rejected；空 payload rejected；无活跃 turn 落库即 queued" do
       store, registry, center, _dir = steer_env
       disabled = ::Sebas::Sessions::Scheduling::SteerCenter.new(store, registry,
-        -> { ::Sebas::Sessions::Scheduling::PolicySnapshot.new(
+        ->(_session : String) { ::Sebas::Sessions::Scheduling::PolicySnapshot.new(
           "queue", 0_i64, 5000_i64, 20_i64, 65536_i64, true, "session", 8_i64, 32_i64, 1_048_576_i64,
           false, 300_i64, 16_i64, 30_000_i64) })
       session = "agent:main:acc:email:s2@example.com"
@@ -94,11 +94,17 @@ module Sebas
       pending.target_generation.should eq(lease.generation)
       store.session_steers(session, "accepted").size.should eq(1)
 
-      stale = center.submit(session, "迟到纠偏", target_turn_id: "turn:t0",
+      # 显式 turn 与活跃不一致（优先判 turn）
+      stale_turn = center.submit(session, "迟到纠偏", target_turn_id: "turn:t0",
         target_generation: lease.generation - 1)
-      stale.status.to_s.should eq("queued")
-      stale.reason.should eq("generation_mismatch")
-      store.session_steers(session, "queued").size.should eq(1)
+      stale_turn.status.to_s.should eq("queued")
+      stale_turn.reason.should eq("turn_mismatch")
+
+      # turn 一致仅 generation 旧
+      stale_gen = center.submit(session, "旧世代纠偏", target_generation: lease.generation - 1)
+      stale_gen.status.to_s.should eq("queued")
+      stale_gen.reason.should eq("generation_mismatch")
+      store.session_steers(session, "queued").size.should eq(2)
       store.close
     end
 
@@ -133,8 +139,9 @@ module Sebas
       center.submit(session, "迟到一")
       center.submit(session, "迟到二")
 
-      payloads = center.flush_to_queue(session, "turn:t3")
-      payloads.should eq(["迟到一", "迟到二"])
+      downgraded = center.flush_to_queue(session, "turn:t3")
+      downgraded.map(&.payload).should eq(["迟到一", "迟到二"])
+      downgraded.map(&.steer_id).size.should eq(2) # 带 steer_id 供合成事件幂等
       store.session_steers(session, "accepted").should be_empty
       store.session_steers(session, "queued").size.should eq(2)
       store.close
@@ -147,7 +154,7 @@ module Sebas
       registry = ::Sebas::Sessions::Scheduling::TurnRegistry.new
       clock = ::Time.utc # 对齐 store 落库时钟（created_at 取真实 now）
       center = ::Sebas::Sessions::Scheduling::SteerCenter.new(store, registry,
-        -> { steer_test_policy(max_wait_ms: 30_000) }, now: -> { clock })
+        ->(_session : String) { steer_test_policy(max_wait_ms: 30_000) }, now: -> { clock })
       session = "agent:main:acc:email:s6@example.com"
       registry.register(session, "turn:t4")
       center.submit(session, "等不及的纠偏")

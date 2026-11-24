@@ -227,7 +227,7 @@ module Sebas
         # sessions.steer（M4.5-WP4）：缺 payload 400；提交回执 queued（无活跃 turn）
         server.steer_center = ::Sebas::Sessions::Scheduling::SteerCenter.new(store,
           ::Sebas::Sessions::Scheduling::TurnRegistry.new,
-          -> { ::Sebas::Sessions::Scheduling::PolicySnapshot.new(
+          ->(_session : String) { ::Sebas::Sessions::Scheduling::PolicySnapshot.new(
             "queue", 0_i64, 5000_i64, 20_i64, 65536_i64, true, "session", 8_i64, 32_i64, 1_048_576_i64,
             true, 300_i64, 16_i64, 30_000_i64) })
         no_payload = HTTP::Client.post("#{base}/api/v1/sessions.steer?session_key=agent:main:acc:email:wp4@example.com",

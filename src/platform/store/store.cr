@@ -154,6 +154,17 @@ module Sebas
             updated_at       TEXT NOT NULL
           )
           SQL
+        # steer 查询索引（M4.5-WP4 CodeRabbit）：expire_due 100ms 轮询按
+        # status 扫描；drain/submit 按 session+status 过滤——终态行不删，
+        # 无索引则全表扫描随增长劣化（IF NOT EXISTS 对存量库生效）
+        <<-SQL,
+          CREATE INDEX IF NOT EXISTS idx_session_steers_status_created
+            ON session_steers (status, created_at)
+          SQL
+        <<-SQL,
+          CREATE INDEX IF NOT EXISTS idx_session_steers_session_status
+            ON session_steers (session_key, status, created_at)
+          SQL
         "CREATE TABLE IF NOT EXISTS sessions (" \
         "session_key     TEXT PRIMARY KEY, " \
         "agent_id        TEXT NOT NULL, " \
@@ -831,13 +842,13 @@ module Sebas
           rows = [] of SessionSteerRow
           if status
             @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
-                      "FROM session_steers WHERE session_key = ? AND status = ? ORDER BY created_at",
+                      "FROM session_steers WHERE session_key = ? AND status = ? ORDER BY created_at, rowid",
               session_key, status) do |result_set|
               result_set.each { rows << read_steer(result_set) }
             end
           else
             @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
-                      "FROM session_steers WHERE session_key = ? ORDER BY created_at", session_key) do |result_set|
+                      "FROM session_steers WHERE session_key = ? ORDER BY created_at, rowid", session_key) do |result_set|
               result_set.each { rows << read_steer(result_set) }
             end
           end
@@ -848,7 +859,7 @@ module Sebas
         def steers_with_status(status : String) : Array(SessionSteerRow)
           rows = [] of SessionSteerRow
           @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
-                    "FROM session_steers WHERE status = ? ORDER BY created_at", status) do |result_set|
+                    "FROM session_steers WHERE status = ? ORDER BY created_at, rowid", status) do |result_set|
             result_set.each { rows << read_steer(result_set) }
           end
           rows

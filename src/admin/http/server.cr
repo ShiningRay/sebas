@@ -138,6 +138,7 @@ module Sebas
 
         # busy steer 提交（M4.5-WP4）：session_key query + JSON body
         # {payload, target_turn_id?, target_generation?}；缺参 400，未装配 503
+        # ameba:disable Metrics/CyclomaticComplexity — 参数校验直译（类型错误显式 400）
         private def serve_sessions_steer(ctx : ::HTTP::Server::Context) : Nil
           center = @steer_center
           unless center
@@ -169,8 +170,21 @@ module Sebas
             ctx.response.print(%({"error": "payload is required"}))
             return
           end
-          target_turn_id = params["target_turn_id"]?.try(&.as_s?)
-          target_generation = params["target_generation"]?.try(&.as_i64?)
+          # 显式指定但类型错误 → 400（静默当未指定会错误绑定当前活跃 turn）
+          target_turn_id = params["target_turn_id"]?
+          if target_turn_id && target_turn_id.as_s?.nil?
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "target_turn_id must be a string"}))
+            return
+          end
+          target_generation = params["target_generation"]?
+          if target_generation && target_generation.as_i64?.nil?
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "target_generation must be an integer"}))
+            return
+          end
+          target_turn_id = target_turn_id.try(&.as_s?)
+          target_generation = target_generation.try(&.as_i64?)
           receipt = center.submit(session_key, payload, target_turn_id: target_turn_id,
             target_generation: target_generation)
           ctx.response.print({

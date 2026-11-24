@@ -116,13 +116,13 @@ module Sebas
           # 过期扫描与 seal 扫描同款 100ms 协程粒度
           @steer_registry = Sessions::Scheduling::TurnRegistry.new
           @steer_center = Sessions::Scheduling::SteerCenter.new(@store, @steer_registry,
-            -> { steering_policy })
+            ->(session : String) { steering_policy(session) })
           spawn(name: "sebas-steer-expire-scanner") do
             loop do
               sleep 100.milliseconds
               break if @stopping_scan.get
               begin
-                @steer_center.expire_due
+                @steer_center.expire_due.each { |dispatch| dispatch_queued_steer(dispatch) }
               rescue ex
                 Log.error(exception: ex) { "steer expire scan failed, next tick continues" }
               end
@@ -158,7 +158,7 @@ module Sebas
           Sessions::Scheduling::Recovery.recover_stale(@store)
           # steer 恢复口径（M4.5-WP4）：崩溃窗口保守降级——injected 且
           # transcript 无标记 → queued（unknown_not_injected，不伪报成功）
-          @steer_center.recover_unconfirmed
+          @steer_center.recover_unconfirmed.each { |dispatch| dispatch_queued_steer(dispatch) }
           # orchestration 装配置 initialize 尾段（恢复完成后）：组件可达即装配成立；
           # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
           # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
@@ -373,7 +373,9 @@ module Sebas
           ensure
             @steer_registry.unregister(session_key, turn_id)
             begin
-              @steer_center.flush_to_queue(session_key, turn_id)
+              @steer_center.flush_to_queue(session_key, turn_id).each do |dispatch|
+                dispatch_queued_steer(dispatch)
+              end
             rescue ex
               Log.error(exception: ex) { "steer flush failed (turn=#{turn_id})" }
             end

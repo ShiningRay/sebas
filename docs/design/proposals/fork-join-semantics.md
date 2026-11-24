@@ -358,8 +358,8 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 
 | 断言 | 锚点 |
 |---|---|
-| admin_dispatch 统一路由 + 写命令认证闸 | src/admin/ipc/server.cr:315-322 |
-| lifecycle/templates 命令分发 | src/admin/ipc/server.cr:251-333 |
+| admin_dispatch 统一路由 + 写命令认证闸 | src/admin/ipc/admin_commands.cr:88-95（#189 迁入 admin_commands） |
+| lifecycle/templates 命令分发 | src/admin/ipc/admin_commands.cr:24-86（#189 迁入 admin_commands） |
 | HTTP 路由表 | src/admin/http/server.cr:79-115 |
 | gateway 注入接线 | src/platform/cli/gateway.cr:140-145 |
 | GC 目录限定 | src/sessions/lifecycle/lifecycle.cr:139-167 |
