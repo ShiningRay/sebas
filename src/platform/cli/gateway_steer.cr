@@ -92,35 +92,63 @@ module Sebas
               next
             end
             next if blocked.includes?(session_key)
-            parts = session_key.split(":", 5) # 第五段保留完整 peer（分身 peer 含冒号）
-            head = group.first
-            event_id = head.dispatch_event_id || "steer-dispatch-#{head.steer_id}"
-            # 新组：单条 UPDATE 原子写全组标记（部分命中=并发确认过，本轮跳过）
-            unless head.dispatch_event_id
-              next unless @store.mark_steer_dispatch_group(group.map(&.steer_id), event_id)
-            end
-            content = group.map { |row| "[steer replay #{row.steer_id}] #{row.payload}" }.join("\n")
-            envelope = Sessions::Scheduling::InputEnvelope.new(
-              event_id, session_key, parts[3]? || "", parts[4]? || "", 0,
-              ::Time.utc.to_rfc3339, nil,
-              Bus::InboundMessage.new(event_id, parts[3]? || "", parts[2]? || "",
-                parts[4]? || "", content).to_json,
-              Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
-            )
-            receipt = scheduling.admit(envelope)
-            if receipt.status == "accepted" || receipt.status == "duplicate"
-              group.each do |row|
+            # 字节预算拆分（五轮 RtPy）：合成输入超 policy.max_bytes 会被
+            # admit 永拒（组固定 event_id + blocked → 永久阻塞）。标记前按
+            # 预算切子组；单条超限显式 rejected（oversized）不静默丢弃。
+            budget = Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session).max_bytes
+            subgroups = Array(Array(::Sebas::Platform::Store::Store::SessionSteerRow)).new
+            current = Array(::Sebas::Platform::Store::Store::SessionSteerRow).new
+            current_bytes = 0
+            group.each do |row|
+              row_bytes = row.payload.bytesize + 96 # marker/id/换行余量
+              if row_bytes > budget
                 @store.transition_session_steer(row.steer_id,
                   ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
-                  ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
-                  "dispatched to batch (#{receipt.status})")
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Rejected, "oversized payload")
+                Log.warn { "oversized steer rejected (session=#{session_key} steer=#{row.steer_id} bytes=#{row_bytes})" }
+                next
               end
-              Log.info { "queued steer group dispatched (session=#{session_key} count=#{group.size} admission=#{receipt.status})" }
-            else
-              # 容量满等拒绝：整组保持 queued（标记已在），下轮同 event_id 重试；
-              # blocked 防本轮同会话后项抢先进批（CodeRabbit QWvI）
-              blocked << session_key
-              Log.warn { "queued steer dispatch deferred (session=#{session_key} count=#{group.size} admission=#{receipt.status})" }
+              if current_bytes + row_bytes > budget && !current.empty?
+                subgroups << current
+                current = Array(::Sebas::Platform::Store::Store::SessionSteerRow).new
+                current_bytes = 0
+              end
+              current << row
+              current_bytes += row_bytes
+            end
+            subgroups << current unless current.empty?
+
+            subgroups.each do |sub|
+              head = sub.first
+              parts = session_key.split(":", 5) # 第五段保留完整 peer（分身 peer 含冒号）
+              event_id = head.dispatch_event_id || "steer-dispatch-#{head.steer_id}"
+              # 新组：事务内原子写全组标记（部分命中=并发确认过，本轮跳过）
+              unless head.dispatch_event_id
+                next unless @store.mark_steer_dispatch_group(sub.map(&.steer_id), event_id)
+              end
+              content = sub.map { |row| "[steer replay #{row.steer_id}] #{row.payload}" }.join("\n")
+              envelope = Sessions::Scheduling::InputEnvelope.new(
+                event_id, session_key, parts[3]? || "", parts[4]? || "", 0,
+                ::Time.utc.to_rfc3339, nil,
+                Bus::InboundMessage.new(event_id, parts[3]? || "", parts[2]? || "",
+                  parts[4]? || "", content).to_json,
+                Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
+              )
+              receipt = scheduling.admit(envelope)
+              if receipt.status == "accepted" || receipt.status == "duplicate"
+                sub.each do |row|
+                  @store.transition_session_steer(row.steer_id,
+                    ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                    ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
+                    "dispatched to batch (#{receipt.status})")
+                end
+                Log.info { "queued steer group dispatched (session=#{session_key} count=#{sub.size} admission=#{receipt.status})" }
+              else
+                # 容量满等拒绝：整组保持 queued（标记已在），下轮同 event_id 重试；
+                # blocked 防本轮同会话后项抢先进批（CodeRabbit QWvI）
+                blocked << session_key
+                Log.warn { "queued steer dispatch deferred (session=#{session_key} count=#{sub.size} admission=#{receipt.status})" }
+              end
             end
           end
         rescue ex
