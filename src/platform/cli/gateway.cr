@@ -69,6 +69,7 @@ module Sebas
         getter fork_manager : ::Sebas::Orchestration::Fork::ForkManager
         getter join_writer : ::Sebas::Orchestration::Fork::JoinWriter
         getter steer_registry : Sessions::Scheduling::TurnRegistry
+        @steer_dispatch_ready : Atomic(Bool)
         getter steer_center : Sessions::Scheduling::SteerCenter
 
         # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
@@ -117,6 +118,7 @@ module Sebas
           @steer_registry = Sessions::Scheduling::TurnRegistry.new
           @steer_center = Sessions::Scheduling::SteerCenter.new(@store, @steer_registry,
             ->(session : String) { steering_policy(session) })
+          @steer_dispatch_ready = Atomic(Bool).new(false) # 恢复重放完成后才允许派发（QWvO）
           spawn(name: "sebas-steer-expire-scanner") do
             loop do
               sleep 100.milliseconds
@@ -203,8 +205,9 @@ module Sebas
           @ipc.listen
           @http.listen
           @supervisor.start_all
-          replay_unfinished           # 崩溃恢复重放先于调度启动（同会话不出现双 turn）
-          scheduling.recover_dispatch # 持久待发批次重派（§5.2：sealed/queued 重新入队）
+          replay_unfinished               # 崩溃恢复重放先于调度启动（同会话不出现双 turn）
+          scheduling.recover_dispatch     # 持久待发批次重派（§5.2：sealed/queued 重新入队）
+          @steer_dispatch_ready.set(true) # 恢复完成后启用 queued steer 派发（QWvO）
           consume_bus
           if @config_path.empty?
             Log.info { "gateway running (data_dir=#{@data_dir}; config reload disabled: no config path)" }

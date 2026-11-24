@@ -289,38 +289,65 @@ module Sebas
         # id 派生自 steer_id，admission accepted/duplicate 都算交接完成
         # （duplicate=重试幂等不重排）；rejected（容量满）保持 queued 下轮
         # 重试；重启后扫描器接着派发 queued 行，不丢消息。
+        # queued steer 派发扫描器（M4.5-WP4 outbox，三轮 QWvD/QWvI/QWvO）：
+        # 按会话分组——同会话多条 queued 合成一个合成事件（一个批次成员 =
+        # 一个后续 turn 一次看到全部纠偏，保留各行审计身份）；容量拒绝记录
+        # blocked 会话，本轮跳过其后项（防顺序反转）；恢复重放完成前不派发
+        # （@steer_dispatch_ready，防恢复 turn 与派发 turn 并行写同一 transcript）。
+        # ameba:disable Metrics/CyclomaticComplexity — 分组派发直译（agent/归档/blocked/容量逐层闸）
         private def dispatch_due_steers : Nil
+          return unless @steer_dispatch_ready.get
+          groups = Hash(String, Array(::Sebas::Platform::Store::Store::SessionSteerRow)).new
           @store.steers_with_status("queued").each do |row|
-            agent_name = row.session_key.split(":")[1]? || ""
+            groups[row.session_key] ||= Array(::Sebas::Platform::Store::Store::SessionSteerRow).new
+            groups[row.session_key] << row # 数组序 = created_at,rowid（接收序）
+          end
+          blocked = Set(String).new
+          groups.each do |session_key, group|
+            agent_name = session_key.split(":")[1]? || ""
             agent = @config.agents[agent_name]?
             unless agent
-              @store.transition_session_steer(row.steer_id, Sessions::Scheduling::SteerStatus::Queued,
-                Sessions::Scheduling::SteerStatus::Rejected, "unknown agent for session")
+              group.each do |row|
+                @store.transition_session_steer(row.steer_id,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Rejected, "unknown agent for session")
+              end
               next
             end
-            if @lifecycle_store.archived?(row.session_key)
-              @store.transition_session_steer(row.steer_id, Sessions::Scheduling::SteerStatus::Queued,
-                Sessions::Scheduling::SteerStatus::Rejected, "archived session")
+            if @lifecycle_store.archived?(session_key)
+              group.each do |row|
+                @store.transition_session_steer(row.steer_id,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Rejected, "archived session")
+              end
               next
             end
-            parts = row.session_key.split(":")
+            next if blocked.includes?(session_key)
+            parts = session_key.split(":", 5) # 第五段保留完整 peer（分身 peer 含冒号）
+            head = group.first
+            content = group.map { |row| "[steer replay #{row.steer_id}] #{row.payload}" }.join("\n")
+            event_id = "steer-dispatch-#{head.steer_id}" # 组头派生：admission 幂等
             envelope = Sessions::Scheduling::InputEnvelope.new(
-              "steer-dispatch-#{row.steer_id}", row.session_key, parts[3]? || "",
-              parts[4]? || "", 0, ::Time.utc.to_rfc3339, nil,
-              Bus::InboundMessage.new("steer-dispatch-#{row.steer_id}", parts[3]? || "",
-                parts[2]? || "", parts[4]? || "", "[steer replay] #{row.payload}").to_json,
+              event_id, session_key, parts[3]? || "", parts[4]? || "", 0,
+              ::Time.utc.to_rfc3339, nil,
+              Bus::InboundMessage.new(event_id, parts[3]? || "", parts[2]? || "",
+                parts[4]? || "", content).to_json,
               Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
             )
             receipt = scheduling.admit(envelope)
             if receipt.status == "accepted" || receipt.status == "duplicate"
-              @store.transition_session_steer(row.steer_id,
-                ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
-                ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
-                "dispatched to batch (#{receipt.status})")
-              Log.info { "queued steer dispatched (session=#{row.session_key} steer=#{row.steer_id} admission=#{receipt.status})" }
+              group.each do |row|
+                @store.transition_session_steer(row.steer_id,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
+                  "dispatched to batch (#{receipt.status})")
+              end
+              Log.info { "queued steer group dispatched (session=#{session_key} count=#{group.size} admission=#{receipt.status})" }
             else
-              # 容量满等拒绝：保持 queued，下轮扫描重试（持久可重试不丢弃）
-              Log.warn { "queued steer dispatch deferred (steer=#{row.steer_id} admission=#{receipt.status})" }
+              # 容量满等拒绝：整组保持 queued 下轮重试；blocked 防本轮后项
+              # 抢先取得更小 seq 导致顺序反转（CodeRabbit QWvI）
+              blocked << session_key
+              Log.warn { "queued steer dispatch deferred (session=#{session_key} count=#{group.size} admission=#{receipt.status})" }
             end
           end
         rescue ex

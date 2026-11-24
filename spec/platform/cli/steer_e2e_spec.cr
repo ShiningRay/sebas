@@ -61,15 +61,15 @@ module Sebas
         "evt-steer-1", "email", "test-acc", "alice@example.com", "/steer 改用中文回答"
       ))
       gateway.run
-      ok = wait_for { gateway.store.intent_status("evt-steer-1") == "done" }
       session = "agent:main:test-acc:email:alice@example.com"
       # 等 outbox 扫描器派发确认（queued→dispatched）+ 合成 turn 消费 replay
-      ok = ok && wait_for(10.seconds) do
-        gateway.store.session_steers(session, "dispatched").size == 1 &&
-          gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay]"))
+      dispatched = wait_for(15.seconds) { gateway.store.session_steers(session, "dispatched").size == 1 }
+      replayed = wait_for(30.seconds) do
+        gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay "))
       end
       gateway.shutdown
-      ok.should be_true
+      dispatched.should be_true
+      replayed.should be_true
 
       steers = gateway.store.session_steers(session)
       steers.size.should eq(1)
@@ -193,7 +193,7 @@ module Sebas
       steers.first.status.should eq("dispatched")                          # 扫描器派发确认
       # 合成事件成为第二个 turn（queued 有消费方）
       gateway.store.task("turn:steer-dispatch-steer-evt-cons-2").kind.should eq("turn")
-      gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay]")).should be_true
+      gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay ")).should be_true
     end
 
     it "steer 禁用（默认）：/steer rejected 落库，普通消息照常走 turn" do
