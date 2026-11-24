@@ -46,6 +46,7 @@
 - commitments 与日历集成提案（[#61](https://github.com/ShiningRay/sebas/pull/61)）、M5–M7 计划（[#62](https://github.com/ShiningRay/sebas/pull/62)）。
 - M4.0-WP2 定稿吸收回写与失效引用修正（[#134](https://github.com/ShiningRay/sebas/pull/134)）、M8 渠道扩展（Slack + Telegram）提案与 WBS（[#137](https://github.com/ShiningRay/sebas/pull/137)）、
   Agent 分类与标签元数据模型提案（[#151](https://github.com/ShiningRay/sebas/pull/151)）、设计提案走 issue 治理（[#155](https://github.com/ShiningRay/sebas/pull/155)）。
+- 多任务并行开发提案定稿候选：每卡独立租约与集中合并收口，附恢复、迁移与验证续篇（[#191](https://github.com/ShiningRay/sebas/pull/191)）。
 - 流程工具验收报告（[#100](https://github.com/ShiningRay/sebas/pull/100)）、合并前门禁口径改为 `verify merge --pre`（[#119](https://github.com/ShiningRay/sebas/pull/119)）、
   LLM 语义核验可行性评估——结论不做（[#131](https://github.com/ShiningRay/sebas/pull/131)）。
 
