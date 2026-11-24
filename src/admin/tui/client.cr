@@ -26,7 +26,8 @@ module Sebas
 
         # hello 握手；caps 协商；token 随帧上行（写命令认证）
         def handshake(caps : Array(String) = IPC::CAPABILITIES) : Hash(String, JSON::Any)?
-          @io.puts(IPC::Hello.new(IPC::PROTOCOL, IPC::VERSION, caps, @token).to_frame)
+          hello = IPC::Hello.new(IPC::PROTOCOL, IPC::VERSION, caps, @token)
+          @io.puts(hello.to_frame)
           frame = read_response do |data|
             data["type"]?.try(&.as_s?) == "hello_ack"
           end
