@@ -69,7 +69,7 @@ module Sebas
       researcher = ::Sebas::Agents::Skills::Skill.new("sprint", "", "sprint body", "/x", "researcher")
       ops = ::Sebas::Agents::Skills::Skill.new("ops-card", "", "ops body", "/x", "ops")
 
-      rendered = ::Sebas::Agents::Skills.render([generic, researcher], role: "researcher")
+      rendered = ::Sebas::Agents::Skills.render([generic, researcher, ops], role: "researcher")
       rendered.should contain("generic body")
       rendered.should contain("sprint body")
       rendered.should_not contain("ops body")

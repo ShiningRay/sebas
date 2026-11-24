@@ -75,7 +75,7 @@ module Sebas
       # 角色的技能卡；role=nil 时全量注入（现状）。
       def self.render(skills : Array(Skill), role : String? = nil) : String
         return "" if skills.empty?
-        selected = role ? skills.select { |s| s.role.nil? || s.role == role } : skills
+        selected = role ? skills.select { |entry| entry.role.nil? || entry.role == role } : skills
         return "" if selected.empty?
         String.build do |output|
           output << "## Skills\n"

@@ -75,13 +75,20 @@ module Sebas
         new_dir = @root / new_id
         raise ::Sebas::Agents::RegistryError.new(
           "agent already exists: #{new_id} (#{new_dir})") if Dir.exists?(new_dir)
-        FileUtils.cp_r(template_dir, new_dir)
-        instance = get_or_create(new_id)
-        if patch = persona_patch
-          instance.memory_write("SOUL.md", instance.persona + "\n\n## Persona Patch\n\n" + patch)
-          instance.reload_persona
+        begin
+          FileUtils.cp_r(template_dir, new_dir)
+          instance = get_or_create(new_id)
+          if patch = persona_patch
+            instance.memory_write("SOUL.md", instance.persona + "\n\n## Persona Patch\n\n" + patch)
+            instance.reload_persona
+          end
+          instance
+        rescue ex
+          # 失败回滚（CodeRabbit J-Bq）：清目标目录 + 注册表，同参数重试可达
+          FileUtils.rm_rf(new_dir)
+          @mutex.synchronize { @agents.delete(new_id) }
+          raise ex
         end
-        instance
       end
 
       def get(id : String) : AgentInstance?
