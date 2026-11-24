@@ -170,6 +170,13 @@ module Sebas
           Log.error(exception: ex) { "steer dispatch scan failed, next tick continues" }
         end
 
+        # IPC steer_handler 接线（gateway 构造调用）
+        def wire_steer_handler : Nil
+          @ipc.steer_handler = ->(session_key : String, payload : String, turn_id : String?, generation : Int64?) do
+            @steer_center.submit(session_key, payload, target_turn_id: turn_id, target_generation: generation)
+          end
+        end
+
         # steer 策略快照（SteerCenter 过期扫描/drain 判定用）：沿用调度链
         # 解析口径（内置 → gateway.session → agents.<name>.session）
         private def steering_policy(session_key : String? = nil) : Sessions::Scheduling::PolicySnapshot

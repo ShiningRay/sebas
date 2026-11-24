@@ -25,6 +25,10 @@ module Sebas
           failed = [] of String
           if @store.session_batch(batch_id).nil?
             Log.error { "dispatch references missing batch #{batch_id} (session=#{session_key})" }
+          elsif session_key.split(":")[2]? == "hooks" # channel 段（五段键第 3 段）
+            # webhook 会话批次（M4.5-WP5）：hook 事件不走聊天链（无 binding），
+            # 分流到 workflow 执行（逐事件或显式批量合成 run）
+            failed = run_hooks_batch(session_key, batch_id, @store.batch_inputs(batch_id))
           else
             @store.batch_inputs(batch_id).each do |input|
               process_message(message_from_payload(input.payload), admitted_session: session_key)

@@ -18,6 +18,7 @@ module Sebas
         setter lifecycle : ::Sebas::Sessions::Lifecycle::Store?
         setter templates : ::Sebas::Agents::AgentRegistry?
         setter steer_center : ::Sebas::Sessions::Scheduling::SteerCenter?
+        setter hook_handler : (String, String, String? -> Tuple(Int32, String))?
 
         @server : ::HTTP::Server?
         @running = Atomic(Bool).new(false)
@@ -58,6 +59,31 @@ module Sebas
 
         private def route(ctx : ::HTTP::Server::Context) : Nil
           path = ctx.request.path
+          if path.starts_with?("/hooks/") && ctx.request.method == "POST"
+            # webhook 会话接入（M4.5-WP5）：管理 token 鉴权 fail-closed
+            # （hook 级 secret 验签扩展另卡）；未知 hook/缺参 fail-closed，
+            # 持久 admission 成功即 202 ACK（不阻塞队列执行）
+            unless authorized?(ctx.request)
+              ctx.response.status_code = 401
+              ctx.response.headers["WWW-Authenticate"] = "Bearer"
+              ctx.response.print(%({"error": "unauthorized"}))
+              return
+            end
+            handler = @hook_handler
+            unless handler
+              ctx.response.status_code = 503
+              ctx.response.print(%({"error": "hooks not wired"}))
+              return
+            end
+            name = path.lchop("/hooks/").split("/")[0]
+            idempotency_key = ctx.request.headers["Idempotency-Key"]?
+            body = ctx.request.body.try(&.gets_to_end) || ""
+            code, hook_body = handler.call(name, body, idempotency_key)
+            ctx.response.status_code = code
+            ctx.response.content_type = "application/json"
+            ctx.response.print(hook_body)
+            return
+          end
           if path.starts_with?("/cb/")
             dispatch_callback(ctx)
             return

@@ -27,11 +27,19 @@ module Sebas
 
       # 启动一次 workflow run：意图先落库（效应三明治第①步）→ 逐动作执行（第②步）→ 结果落库（第③步）
       # 返回 run task id。幂等：同 trigger_event_id 二次启动不重跑。
-      def start(workflow : DSL::Workflow, trigger_event_id : String) : String?
+      def start(workflow : DSL::Workflow, trigger_event_id : String,
+                batch_id : String? = nil, batch_event_ids : Array(String)? = nil) : String?
         run_id = "run:#{workflow.id}:#{trigger_event_id}"
         return unless @store.record_intent(run_id, "workflow_run", workflow.id)
         @store.finish_intent(run_id, "dispatched")
-        task = @store.create_task(run_id, "run", payload: %({"workflow": "#{workflow.id}"}))
+        # 批量模式（M4.5-WP5）：run payload 记录 batch 与全部 event IDs——
+        # batch→run→events 完整审计；逐事件模式保持原 payload
+        payload = if batch_event_ids
+                    %({"workflow": "#{workflow.id}", "batch_id": "#{batch_id}", "event_ids": #{batch_event_ids.to_json}})
+                  else
+                    %({"workflow": "#{workflow.id}"})
+                  end
+        task = @store.create_task(run_id, "run", payload: payload)
         spawn_run(task.id, workflow, trigger_event_id)
         run_id
       end

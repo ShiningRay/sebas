@@ -1,4 +1,3 @@
-require "digest/sha1"
 require "json"
 require "../../platform/bus/bus"
 require "../../platform/store/store"
@@ -51,16 +50,19 @@ module Sebas
         @mutex.synchronize { @webhook_names.includes?(name) }
       end
 
-      # 外部 webhook 唤醒（§9.2 POST /hooks/<name>；HTTP admin 调用）
-      def fire_webhook(name : String, payload : String) : Bool
+      # 外部 webhook 唤醒（§9.2 POST /hooks/<name>；HTTP admin 调用）。
+      # event_id 优先取外部 Idempotency-Key 派生值（重试幂等，M4.5-WP5）；
+      # 缺省用明确的服务端一次接收 ID——不宣称跨重试去重（原 SHA1+时间戳
+      # 每次重试生成新 id，非幂等语义移除）
+      def fire_webhook(name : String, payload : String, event_id : String? = nil) : Bool
         wf_id = nil
         @mutex.synchronize do
           next unless @webhook_names.includes?(name)
           wf_id = @engine.workflows.values.find { |workflow| workflow.trigger.type == "webhook" && workflow.trigger.source == name }.try(&.id)
         end
         return false unless wf_id
-        event_id = "webhook:#{name}:#{::Digest::SHA1.hexdigest(payload + Time.utc.to_rfc3339)}"
-        @engine.start(@engine.workflows[wf_id], event_id) != nil
+        final_event = event_id || "webhook:#{name}:recv-#{::Random::Secure.hex(8)}"
+        @engine.start(@engine.workflows[wf_id], final_event) != nil
       end
 
       # 消息/账号事件触发：bus 消费循环调用；source 与事件形状匹配（通配尾段）
