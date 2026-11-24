@@ -747,7 +747,8 @@ module Sebas
           status : String, batch_id : String?
 
         record SessionSteerRow, steer_id : String, session_key : String, target_turn_id : String,
-          target_generation : Int64, payload : String, status : String, reason : String?
+          target_generation : Int64, payload : String, status : String, reason : String?,
+          created_at : String = ""
 
         def session_batch(batch_id : String) : SessionBatchRow?
           @db.query_one?(
@@ -829,13 +830,13 @@ module Sebas
         def session_steers(session_key : String, status : String? = nil) : Array(SessionSteerRow)
           rows = [] of SessionSteerRow
           if status
-            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason " \
+            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
                       "FROM session_steers WHERE session_key = ? AND status = ? ORDER BY created_at",
               session_key, status) do |result_set|
               result_set.each { rows << read_steer(result_set) }
             end
           else
-            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason " \
+            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
                       "FROM session_steers WHERE session_key = ? ORDER BY created_at", session_key) do |result_set|
               result_set.each { rows << read_steer(result_set) }
             end
@@ -843,9 +844,20 @@ module Sebas
           rows
         end
 
+        # 跨会话按状态查（WP4：expire_due 超时扫描 / recovery unknown_not_injected 收敛）
+        def steers_with_status(status : String) : Array(SessionSteerRow)
+          rows = [] of SessionSteerRow
+          @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
+                    "FROM session_steers WHERE status = ? ORDER BY created_at", status) do |result_set|
+            result_set.each { rows << read_steer(result_set) }
+          end
+          rows
+        end
+
         private def read_steer(result_set : ::DB::ResultSet) : SessionSteerRow
           SessionSteerRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
-            result_set.read(Int64), result_set.read(String), result_set.read(String), result_set.read(String?))
+            result_set.read(Int64), result_set.read(String), result_set.read(String), result_set.read(String?),
+            result_set.read(String))
         end
 
         private def now : String

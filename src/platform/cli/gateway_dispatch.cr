@@ -242,6 +242,27 @@ module Sebas
           # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
         end
 
+        # 显式 /steer 命令（M4.5-WP4）：明确 correction 语义入口——普通
+        # 聊天正文不靠关键词/LLM 猜测纠偏意图；回执经提交状态落库。
+        # 返回 true = 已按 steer 处理（调用方直接返回）。
+        private def handle_steer_command(message : Bus::InboundMessage, session_key : String) : Bool
+          return false unless message.content.starts_with?("/steer ")
+          steer_payload = message.content[7..].to_s.strip
+          receipt = @steer_center.submit(session_key, steer_payload)
+          Log.info { "steer submitted (event=#{message.event_id} id=#{receipt.steer_id} status=#{receipt.status} reason=#{receipt.reason})" }
+          @store.finish_intent(message.event_id, "done")
+          true
+        end
+
+        # steer 策略快照（SteerCenter 过期扫描/drain 判定用）：沿用调度链
+        # 解析口径（内置 → gateway.session → agents.<name>.session）
+        private def steering_policy(session_key : String? = nil) : Sessions::Scheduling::PolicySnapshot
+          config = Config::CURRENT.get
+          agent_name = session_key.try(&.split(":")[1]?) || "main"
+          agent = config.agents[agent_name]?
+          Sessions::Scheduling::Policy.resolve_session(config.gateway.try(&.session), agent.try(&.session))
+        end
+
         # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
         private def finish_round(task_id : String?, round : Int32, text : String) : String
           @store.checkpoint(task_id, round) if task_id

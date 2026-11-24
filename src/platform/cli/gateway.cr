@@ -22,6 +22,8 @@ require "../../providers/tool_call_parser"
 require "../../sessions/scheduling/scheduler"
 require "../../sessions/scheduling/registry"
 require "../../sessions/scheduling/recovery"
+require "../../sessions/scheduling/steer"
+require "../../agents/runtime"
 require "./gateway_dispatch"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
@@ -66,6 +68,8 @@ module Sebas
         getter approvals : ::Sebas::Orchestration::Approvals::Center
         getter fork_manager : ::Sebas::Orchestration::Fork::ForkManager
         getter join_writer : ::Sebas::Orchestration::Fork::JoinWriter
+        getter steer_registry : Sessions::Scheduling::TurnRegistry
+        getter steer_center : Sessions::Scheduling::SteerCenter
 
         # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
         # pool handler ↔ scheduling registry 的循环引用
@@ -108,6 +112,22 @@ module Sebas
               end
             end
           end
+          # busy steer 中心（M4.5-WP4）：turn 注册表 + 持久化纠偏通道；
+          # 过期扫描与 seal 扫描同款 100ms 协程粒度
+          @steer_registry = Sessions::Scheduling::TurnRegistry.new
+          @steer_center = Sessions::Scheduling::SteerCenter.new(@store, @steer_registry,
+            -> { steering_policy })
+          spawn(name: "sebas-steer-expire-scanner") do
+            loop do
+              sleep 100.milliseconds
+              break if @stopping_scan.get
+              begin
+                @steer_center.expire_due
+              rescue ex
+                Log.error(exception: ex) { "steer expire scan failed, next tick continues" }
+              end
+            end
+          end
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
@@ -125,6 +145,9 @@ module Sebas
           # fork/join 用户显式触发面接线（M4.1-WP5，Q3：不动生产 agent_turn）：
           # IPC payload → Executor 执行 → 结果 JSON（回执 + expectation 终态）。
           @ipc.fork_handler = ->(payload : JSON::Any) { handle_fork_command(payload) }
+          @ipc.steer_handler = ->(session_key : String, payload : String, turn_id : String?, generation : Int64?) do
+            @steer_center.submit(session_key, payload, target_turn_id: turn_id, target_generation: generation)
+          end
           http_cfg = @config.gateway.http
           @http = Admin::HTTP::Server.new(@channels, @ipc.tap,
             http_cfg.try(&.bind) || "127.0.0.1", http_cfg.try(&.port) || 18790,
@@ -133,6 +156,9 @@ module Sebas
             &->trigger_reload)
           @store.recover!
           Sessions::Scheduling::Recovery.recover_stale(@store)
+          # steer 恢复口径（M4.5-WP4）：崩溃窗口保守降级——injected 且
+          # transcript 无标记 → queued（unknown_not_injected，不伪报成功）
+          @steer_center.recover_unconfirmed
           # orchestration 装配置 initialize 尾段（恢复完成后）：组件可达即装配成立；
           # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
           # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
@@ -143,6 +169,7 @@ module Sebas
           @ipc.template_registry = @agent_registry
           @http.lifecycle = @lifecycle_store
           @http.templates = @agent_registry
+          @http.steer_center = @steer_center
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
           @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters
@@ -274,6 +301,7 @@ module Sebas
             @store.finish_intent(message.event_id, "failed")
             return
           end
+          return if handle_steer_command(message, session_key)
           @store.append_transcript(session_key, "user", message.content)
 
           task = @store.create_task("turn:#{message.event_id}", "turn", payload: message.to_json)
@@ -297,11 +325,11 @@ module Sebas
 
         MAX_TOOL_ROUNDS = 8
 
-        # ReAct 工具循环（M4.3-WP1，Q3 裁断）：一次性 provider 调用升为
-        # 模型响应 → 工具调用解析 → 衰减工具面执行 → 结果回注 → 下一轮。
-        # 轮数上限 MAX_TOOL_ROUNDS（防无限循环）；无工具调用 = 终答（行为
-        # 与 M0 现状一致，回归口径）。checkpoint 复用 task phase：每轮结果
-        # 持久化（transcript tool 行）后 checkpoint(round)。
+        # ReAct 工具循环（M4.3-WP1）+ busy steer（M4.5-WP4）：循环本体在
+        # AgentRuntime（provider/tool 循环 + TurnContext）；本方法只负责
+        # 依赖组装与 turn 生命周期——注册 lease（generation 权威发放）→
+        # runtime.run（drain 回调注 steer）→ finally 注销 + 未注入 pending
+        # 转 queued 后续批次（验收：turn 结束不丢消息）。
         private def agent_turn(agent_name : String, agent : Config::AgentConfig,
                                session_key : String, task_id : String? = nil,
                                event_id : String = "") : String
@@ -331,35 +359,25 @@ module Sebas
           system_text += "\n\n" + ::Sebas::Agents::Reception.referral_prompt if front_desk
           messages = [Providers::Message.new("system", system_text)] + history
 
-          (1..MAX_TOOL_ROUNDS).each do |round|
-            completion = provider.complete(messages)
-            unless completion.ok?
-              Log.error { "provider error: #{completion.error}" }
-              return "(provider error: #{completion.error})"
-            end
-            call = Providers::ToolCallParser.parse(completion.text)
-            return finish_round(task_id, round, completion.text) if call.nil?
-
-            # 工具调用轮：执行（衰减面）→ 结果持久化 + 回注 → checkpoint → 下一轮。
-            # 每次调用独立幂等标识：入站事件 + 轮次（重放同事件同轮复用同标识）。
-            messages += [Providers::Message.new("assistant", completion.text)]
-            # 对话上下文人工在场（unattended=false）：L3 审批走 pending 等人
-            # 工，approvals 装配使 fork 的 L3 门可达（M4.2-WP3 fail-closed）。
-            round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store,
-              nil, @approvals, false, "deny")
-            result = executor.run(call.tool, call.args, round_ctx)
-            outcome = result.ok? ? result.output : "error: #{result.error}"
-            Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }
-            # 工具结果持久化到 transcript（role=tool）——checkpoint 语义 =
-            # 「本轮结果已落库」，崩溃重放经 history 重建消息上下文
-            @store.append_transcript(session_key, "tool", "#{call.tool}: #{outcome}")
-            messages << Providers::Message.new("user", "tool result (#{call.tool}): #{outcome}")
-            @store.checkpoint(task_id, round) if task_id
+          # steer drain 回调（M4.5-WP4）：固定顺序「工具结果落库 → drain →
+          # 下一次模型调用」的轮边界唯一注入点
+          drain = ->(session : String, turn_id : String, generation : Int64) do
+            @steer_center.drain(session, turn_id, generation)
           end
-          # 轮数上限：不再解析工具调用，要求模型给终答
-          final = provider.complete(messages + [Providers::Message.new("user",
-            "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")])
-          final.ok? ? final.text : "(provider error: #{final.error})"
+          runtime = Agents::AgentRuntime.new(@store, @approvals, drain)
+          turn_id = "turn:#{event_id}"
+          lease = @steer_registry.register(session_key, turn_id)
+          turn_ctx = Agents::TurnContext.new(session_key, lease.turn_id, lease.generation)
+          begin
+            runtime.run(session_key, turn_ctx, provider, executor, messages, task_id, event_id)
+          ensure
+            @steer_registry.unregister(session_key, turn_id)
+            begin
+              @steer_center.flush_to_queue(session_key, turn_id)
+            rescue ex
+              Log.error(exception: ex) { "steer flush failed (turn=#{turn_id})" }
+            end
+          end
         end
 
         private def build_pool : Agents::Pool

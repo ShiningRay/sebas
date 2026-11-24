@@ -207,7 +207,7 @@ module Sebas
             io.puts(authenticated_response(io, frame) { fork_join_response(frame) })
           when "approvals.approve", "approvals.deny", "approvals.pending",
                "sessions.dormant", "sessions.archive", "sessions.gc", "sessions.lifecycle",
-               "templates.clone", "templates.list"
+               "sessions.steer", "templates.clone", "templates.list"
             io.puts(admin_dispatch(io, frame))
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
@@ -324,11 +324,33 @@ module Sebas
           case frame_type
           when .starts_with?("approvals.")
             approvals_dispatch(io, frame)
+          when "sessions.steer"
+            steer_dispatch(frame)
           when .starts_with?("sessions.")
             lifecycle_dispatch(frame)
           else # templates.*
             templates_dispatch(frame)
           end
+        end
+
+        # busy steer 提交（M4.5-WP4）：明确 correction 语义入口——handler 由
+        # gateway 注入 SteerCenter.submit；payload 字段名 steer（纠偏正文）
+        private def steer_dispatch(frame : Frame) : String
+          handler = @steer_handler
+          return error_response(frame.id, "sessions.steer not available: steer 中心未装配") unless handler
+          session_key = frame.field("session_key").try(&.as_s?)
+          payload = frame.field("payload").try(&.as_s?)
+          return error_response(frame.id, "session_key and payload are required") unless session_key && payload
+          target_turn_id = frame.field("target_turn_id").try(&.as_s?)
+          target_generation = frame.field("target_generation").try(&.as_i64?)
+          receipt = handler.call(session_key, payload, target_turn_id, target_generation)
+          ok_response(frame.id, {
+            "steer_id"   => JSON::Any.new(receipt.steer_id),
+            "status"     => JSON::Any.new(receipt.status.to_s),
+            "reason"     => JSON::Any.new(receipt.reason || ""),
+            "turn_id"    => JSON::Any.new(receipt.target_turn_id),
+            "generation" => JSON::Any.new(receipt.target_generation),
+          })
         end
 
         # approvals 命令路由：approve/deny 是写操作（与 fork/join 同级认证，
@@ -391,6 +413,8 @@ module Sebas
         def fork_handler=(handler : JSON::Any -> JSON::Any) : Nil
           @fork_handler = handler
         end
+
+        setter steer_handler : (String, String, String?, Int64? -> ::Sebas::Sessions::Scheduling::SteerReceipt)?
 
         # 审批装配接线（M4.2-WP3）：approvals.approve/deny/pending 命令的处理体。
         setter approvals_center

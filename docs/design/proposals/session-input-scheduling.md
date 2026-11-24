@@ -152,6 +152,15 @@ seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0
 - 转 queued 时普通队列容量满：steer 保留在独立的持久 steer 重试状态中（不静默丢弃、不挤占普通批次），容量可用后按原接收序转为后续批次；重试状态持久化亦超限时按结构化错误显式回执 rejected/expired 并通知，不做静默覆盖。
 - 压缩/session reset 等世代变化必须使旧 steer 失效转 queue，不能注入新世代；首版只 steer 父 turn；外部 webhook 默认 queue/debounce。
 
+**实现注记（M4.5-WP4 #6，实现与本文的等价/偏差口径）**：
+
+- generation 权威发放：`TurnRegistry`（进程内 Mutex，session 单调递增，`TurnRegistry#register` 每注册新 turn +1）；`TurnLease` 防迟到结束覆盖新 lease。压缩/reset 的显式功能未建，generation 递增即其最小等价物。
+- `steer.debounce_ms` 聚合以「同轮 drain 按接收序（ORDER BY created_at）注入为一批 user 消息」等价实现——多条 pending 同一工具边界成批可见，不再单独建聚合窗口。
+- 循环本体抽为 `Agents::AgentRuntime`（provider/tool 循环 + `TurnContext`），固定顺序：模型响应 → 工具调用 → 工具结果落库 → drain steer → 下一次模型调用；无工具边界（单轮直答）无 drain 点，turn 结束 `flush_to_queue` 收口转 queued。
+- 崩溃窗口保守口径：drain = CAS accepted→injected → transcript 落 `[steer <id> turn= gen=]` 标记行 → 注入；重启 `recover_unconfirmed` 扫 injected 无标记行转 queued（`unknown_not_injected`），accepted 未注入行转 queued（`recovery_no_active_turn`，§5.2）。
+- `steer.max_pending_messages` 堆积上限：submit 判级超限显式回执 rejected（`pending limit exceeded`），不静默覆盖；§4.4 的「独立 steer 重试状态」未单独建（容量不足走 rejected 显式回执，恢复由 re-submit 承担）——偏差记录如上，若后续需要独立重试态另立变更。
+- 入口：管理面 `sessions.steer`（IPC 写认证 / HTTP POST /api/v1/sessions.steer，统一 Bearer token）+ 显式 `/steer` 聊天命令；普通聊天正文不猜纠偏意图。
+
 ### 4.5 控制通道
 
 - `/stop`、审批 approve/deny、安全撤销、授权与 reset 不进入普通 batch，不等待 idle/max wait；需独立权限校验、目标 generation 和审计。
