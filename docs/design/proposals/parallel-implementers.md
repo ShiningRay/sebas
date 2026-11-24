@@ -253,18 +253,18 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 
 ```
 取队首（按进入 merge_ready 的先后）
-→ 归属校验：PR 仍 open，租约与 PR 归属一致，head 与核验时一致
+→ 归属校验：PR 仍 open，租约与 PR 归属一致
 → verify merge <pr> <issue> --pre，退出码 0
 → Verifier 核验与终验（独立进程），结论为「通过」
 → BEHIND 则 update-branch，等 CI 与 verify.yml 重跑
 → head 因此改变时：§7.5 未获裁决，或无法证明只多了同步提交，就回到核验一步重做
-→ squash 合并：带 --match-head-commit 绑定已核验的 head，head 已变则拒绝合并，回到归属校验
+→ squash 合并：带 --match-head-commit 绑定已核验的 head；head 已变则 GitHub 拒绝合并，回到 verify merge --pre 重做核验
 → 远端复核 MERGED
 → 等 main 上该合并提交的 CI 成功，Evidence 升级为 merged_into_main=true
 → unclaim，租约置为 released，下一张
 ```
 
-归属校验与合并之间有时间差。核验通过之后、合并之前，PR 若又收到提交，照旧合并就是把没核验过的提交合进去。`gh pr merge --match-head-commit` 让 GitHub 在 head 不等于给定提交时拒绝合并，这是合并步骤唯一依赖的原子绑定。
+归属校验与合并之间有时间差。核验通过之后、合并之前，PR 若又收到提交，照旧合并就是把没核验过的提交合进去。`gh pr merge --match-head-commit` 让 GitHub 在 head 不等于给定提交时拒绝合并。被拒之后一律重做核验与终验，再用新的 head 绑定，不拿旧结论去套新提交。
 
 链上有三处事实决定它必须这么长：
 
