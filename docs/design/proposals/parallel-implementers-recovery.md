@@ -45,7 +45,7 @@
 | F9 | 同一张卡有两份有效凭据 | 扫到两条 `state` 不是 `released` 的租约 | `invalid_plan`，全仓停止认领 | 新增；只有 Q1 选 A 或 B 时检得出 |
 | F10 | PR 已建，记录未回填 | 快照里 PR 关联本卡，分支等于租约分支 | 回填 `pr`，续做 | 细化：现在按 `closing_issues` 推断，不比对分支 |
 | F11 | 别的 PR 关联了本卡 | PR 分支不等于租约分支，或 PR 关联多张卡 | 不是本 worker 所建，`invalid_plan` | 细化：「关联多张卡」文档已要求，代码未见判定 |
-| F12 | PR 已合并，unclaim 中途失败 | PR 已合并，issue completed，Evidence 已是 `merged_into_main: true` | 重跑 `unclaim`。标签已移除时按已释放收尾并补写记录 | 细化：现在这种情形返回 `refused`，要改成幂等；另要求 Evidence 已升级 |
+| F12 | PR 已合并，unclaim 中途失败 | PR 已合并，issue completed，Evidence 已是 `merged_into_main: true` | 重跑 `unclaim`。标签已移除时：先核对 GitHub 侧凭据的 `state`，不是 `released` 就先改为 `released`，核对不了则 `invalid_plan`；确认后按已释放收尾并补写记录 | 细化：现在这种情形返回 `refused`，要改成幂等；另要求 Evidence 已升级、凭据已释放 |
 | F13 | 合并后 main 上的 CI 被下一次合并取消 | 合并提交的 CI 结论为 `cancelled`，Evidence 仍是 `merged_into_main: false` | 重跑被取消的那次 CI run：成功后升级自动触发，或 dispatch 补登记。重跑仍失败就转人工手工登记 | 新增 |
 | F14 | worker 越界写 | PR 的变更文件不在租约 `scope` 内 | 本租约转 `needs_human`，停止新认领 | 新增 |
 | F15 | coordinator 在合并步骤中途崩溃 | 记录 `merging` | 重读远端。已合并：Evidence 未升级就先续等 main CI 成功与升级，必要时按 F13 补救，升级后才走 F12。仍 open：从归属校验与 `verify merge --pre` 重来。读不到：`invalid_plan` | 新增 |
@@ -110,6 +110,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 10. 迁移：v1 记录、schema 不是 2 的记录、迁移期容量恒为 1。
 11. 租约评论：评论已发出而评论 id 未落盘时崩溃，恢复按 `lease_id` 复用既有评论，不重发。
 12. 合并后崩溃：恢复不得跳过 main CI 成功与 Evidence 升级直接释放租约。
+13. 合并绑定：head 与已核验的提交不一致时合并被拒，流程回到归属校验。标签已删而凭据未释放时，F12 先释放凭据再补写记录。
 
 ### 8.2 故障注入
 
