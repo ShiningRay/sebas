@@ -4,7 +4,7 @@ module SebasAgents
   module Policy
     # 依赖判定：WP「依赖」字段为权威（此处体现在 Automation.depends_on 与原生 blocked_by 的一致性核对）。
     module Dependencies
-      KINDS = %w[work_package tracking manual].freeze
+      KINDS = %w[work_package tracking manual design].freeze
       ARRAY_FIELDS = %w[depends_on external].freeze
 
       module_function
