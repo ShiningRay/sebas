@@ -48,7 +48,7 @@
 | F12 | PR 已合并，unclaim 中途失败 | PR 已合并，issue completed，Evidence 已是 `merged_into_main: true` | 重跑 `unclaim`。标签已移除时按已释放收尾并补写记录。Q1 选 A 或 B 时，收尾前先核对 GitHub 侧凭据的 `state`，不是 `released` 就先改为 `released`，核对不了则 `invalid_plan`；选 C 时没有凭据可核对 | 细化：现在这种情形返回 `refused`，要改成幂等；另要求 Evidence 已升级，选 A 或 B 时还要求凭据已释放 |
 | F13 | 合并后 main 上的 CI 被下一次合并取消 | 合并提交的 CI 结论为 `cancelled`，Evidence 仍是 `merged_into_main: false` | 重跑被取消的那次 CI run：成功后升级自动触发，或 dispatch 补登记。重跑仍失败就转人工手工登记 | 新增 |
 | F14 | worker 越界写 | PR 的变更文件不在租约 `scope` 内 | 本租约转 `needs_human`，停止新认领 | 新增 |
-| F15 | coordinator 在合并步骤中途崩溃 | 记录 `merging` | 重读远端。已合并：Evidence 未升级就先续等 main CI 成功与升级，必要时按 F13 补救，升级后才走 F12。仍 open：从归属校验与 `verify merge --pre` 重来。读不到：`invalid_plan` | 新增 |
+| F15 | coordinator 在合并步骤中途崩溃 | 记录 `merging` | 重读远端。已合并：目标分支不是 `main` 就转人工；Evidence 未升级就先续等 main CI 成功与升级，必要时按 F13 补救，升级后才走 F12。仍 open：从归属校验与 `verify merge --pre` 重来。读不到：`invalid_plan` | 新增 |
 
 F13 是从 [ci.yml](../../../.github/workflows/ci.yml) 的 `cancel-in-progress: true` 与 [evidence-register.yml](../../../.github/workflows/evidence-register.yml) 的成功条件推出来的。
 登记脚本的 `resolve_checks_url` 只认 merge commit 自己的成功 CI run，所以 dispatch 不能代替重跑。处置栏里的补偿路径还没有实测。
@@ -111,6 +111,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 11. 租约评论：评论已发出而评论 id 未落盘时崩溃，恢复按 `lease_id` 复用既有评论，不重发。
 12. 合并后崩溃：恢复不得跳过 main CI 成功与 Evidence 升级直接释放租约。
 13. 合并绑定：head 与已核验的提交不一致时合并被拒，流程重做核验后用新的 head 绑定。Q1 选 A 或 B 时，标签已删而凭据未释放的 F12 先释放凭据再补写记录；选 C 时不因缺凭据而 `invalid_plan`。
+14. 目标分支：核验后被改到非 `main` 的 PR，合并前的复核拒绝执行；已合并到非 `main` 的卡停下并转人工；等待 main CI 与 Evidence 升级超时后转人工。
 
 ### 8.2 故障注入
 

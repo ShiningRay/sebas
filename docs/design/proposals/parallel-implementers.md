@@ -108,7 +108,7 @@ ruby tools/sebas-process plan --capacity 2   # 只读：不写 GitHub，也不�
 |---|---|---|
 | 记录 `phase=aborted` | `invalid_plan`；`label_written=true` 时需人工核对远端 | 无 |
 | 记录与远端认领不是同一张卡 | `invalid_plan` | 无 |
-| PR 的分支不是租约分支，或 PR 关联多张卡 | `invalid_plan` | 分支比对是新增；「关联多张卡」implementer-loop.md §3.1 已要求，`policy/selection.rb` 未见对应判定 |
+| PR 的分支不是租约分支、目标分支不是 `main`，或 PR 关联多张卡 | `invalid_plan` | 两项都是新增；「关联多张卡」implementer-loop.md §3.1 已要求，`policy/selection.rb` 未见对应判定 |
 | 本卡带 `needs:human` 与 `agent:resume` | `resume_issue`：核验说明后移除两标签 | 无 |
 | 本卡带 `needs:human` | `needs_human`，只作用于本卡 | 不再阻塞其他租约 |
 | 无 PR，记录与远端认领一致 | `resume_issue`，沿用原 worktree | 无 |
@@ -253,18 +253,20 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 
 ```
 取队首（按进入 merge_ready 的先后）
-→ 归属校验：PR 仍 open，租约与 PR 归属一致
+→ 归属校验：PR 仍 open，目标分支是 main，租约与 PR 归属一致
 → verify merge <pr> <issue> --pre，退出码 0
 → Verifier 核验与终验（独立进程），结论为「通过」
 → BEHIND 则 update-branch，等 CI 与 verify.yml 重跑
 → head 因此改变时：§7.5 未获裁决，或无法证明只多了同步提交，就回到核验一步重做
-→ squash 合并：带 --match-head-commit 绑定已核验的 head；head 已变则 GitHub 拒绝合并，回到 verify merge --pre 重做核验
-→ 远端复核 MERGED
-→ 等 main 上该合并提交的 CI 成功，Evidence 升级为 merged_into_main=true
+→ 合并前再读一次目标分支，仍是 main 才 squash 合并：带 --match-head-commit 绑定已核验的 head；head 已变则 GitHub 拒绝合并，回到 verify merge --pre 重做核验
+→ 远端复核已合并且目标分支仍是 main；不是就停下这张卡，转人工
+→ 等 main 上该合并提交的 CI 成功与 Evidence 升级为 merged_into_main=true；等待设超时，超时转人工
 → unclaim，租约置为 released，下一张
 ```
 
 归属校验与合并之间有时间差。核验通过之后、合并之前，PR 若又收到提交，照旧合并就是把没核验过的提交合进去。`gh pr merge --match-head-commit` 让 GitHub 在 head 不等于给定提交时拒绝合并。被拒之后一律重做核验与终验，再用新的 head 绑定，不拿旧结论去套新提交。
+
+head 绑定管不到目标分支。`gh pr merge` 没有绑定 base 的参数，核验之后有人把 PR 的基础分支改到别处，head 不变也会照合，合进去的分支不触发 main 上的 CI，等待就没有尽头。所以归属校验、合并前、合并后各读一次目标分支；这只能缩小窗口，关不掉它。
 
 链上有三处事实决定它必须这么长：
 
