@@ -19,15 +19,15 @@ module Sebas
           when {"POST", "/api/v1/config.scheduling.validate"}
             code, params = body_params_with_code(ctx)
             scheduling_admin_call(ctx, "config.scheduling.validate", params, gate: code == 200)
-            code == 200
+            true # 已响应（含 413/400 拒绝），不再落 route_api
           when {"POST", "/api/v1/config.scheduling.update"}
             code, params = body_params_with_code(ctx)
             scheduling_admin_call(ctx, "config.scheduling.update", params, gate: code == 200)
-            code == 200
+            true # 已响应（含 413/400 拒绝），不再落 route_api
           when {"POST", "/api/v1/config.scheduling.reset"}
             code, params = body_params_with_code(ctx)
             scheduling_admin_call(ctx, "config.scheduling.reset", params, gate: code == 200)
-            code == 200
+            true # 已响应（含 413/400 拒绝），不再落 route_api
           when {"GET", "/api/v1/sessions.queue.get"}
             scheduling_admin_call(ctx, "sessions.queue.get", query_params_json(ctx))
             true
