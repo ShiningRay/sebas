@@ -34,6 +34,7 @@ module Sebas
       # 为基线后新增列，ALTER TABLE 幂等补列（duplicate column 静默忽略，见 initialize）
       MIGRATIONS = [
         "ALTER TABLE expectations ADD COLUMN members_final INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE session_steers ADD COLUMN dispatch_event_id TEXT",
       ]
 
       # 逐条执行（crystal-sqlite3 prepared statement 一次只接受一条语句）
@@ -150,6 +151,7 @@ module Sebas
             payload          TEXT NOT NULL,
             status           TEXT NOT NULL DEFAULT 'accepted',
             reason           TEXT,
+            dispatch_event_id TEXT,
             created_at       TEXT NOT NULL,
             updated_at       TEXT NOT NULL
           )
@@ -759,7 +761,7 @@ module Sebas
 
         record SessionSteerRow, steer_id : String, session_key : String, target_turn_id : String,
           target_generation : Int64, payload : String, status : String, reason : String?,
-          created_at : String = ""
+          created_at : String = "", dispatch_event_id : String? = nil
 
         def session_batch(batch_id : String) : SessionBatchRow?
           @db.query_one?(
@@ -841,13 +843,13 @@ module Sebas
         def session_steers(session_key : String, status : String? = nil) : Array(SessionSteerRow)
           rows = [] of SessionSteerRow
           if status
-            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
+            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at, dispatch_event_id " \
                       "FROM session_steers WHERE session_key = ? AND status = ? ORDER BY created_at, rowid",
               session_key, status) do |result_set|
               result_set.each { rows << read_steer(result_set) }
             end
           else
-            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
+            @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at, dispatch_event_id " \
                       "FROM session_steers WHERE session_key = ? ORDER BY created_at, rowid", session_key) do |result_set|
               result_set.each { rows << read_steer(result_set) }
             end
@@ -855,10 +857,30 @@ module Sebas
           rows
         end
 
+        # 组派发标记（M4.5-WP4 四轮 RB-Q）：单条 UPDATE 原子写组内全部行——
+        # 崩溃后恢复按 dispatch_event_id 找回原组沿用原 event_id（admission
+        # duplicate 幂等），不按剩余成员重算组头防重复派发。部分命中（并发
+        # 确认）返回 false 跳过本轮。
+        def mark_steer_dispatch_group(steer_ids : Array(String), event_id : String) : Bool
+          # 事务内逐行 UPDATE（IN 数组绑定 statement 不支持）；任一行非
+          # queued 即 return false → 事务回滚，组标记原子生效
+          @db.transaction do |tx|
+            steer_ids.each do |id|
+              rows = tx.connection.exec(
+                "UPDATE session_steers SET dispatch_event_id = ?, updated_at = ? " \
+                "WHERE steer_id = ? AND status = 'queued'",
+                event_id, now, id
+              ).rows_affected
+              return false unless rows == 1
+            end
+          end
+          true
+        end
+
         # 跨会话按状态查（WP4：expire_due 超时扫描 / recovery unknown_not_injected 收敛）
         def steers_with_status(status : String) : Array(SessionSteerRow)
           rows = [] of SessionSteerRow
-          @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at " \
+          @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at, dispatch_event_id " \
                     "FROM session_steers WHERE status = ? ORDER BY created_at, rowid", status) do |result_set|
             result_set.each { rows << read_steer(result_set) }
           end
@@ -868,7 +890,7 @@ module Sebas
         private def read_steer(result_set : ::DB::ResultSet) : SessionSteerRow
           SessionSteerRow.new(result_set.read(String), result_set.read(String), result_set.read(String),
             result_set.read(Int64), result_set.read(String), result_set.read(String), result_set.read(String?),
-            result_set.read(String))
+            result_set.read(String), result_set.read(String?))
         end
 
         private def now : String

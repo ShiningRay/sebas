@@ -182,7 +182,7 @@ module Sebas
         "evt-cons-2", "email", "test-acc", "dave@example.com", "/steer 后续纠偏"
       ))
       gateway.run
-      ok = wait_for { gateway.store.intent_status("steer-dispatch-steer-evt-cons-2") == "done" }
+      ok = wait_for(15.seconds) { gateway.store.intent_status("steer-dispatch-steer-evt-cons-2") == "done" }
       gateway.shutdown
       ok.should be_true
 

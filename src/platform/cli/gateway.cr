@@ -25,6 +25,7 @@ require "../../sessions/scheduling/recovery"
 require "../../sessions/scheduling/steer"
 require "../../agents/runtime"
 require "./gateway_dispatch"
+require "./gateway_steer"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
@@ -47,6 +48,7 @@ module Sebas
     module CLI
       class Gateway
         include GatewayDispatch
+        include GatewaySteer
         include GatewaySecrets
 
         Log = Sebas::Log.for("sebas.gateway")
