@@ -92,6 +92,20 @@ module Sebas
               next
             end
             next if blocked.includes?(session_key)
+            # 已标记组（历史 E）先查原事件是否已入批：已入批按原输入恢复
+            # 确认——必须在预算拒绝等状态修改**之前**（否则崩溃窗口 + policy
+            # 调小会让超限行先 rejected，queued→dispatched CAS 无路可走，
+            # CodeRabbit 七轮）；未入批组才执行预算校验与重拆。
+            marked_event = group.first.dispatch_event_id
+            if marked_event && @store.session_input?(marked_event)
+              group.each do |row|
+                @store.transition_session_steer(row.steer_id,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                  ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
+                  "recovered confirm (input exists: #{marked_event})")
+              end
+              next
+            end
             # 字节预算拆分（五轮 RtPy）：合成输入超 policy.max_bytes 会被
             # admit 永拒（组固定 event_id + blocked → 永久阻塞）。标记前按
             # 预算切子组；单条超限显式 rejected（oversized）不静默丢弃。
@@ -118,33 +132,14 @@ module Sebas
             end
             subgroups << current unless current.empty?
 
-            # 已标记组（历史 E）先查原事件是否已入批：已入批按原输入恢复
-            # 确认（不重发，CodeRabbit SM7E 后半）；未入批才重拆子组新 id
-            marked_event = group.first.dispatch_event_id
-            if marked_event && @store.session_input?(marked_event)
-              group.each do |row|
-                @store.transition_session_steer(row.steer_id,
-                  ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
-                  ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
-                  "recovered confirm (input exists: #{marked_event})")
-              end
-              next
-            end
             subgroups.each do |sub|
               head = sub.first
               parts = session_key.split(":", 5) # 第五段保留完整 peer（分身 peer 含冒号）
-              # 重拆子组（原标记组）用新独立 id：head.steer_id 唯一 + 序号防撞
-              # 原组头同 id；mark 覆盖行标记为子组新 id（恢复按新 id 幂等）
-              event_id = if marked_event
-                           "steer-dispatch-#{head.steer_id}-r#{subgroups.index(sub)}"
-                         else
-                           head.dispatch_event_id || "steer-dispatch-#{head.steer_id}"
-                         end
-              # 新组：事务内原子写全组标记（部分命中=并发确认过，本轮跳过）
-              is_new_group = !head.dispatch_event_id || !marked_event.nil?
-              if is_new_group && !@store.mark_steer_dispatch_group(sub.map(&.steer_id), event_id)
-                next
-              end
+              # 未入批已标记组重拆：子组用新独立 id（head.steer_id 唯一，
+              # mark 覆盖旧标记为子组新 id，恢复按新 id 幂等）
+              event_id = marked_event ? "steer-dispatch-#{head.steer_id}-r#{subgroups.index(sub)}" : "steer-dispatch-#{head.steer_id}"
+              # 事务内原子写全组标记（部分命中=并发确认过，本轮跳过）
+              next unless @store.mark_steer_dispatch_group(sub.map(&.steer_id), event_id)
               content = sub.map { |row| "[steer replay #{row.steer_id}] #{row.payload}" }.join("\n")
               envelope = Sessions::Scheduling::InputEnvelope.new(
                 event_id, session_key, parts[3]? || "", parts[4]? || "", 0,
