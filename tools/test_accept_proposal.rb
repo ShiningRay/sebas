@@ -325,4 +325,42 @@ class AcceptProposalTest < Minitest::Test
       assert_empty calls.select { |kind,| kind == :gh }
     end
   end
+
+  def retry_evidence_handler(issue, evidence)
+    lambda do |*args|
+      case args
+      in ["api", "user"]
+        {"login" => "ShiningRay"}
+      in ["api", "repos/o/r/issues/8"]
+        issue
+      in ["api", "repos/o/r/issues/comments/123"]
+        {"user" => {"login" => evidence["author"]}, "body" => evidence["body"], "issue_url" => evidence["parent"]}
+      else
+        raise "unexpected json call: #{args.inspect}"
+      end
+    end
+  end
+
+  def test_retry_rejects_non_maintainer_evidence_before_writing
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    issue = sample_issue(url).merge("labels" => [{"name" => "proposal"}, {"name" => "proposal:accepted-design"}])
+    evidence = sample_evidence(author: "someone", url: url)
+    with_github_stubs(json_handler: retry_evidence_handler(issue, evidence)) do |calls|
+      err = assert_raises(AcceptProposal::Failure) { AcceptProposal.apply(8, "x", repo: "o/r") }
+      assert_includes err.message, "Maintainer"
+      assert_empty calls.select { |kind,| kind == :gh }
+    end
+  end
+
+  def test_retry_rejects_missing_verdict_marker_before_writing
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    issue = sample_issue(url).merge("labels" => [{"name" => "proposal"}, {"name" => "proposal:accepted-design"}])
+    evidence = sample_evidence(url: url)
+    evidence["body"] = "没有裁决标记"
+    with_github_stubs(json_handler: retry_evidence_handler(issue, evidence)) do |calls|
+      err = assert_raises(AcceptProposal::Failure) { AcceptProposal.apply(8, "x", repo: "o/r") }
+      assert_includes err.message, "proposal-verdict"
+      assert_empty calls.select { |kind,| kind == :gh }
+    end
+  end
 end
