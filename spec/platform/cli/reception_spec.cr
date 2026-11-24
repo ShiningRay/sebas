@@ -107,16 +107,22 @@ module Sebas
           - { channel: email, account: test-acc, peer: "known@example.com", agent: main }
         YAML
       )
-      gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |agent, _key|
-        ::Sebas::Providers::FakeProvider.new(agent.model, ["should not run"])
+      provider_ran = false
+      gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |_agent, _key|
+        provider_ran = true
+        ::Sebas::Providers::FakeProvider.new("fake", ["should not run"])
       end
+      gateway.bus.publish(::Sebas::Platform::Bus::InboundMessage.new(
+        "evt-recept-none", "email", "test-acc", "stranger@example.com", "hello?"
+      ))
       gateway.run
       sleep 500.milliseconds
       gateway.shutdown
-      # 无前台配置：匿名消息被丢弃（无前台会话、无 intent）
-      ::Sebas::Agents::Reception.session_key_for("email", "test-acc", "stranger@example.com")
+      # 无前台配置：匿名消息被丢弃（无前台会话、无 intent、provider 未执行）
       front_session = "agent:reception:test-acc:email:stranger@example.com"
       gateway.store.transcripts(front_session).should be_empty
+      gateway.store.intent_status("evt-recept-none").should be_nil
+      provider_ran.should be_false
     end
   end
 end

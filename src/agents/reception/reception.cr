@@ -14,8 +14,11 @@ module Sebas
     module Reception
       FRONT_DESK_AGENT = "reception"
 
-      # 前台默认档 = 只读 + 转介建议（无任何写副作用工具）
-      READ_ONLY_TOOLS = %w[memory.search session.read]
+      # 前台默认档 = 当前会话只读 + 转介建议（无任何写副作用工具）。
+      # 不含 memory.search（CWE-862，CodeRabbit）：全局记忆检索无 agent/
+      # account/session 范围过滤——匿名会话可借此读取非公开记忆。带明确
+      # 公开数据范围的接待检索工具留后续卡。
+      READ_ONLY_TOOLS = %w[session.read]
 
       # 无 binding 消息的前台会话键：匿名/临时包装（peer 保留原始发件人
       # 便于转介）；结构与其余五段键一致（M4.4 sessions 表可按前缀识别）。
