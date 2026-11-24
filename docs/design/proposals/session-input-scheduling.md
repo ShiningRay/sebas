@@ -168,6 +168,14 @@ seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0
 - `/flush` 只 seal 当前发送者/来源有权限操作的 collecting batch，不越过队列优先权。
 - 本期只提供 stop 的独立控制路径；redirect/cancel 工具语义不借 steer 名义隐式实现。
 
+### 4.5.1 实现注记（M4.5-WP5 #7）
+
+- **入口**：`POST /hooks/<name>`（HTTP admin 同端口）——hooks 入口独立强制管理 token（不随 gateway.http.auth 放宽，CWE-306 fail-closed）；请求体限读 1 MiB（413）。Idempotency-Key 派生 event_id（`webhook:<name>:<key>`，同 key 重试 admission duplicate 不重复入批）；缺省用服务端一次接收 ID（`recv-<hex>`），不宣称跨重试去重。原 `SHA1(payload+时间戳)` 非幂等语义移除。
+- **会话路由**：同一 hook 复用会话 `agent:main:hooks:webhook:<name>`（peer 段 = hook 名），不同 hook 不串会话；webhook source 含 `:` 装载时跳过（event_id 分隔歧义）。
+- **批量策略**：hook 事件全部走持久 admission（snapshot = `Policy.resolve_workflow(workflow.batch)`）——确定性 workflow 默认逐事件一 run；显式 `batch:` 配置 debounce 聚合同批 → 合成一个 run，**run payload 记录 batch_id 与全部 event IDs**（batch→run→events 完整审计）；容量满 429 retryable。
+- **执行上下文贯通**：`Engine.start` 增 `ctx_session`（缺省保持 cron 原值 `agent:main:engine:orchestration`），payload 持久化 session 字段——hook 准入会话贯通正常执行与 `resume_interrupted` 续跑；payload 由 `to_json` 序列化器生成。
+- **装配**：TriggerManager/Engine 首次生产接线——`data_dir/workflows/*.yaml` 装载（windows 用 Dir.children+Path 拼接，glob 反斜杠模式不匹配）；`enabled: false` 不注册；fork 动作 provider 工厂注入。
+
 ## 5. 持久化与恢复
 
 ### 5.1 存储表（版本化 migration）
