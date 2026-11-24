@@ -94,4 +94,4 @@
 
 - **引用一律用 `§锚` 或具体文件路径**，不用行号；`tools/check_docs.rb` 会在 CI 拦截行号锚与死链。
 - 新增设计内容写进 `spec/` 对应章并在 `spec/README.md` 登记；新增计划内容写进 `plan/` 对应节并在 [plan/README.md](plan/README.md) 登记。
-- 单文件超过 400 行时 `check_docs.rb` 会告警，提示拆分。
+- 单文件体量按三项并列判定：物理行 ≤ 400、等效屏幕行 ≤ 400、单行显示宽度 ≤ 400 列；超过时 `check_docs.rb` 告警。长行应拆子列表、表格或小节，不要用硬折行——Markdown 软换行会渲染成空格。口径见 [process/scribe.md §体量口径](process/scribe.md)。
