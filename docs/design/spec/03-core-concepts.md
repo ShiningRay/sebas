@@ -107,6 +107,7 @@ workflows: [ /* 编排定义，见 §7.6 */ ]
 gateway:
   http: { bind: 127.0.0.1, port: 18790, auth: token }
   ipc: auto                          # NDJSON/IPC，见 §9
+  collaboration: { max_hops: 4 }     # agent 间传递上限（防环），见 §8.1
 ```
 
 要点：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。配置加载沿用 autobot 的 `${VAR}` 展开 + chmod 0o600（autobot A 级件：`config/loader.cr` 机制），但**敏感值改为 keyring 引用**（`*_ref: keyring:<namespace>/<key>`，§10.2）。

@@ -7,6 +7,9 @@
 
 ### Added
 
+- **M4x-Comm-WP1 message_agent 工具面接线**：`message_agent` 进 `agent_turn` 衰减工具面（受 `agent.tools.allow` 白名单约束，装配未接线时工具不可见）；
+  防环上限改由 `gateway.collaboration.max_hops` 配置（默认 4，loader 校验 ≥ 1，热更新即生效）；hops 不再由模型自报——投递时按收方会话键落库链路跳数，
+  下一跳从工具 ctx 继承，回执形如 `queued <delivery_id> hops=<n>`；inbox 按 `to_agent` 分片，收方只取本 agent 的消息（[#185](https://github.com/ShiningRay/sebas/pull/185)）。
 - **流程工具 accept-proposal**：一条命令完成 Proposal 的 `accepted-design` 裁决（发公开评论、登记裁决证据、复用 `Triager.plan` 校验并落地状态标签）；`--milestone` 顺带记录排期意图，不替代 Scribe 拆 `plan` 工作包。默认 dry-run，`--apply` 才写 GitHub。
 - **M4.1 fork/join 影分身最小闭环**：生产装配补齐与入队键一致性（[#135](https://github.com/ShiningRay/sebas/pull/135)）、expectations 表 + mode 判定器 +
   恢复扫描（[#136](https://github.com/ShiningRay/sebas/pull/136)）、fork 快照组装与分身执行体（[#150](https://github.com/ShiningRay/sebas/pull/150)）、JoinWriter 分层回写 + 四时机语义（[#152](https://github.com/ShiningRay/sebas/pull/152)）、

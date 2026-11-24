@@ -127,8 +127,20 @@ module Sebas
         getter data_dir : String = "data"
         # 会话输入调度系统级默认（session-input-scheduling.md §3.1；作用于所有支持对话调度的 agent）
         getter session : SessionPolicyConfig?
+        # agent 间协作（design.md §8.1）：max_hops = 一轮交换内 agent-to-agent 传递上限
+        getter collaboration : CollaborationConfig = CollaborationConfig.new
 
-        def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data", @session = nil)
+        def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data", @session = nil,
+                       @collaboration = CollaborationConfig.new)
+        end
+      end
+
+      # agent 间协作参数（#185 WP1 接线）：默认 4 与 design.md §8.1 防环上限一致
+      class CollaborationConfig
+        include YAML::Serializable
+        getter max_hops : Int64 = 4_i64
+
+        def initialize(@max_hops = 4_i64)
         end
       end
 

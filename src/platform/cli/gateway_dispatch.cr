@@ -253,6 +253,16 @@ module Sebas
           # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
         end
 
+        # 协作 messenger 装配（#185 WP1）：max_hops 取自 gateway.collaboration。
+        # 装配异常不阻断启动——message_agent 隐去（宁缺不可见，不留半接线）。
+        private def build_collaboration_messenger : ::Sebas::Orchestration::Collaboration::Messenger?
+          ::Sebas::Orchestration::Collaboration::Messenger.new(@agent_registry, @store,
+            max_hops: @config.gateway.collaboration.max_hops)
+        rescue ex : ::Exception
+          Log.warn(exception: ex) { "collaboration messenger assembly failed; message_agent tool hidden" }
+          nil
+        end
+
         # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
         private def finish_round(task_id : String?, round : Int32, text : String) : String
           @store.checkpoint(task_id, round) if task_id
@@ -260,15 +270,13 @@ module Sebas
         end
 
         # 衰减工具面（M4.3-WP1）：agent.tools.allow 白名单过滤（"*" 现状
-        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面
+        # 口径 = 全量）——白名单外工具从注册表移除，工具面即生效面。
+        # 协作工具（#185 WP1）：messenger 未接线则不注册（工具不可见），
+        # 注册后与默认工具面同受白名单裁剪。
         private def attenuated_registry(agent : Config::AgentConfig) : Tools::Registry
           registry = Tools.default_registry(@channels)
-          allowed = agent.tools.try(&.allow) || ["*"]
-          unless allowed.includes?("*")
-            registry.names.each do |name|
-              registry.unregister(name) unless allowed.includes?(name)
-            end
-          end
+          Orchestration::Collaboration.register_tool_face(registry, @collaboration_messenger)
+          registry.restrict_to(agent.tools.try(&.allow) || ["*"])
           registry
         end
 
