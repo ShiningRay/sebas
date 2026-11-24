@@ -54,6 +54,20 @@ module AcceptProposal
     "#{DECISION_PREFIX}#{url} -->"
   end
 
+  # 从 issue 正文读出已登记的裁决评论 URL（重试时复用，不重复发评论）。
+  def registered_decision_urls(body)
+    body.to_s.scan(/^#{Regexp.escape(DECISION_PREFIX)}(\S+) -->$/).flatten
+  end
+
+  # 判断是否已有本工具发出的 status 评论（含 verdict 状态标记与裁决链接）。
+  def status_comment_exists?(number, url, repo:)
+    comments = gh_json("api", "repos/#{repo}/issues/#{number}/comments?per_page=100")
+    comments.any? do |comment|
+      body = comment["body"].to_s
+      body.include?("<!-- status: #{DECISION} -->") && body.include?(url)
+    end
+  end
+
   # 在 issue 正文登记裁决证据链接（HTML 注释，渲染不可见）。
   def with_decision_marker(body, url)
     marker = decision_marker(body, url)
@@ -187,7 +201,7 @@ module AcceptProposal
   def preflight!(issue, number, repo:, login:, maintainers:)
     labels = Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s }
     raise Failure, "##{number} 没有 proposal 标签，不能用本命令接受" unless labels.include?("proposal")
-    raise Failure, "##{number} 已处于 #{STATUS_LABEL}，无需重复接受" if labels.include?(STATUS_LABEL)
+    raise Failure, "##{number} 同时带 plan 标签，是工作包卡，不能按 Proposal 接受" if labels.include?("plan")
     raise Failure, "##{number} 已关闭（#{issue["state"]}）" unless issue["state"] == "open"
     raise Failure, "当前登录 #{login} 不在 maintainers 白名单中，无法作裁决" unless maintainers.include?(login)
   end
@@ -206,19 +220,14 @@ module AcceptProposal
     puts "并发一条 status 评论。实现工作包由 Scribe 按指令另行拆解。"
   end
 
-  # 发 status 评论（Triager.plan 生成的评论含 status marker 与裁决链接）。
-  def post_status_comment(number, plan, repo:)
-    body = plan["comment"].to_s
-    return if body.empty?
-
+  # 发 status 评论（含 status marker 与裁决链接）。
+  def post_status_comment(number, body, repo:)
     gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{body}")
   end
 
   def apply(number, reason, repo:, milestone_value: nil)
     login = current_login
     issue = fetch_issue(number, repo: repo)
-
-    # maintainers 来自仓库 .github/agents.yml 的快照字段，此处直接读文件首段。
     maintainers = read_maintainers
     preflight!(issue, number, repo: repo, login: login, maintainers: maintainers)
 
@@ -226,22 +235,36 @@ module AcceptProposal
     milestone = milestone_value ? resolve_milestone(milestone_value, repo: repo) : nil
     milestone_title = milestone && milestone["title"]
 
-    comment = post_verdict_comment(number, reason, repo: repo, milestone: milestone_title)
-    url = comment.fetch("html_url")
-    marker = decision_marker(issue["body"], url)
-    unless issue["body"].to_s.include?(marker)
-      gh("issue", "edit", number.to_s, "--repo", repo, "--body", with_decision_marker(issue["body"], url))
+    labels = Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s }
+    already_accepted = labels.include?(STATUS_LABEL)
+
+    if already_accepted
+      # 重试：复用已登记的裁决评论，绝不重复发评论或改标签。
+      urls = registered_decision_urls(issue["body"])
+      raise Failure, "##{number} 已接受但正文缺裁决证据 marker，无法幂等补齐" if urls.empty?
+
+      url = urls.last
+      evidence = fetch_decision_evidence(url, repo: repo)
+      puts "检测到已接受，补齐未完成步骤：#{url}"
+    else
+      comment = post_verdict_comment(number, reason, repo: repo, milestone: milestone_title)
+      url = comment.fetch("html_url")
+      # 评论发布期间协作者可能改过正文：写回前重读最新正文，缩短竞争窗口。
+      fresh_body = fetch_issue(number, repo: repo)["body"]
+      unless fresh_body.to_s.include?(decision_marker(fresh_body, url))
+        gh("issue", "edit", number.to_s, "--repo", repo, "--body", with_decision_marker(fresh_body, url))
+      end
+
+      evidence = fetch_decision_evidence(url, repo: repo)
+      plan = build_plan(number, url, repo: repo, issue: issue, evidence: evidence)
+      raise Failure, "triage 未生成可执行计划：#{plan.inspect}" unless plan["ok"] && plan["decision"] == DECISION
+
+      execute_actions(number, plan["actions"], repo: repo)
     end
 
-    # 证据直接回读 GitHub 已发布的评论，作者/正文/父对象都来自 API，
-    # 再由 Triager.plan 做真正的 accepted-design 校验。
-    evidence = fetch_decision_evidence(url, repo: repo)
-    plan = build_plan(number, url, repo: repo, issue: issue, evidence: evidence)
-    raise Failure, "triage 未生成可执行计划：#{plan.inspect}" unless plan["ok"]
-
-    execute_actions(number, plan["actions"], repo: repo)
-    post_status_comment(number, plan, repo: repo)
-    set_milestone(number, milestone["number"], repo: repo) if milestone
+    body = status_comment_body(evidence, url)
+    post_status_comment(number, body, repo: repo) unless status_comment_exists?(number, url, repo: repo)
+    set_milestone(number, milestone["number"], repo: repo) if milestone && issue["milestone"].to_s != milestone["number"].to_s
 
     puts "已接受 Proposal ##{number}（#{DECISION}）"
     puts "裁决评论：#{url}"
@@ -249,6 +272,19 @@ module AcceptProposal
     puts(milestone ? "排期：已挂到 milestone #{milestone_title}" : "排期：未指定 milestone，仍待另行裁决")
   rescue SebasAgents::Error => e
     raise Failure, e.message
+  end
+
+  # status 评论正文：status marker + arch marker + 裁决链接（与 Triager 评论同构）。
+  def status_comment_body(evidence, url)
+    title = comment_title(evidence["body"])
+    <<~MD
+      <!-- status: #{DECISION} -->
+      <!-- arch: issue-arch -->
+
+      #{title}
+
+      Maintainer 裁决：#{url}
+    MD
   end
 
   # 从仓库根 .github/agents.yml 读 maintainers（不引入 YAML gem）。
@@ -283,6 +319,13 @@ def usage
   TXT
 end
 
+def take_value!(argv, index, flag)
+  value = argv[index + 1]
+  raise ArgumentError, "#{flag} 需要一个值" if value.nil? || value.start_with?("--")
+
+  value
+end
+
 def parse_argv(argv)
   options = {}
   positional = []
@@ -291,10 +334,10 @@ def parse_argv(argv)
     case argv[i]
     when "--help", "-h" then return :help, nil
     when "--apply" then options[:apply] = true
-    when "--reason" then options[:reason] = argv[i + 1]; i += 1
-    when "--reason-file" then options[:reason_file] = argv[i + 1]; i += 1
-    when "--repo" then options[:repo] = argv[i + 1]; i += 1
-    when "--milestone" then options[:milestone] = argv[i + 1]; i += 1
+    when "--reason" then options[:reason] = take_value!(argv, i, "--reason"); i += 1
+    when "--reason-file" then options[:reason_file] = take_value!(argv, i, "--reason-file"); i += 1
+    when "--repo" then options[:repo] = take_value!(argv, i, "--repo"); i += 1
+    when "--milestone" then options[:milestone] = take_value!(argv, i, "--milestone"); i += 1
     else positional << argv[i]
     end
     i += 1
@@ -312,7 +355,6 @@ def parse_argv(argv)
     options[:reason] = File.read(options[:reason_file], encoding: "UTF-8")
   end
   raise ArgumentError, "必须用 --reason 或 --reason-file 提供接受理由" if options[:reason].to_s.strip.empty?
-  raise ArgumentError, "--milestone 需要一个值（数字或标题）" if argv.include?("--milestone") && options[:milestone].to_s.strip.empty?
 
   [nil, {number: number, reason: options[:reason], apply: options[:apply],
          repo: options[:repo], milestone: options[:milestone]}]

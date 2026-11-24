@@ -79,10 +79,30 @@ class AcceptProposalTest < Minitest::Test
 
   def test_preflight_rejects_already_accepted
     issue = {"labels" => [{"name" => "proposal"}, {"name" => "proposal:accepted-design"}], "state" => "open"}
+    # 已接受不再是错误：重试时走幂等补齐路径。
+    AcceptProposal.preflight!(issue, 8, repo: "o/r", login: "ShiningRay", maintainers: ["ShiningRay"])
+  end
+
+  def test_preflight_rejects_plan_card_with_proposal_label
+    issue = {"labels" => [{"name" => "proposal"}, {"name" => "plan"}], "state" => "open"}
     err = assert_raises(AcceptProposal::Failure) do
       AcceptProposal.preflight!(issue, 8, repo: "o/r", login: "ShiningRay", maintainers: ["ShiningRay"])
     end
-    assert_includes err.message, "无需重复"
+    assert_includes err.message, "plan"
+  end
+
+  def test_registered_decision_urls_extracts_marker
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    body = AcceptProposal.with_decision_marker("正文", url)
+    assert_equal [url], AcceptProposal.registered_decision_urls(body)
+  end
+
+  def test_status_comment_body_has_markers_and_url
+    evidence = sample_evidence
+    url = "https://github.com/o/r/issues/8#issuecomment-123"
+    body = AcceptProposal.status_comment_body(evidence, url)
+    assert_includes body, "<!-- status: accepted-design -->"
+    assert_includes body, url
   end
 
   def sample_issue(url)
@@ -108,9 +128,9 @@ class AcceptProposalTest < Minitest::Test
       issue: sample_issue(url), evidence: sample_evidence(url: url))
     assert plan["ok"]
     assert_equal "accepted-design", plan["decision"]
-    names = plan["actions"].map { |a| a["name"] }
-    assert_includes names, "proposal:accepted-design"
-    assert_includes names, "proposal:needs-design" # 待清理
+    names = plan["actions"].map { |a| "#{a["action"]}:#{a["name"]}" }
+    assert_includes names, "add_label:proposal:accepted-design"
+    assert_includes names, "remove_label:proposal:needs-design"
     assert_includes plan["comment"], url
   end
 
