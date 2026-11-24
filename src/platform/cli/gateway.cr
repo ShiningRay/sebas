@@ -13,6 +13,7 @@ require "../store/store"
 require "../../agents/pool"
 require "../../agents/agents"
 require "../../agents/reception/reception"
+require "../../sessions/lifecycle/lifecycle"
 require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
@@ -76,6 +77,7 @@ module Sebas
           @config_path = config_path
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
+          @lifecycle_store = Sessions::Lifecycle::Store.new(@store)
           # secrets 收敛（M4.2-WP4 §5.3）：配置明文 api_key 迁 vault（幂等），
           # 配置树抹除明文；provider 构造按 agent 名从 vault 取回（factory
           # 包装由 GatewaySecrets#wire_secret_factory 提供）。
@@ -256,6 +258,12 @@ module Sebas
           agent = Config::CURRENT.get.agents[agent_name]?
           unless agent
             Log.error { "audit: binding targets unknown agent #{agent_name}" }
+            @store.finish_intent(message.event_id, "failed")
+            return
+          end
+          # 归档会话写拒绝（M4.4-WP3：归档可查不可写）
+          if @lifecycle_store.archived?(session_key)
+            Log.warn { "audit: write rejected for archived session #{session_key} (event=#{message.event_id})" }
             @store.finish_intent(message.event_id, "failed")
             return
           end

@@ -65,6 +65,7 @@ module Sebas
             ::Time.utc.to_rfc3339, nil, event.to_json, snapshot
           )
           receipt = scheduling.admit(envelope)
+          @lifecycle_store.touch(session_key, agent_name, "user") if receipt.status == "accepted"
           Log.info { "reception admitted (session=#{session_key} event=#{event.event_id} status=#{receipt.status})" } if receipt.status == "accepted"
         end
 
@@ -99,6 +100,7 @@ module Sebas
             ::Time.utc.to_rfc3339, nil, event.to_json, snapshot
           )
           receipt = scheduling.admit(env)
+          @lifecycle_store.touch(session_key, agent_name, "user") if receipt.status == "accepted"
           case receipt.status
           when "accepted"
             Log.info { "admitted (session=#{session_key} event=#{event.event_id} batch=#{receipt.batch_id} position=#{receipt.queue_position})" }
