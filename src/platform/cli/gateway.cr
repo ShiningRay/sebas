@@ -118,8 +118,7 @@ module Sebas
               end
             end
           end
-          # busy steer 中心（M4.5-WP4）：turn 注册表 + 持久化纠偏通道；
-          # 过期扫描与 seal 扫描同款 100ms 协程粒度
+          # busy steer 中心（M4.5-WP4）：100ms 协程粒度（同 seal 扫描）
           @steer_registry = Sessions::Scheduling::TurnRegistry.new
           @steer_center = Sessions::Scheduling::SteerCenter.new(@store, @steer_registry,
             ->(session : String) { steering_policy(session) })
@@ -150,7 +149,6 @@ module Sebas
             port: @config.gateway.ipc.port,
             &->trigger_reload)
           @ipc.approvals_center = @approvals
-          # fork/join 显式触发面接线（M4.1-WP5，Q3：不动生产 agent_turn）
           @ipc.fork_handler = ->(payload : JSON::Any) { handle_fork_command(payload) }
           wire_steer_handler
           http_cfg = @config.gateway.http
@@ -161,16 +159,17 @@ module Sebas
             &->trigger_reload)
           @store.recover!
           Sessions::Scheduling::Recovery.recover_stale(@store)
-          # steer 恢复口径（M4.5-WP4）：unknown_not_injected/recovery 保守降级 queued，扫描器接管
-          @steer_center.recover_unconfirmed
+          @steer_center.recover_unconfirmed # 降级 queued，扫描器接管
           # orchestration 装配（M4.1）：组件可达即成立；后续包填充点见各 mixin
-          # workflow 触发子系统首接线（M4.5-WP5，详见 gateway_hooks）
-          @engine = Orchestration::Engine.new(@store, @executor, "engine")
+          fork_factory = -> do # 触发子系统首接线（M4.5-WP5）；fork factory（aD50）
+ cfg = Config::CURRENT.get.agents["main"]?
+          raise Store::StoreError.new("engine fork factory: no main agent") unless cfg
+          @provider_factory.call(cfg, nil)           end
+          @engine = Orchestration::Engine.new(@store, @executor, "engine", nil, fork_factory)
           @triggers = Orchestration::TriggerManager.new(@engine, @bus)
           load_workflows
           @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
-          # 管理面注入（M4.4-WP4）：lifecycle/模板 registry 装配后才可见，
-          # IPC/HTTP 两侧同源（构造早于 registry 创建，setter 补注）。
+          # 管理面注入（M4.4-WP4，装配晚于构造 setter 补注）
           @ipc.lifecycle_store = @lifecycle_store
           @ipc.template_registry = @agent_registry
           @http.lifecycle = @lifecycle_store
@@ -210,6 +209,7 @@ module Sebas
           @http.listen
           @supervisor.start_all
           replay_unfinished               # 崩溃恢复重放先于调度启动（同会话不出现双 turn）
+          @engine.resume_interrupted      # 中断 workflow run 续跑（aD57；需 workflows 注册表已载）
           scheduling.recover_dispatch     # 持久待发批次重派（§5.2：sealed/queued 重新入队）
           @steer_dispatch_ready.set(true) # 恢复完成后启用 queued steer 派发（QWvO）
           consume_bus

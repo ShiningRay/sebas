@@ -21,7 +21,8 @@ module Sebas
         # 不同 hook 不串会话；channel 段固定 "hooks" 供 run_batch_job 分流
         # workflow YAML 装载（data_dir/workflows/*.yaml）：目录不存在即空
         # （向后兼容，无 workflow 部署时行为不变）；装载失败单文件 fail-logged
-        # 不阻断其余
+        # 不阻断其余。disabled（enabled: false）不注册（a4nz）；webhook source
+        # 含 ":" 跳过（event_id 分隔歧义，aD5g）。
         private def load_workflows : Nil
           workflow_dir = @data_dir / "workflows"
           return unless Dir.exists?(workflow_dir)
@@ -29,7 +30,16 @@ module Sebas
           # windows CI 实测 workflow 全部漏载）
           files = Dir.children(workflow_dir).select(&.ends_with?(".yaml")).sort!
           files.each do |file|
-            @engine.register(Orchestration::DSL::Parser.parse_workflow(File.read(workflow_dir / file)))
+            workflow = Orchestration::DSL::Parser.parse_workflow(File.read(workflow_dir / file))
+            unless workflow.enabled
+              Log.warn { "workflow disabled, skipped: #{workflow.id}" }
+              next
+            end
+            if workflow.trigger.type == "webhook" && workflow.trigger.source.includes?(":")
+              Log.error { "webhook source must not contain ':', skipped: #{workflow.id} (#{workflow.trigger.source})" }
+              next
+            end
+            @engine.register(workflow)
           rescue ex
             Log.error(exception: ex) { "workflow load failed: #{file}" }
           end
@@ -90,6 +100,7 @@ module Sebas
         # workflow 默认逐事件一 run；显式 batch 配置合成一个 run——payload
         # 记录 batch_id 与全部 event IDs（batch→run→events 完整审计）。
         # 返回失败 event_ids（batch_done 收敛口径与聊天路径一致）。
+        # ameba:disable Metrics/CyclomaticComplexity — 批量执行直译（预算拆/等终态/逐事件降级）
         private def run_hooks_batch(session_key : String, batch_id : String,
                                     inputs : Array(::Sebas::Platform::Store::Store::SessionInputRow)) : Array(String)
           name = session_key.split(":", 5)[4]? || ""
@@ -103,10 +114,28 @@ module Sebas
             event_ids = inputs.map(&.event_id)
             head = event_ids.first
             started = @engine.start(workflow, head, batch_id, event_ids) != nil
+            run_ok = false
+            if started
+              # 等待 run 终态再收敛批次（同会话同时只允许一个活动批次——
+              # engine.start spawn 即返回，提前 batch_done 会并行派发下一批，
+              # CodeRabbit aD5o）；上限 30 分钟，超时保守判失败不伪报成功
+              run_id = "run:#{workflow.id}:#{head}"
+              deadline = Time.instant + 30.minutes
+              loop do
+                status = begin
+                  @store.task(run_id).status
+                rescue
+                  nil
+                end
+                run_ok = status == "done"
+                break if ["done", "failed"].includes?(status) || Time.instant > deadline
+                sleep 200.milliseconds
+              end
+            end
             event_ids.each do |eid|
               @store.record_intent(eid, "message", inputs.find(&.event_id.==(eid)).try(&.payload) || "")
-              @store.finish_intent(eid, started ? "done" : "failed")
-              failed << eid unless started
+              @store.finish_intent(eid, run_ok ? "done" : "failed")
+              failed << eid unless run_ok
             end
             return failed
           end

@@ -100,16 +100,15 @@ module Sebas
           gateway.store.intent_status("webhook:deploy:k1") == "done" &&
             gateway.store.intent_status("webhook:deploy:k2") == "done"
         end
-      ensure
-        gateway.shutdown # 断言失败也释放 IPC 端口（防全量连锁 bind 失败）
-      end
-      ok.should be_true
+        ok.should be_true
 
-      # 逐事件独立 run（queue 默认一事件一 run）
-      gateway.store.task("run:deploy-hook:webhook:deploy:k1").kind.should eq("run")
-      gateway.store.task("run:deploy-hook:webhook:deploy:k2").kind.should eq("run")
-      # hook 会话（同一 hook 复用会话）transcript 有事件（run 落库链）
-      gateway.store.intent_status("webhook:deploy:k1").should eq("done")
+        # 逐事件独立 run（queue 默认一事件一 run）
+        gateway.store.task("run:deploy-hook:webhook:deploy:k1").kind.should eq("run")
+        gateway.store.task("run:deploy-hook:webhook:deploy:k2").kind.should eq("run")
+        gateway.store.intent_status("webhook:deploy:k1").should eq("done")
+      ensure
+        gateway.shutdown # 全部 store 断言结束后再关（shutdown 关 store，a4np）
+      end
     end
 
     it "显式 batch：两事件合成一个 run，payload 记录 batch 与全部 event IDs" do
@@ -184,15 +183,15 @@ module Sebas
           end
           status == "done" || status == "running"
         end
+        ok.should be_true
+        payload = JSON.parse(gateway.store.task_payload(run_id).to_s)
+        payload["batch_id"].as_s.should eq(batch_id)
+        ids = payload["event_ids"].as_a.map(&.as_s)
+        ids.should contain("webhook:events:b1")
+        ids.should contain("webhook:events:b2")
       ensure
-        gateway.shutdown
+        gateway.shutdown # 全部 store 断言结束后再关（a4np）
       end
-      ok.should be_true
-      payload = JSON.parse(gateway.store.task_payload(run_id).to_s)
-      payload["batch_id"].as_s.should eq(batch_id)
-      ids = payload["event_ids"].as_a.map(&.as_s)
-      ids.should contain("webhook:events:b1")
-      ids.should contain("webhook:events:b2")
     end
   end
 end

@@ -29,7 +29,13 @@ module Sebas
         @engine.workflows.each_value do |workflow|
           case workflow.trigger.type
           when "cron"
-            next_at = Cron.next_after(workflow.trigger.schedule)
+            begin
+              next_at = Cron.next_after(workflow.trigger.schedule)
+            rescue ex : Cron::CronError
+              # 无效表达式只跳过该 workflow 触发源，不中断其余注册（aD5X）
+              Log.error(exception: ex) { "cron schedule invalid, trigger skipped: #{workflow.id}" }
+              next
+            end
             register_cron(workflow.id, "main", workflow.trigger.schedule, next_at)
           when "webhook"
             @mutex.synchronize { @webhook_names << workflow.trigger.source }
