@@ -120,11 +120,17 @@ ruby tools/check_docs.rb
 ```
 
 It fails on dead relative links and on `design.md:L749`-style line anchors (line numbers
-drift on every edit — cite `§section` or a file path instead), and warns when a single
-Markdown file exceeds 400 lines. Never let a file grow into a thousand-line monolith
-again; split it by chapter or section and link the pieces.
+drift on every edit — cite `§section` or a file path instead). It warns on file size three
+ways: more than 400 physical lines, more than 400 equivalent screen rows (a 100-column
+viewport with CJK counted as two columns), or any single line wider than 400 columns.
+Long lines do not disappear by pressing Enter — CommonMark renders a soft break inside a
+paragraph as a space, which shows up as a stray space in Chinese text, and table rows and
+code blocks cannot be folded at all. Split the structure instead: turn an overlong bullet
+into a lead-in plus a sub-list or a table, promote a dense paragraph into a `###` section,
+narrow an over-wide table. Never let a file grow into a thousand-line monolith again;
+split it by chapter or section and link the pieces.
 
-*中文要点：重大行为、架构、配置或 DSL 变更先开 Proposal issue；简短写清问题、目标、备选与影响即可，不要求先写完整设计文档或提交 PR。开放式想法先在 Discussions 讨论，形成具体待裁决建议后转 Proposal issue。Maintainer 决定接受方向、要求补设计或拒绝；需要设计文档时由 Scribe 依据 Issue 共识整理并代提 PR，贡献者也可自愿 fork 提 PR。原 Issue 保留公开讨论，入库文档回链原 Issue。接受设计不等于承诺排期或实现；Maintainer 另行决定排期后才拆 `plan` 工作包。文档分 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `ruby tools/check_docs.rb`：死链与行号锚报错，引用用 §节号或文件路径，单文件超 400 行告警。*
+*中文要点：重大行为、架构、配置或 DSL 变更先开 Proposal issue；简短写清问题、目标、备选与影响即可，不要求先写完整设计文档或提交 PR。开放式想法先在 Discussions 讨论，形成具体待裁决建议后转 Proposal issue。Maintainer 决定接受方向、要求补设计或拒绝；需要设计文档时由 Scribe 依据 Issue 共识整理并代提 PR，贡献者也可自愿 fork 提 PR。原 Issue 保留公开讨论，入库文档回链原 Issue。接受设计不等于承诺排期或实现；Maintainer 另行决定排期后才拆 `plan` 工作包。文档分 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `ruby tools/check_docs.rb`：死链与行号锚报错，引用用 §节号或文件路径；体量三项告警——物理行超 400、等效屏幕行超 400（100 列视口、CJK 记 2 列）、单行显示宽度超 400 列。长行不能靠回车折行解决（Markdown 软换行会渲染为空格），应拆子列表、表格或小节。*
 
 ## Security
 

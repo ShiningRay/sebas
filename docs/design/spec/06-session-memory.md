@@ -28,7 +28,21 @@
 
 ### 6.3 会话输入调度（Proposal，待实施）
 
-支持持久 queue、可配置 debounce 与工具边界 steer：`batch_mode: queue|debounce` 两态 + `steer.enabled` 正交开关；默认 `queue` 且不启用 steer；停止/审批等控制输入走独立通道，不参与聚合。 **落位**（调度 WP3，#5）：debounce 模式已接线——六类 seal 条件（idle/max_wait/count/bytes/显式 flush/turn_end，Clock 注入单调时钟）+ bucket_key 分桶（sender|session）+ 忙碌期聚合（不饥饿）+ 结构化批次视图（原始 envelope 永久可查）；实现见 `sessions/scheduling/scheduler.cr`（debounce 分支 + seal_due 扫描器 + Registry 转发）与 `registry.cr`。
+支持持久 queue、可配置 debounce 与工具边界 steer。契约由三个正交开关定义：
+
+- `batch_mode: queue|debounce` 两态。
+- `steer.enabled` 正交开关。
+- 默认 `queue` 且不启用 steer；停止/审批等控制输入走独立通道，不参与聚合。
+
+**落位**（调度 WP3，#5）：debounce 模式已接线，含四项机制。
+
+1. 六类 seal 条件：idle / max_wait / count / bytes / 显式 flush / turn_end，Clock 注入单调时钟。
+2. `bucket_key` 分桶（sender|session）。
+3. 忙碌期聚合（不饥饿）。
+4. 结构化批次视图（原始 envelope 永久可查）。
+
+实现见 `sessions/scheduling/scheduler.cr`（debounce 分支 + seal_due 扫描器 + Registry 转发）
+与 `registry.cr`。
 
 - 完整契约（状态机与关键时序、参数微调、持久化与恢复、安全边界）：[proposals/session-input-scheduling.md](../proposals/session-input-scheduling.md)。
 - 执行状态与 WP 拆分：[tracking issue #9](https://github.com/ShiningRay/sebas/issues/9)（WP 子卡 #3–#8）。

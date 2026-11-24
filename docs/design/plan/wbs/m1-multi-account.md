@@ -62,7 +62,14 @@
 
 **M1-WP8 配置热更新四正交件**（4–6 pd）
 - 目标：免重启改配置（用户硬需求③）。
-- 范围：`config/reload` 管线：触发三通道（file_watcher 主路+mtime 1–5s 轮询兜底+IPC/HTTP reload 命令；**另含 POSIX SIGHUP 第三便利通道** [来源: design.md §11.2①]，Windows 无对应信号，该平台走 IPC/HTTP）；先验后换（复用 M0-WP2 校验器）；`Atomic(Config)` 整根替换 [来源: design.md §11.2]；组件重应用矩阵（路由/编排/allowlist/限流/provider key/凭据热换；账号增删=监督体启停+drain；端口类标 restart）[来源: design.md §11.3]；每 turn 快照纪律 lint。
+- 范围：`config/reload` 管线，五项：
+  ① 触发三通道——file_watcher 主路 + mtime 1–5s 轮询兜底 + IPC/HTTP reload 命令；
+  **另含 POSIX SIGHUP 第三便利通道** [来源: design.md §11.2①]，Windows 无对应信号，该平台走 IPC/HTTP。
+  ② 先验后换（复用 M0-WP2 校验器）。
+  ③ `Atomic(Config)` 整根替换 [来源: design.md §11.2]。
+  ④ 组件重应用矩阵——路由/编排/allowlist/限流/provider key/凭据热换；账号增删 = 监督体启停 + drain；
+  端口类标 restart [来源: design.md §11.3]。
+  ⑤ 每 turn 快照纪律 lint。
 - 交付物：reload 管线+矩阵各组件重应用 spec。
 - 依赖：M1-WP1、M1-WP2、M1-WP7（凭据热换）；**前置冒烟须于本包开工前完成**（EX-W1-03 已排 W1：Atomic 编译冒烟+file_watcher Windows demo，E.2 节）。
 - 验收：**§14 M1 热更新四条全过**：运行中加/删账号、改路由、换 provider key 不重启生效 / 配置写坏（YAML 错+binding 悬空引用）保旧运行并报警 / 改监听端口得到「需重启」明确提示 [来源: design.md §14]。

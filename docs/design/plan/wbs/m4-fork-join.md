@@ -4,7 +4,15 @@
 
 ### M4 · Fork/Join 影分身 + 轻量 Agent 团队 + 会话治理——估时合计 27.5–44.5 pd（2026-11-20 追加）
 
-> 依据：[proposals/fork-join-semantics.md](../../proposals/fork-join-semantics.md)（语义方案核心）+ [proposals/fork-join-shadow-clone-architecture.md](../../proposals/fork-join-shadow-clone-architecture.md)（架构）+ [fork-join-shadow-clone-analysis.md](../../fork-join-shadow-clone-analysis.md)（翰林现状核实）+ [proposals/fork-join-shadow-clone-positioning.md](../../proposals/fork-join-shadow-clone-positioning.md)（定位提案）+ 首辅九问裁断（Q1–Q9，已全部落实）。仓内 M1–M3 已存在，提案原号 M0.5–M4 防撞名重编为 **M4.0–M4.4**，映射见 B.8.1。
+> 依据：
+>
+> - [fork-join-semantics.md](../../proposals/fork-join-semantics.md)（语义方案核心）
+> - [fork-join-shadow-clone-architecture.md](../../proposals/fork-join-shadow-clone-architecture.md)（架构）
+> - [fork-join-shadow-clone-analysis.md](../../fork-join-shadow-clone-analysis.md)（翰林现状核实）
+> - [fork-join-shadow-clone-positioning.md](../../proposals/fork-join-shadow-clone-positioning.md)（定位提案）
+> - 首辅九问裁断（Q1–Q9，已全部落实）
+>
+> 仓内 M1–M3 已存在，提案原号 M0.5–M4 防撞名重编为 **M4.0–M4.4**，映射见 B.8.1。
 
 **M4.0-WP1 语义/架构提案评审修订定稿**（0.5–1 pd）
 - 目标：fork-join-semantics.md 与 fork-join-shadow-clone-architecture.md 定稿。
@@ -16,7 +24,15 @@
 
 **M4.0-WP2 定稿吸收回写 + 失效引用修正**（1–1.5 pd）
 - 目标：按既有提案→design.md 契约吸收流落定 fork/join。
-- 范围：§8 协作扩展（fork/join 节：键/表/矩阵/衰减摘要）落 [spec/08-multi-agent.md](../../spec/08-multi-agent.md) + §14 路线图延至 M4 落 [spec/14-roadmap.md](../../spec/14-roadmap.md) [来源: design.md §14 现仅到 M3]；[plan/00-baseline.md](../00-baseline.md) 第 0 节「质量门禁惯例」行的失效引用修正（原文引 CLAUDE.md，该文件仓内不存在；改指 CONTRIBUTING.md 质量门禁节 + Makefile + .github/workflows/ci.yml 现行权威 [来源: fork-join-shadow-clone-analysis.md:158]）；本文 M4 段同步勾稽。
+- 范围：三处回写。
+  ① §8 协作扩展（fork/join 节：键/表/矩阵/衰减摘要）落
+  [spec/08-multi-agent.md](../../spec/08-multi-agent.md)。
+  ② §14 路线图延至 M4 落 [spec/14-roadmap.md](../../spec/14-roadmap.md)
+  [来源: design.md §14 现仅到 M3]。
+  ③ [plan/00-baseline.md](../00-baseline.md) 第 0 节「质量门禁惯例」行的失效引用修正
+  （原文引 CLAUDE.md，该文件仓内不存在；改指 CONTRIBUTING.md 质量门禁节 + Makefile +
+  .github/workflows/ci.yml 现行权威 [来源: fork-join-shadow-clone-analysis.md:158]）。
+  本文 M4 段同步勾稽。
 - 交付物：`spec/08-multi-agent.md`（§8）与 `spec/14-roadmap.md`（§14）修订 + `plan/00-baseline.md` 第 0 节修正。
 - 落位：§8.4「fork / join 影分身（契约摘要）」与 §14 M4 行已落 [spec/08-multi-agent.md](../../spec/08-multi-agent.md) / [spec/14-roadmap.md](../../spec/14-roadmap.md)；第 0 节失效引用先前已修（现引 CONTRIBUTING.md 质量门禁节），本包复核确认无残留。
 - 依赖：M4.0-WP1 定稿。
@@ -41,7 +57,13 @@
 
 **M4.1-WP3 ForkManager 快照组装 + 分身执行体**（2–3 pd）
 - 目标：fork 原语可执行（快照→分身任务→turn）。
-- 范围：ForkManager（输入契约 = 任务描述/快照范围/能力声明/角色/join 模式/deadline）；快照 = transcripts 窗口 + system prompt + skills 注入 [来源: 仓库:src/platform/store/store.cr:406-417；src/agents/skills/skills.cr:43-83]；分身 turn 走 HttpProvider 纯消息接口 [来源: 仓库:src/providers/providers.cr:58-88]；ToolContext 扩展子任务句柄 [来源: 仓库:src/tools/registry.cr:44-59 现无]；分身并发信号量默认 3（循 subagent.cr:16 先例）。
+- 范围：四项。
+  ① ForkManager（输入契约 = 任务描述/快照范围/能力声明/角色/join 模式/deadline）。
+  ② 快照 = transcripts 窗口 + system prompt + skills 注入
+  [来源: 仓库:src/platform/store/store.cr:406-417；src/agents/skills/skills.cr:43-83]。
+  ③ 分身 turn 走 HttpProvider 纯消息接口 [来源: 仓库:src/providers/providers.cr:58-88]。
+  ④ ToolContext 扩展子任务句柄 [来源: 仓库:src/tools/registry.cr:44-59 现无]；
+  分身并发信号量默认 3（循 subagent.cr:16 先例）。
 - 交付物：ForkManager + 分身执行体 spec。
 - 依赖：M4.1-WP2；E.5（ForkEnvelope 派发路径：无渠道入站消息、无 sender/peer）。
 - 验收：N=1/N=3 fork 快照内容断言（窗口行数正确、不含 secrets）；超并发闸排队不失控。

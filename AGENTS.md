@@ -22,7 +22,7 @@ shards install
 crystal spec                          # 0 failures
 crystal tool format --check           # 不许手改格式
 crystal build -o bin/ameba lib/ameba/bin/ameba.cr && ./bin/ameba   # 0 issues
-ruby tools/check_docs.rb            # FAIL=0（WARN 可接受，仅限 docs/design/review/ 存档）
+ruby tools/check_docs.rb            # FAIL=0；体量/长行 WARN 不阻断但要治理
 ```
 
 CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + verify + release build + docs-check。
@@ -79,7 +79,9 @@ scripts/
   Windows-only FFI 独立文件。
 - spec 用 `Dir.tempdir`，不依赖 `$TEMP` 等平台特定环境变量。
 - 引用文档用 `§节号` 或文件路径，不用行号（`tools/check_docs.rb` 拦截行号锚）。
-- 单文件不超 400 行，超过告警。
+- 单文件体量三项并列：物理行 ≤ 400、等效屏幕行（100 列视口，CJK 记 2 列）≤ 400、单行显示宽度 ≤ 400 列；
+  超过告警。长行不能靠硬折行消除（Markdown 软换行会渲染成空格），应拆子列表、表格或小节。
+  口径详见 [scribe.md §体量口径](docs/design/process/scribe.md)。
 
 ## 分支与 PR
 

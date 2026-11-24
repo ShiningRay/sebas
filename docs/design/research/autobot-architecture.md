@@ -79,8 +79,22 @@ autobot 是**单进程、事件总线驱动的分层单体**：一个 `Bus::Mess
 ## 3. Provider 抽象与 LLM 调用方式（Focus 3）
 
 - 抽象：`src/autobot/providers/provider.cr:14-33`——`abstract class Provider`，`getter api_key/api_base`，核心方法 `abstract def chat(messages, tools, model, max_tokens, temperature, session_key) : Response`，`abstract def default_model`。**一个实例一套 api_key = LLM 侧的单账号假设**。
-- 规格表：`src/autobot/providers/registry.cr:5-66` `ProviderSpec` record（name/keywords/api_url/auth_header/model_prefix/gateway?/local?/use_max_completion_tokens/user_agent/supports_system_role/supports_prompt_cache_key…）；`registry.cr:69-182` `PROVIDERS` **编译期常量数组**：openrouter（prompt cache key）、aihubmix（gateway）、anthropic（x-api-key）、openai（新模型用 max_completion_tokens）、deepseek、gemini（走 OpenAI 兼容 URL）、kimi（sk-kimi- 前缀+UA 伪装 KimiCLI/0.77）、moonshot、minimax、groq、bedrock、duckai（不支持 system role）、vllm（local）。`find_by_model`（`registry.cr:185-191`）按模型串关键词选规格。
-- 主实现：`src/autobot/providers/http_provider.cr:16-87`——OpenAI 兼容 chat completions + Anthropic Messages API 自动格式转换（`http_provider.cr:15,78-82`）；超时 connect 30s / read 300s（`http_provider.cr:19-20`）；重试 3 次、429 与 5xx 触发（`http_provider.cr:24-28`）；finish_reason 双向映射（`http_provider.cr:30-42`）；**异常兜底**：`rescue ex` 后返回 `Response.new(content: "Error calling LLM: ...", finish_reason: "error")`（`http_provider.cr:83-87`），不向上炸。
+- 规格表：`src/autobot/providers/registry.cr:5-66` 的 `ProviderSpec` record
+  （name/keywords/api_url/auth_header/model_prefix/gateway?/local?/use_max_completion_tokens/
+  user_agent/supports_system_role/supports_prompt_cache_key…）。
+  `registry.cr:69-182` 是 `PROVIDERS` **编译期常量数组**，逐项定义：
+  openrouter（prompt cache key）、aihubmix（gateway）、anthropic（x-api-key）、
+  openai（新模型用 max_completion_tokens）、deepseek、gemini（走 OpenAI 兼容 URL）、
+  kimi（sk-kimi- 前缀 + UA 伪装 KimiCLI/0.77）、moonshot、minimax、groq、bedrock、
+  duckai（不支持 system role）、vllm（local）。
+  `find_by_model`（`registry.cr:185-191`）按模型串关键词选规格。
+- 主实现：`src/autobot/providers/http_provider.cr:16-87`——OpenAI 兼容 chat completions +
+  Anthropic Messages API 自动格式转换（`http_provider.cr:15,78-82`）。
+  超时 connect 30s / read 300s（`http_provider.cr:19-20`）；重试 3 次、429 与 5xx 触发
+  （`http_provider.cr:24-28`）；finish_reason 双向映射（`http_provider.cr:30-42`）。
+  **异常兜底**：`rescue ex` 后返回
+  `Response.new(content: "Error calling LLM: ...", finish_reason: "error")`
+  （`http_provider.cr:83-87`），不向上炸。
 - 特化实现：`gemini_provider`（OAuth refresh token，装配见 `setup_helper.cr:57-89`）、`bedrock_provider`（AWS keys+guardrail）。**未逐行读，见未验证清单。**
 - 选择逻辑：`schema.cr:498-520` `match_provider` 用 `{% for %}` 宏按 `model` 字符串匹配十个具名 provider 槽；`schema.cr:523-531` match_bedrock。
 - 装配：`setup_helper.cr:57-89` 整个 gateway 只 **new 一个 provider**；HttpProvider 按 provider_name/api_key 查 gateway 规格（`http_provider.cr:58-59`）。

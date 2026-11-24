@@ -34,11 +34,22 @@
 3. **执行后崩溃**：拿到结果并持久保存后，三明治完成，中间的意图/进行态信息可丢弃（除非留作审计 trace）。无论进程死在哪一层，最终都收敛到「结果已存」。
 不可逆/不可重复的效应（删文件、刷卡）无法天然套用，故**所有效应必须显式声明与持久系统的组合方式**（见第 4 节 replay 语义）。来源：<https://www.sohu.com/a/1087686028_355140>。
 
-**Harness 内一切皆 Task**：模型请求、工具调用、compaction、自定义工作流，每个都是任务 = durable state machine。每个 step 先存 checkpoint 再前进；进程死后新进程打开同一存储，发现未完成任务，从**最后一个 checkpoint** 续跑。LLM 生成任务即三明治：收集上下文/参数/模型 → 存「即将调用」→ 调 LLM（效应）→ 存回答。来源：<https://earendil.com/posts/pi-durable/>、README <https://github.com/earendil-works/pi/blob/main/packages/durable/README.md>。
+**Harness 内一切皆 Task**：模型请求、工具调用、compaction、自定义工作流，每个都是任务
+= durable state machine。每个 step 先存 checkpoint 再前进；进程死后新进程打开同一存储，
+发现未完成任务，从**最后一个 checkpoint** 续跑。
+LLM 生成任务即三明治：收集上下文/参数/模型 → 存「即将调用」→ 调 LLM（效应）→ 存回答。
+来源：<https://earendil.com/posts/pi-durable/>、README
+<https://github.com/earendil-works/pi/blob/main/packages/durable/README.md>。
 
 **journal 化的载体是两类原语**（Mario：「仅靠版本化文档和任务这两个基本原语，就能做一大堆事情」）：
 - **Transcript**：会话 = 不可变 entry 追加日志（`pi.user`/`pi.assistant`/`pi.tool-result`/`pi.system`/`pi.reset` 及自定义 kind），所有变更经单一原子 commit 通道写入，「nothing is shown before its commit is stored」。
-- **版本化文档（Documents）**：typed JSON 状态（待办清单、计划单、票据、沙箱句柄），与 transcript 相邻存储、在**同一原子 commit** 内变更，保证应用状态与产生它的对话记录永不失配。文档可声明与 transcript 位置的三种关联策略：`asOf`（fork 时取父会话 fork 点的旧值）、`current`（取最新值）、`initial`/fresh（取初始值）。变更以 JSON-Patch-like 操作记录（官方称对标准 JSON Patch 做了 Agent 场景优化；TS 实现靠 Proxy 记录对象写操作）。来源：<https://earendil.com/posts/pi-durable/>、<https://www.sohu.com/a/1087686028_355140>、README。
+- **版本化文档（Documents）**：typed JSON 状态（待办清单、计划单、票据、沙箱句柄），
+  与 transcript 相邻存储、在**同一原子 commit** 内变更，保证应用状态与产生它的对话记录永不失配。
+  文档可声明与 transcript 位置的三种关联策略：`asOf`（fork 时取父会话 fork 点的旧值）、
+  `current`（取最新值）、`initial`/fresh（取初始值）。
+  变更以 JSON-Patch-like 操作记录（官方称对标准 JSON Patch 做了 Agent 场景优化；
+  TS 实现靠 Proxy 记录对象写操作）。来源：<https://earendil.com/posts/pi-durable/>、
+  <https://www.sohu.com/a/1087686028_355140>、README。
 
 **存储后端**（可插拔 + 官方 conformance suite + benchmark）：
 
@@ -60,14 +71,23 @@
 - **提交先于执行**：`submit()` 在模型运行**之前**就持久化输入并返回回执（Cloudflare 侧同语义：`submit() returns once Pi has durably stored the input, before the model runs`），`wait()` 稍后取结果——长任务可跨请求/跨进程等待。来源：<https://developers.cloudflare.com/agents/harnesses/pi/>、README。
 - **exactly-once 提交**：`requestId`（Cloudflare 面为 `operationId`）使提交幂等——崩溃后客户端用同一 ID 重试，拿回的是**原 submission** 而非重复提问（`accepted: false`）。官方建议用「能扛住你自己重试的 ID，如入站事件 ID」。来源：<https://earendil.com/posts/pi-durable/>、<https://developers.cloudflare.com/agents/harnesses/pi/>。
 - **system prompt 的持久化**：每次请求前从会话所选 extension 的 sections 重建 system prompt；变更被记录在 **transcript 的对应位置**，重启或 fork 后模型看到的与当时一致；支持 mid-conversation 只发送变更部分以保持 provider prompt cache 命中。来源：<https://earendil.com/posts/pi-durable/>。
-- **compaction 也是任务**：接近上下文上限时后台压缩，summary 落在下一个 turn 边界；仅当下一请求放不下才等待压缩；provider 仍拒则压缩后重试一次；老消息**永远留在存储**不删。参数：`reserveTokens`（如 16384，越过即下一请求等 summary）、`backgroundTokens`（如 32768，此前启动后台压缩）。另有 `reset(handoff note)`：带着交接笔记开新上下文，历史仍可搜索——官方示范配 `search_history` 工具即「自我交接 + 事后检索」的无限长会话模式。来源：<https://earendil.com/posts/pi-durable/>、README。
+- **compaction 也是任务**：接近上下文上限时后台压缩，summary 落在下一个 turn 边界；
+  仅当下一请求放不下才等待压缩；provider 仍拒则压缩后重试一次；老消息**永远留在存储**不删。
+  参数：`reserveTokens`（如 16384，越过即下一请求等 summary）、`backgroundTokens`
+  （如 32768，此前启动后台压缩）。另有 `reset(handoff note)`：带着交接笔记开新上下文，
+  历史仍可搜索——官方示范配 `search_history` 工具即「自我交接 + 事后检索」的无限长会话模式。
+  来源：<https://earendil.com/posts/pi-durable/>、README。
 - **睡眠与唤醒**：任务等待靠「结束当前 phase 进 sleeping」而非进程内 sleep——睡眠存入存储，重启后到点续跑；宿主（如 Cloudflare DO）通过 `onWake`/`harness.wake()` 自行维护 alarm，对象可在任务睡眠期间 hibernate。Signals 机制让任务挂在类型化键上等外部输入（webhook 回执、人工答复），不占进程。来源：README、<https://developers.cloudflare.com/agents/harnesses/pi/>。
 - **多会话/fork**：一个 harness 并发跑任意多 conversation；conversation 可在 transcript 任意点 fork（Slack 频道=主会话、thread=fork 的官方示例），fork 见父历史但不复制，二者并行互不阻塞。来源：<https://earendil.com/posts/pi-durable/>。
 - **subagent 即被拥有的会话**：工具在 commit 内创建 `ownership: {kind:"task"}` 的子会话，崩溃重跑时经 `scanConversations({ownerTaskId})` 找回**同一个**子会话与同一 submission 等答案——subagent 无需内建，几行代码即成，且享受全部持久保证。来源：<https://earendil.com/posts/pi-durable/>、README。
 
 ## 4. 工具调用的幂等与重试语义
 
-- **二分法 `replay` 标注**：工具定义显式声明 `replay: "safe"`（重跑无害，如只读、整文件写入）→ 崩溃后自动重跑；**未标注则一律不重跑**——模型收到「interrupted」结果与已存的部分输出，自行决策（如 deploy、edit 这类会因已替换文本而失败或有副作用的调用）。官方准则：「running it twice is harmless」才标 safe。来源：<https://earendil.com/posts/pi-durable/>、<https://developers.cloudflare.com/agents/harnesses/pi/>。
+- **二分法 `replay` 标注**：工具定义显式声明 `replay: "safe"`（重跑无害，如只读、整文件写入）
+  → 崩溃后自动重跑；**未标注则一律不重跑**——模型收到「interrupted」结果与已存的部分输出，
+  自行决策（如 deploy、edit 这类会因已替换文本而失败或有副作用的调用）。
+  官方准则：「running it twice is harmless」才标 safe。来源：<https://earendil.com/posts/pi-durable/>、
+  <https://developers.cloudflare.com/agents/harnesses/pi/>。
 - **幂等键模式**：官方支付示例以 `payment-${task.id}` 作为银行扣款幂等键，「if a crash reruns this phase, the card is only charged once」；访谈中 GitHub Actions 例子：调度前先存 run ID。**幂等键 + 意图先行**是执行中崩溃的标准解。来源：<https://earendil.com/posts/pi-durable/>、<https://www.sohu.com/a/1087686028_355140>。
 - **工具意图先存**：「every tool call runs as its own durable task, and its intent is stored before it runs」——对应三明治第一层。来源：<https://earendil.com/posts/pi-durable/>。
 - **memo（first-write-wins）**：hook/工具做的**决策**存为 memo 小值与任务同存，崩溃重跑读到已存答案即不再重复决策。官方 approval hook 示例：崩溃后「finds the stored answer instead of asking again」。来源：<https://earendil.com/posts/pi-durable/>。
@@ -78,12 +98,34 @@
 
 ## 5. 崩溃恢复的实证
 
-- **官方 demo（vacation planner，约 1,300 行 TS）**：官方文章逐步描述崩溃场景——「The process dies. Weather and museums are done, trains is not. → Restarted. `search` is safe to rerun: only trains runs again.」即三个并行搜索子任务中，已完成两个不重跑、只重跑未完的那个；重启后可继续 steer 子代理。运行方式见文章（`node packages/coding-agent/src/experimental/{durable,vacation}/main.ts`）。来源：<https://earendil.com/posts/pi-durable/>。**未验证**：本调研未实际运行该 demo。
-- **代码内建恢复演练**：`packages/durable/test/examples` 共 48 个可运行示例，其中 `12-recovery`、`23-child-tasks`（明确标注「a restart while the payments run」）、`22-subagent-background`（标注 restart-safe）、`30-reload-and-restart`（stored choices surviving a restart）、`40-tool-waits-for-webhook`（「a crash before the park (idempotency memo)」）均直接演练崩溃-恢复路径。来源：README <https://github.com/earendil-works/pi/blob/main/packages/durable/README.md>。**未验证**：未实际执行。
+- **官方 demo（vacation planner，约 1,300 行 TS）**：官方文章逐步描述崩溃场景——
+  「The process dies. Weather and museums are done, trains is not. → Restarted. `search` is
+  safe to rerun: only trains runs again.」即三个并行搜索子任务中，已完成两个不重跑、
+  只重跑未完的那个；重启后可继续 steer 子代理。运行方式见文章
+  （`node packages/coding-agent/src/experimental/{durable,vacation}/main.ts`）。
+  来源：<https://earendil.com/posts/pi-durable/>。**未验证**：本调研未实际运行该 demo。
+- **代码内建恢复演练**：`packages/durable/test/examples` 共 48 个可运行示例，其中
+  `12-recovery`、`23-child-tasks`（明确标注「a restart while the payments run」）、
+  `22-subagent-background`（标注 restart-safe）、`30-reload-and-restart`
+  （stored choices surviving a restart）、`40-tool-waits-for-webhook`
+  （「a crash before the park (idempotency memo)」）均直接演练崩溃-恢复路径。
+  来源：README <https://github.com/earendil-works/pi/blob/main/packages/durable/README.md>。
+  **未验证**：未实际执行。
 - **规范与测试基建**：`packages/durable/docs/spec.md` 为规范性规格；存储后端有 conformance suite（`registerStorageConformance`，Vitest/Jest 兼容）与四类 benchmark（storage、memory storage、tool output、nested tools）。来源：README。
-- **生产级集成证据**：Cloudflare Agents SDK 官方 changelog（2026-10-02）+ 文档（2026-11-03 更新）给出逐场景恢复矩阵：对象驱逐/崩溃/超限 → alarm 重启 → 从 checkpoint 继续；**部署发生在 run 中间等同崩溃**（运行时给 30 秒排空，之后 alarm 重启续跑）；streaming 请求按重试语义处理。来源：<https://developers.cloudflare.com/agents/harnesses/pi/>、<https://developers.cloudflare.com/changelog/post/2026-10-02-pi-harness/>。完整可部署示例：<https://github.com/cloudflare/agents/tree/main/examples/next/harnesses/pi>（未验证：未部署）。
+- **生产级集成证据**：Cloudflare Agents SDK 官方 changelog（2026-10-02）+ 文档（2026-11-03 更新）
+  给出逐场景恢复矩阵：对象驱逐/崩溃/超限 → alarm 重启 → 从 checkpoint 继续；
+  **部署发生在 run 中间等同崩溃**（运行时给 30 秒排空，之后 alarm 重启续跑）；
+  streaming 请求按重试语义处理。
+  来源：<https://developers.cloudflare.com/agents/harnesses/pi/>、
+  <https://developers.cloudflare.com/changelog/post/2026-10-02-pi-harness/>。
+  完整可部署示例：<https://github.com/cloudflare/agents/tree/main/examples/next/harnesses/pi>
+  （未验证：未部署）。
 - **作者口述实证**：Mario 以 PIM（Pi Mobile）dogfooding 验证「Pi Durable 真的能用」，场景为手机端大脑 + 远程 Hetzner 执行环境。访谈原始视频（未验证，未观看）：<https://www.youtube.com/watch?v=ja_7AF54OtE>；中文编译：<https://www.sohu.com/a/1087686028_355140>、<https://www.infoq.cn/article/hQOHf1ZXoBs7uMpWJQss>。
-- **已知限制（官方自认，属恢复语义边界）**：尚无工具调用 approval/permission 步骤；`abort()` 需等会话 idle，无视 abort signal 的工具会占住会话；Cloudflare alarm 单次上限 15 分钟（harness 每 10 分钟交接，>15 分钟的单次模型流可能被切）；background 任务完成感知最多延迟 30 秒；**会话尚不能删除**；minor 版本间存储格式可能不兼容（升级不可回滚，需前滚修复）。来源：<https://developers.cloudflare.com/agents/harnesses/pi/>。
+- **已知限制（官方自认，属恢复语义边界）**：尚无工具调用 approval/permission 步骤；
+  `abort()` 需等会话 idle，无视 abort signal 的工具会占住会话；Cloudflare alarm 单次上限 15 分钟
+  （harness 每 10 分钟交接，>15 分钟的单次模型流可能被切）；background 任务完成感知最多延迟 30 秒；
+  **会话尚不能删除**；minor 版本间存储格式可能不兼容（升级不可回滚，需前滚修复）。
+  来源：<https://developers.cloudflare.com/agents/harnesses/pi/>。
 
 ## 6. Durable 机制对个人 Agent 的意义
 
@@ -101,7 +143,12 @@
 以下前半为 Pi Durable 已验证机制的映射，后半为**本阁基于调研的设计推论**（均标注）。
 
 **机制层（Pi 已验证，可直接映射）**：
-1. **选 checkpoint 任务状态机，不选事件溯源**。Pi 团队明确拒绝 event sourcing（重放语义复杂、与不可逆副作用难组合），采用「意图先行 → 执行 → 结果落库，中间态可弃」的三明治。映射到 Crystal：把「LLM 调用、工具调用、编排节点」统一抽象为 Task（fiber 驱动 + 状态机 phase + 每 phase 尾 commit checkpoint），重放单位是 **phase** 而非事件流。Pi 的 phase 语义「重跑从 phase 顶部开始，等待后的工作放下一 phase、所需数据放 checkpoint」是可直接照抄的纪律。
+1. **选 checkpoint 任务状态机，不选事件溯源**。Pi 团队明确拒绝 event sourcing
+   （重放语义复杂、与不可逆副作用难组合），采用「意图先行 → 执行 → 结果落库，中间态可弃」的三明治。
+   映射到 Crystal：把「LLM 调用、工具调用、编排节点」统一抽象为 Task
+   （fiber 驱动 + 状态机 phase + 每 phase 尾 commit checkpoint），重放单位是 **phase** 而非事件流。
+   Pi 的 phase 语义「重跑从 phase 顶部开始，等待后的工作放下一 phase、所需数据放 checkpoint」
+   是可直接照抄的纪律。
 2. **Transcript = 不可变 entry 追加 + 单一原子 commit 通道**。Crystal + SQLite 事务天然满足；「commit 未落库前不对外可见」的顺序纪律是正确性核心。
 3. **应用状态与对话同事务提交**（Documents）：待办、计划、流程实例状态放 typed JSON 文档，与产生它的 entry 同 commit 写入；fork 三策略（asOf/current/initial）语义完备，值得整体移植。
 4. **存储选型**：默认 SQLite（WAL + `synchronous=NORMAL`：进程崩溃安全、掉电可失最新一笔——个人 Agent 可接受的默认）；JSONL append-only 仅适合审计/回放，全历史驻内存不适合长驻；手机/边缘场景可用嵌入式 SQLite。Pi 的 conformance suite 思路（存储后端可插拔 + 一致性套件）值得为 Crystal 平台复刻，便于未来支持 Postgres/云 KV。

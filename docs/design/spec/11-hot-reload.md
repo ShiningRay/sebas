@@ -8,7 +8,12 @@
 
 ### 11.1 痛点定位与业界对照
 
-- **反面教材 Hermes**：确认无热重载——四证据链（均为仓库 issue/PR）：issue #48693（「detect config.yaml changes without /restart」，2026-06 开放未实现）；PR #13217（CLI 改配置后打印「must restart the gateway」警告）；PR #66777（2026-09 插件 toggle 仍提示 restart，SIGUSR2 reload 「在途」）；PR #37880（仅个别 key 进 `_CACHE_BUSTING_CONFIG_KEYS` 缓存失效名单，非全量热载）（热更新笔记 §7.2）。用户厌烦的正是此缺陷。
+- **反面教材 Hermes**：确认无热重载——四证据链（均为仓库 issue/PR）：issue #48693
+  （「detect config.yaml changes without /restart」，2026-06 开放未实现）；PR #13217
+  （CLI 改配置后打印「must restart the gateway」警告）；PR #66777
+  （2026-09 插件 toggle 仍提示 restart，SIGUSR2 reload 「在途」）；PR #37880
+  （仅个别 key 进 `_CACHE_BUSTING_CONFIG_KEYS` 缓存失效名单，非全量热载）（热更新笔记 §7.2）。
+  用户厌烦的正是此缺陷。
 - **正面教材 OpenClaw**：reload 是一等公民——`gateway.reload.mode` 默认 **hybrid**（hot / restart / hybrid / off 四模式）：多数改动静默热应用，结构性改动须重启（热更新笔记 §7.1）。**证据局限**：runbook 官方正文未逐字取到（docs.openclaw.ai fetch 仅返回导航目录），上述细节来自 openclawlab.com 与 openclaws.io 两镜像搜索快照互证（热更新笔记 §7.1/§9.1；已列 §15.1.12）。
 - **语义参照 nginx**：`nginx -s reload`=SIGHUP → master 重读配置 → 新 worker 起旧 worker 优雅收尾。单进程 Crystal 翻译：**进程不重启、配置整根换新；进行中的 turn 用旧配置快照跑完，新 turn 用新配置**（热更新笔记 §7.3）。
 
@@ -16,10 +21,22 @@
 
 | 件 | 设计 | 依据 |
 |---|---|---|
-| **① 触发** | **双通道并存**：文件监听主路（`naqvis/file_watcher`：Windows ReadDirectoryChangesW / Linux inotify 原生后端，初始化失败自动降级 snapshot 轮询）+ **IPC `reload` 命令**（确定性手动触发，复用 §9 NDJSON 命令面——Windows 主通道：Crystal 在 Windows 上 `Signal.trap` 直接抛 NotImplementedError，无 SIGHUP 可用；autobot `Ipc::Server` `cli/gateway.cr:102-143` 先例）+ POSIX SIGHUP 第三便利通道（nginx 惯例）。监听不可靠兜底：保留 autobot cron 式 mtime(+size) 轮询、间隔缩至 1–5s（网络盘/编辑器原子写/watch 实例耗尽丢事件的最后防线，~20 行零依赖已在 cron 中验证）。**去抖 200–500ms 合并窗口**吸收编辑器半写瞬态 | 热更新笔记 §2/§4 |
+| **① 触发** | **双通道并存**：文件监听主路 + **IPC `reload` 命令**；POSIX SIGHUP 作第三便利通道。三路细节见下 | 热更新笔记 §2/§4 |
 | **② 解析校验（先验后换）** | 读盘 → `expand_env_vars` → YAML 解析 → `validate!`（从启动 fail-fast 强化为**运行时全量校验**：必填 key、binding 引用的账号必须存在、账号 id 唯一）→ **失败保留旧配置 + Log.warn，不崩溃** | autobot cron `reload_if_changed` 先验后换先例（`cron/service.cr:275-290` rescue 保旧）+ `loader.cr:152-166` 现链复用；热更新笔记 §5 |
 | **③ 换引用** | **`Atomic(Config)` 整根替换**：校验通过才 `CONFIG.set(new_cfg)`，旧引用自然 GC。Crystal 默认单线程调度下裸换本就安全，Atomic 是面向 Parallel 上下文演进的零成本写法。注明歧义：`Atomic#swap` 详注有「T cannot contain any reference types」字样，指算术版 swap；以 reference type 可用方法清单为准（compare_and_set/get/set 均可用） | 热更新笔记 §3 |
 | **④ 消费纪律（每 turn 快照）** | **每 turn 开头取一次 `CONFIG.get` 快照**，turn 内不再受重载影响——「一次 turn 内配置语义一致」不依赖任何同步原语，天然兼容 fiber 切换；等价于 nginx「旧 worker 优雅收尾」的单进程实现 | 热更新笔记 §3.3 模式 B；OpenClaw runtime snapshot 同思路 |
+
+**① 触发件展开**：
+
+- **文件监听主路**：`naqvis/file_watcher`，Windows 用 ReadDirectoryChangesW、Linux 用 inotify
+  原生后端；初始化失败自动降级 snapshot 轮询。
+- **IPC `reload` 命令**：确定性手动触发，复用 §9 NDJSON 命令面。这是 Windows 的主通道——
+  Crystal 在 Windows 上 `Signal.trap` 直接抛 `NotImplementedError`，无 SIGHUP 可用；
+  先例见 autobot `Ipc::Server` `cli/gateway.cr:102-143`。
+- **POSIX SIGHUP**：nginx 惯例的第三便利通道。
+- **监听不可靠兜底**：保留 autobot cron 式 mtime(+size) 轮询，间隔缩至 1–5s。
+  这是网络盘、编辑器原子写、watch 实例耗尽丢事件的最后防线；~20 行零依赖，已在 cron 中验证。
+- **去抖 200–500ms 合并窗口**：吸收编辑器半写瞬态。
 
 ### 11.3 组件重应用矩阵（可热换 vs 必须重启）
 
