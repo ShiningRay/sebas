@@ -213,10 +213,11 @@ module Sebas
         cloned = HTTP::Client.post("#{base}/api/v1/templates.clone", headers: headers,
           body: %({"template": "tpl-one", "new_id": "tpl-clone"}))
         JSON.parse(cloned.body)["id"].as_s.should eq("tpl-clone")
-        store.close
       ensure
         server.close
         bus.close
+        store.try(&.close)
+        FileUtils.rm_rf(dir) unless dir.nil?
       end
     end
   end

@@ -130,12 +130,16 @@ module Sebas
         missing = client.request("sessions.dormant").should_not be_nil
         missing["error"].as_s.should contain("lifecycle 组件未装配")
 
-        lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store)
+        lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store, data_dir) # 与 gateway 装配同参
         server.lifecycle_store = lifecycle
         lifecycle.touch("agent:main:acc:email:ipc4@example.com", "main", "user")
 
         dormant = client.request("sessions.dormant").should_not be_nil
-        dormant["payload"]["dormant"].as_a.should be_empty # 无 stale 会话
+        dormant["payload"]["dormant"].as_a.should be_empty # 默认阈值下刚 touch 不休眠
+
+        # older_than_days=0：真实休眠转换覆盖（防过滤条件写反仍通过）
+        zero = client.request("sessions.dormant", {"older_than_days" => JSON::Any.new(0_i64)}).should_not be_nil
+        zero["payload"]["dormant"].as_a.should eq(["agent:main:acc:email:ipc4@example.com"])
 
         rejected = client.request("sessions.dormant", {"older_than_days" => JSON::Any.new(-1_i64)}).should_not be_nil
         rejected["error"].as_s.should contain("non-negative")

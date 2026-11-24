@@ -26,13 +26,27 @@ module Sebas
       STATUSES = %w[active dormant archived]
 
       class Store
-        def initialize(@store : ::Sebas::Platform::Store::Store, @base_dir : Path? = nil)
+        @base_dir : Path?
+
+        def initialize(@store : ::Sebas::Platform::Store::Store, base_dir : Path | String? = nil)
+          # base_dir 构造时绝对化（相对 data_dir 输入与后续展开共用同一基）
+          @base_dir = base_dir ? Path[base_dir].expand : nil
+        end
+
+        # 分隔符归一仅限 Windows（Unix 反斜杠是合法文件名字符，不得替换——CWE-22）
+        private def normalize_separators(path : String) : String
+          {% if flag?(:windows) %}
+            path.gsub("\\", "/")
+          {% else %}
+            path
+          {% end %}
         end
 
         # upsert：admission 时登记/刷新 last_active_at（status 不回退）
         def touch(session_key : String, agent_id : String, kind : String = "user",
                   fork_id : String? = nil) : Nil
-          now = ::Time.utc.to_rfc3339
+          # 纳秒精度：默认 to_rfc3339 无小数秒，同秒相等会使 < 阈值判定失效
+          now = ::Time.utc.to_rfc3339(fraction_digits: 9)
           @store.db.exec(
             "INSERT INTO sessions (session_key, agent_id, kind, fork_id, status, last_active_at, created_at) " \
             "VALUES (?, ?, ?, ?, 'active', ?, ?) " \
@@ -87,7 +101,7 @@ module Sebas
 
         # 休眠判定：last_active_at 距今超阈值天数 → dormant（仅 active 可休眠）
         def mark_dormant(older_than_days : Int32 = DEFAULT_DORMANT_DAYS) : Array(String)
-          cutoff = (::Time.utc - older_than_days.days).to_rfc3339
+          cutoff = (::Time.utc - older_than_days.days).to_rfc3339(fraction_digits: 9)
           dormant = [] of String
           @store.db.query(
             "SELECT session_key FROM sessions WHERE status = 'active' AND last_active_at < ?",
@@ -123,20 +137,39 @@ module Sebas
         # 防 archived_path 已写而 transcripts 残留），返回清理数。
         # 导出序列化用 JSON.build（inspect 产生 Crystal 字面量非合法 JSON）；
         # 导出文件名中的非法字符（含 Windows 禁用的 :）替换为 _。
+        # 目录限定（base_dir 注入时）：归档目录必须真实落于基目录之下。
+        # 两层：词法 expand 拦 ../（CWE-22）；File.realpath 复核拦中间组件
+        # symlink（CWE-59，词法检查不解析链接）。检查与写入同用 realpath
+        # 原生值——归一仅用于比较（见 normalize_separators）。拒收返回 nil。
+        private def resolve_archive_dir(archive_dir : String) : Path?
+          archive_base = @base_dir
+          return Path[archive_dir] unless archive_base
+          base_s = normalize_separators(begin
+            File.realpath(archive_base)
+          rescue File::Error
+            archive_base.expand.to_s
+          end).chomp('/')
+          # 解析「最深已存在祖先」的 realpath，尾部词法段回拼——
+          # 不存在的段无 symlink 可指，且避免为越界路径预创建目录
+          lexical = Path[archive_dir].expand(archive_base)
+          suffix = [] of String
+          probe = lexical
+          until Dir.exists?(probe) || probe.parent == probe
+            suffix.unshift(probe.parts.last)
+            probe = probe.parent
+          end
+          return unless Dir.exists?(probe) # 回溯到根都不存在（基目录缺失）
+          real = File.realpath(probe)
+          suffix.each { |seg| real = File.join(real, seg) }
+          resolved_s = normalize_separators(real)
+          return unless resolved_s == base_s || resolved_s.starts_with?(base_s + "/")
+          Path[real]
+        end
+
         def gc_archived(archive_dir : String, archive_confirm : Bool) : Int32
           return 0 unless archive_confirm
-          # 目录限定：base_dir 注入时，归档目录解析后必须落在其下（防 ../ 逃逸）
-          archive_base = @base_dir
-          dir = if archive_base
-                  resolved = Path[archive_dir].expand(archive_base)
-                  # 分隔符归一（Windows 反斜杠）：前缀比较跨平台一致
-                  base_s = archive_base.to_s.gsub("\\", "/").chomp('/')
-                  resolved_s = resolved.to_s.gsub("\\", "/")
-                  return 0 unless resolved_s == base_s || resolved_s.starts_with?(base_s + "/")
-                  resolved
-                else
-                  Path[archive_dir]
-                end
+          dir = resolve_archive_dir(archive_dir)
+          return 0 if dir.nil?
           FileUtils.mkdir_p(dir) unless Dir.exists?(dir)
           cleaned = 0
           list("archived").each do |row|

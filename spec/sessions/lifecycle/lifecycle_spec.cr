@@ -133,5 +133,29 @@ module Sebas
       Dir.children(data_dir / "archive").size.should eq(1)
       store.close
     end
+
+    {% if flag?(:windows) %}
+      pending "gc symlink 复核（Windows symlink 需特权，跳过）"
+    {% else %}
+      it "gc 目录限定：界内 symlink 指向界外时 realpath 复核拒收（CWE-59）" do
+        store = ::Sebas::Platform::Store::Store.new(Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4), "sebas.db"])
+        data_dir = Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4)]
+        FileUtils.mkdir_p(data_dir)
+        outside = Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4)]
+        FileUtils.mkdir_p(outside)
+        link = data_dir / "archive"
+        File.symlink(outside, link) # 界内 symlink 指向界外
+
+        lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store, data_dir)
+        key = "agent:main:acc:email:symlink@example.com"
+        store.append_transcript(key, "user", "no leak")
+        lifecycle.touch(key, "main", "user")
+        lifecycle.archive(key).should be_true
+
+        lifecycle.gc_archived("archive", archive_confirm: true).should eq(0)
+        Dir.children(outside).should be_empty # 界外零写入
+        store.close
+      end
+    {% end %}
   end
 end
