@@ -16,6 +16,34 @@ module Sebas
         ) { true } || false
       end
 
+      # 有调度状态的会话键（collecting/sealed/queued 批次或 steer 行——
+      # 与 transcripts 解耦：debounce 待调度会话无 transcript 也可枚举，hlIq）
+      def scheduled_session_keys : Array(String)
+        keys = Array(String).new
+        @db.query("SELECT DISTINCT session_key FROM session_batches WHERE status IN ('collecting', 'sealed', 'queued')") do |result_set|
+          result_set.each { keys << result_set.read(String) }
+        end
+        @db.query("SELECT DISTINCT session_key FROM session_steers") do |result_set|
+          result_set.each { keys << result_set.read(String) }
+        end
+        keys.uniq!.sort!
+      end
+
+      # 会话全部批次行（M4.5-WP6 queue.get/metrics 聚合）
+      def session_batches_by_session(session_key : String) : Array(::Sebas::Platform::Store::Store::SessionBatchRow)
+        rows = [] of ::Sebas::Platform::Store::Store::SessionBatchRow
+        @db.query("SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason " \
+                  "FROM session_batches WHERE session_key = ? ORDER BY created_at", session_key) do |result_set|
+          result_set.each do
+            rows << ::Sebas::Platform::Store::Store::SessionBatchRow.new(
+              result_set.read(String), result_set.read(String), result_set.read(String),
+              result_set.read(String), result_set.read(Int64), result_set.read(Int64),
+              result_set.read(String?))
+          end
+        end
+        rows
+      end
+
       def session_batch(batch_id : String) : ::Sebas::Platform::Store::Store::SessionBatchRow?
         @db.query_one?(
           "SELECT batch_id, session_key, status, policy_snapshot, first_seq, last_seq, seal_reason FROM session_batches WHERE batch_id = ?",
@@ -136,6 +164,16 @@ module Sebas
       end
 
       # 跨会话按状态查（WP4：expire_due 超时扫描 / recovery unknown_not_injected 收敛）
+      # 全表（M4.5-WP6 metrics：/steer 短路不经 admission，会话可能不在 sessions 表）
+      def steers_all : Array(::Sebas::Platform::Store::Store::SessionSteerRow)
+        rows = [] of ::Sebas::Platform::Store::Store::SessionSteerRow
+        @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at, dispatch_event_id " \
+                  "FROM session_steers ORDER BY created_at, rowid") do |result_set|
+          result_set.each { rows << read_steer(result_set) }
+        end
+        rows
+      end
+
       def steers_with_status(status : String) : Array(::Sebas::Platform::Store::Store::SessionSteerRow)
         rows = [] of ::Sebas::Platform::Store::Store::SessionSteerRow
         @db.query("SELECT steer_id, session_key, target_turn_id, target_generation, payload, status, reason, created_at, dispatch_event_id " \

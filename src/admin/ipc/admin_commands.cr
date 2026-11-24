@@ -85,6 +85,20 @@ module Sebas
         # M4.4-WP4 管理面命令路由：approvals.*（既有）/sessions 生命周期/
         # templates（本卡新增）。写命令认证强制（CWE-863 同口径）；查询读
 
+        # 调度管理面（M4.5-WP6）：写命令经 authenticated_response 闸（dispatch 分流），
+        # handler 由 gateway 注入（IPC/HTTP 同一实现语义一致）
+        private def scheduling_dispatch(io : TCPSocket, frame : Frame) : String
+          handler = @scheduling_admin_handler
+          return error_response(frame.id, "#{frame.type} not available: scheduling admin 未装配") unless handler
+          params = begin
+            JSON.parse(frame.data.to_json)
+          rescue
+            ::JSON::Any.new(Hash(String, ::JSON::Any).new)
+          end
+          code, body = handler.call(frame.type.to_s, params)
+          code == 200 || code == 202 ? ok_response(frame.id, JSON.parse(body).as_h) : error_response(frame.id, body)
+        end
+
         private def admin_dispatch(io : TCPSocket, frame : Frame) : String
           frame_type = frame.type
           return error_response(frame.id, "missing frame type") unless frame_type

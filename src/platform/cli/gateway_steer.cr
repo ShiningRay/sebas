@@ -170,6 +170,22 @@ module Sebas
           Log.error(exception: ex) { "steer dispatch scan failed, next tick continues" }
         end
 
+        # steer 过期扫描 + outbox 派发协程（gateway initialize 调用）
+        def spawn_steer_scanners : Nil
+          spawn(name: "sebas-steer-expire-scanner") do
+            loop do
+              sleep 100.milliseconds
+              break if @stopping_scan.get
+              begin
+                @steer_center.expire_due
+                dispatch_due_steers
+              rescue ex
+                Log.error(exception: ex) { "steer scan failed, next tick continues" }
+              end
+            end
+          end
+        end
+
         # IPC steer_handler 接线（gateway 构造调用）
         def wire_steer_handler : Nil
           @ipc.steer_handler = ->(session_key : String, payload : String, turn_id : String?, generation : Int64?) do

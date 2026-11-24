@@ -39,6 +39,9 @@ module Sebas
         @bucket_batch_ids = Hash(String, String).new
         @clock : -> Int64
 
+        # 状态迁移事件回调（M4.5-WP6 SSE）：(event_name, payload)——nil = 未接线
+        setter on_transition : Proc(String, ::JSON::Any, Nil)?
+
         def initialize(@session_key : String, @store : ::Sebas::Platform::Store::Store,
                        @dispatch : DispatchFn, clock : (-> Int64)? = nil)
           @metrics = {
@@ -120,6 +123,7 @@ module Sebas
             # queue 模式：每消息独立批次，admit 成功后立即 seal（flush）并入队
             seal_and_queue(batch.batch_id, SealReason::Flush)
             # 空闲即派发；回执排队位 = 本批之前的 pending 批数（自身被派发则为 0）
+            # batch.queued 已在 seal_and_queue 共享路径发送（hlIz）
             dispatched = dispatch_locked
             position = if dispatched == batch.batch_id
                          0
@@ -151,6 +155,9 @@ module Sebas
               Log.warn { "stale completion callback ignored (session=#{@session_key} batch=#{batch_id})" }
             end
             bump("completed")
+            emit("batch.settled", {"session_key" => ::JSON::Any.new(@session_key),
+                                   "batch_id"    => ::JSON::Any.new(batch_id),
+                                   "failed"      => ::JSON::Any.new(failed_event_ids.size.to_i64)})
             flush_on_turn_end_buckets
             dispatch_locked
           end
@@ -158,6 +165,22 @@ module Sebas
 
         # 显式 flush 入口（契约 §4.3：显式 flush > 其余条件，不等 debounce）：
         # 逐桶立即封存。返回封存桶数。
+        # 指标快照（M4.5-WP6 metrics.scheduling）：内存计数器只读副本
+        def metrics_snapshot : Hash(String, Int64)
+          @mutex.synchronize { @metrics.dup }
+        end
+
+        # 在途批次（运行中 batch id；无则 nil）
+        def in_flight_batch : String?
+          @mutex.synchronize { @running_batch }
+        end
+
+        private def emit(event : String, payload : Hash(String, ::JSON::Any)) : Nil
+          @on_transition.try(&.call(event, ::JSON::Any.new(payload)))
+        rescue
+          nil # 事件不反噬调度主链
+        end
+
         def flush_all_buckets : Int32
           @mutex.synchronize do
             sealed = 0
@@ -199,6 +222,10 @@ module Sebas
             @store.settle_batch(batch_id, BatchStatus::Running, BatchStatus::Failed,
               [] of ::Sebas::Platform::Store::Store::MemberMove)
             bump("completed")
+            emit("batch.settled", {"session_key" => ::JSON::Any.new(@session_key),
+                                   "batch_id"    => ::JSON::Any.new(batch_id),
+                                   "failed"      => ::JSON::Any.new(true),
+                                   "crash"       => ::JSON::Any.new(true)})
             dispatch_locked
           end
         end
@@ -339,10 +366,24 @@ module Sebas
 
         # ---- 内部（调用方须持 @mutex）----
 
-        # seal + 入队（受守卫迁移，竞态由状态守卫兜底）
+        # seal + 入队（受守卫迁移，竞态由状态守卫兜底）。sealed 事件在共享
+        # 路径发送（gzkQ：flush_on_turn_end/queue admission/shutdown 全覆盖，
+        # 迁移成功才发）
         private def seal_and_queue(batch_id : String, reason : SealReason) : Nil
-          @store.transition_session_batch(batch_id, BatchStatus::Collecting, BatchStatus::Sealed, reason.to_s)
-          @store.transition_session_batch(batch_id, BatchStatus::Sealed, BatchStatus::Queued)
+          sealed = @store.transition_session_batch(batch_id, BatchStatus::Collecting,
+            BatchStatus::Sealed, reason.to_s)
+          queued = @store.transition_session_batch(batch_id, BatchStatus::Sealed, BatchStatus::Queued)
+          if sealed
+            emit("batch.sealed", {"session_key" => ::JSON::Any.new(@session_key),
+                                  "batch_id"    => ::JSON::Any.new(batch_id),
+                                  "reason"      => ::JSON::Any.new(reason.to_s.downcase)})
+          end
+          # queued 事件在共享入队路径发送（hlIz：覆盖 debounce seal_due 路径；
+          # queue admission 处删除避免 started→queued 逆序）
+          if queued
+            emit("batch.queued", {"session_key" => ::JSON::Any.new(@session_key),
+                                  "batch_id"    => ::JSON::Any.new(batch_id)})
+          end
         end
 
         # 空闲则派发 head：返回被派发批次 id；nil = 会话忙 / 停止中 / 无待发批 /
@@ -358,6 +399,8 @@ module Sebas
           return unless @store.transition_session_batch(batch_id, BatchStatus::Queued, BatchStatus::Running)
           @running_batch = batch_id
           bump("dispatched")
+          emit("batch.started", {"session_key" => ::JSON::Any.new(@session_key),
+                                 "batch_id"    => ::JSON::Any.new(batch_id)})
           begin
             @dispatch.call(@session_key, dispatch_payload(batch_id))
           rescue ex

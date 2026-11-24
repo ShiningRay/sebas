@@ -9,7 +9,8 @@ module Sebas
       VERSION      = 1
       MAX_FRAME    = 8 * 1024 * 1024 # 8MiB
       DEFAULT_PORT = 18791
-      CAPABILITIES = %w[sessions.read events.subscribe approvals config.status]
+      CAPABILITIES = %w[sessions.read events.subscribe approvals config.status
+        sessions.queue sessions.steer.get scheduling.config metrics.scheduling]
 
       # 首帧 hello（客户端→服务端）
       record Hello, protocol : String, version : Int32, caps : Array(String), token : String? = nil do

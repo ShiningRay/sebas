@@ -1,4 +1,5 @@
 require "http/server"
+require "./scheduling_http"
 require "json"
 require "../../log"
 require "../../platform/bus/bus"
@@ -12,6 +13,7 @@ module Sebas
   module Admin
     module HTTP
       class Server
+        include ::Sebas::Admin::HTTP::SchedulingHTTPMethods
         Log = Sebas::Log.for("sebas.admin.http")
 
         getter port : Int32
@@ -19,6 +21,7 @@ module Sebas
         setter templates : ::Sebas::Agents::AgentRegistry?
         setter steer_center : ::Sebas::Sessions::Scheduling::SteerCenter?
         setter hook_handler : (String, String, String? -> Tuple(Int32, String))?
+        setter scheduling_admin_handler : (String, ::JSON::Any -> Tuple(Int32, String))?
 
         @server : ::HTTP::Server?
         @running = Atomic(Bool).new(false)
@@ -122,6 +125,7 @@ module Sebas
             ctx.response.print(%({"error": "unauthorized"}))
             return
           end
+          return if scheduling_routes(ctx) # 调度管理面（/api/v1 闸后——token 统一，CWE-862）
           route_api(ctx, path)
         end
 

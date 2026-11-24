@@ -1,4 +1,5 @@
 require "yaml"
+require "./policy_overlays"
 require "json"
 
 # 会话输入调度策略（session-input-scheduling.md §3；M3-WP1 承载）
