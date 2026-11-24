@@ -210,14 +210,17 @@ class SelectionTest < Minitest::Test
     assert_equal 1, action.excluded.length
   end
 
-  def test_tracking_and_manual_excluded
+  def test_tracking_manual_and_design_excluded
     data = snapshot(issues: [
       issue(1, body: automation(kind: "tracking")),
       issue(2, body: automation(kind: "manual")),
+      issue(4, body: automation(kind: "design", order: [0])),
       issue(3, body: automation(order: [4]))
     ])
     action = select(data)
     assert_equal 3, action.issue
+    reasons = action.excluded.map { |item| item["reason"] }
+    assert_includes reasons, "kind=design"
   end
 
   # §3.2：暂停卡未放行时整轮停手，不得换卡并发
@@ -646,6 +649,15 @@ track: main
     ])
     action = select(data)
     assert_empty action.metadata_gaps.select { |g| g["issue"] == 904 }
+  end
+
+  def test_design_card_is_not_a_gap_even_without_milestone
+    # design 卡归 Scribe，不进 Implementer 的缺口提示。
+    data = snapshot(issues: [
+      issue(905, body: automation(kind: "design", order: [4, 0]), milestone: nil)
+    ])
+    action = select(data)
+    assert_empty action.metadata_gaps.select { |g| g["issue"] == 905 }
   end
 
   # CR：依赖节里只有引用说明（「另见 #35」）也算工作包信号。

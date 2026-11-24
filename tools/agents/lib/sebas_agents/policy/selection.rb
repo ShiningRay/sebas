@@ -6,7 +6,8 @@ module SebasAgents
     module Selection
       require "set"
 
-      NON_WORK_KINDS = %w[tracking manual].freeze
+      # design 卡由 Scribe 执行，与 tracking / manual 一样不进 Implementer 选卡。
+      NON_WORK_KINDS = %w[tracking manual design].freeze
 
       module_function
 
@@ -276,6 +277,9 @@ module SebasAgents
       # 第 3 条刻意不复用 prose_dependencies：那个解析器会剥掉引用说明以得到
       # 「真正的前置」，而这里只关心「作者是否按工作包格式写了依赖节」。
       def work_package_like?(issue)
+        # design / tracking / manual 明确不归 Implementer，不能进缺口提示。
+        kind = issue.automation && issue.automation["kind"]
+        return false if NON_WORK_KINDS.include?(kind)
         return true if issue.label?("plan")
         return true if issue.automation
 
