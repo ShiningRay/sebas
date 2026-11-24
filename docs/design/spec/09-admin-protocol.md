@@ -37,3 +37,33 @@
 | 配置 | `config.reload`（触发 §11.2 先验后换管线，返回接受/拒绝与原因）；`config.status`（当前配置摘要哈希、最近 reload 结果、restart 类待生效项） |
 
 契约版本化：协议带版本号与 caps 协商（NDJSON 首帧 hello 已有此机制；HTTP 走 `/api/v1/` 前缀）。
+
+### 9.3 生命周期与模板命令面（M4.4-WP4）
+
+生命周期与模板经 IPC/HTTP 可查可操作。鉴权口径按传输面分：IPC 读命令匿名、写命令认证（M1-WP9 口径）；HTTP 全部 /api/v1/ 路由外层统一 Bearer token（token 模式下无匿名读）。
+
+| 命令 | IPC | IPC 认证 | HTTP | HTTP 认证 |
+|---|---|---|---|---|
+| sessions.lifecycle（status 过滤查询） | ✓ | 匿名 | GET /api/v1/sessions.lifecycle | token |
+| sessions.dormant（older_than_days 负数/越界拒绝） | ✓ | 写认证 | POST /api/v1/sessions.dormant | token |
+| sessions.archive | ✓ | 写认证 | POST /api/v1/sessions.archive | token |
+| sessions.gc（confirm 闸 + 目录限定） | ✓ | 写认证 | POST /api/v1/sessions.gc | token |
+| templates.list | ✓ | 匿名 | GET /api/v1/templates.list | token |
+| templates.clone（冲突 → error/409） | ✓ | 写认证 | POST /api/v1/templates.clone | token |
+
+语义要点：
+
+- **装配**：lifecycle store 与 AgentRegistry 构造后经 setter 注入 IPC/HTTP 两侧（registry 创建晚于两侧构造）；IPC hello 帧随 token 上行（discovery.json 同源回读），写命令认证闸由此打通。
+- **GC 目录限定**（base_dir= gateway data_dir）：词法 expand 拦 `../`（CWE-22）；「最深已存在祖先 realpath + 词法尾段回拼」复核拦中间组件 symlink（CWE-59），检查与写盘同用 realpath 原生值，分隔符归一仅 Windows flag 生效。越界拒收且不预创建目录。
+- **休眠原子性**：mark_dormant 条件 UPDATE（`status='active' AND last_active_at < cutoff`）原子查改，查改间隙被 touch 刷新的会话不误标；last_active_at 纳秒精度（默认 rfc3339 无小数秒，同秒相等使 older_than_days=0 判定失效）。
+
+**锚点（工部复核）**
+
+| 断言 | 锚点 |
+|---|---|
+| admin_dispatch 统一路由 + 写命令认证闸 | src/admin/ipc/server.cr:315-322 |
+| lifecycle/templates 命令分发 | src/admin/ipc/server.cr:251-333 |
+| HTTP 路由表 | src/admin/http/server.cr:79-115 |
+| gateway 注入接线 | src/platform/cli/gateway.cr:140-145 |
+| GC 目录限定 | src/sessions/lifecycle/lifecycle.cr:139-167 |
+

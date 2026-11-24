@@ -8,20 +8,20 @@
 
 | 章 | 文件 | 行数 | 内容 |
 |---|---|---|---|
-| §1 | [执行摘要](01-executive-summary.md) | 42 | 一句话定位、六份调研的结论与整体形态 |
+| §1 | [执行摘要](01-executive-summary.md) | 52 | 一句话定位、六份调研的结论与整体形态 |
 | §2 | [目标与非目标](02-goals-non-goals.md) | 26 | §2.1 四条硬需求范围、§2.2 防蔓延边界 |
 | §3 | [核心概念模型](03-core-concepts.md) | 112 | Account/Agent/Binding、most-specific 路由、会话键五段、配置树 |
 | §4 | [总体架构](04-architecture.md) | 39 | 分层职责、Crystal 实现要点、进程模型 |
 | §5 | [多账号设计（硬需求①）](05-multi-account.md) | 111 | 账号生命周期、接收侧两形态、TokenProvider、三渠道接入 |
-| §6 | [会话与记忆](06-session-memory.md) | 35 | 会话管理、记忆分层、会话输入调度（提案态） |
+| §6 | [会话与记忆](06-session-memory.md) | 49 | 会话管理、记忆分层、会话输入调度（提案态） |
 | §7 | [编排引擎（硬需求②）](07-orchestration.md) | 112 | 三段式原语、效应三明治、幂等三件套、lease 与预算、审批、DSL |
-| §8 | [多 Agent 协作](08-multi-agent.md) | 24 | 防环三件套、subagent 边界、并发上限 |
-| §9 | [管理面与控制协议](09-admin-protocol.md) | 39 | NDJSON/IPC TUI + HTTP API 双入口与共用契约 |
+| §8 | [多 Agent 协作](08-multi-agent.md) | 75 | 防环三件套、subagent 边界、并发上限 |
+| §9 | [管理面与控制协议](09-admin-protocol.md) | 69 | NDJSON/IPC TUI + HTTP API 双入口与共用契约 |
 | §10 | [安全模型](10-security.md) | 45 | fail-closed 清单、凭据保护、审批链、Sandbox 策略 |
-| §11 | [配置热更新（硬需求③）](11-hot-reload.md) | 56 | 四正交件、组件重应用矩阵、实现要点 |
-| §12 | [插件脚本层（硬需求④）](12-plugin-layer.md) | 223 | mruby 子进程、沙箱 watchdog、包格式、升级回滚、能力安全、22 hook 闭集 |
-| §13 | [目录结构与模块划分](13-module-layout.md) | 61 | src/ 布局草案与模块归属 |
-| §14 | [分期路线图](14-roadmap.md) | 16 | M0–M3 验收要点、排期依据、共同门禁 |
+| §11 | [配置热更新（硬需求③）](11-hot-reload.md) | 73 | 四正交件、组件重应用矩阵、实现要点 |
+| §12 | [插件脚本层（硬需求④）](12-plugin-layer.md) | 294 | mruby 子进程、沙箱 watchdog、包格式、升级回滚、能力安全、22 hook 闭集 |
+| §13 | [目录结构与模块划分](13-module-layout.md) | 79 | src/ 布局草案与模块归属 |
+| §14 | [分期路线图](14-roadmap.md) | 99 | M0–M3 验收要点、排期依据、共同门禁 |
 | §15 | [风险与未决问题](15-risks.md) | 37 | §15.1 未验证依赖（13 条）、§15.2 架构性能风险、§15.3 已知代价 |
 | §16 | [调研来源对照表](16-sources.md) | 49 | 决策 → 六份调研笔记的依据映射 |
 | 附录 | [本文档未决事项](99-open-questions.md) | 11 | 向用户征求决策的五条 |

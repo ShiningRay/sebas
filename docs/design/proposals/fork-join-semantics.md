@@ -363,38 +363,7 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 3. 与架构文档勾稽：session_key（§1.3）、expectations DDL（§4.1）、装配改造、DSL KNOWN_TOOLS 扩展在架构文档有对应组件落位。
 4. 定稿后按既有流吸收进 design.md（§8 协作扩展 + §14 路线图延至 M4）——M4.0-WP2 工作包，非本文动作。
 
----
-
-## 11. 管理面命令面（M4.4-WP4 补遗）
-
-生命周期与模板经 IPC/HTTP 可查可操作。鉴权口径按传输面分：IPC 读命令匿名、写命令认证（M1-WP9 口径）；HTTP 全部 /api/v1/ 路由外层统一 Bearer token（token 模式下无匿名读）。
-
-| 命令 | IPC | IPC 认证 | HTTP | HTTP 认证 |
-|---|---|---|---|---|
-| sessions.lifecycle（status 过滤查询） | ✓ | 匿名 | GET /api/v1/sessions.lifecycle | token |
-| sessions.dormant（older_than_days 负数/越界拒绝） | ✓ | 写认证 | POST /api/v1/sessions.dormant | token |
-| sessions.archive | ✓ | 写认证 | POST /api/v1/sessions.archive | token |
-| sessions.gc（confirm 闸 + 目录限定） | ✓ | 写认证 | POST /api/v1/sessions.gc | token |
-| templates.list | ✓ | 匿名 | GET /api/v1/templates.list | token |
-| templates.clone（冲突 → error/409） | ✓ | 写认证 | POST /api/v1/templates.clone | token |
-
-语义要点：
-
-- **装配**：lifecycle store 与 AgentRegistry 构造后经 setter 注入 IPC/HTTP 两侧（registry 创建晚于两侧构造）；IPC hello 帧随 token 上行（discovery.json 同源回读），写命令认证闸由此打通。
-- **GC 目录限定**（base_dir= gateway data_dir）：词法 expand 拦 `../`（CWE-22）；「最深已存在祖先 realpath + 词法尾段回拼」复核拦中间组件 symlink（CWE-59），检查与写盘同用 realpath 原生值，分隔符归一仅 Windows flag 生效。越界拒收且不预创建目录。
-- **休眠原子性**：mark_dormant 条件 UPDATE（`status='active' AND last_active_at < cutoff`）原子查改，查改间隙被 touch 刷新的会话不误标；last_active_at 纳秒精度（默认 rfc3339 无小数秒，同秒相等使 older_than_days=0 判定失效）。
-
-### 锚点（工部复核）
-
-| 断言 | 锚点 |
-|---|---|
-| admin_dispatch 统一路由 + 写命令认证闸 | src/admin/ipc/server.cr:315-322 |
-| lifecycle/templates 命令分发 | src/admin/ipc/server.cr:251-333 |
-| HTTP 路由表 | src/admin/http/server.cr:79-115 |
-| gateway 注入接线 | src/platform/cli/gateway.cr:140-145 |
-| GC 目录限定 | src/sessions/lifecycle/lifecycle.cr:139-167 |
-
----
+> 管理面命令面（sessions 生命周期 / templates）已归入 [spec/09-admin-protocol.md](../spec/09-admin-protocol.md) §9.3。
 
 ## 附：关键证据锚点（工部抽查复核 + 翰林报告转引）
 

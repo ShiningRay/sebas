@@ -33,23 +33,23 @@
 | 文件 | 行数 | 主题 |
 |---|---|---|
 | [commitments-calendar-integration.md](proposals/commitments-calendar-integration.md) | 338 | 承诺与日历整合：Calendar 作为持久意图与时间上下文层（M5–M7 输入） |
-| [fork-join-semantics.md](proposals/fork-join-semantics.md) | 310 | fork/join 影分身语义 |
-| [session-input-scheduling.md](proposals/session-input-scheduling.md) | 216 | 会话输入调度（队列/debounce/正交 steer） |
-| [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 175 | 影分身架构 |
+| [fork-join-semantics.md](proposals/fork-join-semantics.md) | 390 | fork/join 影分身语义 |
+| [session-input-scheduling.md](proposals/session-input-scheduling.md) | 223 | 会话输入调度（队列/debounce/正交 steer） |
+| [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 185 | 影分身架构 |
 | [fork-join-shadow-clone-positioning.md](proposals/fork-join-shadow-clone-positioning.md) | 161 | 影分身定位 |
-| [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 81 | 忙时插话与转向 |
+| [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 85 | 忙时插话与转向 |
 
 ## 调研 `research/`（7 篇）
 
 | 文件 | 行数 | 主题 |
 |---|---|---|
-| [channels-wecom-lark-email.md](research/channels-wecom-lark-email.md) | 277 | 企业微信 / 飞书 / email 渠道调研 |
-| [autobot-architecture.md](research/autobot-architecture.md) | 269 | autobot 架构与可复用件（A1–A10） |
-| [crystal-hot-reload.md](research/crystal-hot-reload.md) | 237 | Crystal 热重载机制 |
+| [channels-wecom-lark-email.md](research/channels-wecom-lark-email.md) | 310 | 企业微信 / 飞书 / email 渠道调研 |
+| [autobot-architecture.md](research/autobot-architecture.md) | 283 | autobot 架构与可复用件（A1–A10） |
+| [crystal-hot-reload.md](research/crystal-hot-reload.md) | 275 | Crystal 热重载机制 |
 | [openclaw.md](research/openclaw.md) | 225 | OpenClaw 旁证 |
-| [hermes-agent.md](research/hermes-agent.md) | 218 | Hermes Agent 旁证 |
-| [pi-durable.md](research/pi-durable.md) | 145 | Pi 持久化/恢复旁证 |
-| [prior-art-notes.md](research/prior-art-notes.md) | 108 | 旁证汇总 |
+| [hermes-agent.md](research/hermes-agent.md) | 256 | Hermes Agent 旁证 |
+| [pi-durable.md](research/pi-durable.md) | 192 | Pi 持久化/恢复旁证 |
+| [prior-art-notes.md](research/prior-art-notes.md) | 153 | 旁证汇总 |
 
 ## 核验与记录 `review/`（12 篇）
 
