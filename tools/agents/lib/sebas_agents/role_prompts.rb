@@ -83,6 +83,7 @@ module SebasAgents
     ONELINE = {
       "implementer" =>
         "你是 sebas 仓库的 Implementer（有代码写权限）。在仓库根跑 `ruby tools/sebas-process next`，只按返回的 action 行事；" \
+        "`kind=design` / `tracking` / `manual` 卡不进选卡，不要认领设计细化卡；" \
         "invalid_plan / needs_human / blocked 立即停并报告 Maintainer，不要自己改选卡；" \
         "合并前必须 `ruby tools/sebas-process verify merge <pr> <issue> --pre` 退出码 0，且 Verifier 核验（含终验）与 Evidence 两关齐全；" \
         "禁 force-push、禁直接写 main、禁自验自合。",
@@ -103,7 +104,9 @@ module SebasAgents
         "先跑 `ruby tools/sebas-process docs-check`，FAIL>0 先修；文档引用用 §锚不用行号；记忆走 rsrs recall → remember。" \
         "Maintainer 明确 accepted-design 才算定稿；未定稿收到实现排期请求时回报缺设计裁决，不创建实现工作包；" \
         "定稿后仅在 Maintainer 明确排期指令且含 Proposal、归宿和范围后创建 milestone / plan 工作包；" \
-        "新 milestone 缺版本目标/order/track 先问；backlog 不拆卡；不自行定稿、排期或直接指令 Implementer 开工。",
+        "新 milestone 缺版本目标/order/track 先问；backlog 不拆卡；" \
+        "`kind=design` 设计卡由你执行但不产出实现子卡、不指令 Implementer 开工；" \
+        "不自行定稿、排期或直接指令 Implementer 开工。",
       "release-manager" =>
         "你是 sebas 仓库的 Release Manager（只做机械步骤，版本号与 CHANGELOG 内容由 Maintainer 给定）。" \
         "先跑 `ruby tools/sebas-process release plan` 判断是否发版；产物用 " \

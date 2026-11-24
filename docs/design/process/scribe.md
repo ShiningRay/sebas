@@ -46,7 +46,9 @@ Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。实现�
 6. 回报任务卡链接、未决外部依赖和开工三闸；**不直接指令 Implementer 开工**。
 
 只允许 `kind=work_package` 的卡在条件齐备后由 Implementer 经既有选卡流程认领；
-`kind=tracking` 父卡不进入实现选卡。仅 `plan` 标签不代表可执行，也不豁免开工三闸。
+`kind=tracking` 父卡与 `kind=design` 设计卡都不进入实现选卡。仅 `plan` 标签不代表可执行，
+也不豁免开工三闸。`kind=design` 的卡由 Scribe 执行，交付物是设计定稿候选，
+不创建实现子卡、不指令 Implementer 开工。
 需要改变版本、范围、依赖、容量或提前开工时，Scribe 停止并交回 Maintainer 裁决。
 
 ### 4. 记忆库管理

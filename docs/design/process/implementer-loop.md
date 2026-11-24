@@ -52,10 +52,14 @@ track: main
 
 | 字段 | 含义 |
 |---|---|
-| `kind` | `work_package` 可执行；`tracking` 父卡；`manual` 人工任务 |
+| `kind` | `work_package` 可执行；`tracking` 父卡；`manual` 人工任务；`design` Scribe 设计细化卡（不进 Implementer 选卡） |
 | `order` | 计划顺序数组，例如 M4.0-WP1 为 `[4,0,1]`；只在同一 milestone 内比较 |
 | `depends_on` | issue 编号、`gate:<名称>` 和 `external:<编号>` 前置；默认空数组也必须显式写出 |
 | `external` | 外部依赖编号，对应 [plan/risks.md](../plan/risks.md) E.1；每项同时进入 `depends_on` |
+
+`kind=design` 用于仅做设计细化、交付设计定稿候选的工作包（例如把 Proposal 共识整理成
+`docs/design/proposals/` 文档）。它由 Scribe 执行，不进 Implementer 选卡，也不触发开工三闸；
+文档 PR 合入只代表设计快照入库，设计定稿与实现排期仍是 Maintainer 的独立裁决。
 
 硬依赖以 WP 的「依赖」字段为权威。由该字段生成或逐条核对 Automation，再与 GitHub 原生 `blocked_by` 核对 issue 编号部分；三者不一致即 `invalid_plan`。B.1 DAG 图只用于排期展示，不作为另一套独立真值。首版只做一致性检查，不自动改依赖关系。
 
