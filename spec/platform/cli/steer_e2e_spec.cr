@@ -62,20 +62,22 @@ module Sebas
       ))
       gateway.run
       ok = wait_for { gateway.store.intent_status("evt-steer-1") == "done" }
+      session = "agent:main:test-acc:email:alice@example.com"
+      # 等 outbox 扫描器派发确认（queued→dispatched）+ 合成 turn 消费 replay
+      ok = ok && wait_for(10.seconds) do
+        gateway.store.session_steers(session, "dispatched").size == 1 &&
+          gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay]"))
+      end
       gateway.shutdown
       ok.should be_true
 
-      session = "agent:main:test-acc:email:alice@example.com"
       steers = gateway.store.session_steers(session)
       steers.size.should eq(1)
-      steers.first.status.should eq("queued")
-      steers.first.reason.should eq("no_active_turn")
+      steers.first.status.should eq("dispatched") # outbox 派发确认后的终态
       steers.first.payload.should eq("改用中文回答")
-      # 原事件不进 turn（纠偏不占 turn task）；queued 立即合成投递组后续
-      # 批次（不丢消息）——合成 turn 消费 [steer replay] 内容
+      # 原事件不进 turn（纠偏不占 turn task）；合成 turn 消费 replay 内容
       expect_raises(DB::NoResultsError) { gateway.store.task("turn:evt-steer-1") }
       gateway.store.task("turn:steer-dispatch-steer-evt-steer-1").kind.should eq("turn")
-      gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay]")).should be_true
     end
 
     it "活跃 turn 进行中 /steer：注入下一次模型请求（短路直达，不被批次卡死）" do
@@ -185,9 +187,10 @@ module Sebas
       ok.should be_true
 
       session = "agent:main:test-acc:email:dave@example.com"
-      steers = gateway.store.session_steers(session, "queued")
+      steers = gateway.store.session_steers(session)
       steers.size.should eq(1)
-      steers.first.reason.should eq("no_active_turn")
+      steers.first.reason.as(String).should contain("dispatched to batch") # 派发确认原因
+      steers.first.status.should eq("dispatched")                          # 扫描器派发确认
       # 合成事件成为第二个 turn（queued 有消费方）
       gateway.store.task("turn:steer-dispatch-steer-evt-cons-2").kind.should eq("turn")
       gateway.store.transcripts(session).any?(&.content.starts_with?("[steer replay]")).should be_true

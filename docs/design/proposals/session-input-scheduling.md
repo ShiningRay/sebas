@@ -160,7 +160,7 @@ seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0
 - 崩溃窗口保守口径：drain = CAS accepted→injected → transcript 落 `[steer <id> turn= gen=]` 标记行 → 注入；重启 `recover_unconfirmed` 扫 injected 无标记行转 queued（`unknown_not_injected`），accepted 未注入行转 queued（`recovery_no_active_turn`，§5.2）。
 - `steer.max_pending_messages` 堆积上限：submit 判级超限显式回执 rejected（`pending limit exceeded`），不静默覆盖；§4.4 的「独立 steer 重试状态」未单独建（容量不足走 rejected 显式回执，恢复由 re-submit 承担）——偏差记录如上，若后续需要独立重试态另立变更。
 - 入口：管理面 `sessions.steer`（IPC 写认证 / HTTP POST /api/v1/sessions.steer，统一 Bearer token；显式指定但类型错误的 target 字段 → 400 不静默绑定当前 turn）+ 显式 `/steer` 聊天命令（admission 前短路直达 steer 中心，绕过批次排序——活跃 turn 在途时可 pending 注入；steer_id 派生自 event_id，重放幂等）；普通聊天正文不猜纠偏意图。
-- queued 消费：降级清单（flush/expire/recover）由 gateway 合成入站事件（event_id = steer-dispatch-<steer_id>，content 带 [steer replay] 前缀）重走 admission——正常进 debounce 桶/队列组后续批次，queued 有消费方不丢消息。
+- queued 消费（outbox 语义）：queued 行即持久待发。gateway 100ms 协程扫描器统一派发所有来源的 queued 行（聊天 /steer、管理面 sessions.steer、flush/expire/recover 降级）——直调 admission（不经有界 bus，恢复期消费者未启动也不阻塞）；合成事件 event_id = steer-dispatch-<steer_id>（admission accepted/duplicate 都算交接完成，duplicate=重试幂等）；rejected（容量满）保持 queued 下轮重试；重启后扫描器接着派发 queued 行。派发确认后 steer 行转 dispatched（queued→dispatched 终态迁移）；agent 未知/归档会话转 rejected。
 
 ### 4.5 控制通道
 

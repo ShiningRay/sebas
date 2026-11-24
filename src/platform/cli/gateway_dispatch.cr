@@ -259,8 +259,12 @@ module Sebas
           return false unless message.content.starts_with?("/steer ")
           if record_intent
             unless @store.record_intent(message.event_id, "message", message.to_json)
-              @store.finish_intent(message.event_id, "done") # 重复投递：原提交已在，只收口
-              return true
+              # 重复投递：done=原提交已完成只收口；dispatched=首次提交未完成
+              # （落库后崩溃），用稳定 steer_id 继续幂等提交（CodeRabbit P2Zd）
+              next_status = @store.intent_status(message.event_id)
+              if next_status == "done"
+                return true
+              end
             end
           end
           if @lifecycle_store.archived?(session_key)
@@ -272,31 +276,55 @@ module Sebas
           receipt = @steer_center.submit(session_key, steer_payload,
             steer_id: "steer-#{message.event_id}")
           Log.info { "steer submitted (event=#{message.event_id} id=#{receipt.steer_id} status=#{receipt.status} reason=#{receipt.reason})" }
-          # 提交即降级（queued：无活跃 turn/turn_mismatch/generation_mismatch）
-          # → 立即合成投递组后续批次；accepted 才等 drain（CodeRabbit PQNV）
-          if receipt.status.to_s == "queued"
-            dispatch_queued_steer(Sessions::Scheduling::SteerCenter::SteerDispatch.new(
-              receipt.steer_id, session_key, steer_payload))
-          end
+          # queued（outbox）由派发扫描器统一接管（100ms 粒度，持久可重试），
+          # 各入口语义一致——此处只收口 intent（CodeRabbit P2Zb/P2Zo）
           @store.finish_intent(message.event_id, "done")
           true
         end
 
-        # queued steer 消费（M4.5-WP4）：降级清单合成入站事件重走 admission
-        # ——正常进 debounce 桶/队列组后续批次（多条按接收序成批，不丢消息）。
-        # event_id 派生自 steer_id：重放幂等（admission duplicate 不重排）。
-        private def dispatch_queued_steer(dispatch : Sessions::Scheduling::SteerCenter::SteerDispatch) : Nil
-          parts = dispatch.session_key.split(":")
-          account_id = parts[2]? || ""
-          channel_type = parts[3]? || ""
-          peer = parts[4]? || ""
-          @bus.publish(Bus::InboundMessage.new(
-            "steer-dispatch-#{dispatch.steer_id}", channel_type, account_id, peer,
-            "[steer replay] #{dispatch.payload}"
-          ))
-          Log.info { "queued steer dispatched for replay (session=#{dispatch.session_key} steer=#{dispatch.steer_id})" }
+        # queued steer 派发扫描器（M4.5-WP4 outbox，CodeRabbit 二轮 P2Zb/
+        # P2Zo/P2Zt/P2Zy）：queued 行即持久待发，100ms 粒度统一派发所有来源
+        # （聊天 /steer、管理面 sessions.steer、flush/expire/recover 降级）。
+        # 直调 admission（不经有界 bus——恢复期消费者未启动也不阻塞）；事件
+        # id 派生自 steer_id，admission accepted/duplicate 都算交接完成
+        # （duplicate=重试幂等不重排）；rejected（容量满）保持 queued 下轮
+        # 重试；重启后扫描器接着派发 queued 行，不丢消息。
+        private def dispatch_due_steers : Nil
+          @store.steers_with_status("queued").each do |row|
+            agent_name = row.session_key.split(":")[1]? || ""
+            agent = @config.agents[agent_name]?
+            unless agent
+              @store.transition_session_steer(row.steer_id, Sessions::Scheduling::SteerStatus::Queued,
+                Sessions::Scheduling::SteerStatus::Rejected, "unknown agent for session")
+              next
+            end
+            if @lifecycle_store.archived?(row.session_key)
+              @store.transition_session_steer(row.steer_id, Sessions::Scheduling::SteerStatus::Queued,
+                Sessions::Scheduling::SteerStatus::Rejected, "archived session")
+              next
+            end
+            parts = row.session_key.split(":")
+            envelope = Sessions::Scheduling::InputEnvelope.new(
+              "steer-dispatch-#{row.steer_id}", row.session_key, parts[3]? || "",
+              parts[4]? || "", 0, ::Time.utc.to_rfc3339, nil,
+              Bus::InboundMessage.new("steer-dispatch-#{row.steer_id}", parts[3]? || "",
+                parts[2]? || "", parts[4]? || "", "[steer replay] #{row.payload}").to_json,
+              Sessions::Scheduling::Policy.resolve_session(@config.gateway.session, agent.session)
+            )
+            receipt = scheduling.admit(envelope)
+            if receipt.status == "accepted" || receipt.status == "duplicate"
+              @store.transition_session_steer(row.steer_id,
+                ::Sebas::Sessions::Scheduling::SteerStatus::Queued,
+                ::Sebas::Sessions::Scheduling::SteerStatus::Dispatched,
+                "dispatched to batch (#{receipt.status})")
+              Log.info { "queued steer dispatched (session=#{row.session_key} steer=#{row.steer_id} admission=#{receipt.status})" }
+            else
+              # 容量满等拒绝：保持 queued，下轮扫描重试（持久可重试不丢弃）
+              Log.warn { "queued steer dispatch deferred (steer=#{row.steer_id} admission=#{receipt.status})" }
+            end
+          end
         rescue ex
-          Log.error(exception: ex) { "queued steer dispatch failed (steer=#{dispatch.steer_id})" }
+          Log.error(exception: ex) { "steer dispatch scan failed, next tick continues" }
         end
 
         # steer 策略快照（SteerCenter 过期扫描/drain 判定用）：沿用调度链

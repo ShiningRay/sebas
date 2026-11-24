@@ -41,6 +41,7 @@ module Sebas
         Accepted
         Injected
         Queued
+        Dispatched # 已合成入站事件并入持久批次（queued 的消费终态，M4.5-WP4）
         Expired
         Rejected
 
@@ -82,6 +83,7 @@ module Sebas
       STEER_TRANSITIONS = {
         {"accepted", "injected"}, {"accepted", "queued"},
         {"accepted", "expired"}, {"accepted", "rejected"},
+        {"queued", "dispatched"}, {"queued", "rejected"}, # queued=持久 outbox，派发确认后终结（M4.5-WP4）
       }
 
       def valid_input_transition?(from : InputStatus, to : InputStatus) : Bool
