@@ -6,10 +6,17 @@ require "../log"
 # 验收口径：两 agent 各自人格/记忆独立应答。
 module Sebas
   module Agents
+    class RegistryError < ::Exception; end
+
     class AgentInstance
       getter id : String
       getter persona : String
       getter memory_dir : Path
+
+      # clone_from_template patch 后重读 SOUL.md（patch 落盘→内存一致）
+      def reload_persona : Nil
+        @persona = File.read(@memory_dir / "SOUL.md")
+      end
 
       def initialize(@id : String, agents_root : String | Path, persona : String? = nil)
         @memory_dir = Path[agents_root, @id]
@@ -54,6 +61,27 @@ module Sebas
             instance
           end
         end
+      end
+
+      # 从模板克隆 agent 一次成型（M4.4-WP2，Q 裁断）：复制模板目录全部
+      # 文件（SOUL.md/记忆文件）到新 agent 目录 + 人格 patch（覆盖 SOUL.md
+      # 的 persona 段——patch 为空则沿用模板人格）。模板不存在报错可读。
+      # 新实例进内存注册（后续 get_or_create 幂等命中）。
+      def clone_from_template(template_id : String, new_id : String,
+                              persona_patch : String? = nil) : AgentInstance
+        template_dir = @root / template_id
+        raise ::Sebas::Agents::RegistryError.new(
+          "template agent not found: #{template_id} (#{template_dir})") unless Dir.exists?(template_dir)
+        new_dir = @root / new_id
+        raise ::Sebas::Agents::RegistryError.new(
+          "agent already exists: #{new_id} (#{new_dir})") if Dir.exists?(new_dir)
+        FileUtils.cp_r(template_dir, new_dir)
+        instance = get_or_create(new_id)
+        if patch = persona_patch
+          instance.memory_write("SOUL.md", instance.persona + "\n\n## Persona Patch\n\n" + patch)
+          instance.reload_persona
+        end
+        instance
       end
 
       def get(id : String) : AgentInstance?
