@@ -241,6 +241,7 @@ jobs:
           ruby tools/test_sebas_process_regressions.rb
           ruby tools/test_docs_examples.rb
           ruby tools/test_oneline_sheet.rb
+          ruby tools/test_accept_proposal.rb
           ruby tools/test_backfill_script.rb
           ruby tools/test_ruby_version_guard.rb
           ruby tools/test_evidence_register.rb

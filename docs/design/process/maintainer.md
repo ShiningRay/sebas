@@ -26,6 +26,25 @@
 独立小修属于明确实现排期指令；`backlog` 只记录延期，不授权创建实现工作包，后续须另行批准实现排期。
 缺少归宿或范围时，Scribe 应提问而非推断。
 
+### 可执行工具：accept-proposal
+
+`tools/accept-proposal` 把上述接受与排期裁决落成一条命令，替代手工发评论与改标签。
+默认 dry-run，`--apply` 才写 GitHub；`--reason`（或 `--reason-file`）给公开理由，
+`--milestone`（数字或标题，须已开放）顺带把 Proposal 挂到该 milestone。
+
+```sh
+ruby tools/accept-proposal 159 --reason "方向成立，按建议收敛"
+ruby tools/accept-proposal 159 --reason "排期进 v0.2.0" --milestone v0.2.0 --apply
+```
+
+脚本发带 `<!-- proposal-verdict: accepted-design -->` 的公开评论、登记裁决证据 marker，
+复用 `Triager.plan` 完成校验与状态标签落地；指定 milestone 时在评论留公开排期理由并挂载。
+它只做设计定稿与排期登记，**不拆 plan 工作包**——拆卡仍由 Maintainer 另发指令、Scribe 执行。
+Proposal 上的 milestone 只是排期意图记录，Implementer 只按 Scribe 拆出的 `plan` 卡选卡；
+Proposal 本身不进实现选卡。
+使用前提与完整参数见 [quickstart.md](quickstart.md) 的 Maintainer 段；测试见
+`tools/test_accept_proposal.rb`。
+
 ### 2. 范围决策
 
 - 决定某期的 WP 划分是否合理，是否需要拆并
