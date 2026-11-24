@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "log"
 require "../../log"
 require "./envelope"
@@ -22,6 +23,11 @@ module Sebas
         def dispatch_handler=(fn : SessionScheduler::DispatchFn) : Nil
           @dispatch_handler = fn
         end
+
+        # 状态迁移事件桥（M4.5-WP6 SSE）：转发到每个 scheduler（含新建）
+        @on_transition : Proc(String, ::JSON::Any, Nil)?
+
+        setter on_transition : Proc(String, ::JSON::Any, Nil)?
 
         def admit(env : InputEnvelope) : AdmissionReceipt
           scheduler_for(env.session_key).admit(env)
@@ -59,11 +65,39 @@ module Sebas
           @mutex.synchronize { @schedulers[session_key]? }
         end
 
-        private def scheduler_for(session_key : String) : SessionScheduler
+        def scheduler_for(session_key : String) : SessionScheduler
           @mutex.synchronize do
-            @schedulers[session_key] ||= SessionScheduler.new(session_key, @store,
-              ->(key : String, payload : String) { dispatch_to_pool(key, payload) })
+            @schedulers[session_key] ||= begin
+              scheduler = SessionScheduler.new(session_key, @store,
+                ->(key : String, payload : String) { dispatch_to_pool(key, payload) })
+              scheduler.on_transition = @on_transition
+              scheduler
+            end
           end
+        end
+
+        # queue.flush（M4.5-WP6）：collecting 桶强制封冻 + 立即派发
+        def flush_session(session_key : String) : Int32
+          scheduler = scheduler_for(session_key)
+          sealed = scheduler.flush_all_buckets
+          scheduler.dispatch_if_idle
+          sealed
+        end
+
+        # metrics.scheduling：内存计数器快照
+        def session_metrics(session_key : String) : Hash(String, Int64)
+          scheduler_for(session_key).metrics_snapshot
+        end
+
+        # 在途批次（运行中 batch id；无则 nil）
+        def in_flight_batch(session_key : String) : String?
+          scheduler_for(session_key).in_flight_batch
+        end
+
+        # pending 概览（持久 batches/bytes，store 聚合）
+        def pending_load(session_key : String) : ::JSON::Any
+          load = @store.pending_load(session_key)
+          JSON.parse({batches: load.batches, bytes: load.bytes}.to_json)
         end
 
         private def dispatch_to_pool(session_key : String, payload : String) : Nil

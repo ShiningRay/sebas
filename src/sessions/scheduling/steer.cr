@@ -56,6 +56,9 @@ module Sebas
         # 降级转 queued 后的投递清单项（gateway 合成入站事件组后续批次）
         record SteerDispatch, steer_id : String, session_key : String, payload : String
 
+        # 状态迁移事件回调（M4.5-WP6 SSE）：(event, payload)
+        setter on_transition : Proc(String, ::JSON::Any, Nil)?
+
         def initialize(@store : ::Sebas::Platform::Store::Store, @registry : TurnRegistry,
                        @policy : Proc(String, PolicySnapshot), @now : -> ::Time = -> { ::Time.utc })
         end
@@ -100,6 +103,9 @@ module Sebas
           unless status == SteerStatus::Accepted
             @store.transition_session_steer(steer_id, SteerStatus::Accepted, status, reason)
           end
+          emit("steer.#{status}", {"session_key" => ::JSON::Any.new(session_key),
+                                   "steer_id"    => ::JSON::Any.new(steer_id),
+                                   "reason"      => ::JSON::Any.new(reason || "")})
           SteerReceipt.new(steer_id, turn_id, generation, status, reason)
         end
 
@@ -122,6 +128,8 @@ module Sebas
               next # 并发转态（过期扫描/另一 drain），不重复注入
             end
             @store.append_transcript(session_key, "user", steer_marker(row))
+            emit("steer.injected", {"session_key" => ::JSON::Any.new(session_key),
+                                    "steer_id"    => ::JSON::Any.new(row.steer_id)})
             injected << "[steer #{row.steer_id}] #{row.payload}"
           end
           injected
@@ -157,6 +165,12 @@ module Sebas
             end
           end
           downgraded
+        end
+
+        private def emit(event : String, payload : Hash(String, ::JSON::Any)) : Nil
+          @on_transition.try(&.call(event, ::JSON::Any.new(payload)))
+        rescue
+          nil
         end
 
         private def steer_expired?(row : ::Sebas::Platform::Store::Store::SessionSteerRow) : Bool

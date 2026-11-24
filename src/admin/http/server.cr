@@ -19,6 +19,7 @@ module Sebas
         setter templates : ::Sebas::Agents::AgentRegistry?
         setter steer_center : ::Sebas::Sessions::Scheduling::SteerCenter?
         setter hook_handler : (String, String, String? -> Tuple(Int32, String))?
+        setter scheduling_admin_handler : (String, ::JSON::Any -> Tuple(Int32, String))?
 
         @server : ::HTTP::Server?
         @running = Atomic(Bool).new(false)
@@ -55,6 +56,28 @@ module Sebas
         def close : Nil
           @running.set(false)
           @server.try(&.close)
+        end
+
+        # 调度管理面（M4.5-WP6）：handler 由 gateway 注入（IPC/HTTP 同一实现）
+        private def scheduling_admin_call(ctx : ::HTTP::Server::Context, command : String,
+                                          params : ::JSON::Any? = nil) : Nil
+          handler = @scheduling_admin_handler
+          unless handler
+            ctx.response.status_code = 503
+            ctx.response.content_type = "application/json"
+            ctx.response.print(%({"error": "scheduling admin not wired"}))
+            return
+          end
+          code, body = handler.call(command, params || ::JSON::Any.new(Hash(String, ::JSON::Any).new))
+          ctx.response.status_code = code
+          ctx.response.content_type = "application/json"
+          ctx.response.print(body)
+        end
+
+        private def query_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any
+          hash = Hash(String, ::JSON::Any).new
+          ctx.request.query_params.each { |k, v| hash[k] = ::JSON::Any.new(v) }
+          ::JSON::Any.new(hash)
         end
 
         # hooks 请求体限读（1 MiB）；超限返回 nil 由调用方回 413
@@ -159,6 +182,22 @@ module Sebas
             ctx.response.print({templates: @templates.try(&.disk_ids) || [] of String}.to_json)
           when {"POST", "/api/v1/templates.clone"}
             serve_template_clone(ctx)
+          when {"GET", "/api/v1/config.scheduling.get"}
+            scheduling_admin_call(ctx, "config.scheduling.get", ::JSON::Any.new(Hash(String, ::JSON::Any).new))
+          when {"POST", "/api/v1/config.scheduling.validate"}
+            scheduling_admin_call(ctx, "config.scheduling.validate")
+          when {"POST", "/api/v1/config.scheduling.update"}
+            scheduling_admin_call(ctx, "config.scheduling.update")
+          when {"POST", "/api/v1/config.scheduling.reset"}
+            scheduling_admin_call(ctx, "config.scheduling.reset")
+          when {"GET", "/api/v1/sessions.queue.get"}
+            scheduling_admin_call(ctx, "sessions.queue.get", query_params_json(ctx))
+          when {"POST", "/api/v1/sessions.queue.flush"}
+            scheduling_admin_call(ctx, "sessions.queue.flush", query_params_json(ctx))
+          when {"GET", "/api/v1/sessions.steer.get"}
+            scheduling_admin_call(ctx, "sessions.steer.get", query_params_json(ctx))
+          when {"GET", "/api/v1/metrics.scheduling"}
+            scheduling_admin_call(ctx, "metrics.scheduling", ::JSON::Any.new(Hash(String, ::JSON::Any).new))
           else
             ctx.response.status_code = 404
             ctx.response.content_type = "application/json"

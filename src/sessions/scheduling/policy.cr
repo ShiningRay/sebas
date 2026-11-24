@@ -255,6 +255,20 @@ module Sebas
           snapshot_from_fields(resolve_chain(builtin_fields, [gateway, agent]))
         end
 
+        # overlay 叠加解析（M4.5-WP6）：链 = builtin → gateway.session →
+        # gateway overlay → agents.<name>.session → agent overlay（overlay 为
+        # partial SessionPolicyConfig，字段级覆盖上一层）；非法 patch 抛 PolicyError
+        def resolve_session_with_overlays(gateway : SessionPolicyConfig?, agent : SessionPolicyConfig?,
+                                          gateway_overlay : SessionPolicyConfig?,
+                                          agent_overlay : SessionPolicyConfig?) : PolicySnapshot
+          snapshot_from_fields(resolve_chain(builtin_fields, [gateway, gateway_overlay, agent, agent_overlay]))
+        end
+
+        # overlay patch 文本（YAML）→ partial SessionPolicyConfig；非法即 PolicyError
+        def parse_overlay(patch_yaml : String) : SessionPolicyConfig
+          SessionPolicyConfig.from_any(YAML.parse(patch_yaml))
+        end
+
         # workflow 作用域：内置（逐事件 queue）→ workflow.batch；不继承 gateway.session / agents.*.session
         # （契约 §3.1：确定性 workflow 默认一事件一 run，只有显式声明 batch 才聚合）
         def resolve_workflow(batch : SessionPolicyConfig?) : PolicySnapshot

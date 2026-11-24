@@ -27,6 +27,7 @@ require "../../agents/runtime"
 require "./gateway_dispatch"
 require "./gateway_steer"
 require "./gateway_hooks"
+require "./gateway_scheduling_admin"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
@@ -53,6 +54,7 @@ module Sebas
         include GatewayDispatch
         include GatewaySteer
         include GatewayHooks
+        include GatewaySchedulingAdmin
         include GatewaySecrets
 
         Log = Sebas::Log.for("sebas.gateway")
@@ -77,7 +79,7 @@ module Sebas
         getter steer_registry : Sessions::Scheduling::TurnRegistry
         getter engine : Orchestration::Engine
         getter triggers : Orchestration::TriggerManager
-        @steer_dispatch_ready : Atomic(Bool)
+        @steer_dispatch_ready = Atomic(Bool).new(false) # 恢复重放完成后才允许派发（QWvO）
         getter steer_center : Sessions::Scheduling::SteerCenter
 
         # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
@@ -104,7 +106,7 @@ module Sebas
           @scheduling = Sessions::Scheduling::Registry.new(@store)
           scheduling.dispatch_handler = ->(session_key : String, payload : String) { @pool.enqueue(session_key, payload) }
           @batch_job_handler = ->(job : Agents::Job) { run_batch_job(job) }
-          # debounce seal 扫描定时器（#5 WP3）：100ms 粒度；进程内单调时钟。
+          # debounce seal 扫描定时器（#5 WP3）
           spawn(name: "sebas-schedule-seal-scanner") do
             loop do
               sleep 100.milliseconds
@@ -122,19 +124,7 @@ module Sebas
           @steer_registry = Sessions::Scheduling::TurnRegistry.new
           @steer_center = Sessions::Scheduling::SteerCenter.new(@store, @steer_registry,
             ->(session : String) { steering_policy(session) })
-          @steer_dispatch_ready = Atomic(Bool).new(false) # 恢复重放完成后才允许派发（QWvO）
-          spawn(name: "sebas-steer-expire-scanner") do
-            loop do
-              sleep 100.milliseconds
-              break if @stopping_scan.get
-              begin
-                @steer_center.expire_due
-                dispatch_due_steers # queued outbox 统一派发（所有来源，持久可重试）
-              rescue ex
-                Log.error(exception: ex) { "steer scan failed, next tick continues" }
-              end
-            end
-          end
+          spawn_steer_scanners # 过期扫描 + outbox 派发（M4.5-WP6 抽出）
           Config::CURRENT.set(config)
           @supervisor = Supervisor::Supervisor.new(@bus)
           @reload_manager = Config::ReloadManager.new(config_path) { |config| apply_config(config) }
@@ -159,23 +149,22 @@ module Sebas
             &->trigger_reload)
           @store.recover!
           Sessions::Scheduling::Recovery.recover_stale(@store)
-          @steer_center.recover_unconfirmed # 降级 queued，扫描器接管
-          # orchestration 装配（M4.1）：组件可达即成立；后续包填充点见各 mixin
-          fork_factory = -> do # 触发子系统首接线（M4.5-WP5）；fork factory（aD50）
+          @steer_center.recover_unconfirmed
+          @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
+          fork_factory = -> do # workflow 触发子系统（M4.5-WP5/WP6，装载在 hooks）
  cfg = Config::CURRENT.get.agents["main"]?
           raise Store::StoreError.new("engine fork factory: no main agent") unless cfg
           @provider_factory.call(cfg, nil)           end
           @engine = Orchestration::Engine.new(@store, @executor, "engine", nil, fork_factory)
           @triggers = Orchestration::TriggerManager.new(@engine, @bus)
-          load_workflows
-          @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
-          # 管理面注入（M4.4-WP4，装配晚于构造 setter 补注）
-          @ipc.lifecycle_store = @lifecycle_store
+          load_workflows(@engine)
+          @ipc.lifecycle_store = @lifecycle_store # 管理面注入（M4.4-WP4）
           @ipc.template_registry = @agent_registry
           @http.lifecycle = @lifecycle_store
           @http.templates = @agent_registry
           @http.steer_center = @steer_center
           wire_hook_handler
+          wire_scheduling_admin
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
           @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters

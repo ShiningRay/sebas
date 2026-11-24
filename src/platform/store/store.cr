@@ -4,6 +4,7 @@ require "json"
 require "./expectations_store"
 require "./task_effects_store"
 require "./steer_store"
+require "./scheduling_overlay_store"
 require "digest/sha256"
 require "../../log"
 require "../../sessions/scheduling/policy"
@@ -168,6 +169,15 @@ module Sebas
           CREATE INDEX IF NOT EXISTS idx_session_steers_session_status
             ON session_steers (session_key, status, created_at)
           SQL
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS scheduling_overlays (
+            scope       TEXT PRIMARY KEY,
+            patch_yaml  TEXT NOT NULL,
+            revision    INTEGER NOT NULL,
+            operator    TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+          )
+          SQL
         "CREATE TABLE IF NOT EXISTS sessions (" \
         "session_key     TEXT PRIMARY KEY, " \
         "agent_id        TEXT NOT NULL, " \
@@ -197,6 +207,7 @@ module Sebas
       class Store
         include ::Sebas::Platform::TaskEffectsStoreMethods
         include ::Sebas::Platform::SteerStoreMethods
+        include ::Sebas::Platform::SchedulingOverlayStoreMethods
         include ::Sebas::Platform::ExpectationStoreMethods
 
         getter db : ::DB::Database

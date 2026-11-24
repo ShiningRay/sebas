@@ -203,14 +203,19 @@ module Sebas
           hello
         end
 
+        # ameba:disable Metrics/CyclomaticComplexity — 命令表分发，分支即命令本身
         private def dispatch(io : TCPSocket, frame : Frame) : Nil
           case frame.type
           when "fork", "join"
             io.puts(authenticated_response(io, frame) { fork_join_response(frame) })
           when "approvals.approve", "approvals.deny", "approvals.pending",
                "sessions.dormant", "sessions.archive", "sessions.gc", "sessions.lifecycle",
-               "sessions.steer", "templates.clone", "templates.list"
+               "sessions.steer", "templates.clone", "templates.list",
+               "sessions.queue.get", "sessions.steer.get", "metrics.scheduling"
             io.puts(admin_dispatch(io, frame))
+          when "sessions.queue.flush", "config.scheduling.get", "config.scheduling.validate",
+               "config.scheduling.update", "config.scheduling.reset"
+            io.puts(authenticated_response(io, frame) { scheduling_dispatch(io, frame) })
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
           when "system.health"
@@ -264,6 +269,7 @@ module Sebas
 
         # 模板注册表接线（M4.4-WP4）：templates.clone/list 命令的处理体。
         setter template_registry
+        setter scheduling_admin_handler : (String, ::JSON::Any -> Tuple(Int32, String))?
         getter template_registry : ::Sebas::Agents::AgentRegistry?
 
         # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。

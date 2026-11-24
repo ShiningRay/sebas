@@ -23,7 +23,7 @@ module Sebas
         # （向后兼容，无 workflow 部署时行为不变）；装载失败单文件 fail-logged
         # 不阻断其余。disabled（enabled: false）不注册（a4nz）；webhook source
         # 含 ":" 跳过（event_id 分隔歧义，aD5g）。
-        private def load_workflows : Nil
+        private def load_workflows(engine : Orchestration::Engine) : Nil
           workflow_dir = @data_dir / "workflows"
           return unless Dir.exists?(workflow_dir)
           # Dir.children + Path 拼接（glob 反斜杠模式 windows 不匹配——
@@ -39,11 +39,11 @@ module Sebas
               Log.error { "webhook source must not contain ':', skipped: #{workflow.id} (#{workflow.trigger.source})" }
               next
             end
-            @engine.register(workflow)
+            engine.register(workflow)
           rescue ex
             Log.error(exception: ex) { "workflow load failed: #{file}" }
           end
-          @triggers.load_from_registry
+          triggers.load_from_registry
         end
 
         # HTTP hook_handler 接线（gateway 构造调用）：回执转 (code, body)

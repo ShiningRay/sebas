@@ -39,6 +39,9 @@ module Sebas
         @bucket_batch_ids = Hash(String, String).new
         @clock : -> Int64
 
+        # 状态迁移事件回调（M4.5-WP6 SSE）：(event_name, payload)——nil = 未接线
+        setter on_transition : Proc(String, ::JSON::Any, Nil)?
+
         def initialize(@session_key : String, @store : ::Sebas::Platform::Store::Store,
                        @dispatch : DispatchFn, clock : (-> Int64)? = nil)
           @metrics = {
@@ -129,6 +132,10 @@ module Sebas
                          load.batches.to_i32 # 会话忙：本批排在全部 pending 之后
                        end
             bump("admitted")
+            emit(snapshot.batch_mode == "debounce" ? "batch.collecting" : "batch.queued",
+              {"session_key" => ::JSON::Any.new(@session_key),
+               "batch_id"    => ::JSON::Any.new(batch.batch_id),
+               "event_id"    => ::JSON::Any.new(env.event_id)})
             AdmissionReceipt.new(env.event_id, batch.batch_id, "accepted", position)
           end
         end
@@ -151,6 +158,9 @@ module Sebas
               Log.warn { "stale completion callback ignored (session=#{@session_key} batch=#{batch_id})" }
             end
             bump("completed")
+            emit("batch.settled", {"session_key" => ::JSON::Any.new(@session_key),
+                                   "batch_id"    => ::JSON::Any.new(batch_id),
+                                   "failed"      => ::JSON::Any.new(failed_event_ids.size.to_i64)})
             flush_on_turn_end_buckets
             dispatch_locked
           end
@@ -158,6 +168,22 @@ module Sebas
 
         # 显式 flush 入口（契约 §4.3：显式 flush > 其余条件，不等 debounce）：
         # 逐桶立即封存。返回封存桶数。
+        # 指标快照（M4.5-WP6 metrics.scheduling）：内存计数器只读副本
+        def metrics_snapshot : Hash(String, Int64)
+          @mutex.synchronize { @metrics.dup }
+        end
+
+        # 在途批次（运行中 batch id；无则 nil）
+        def in_flight_batch : String?
+          @mutex.synchronize { @running_batch }
+        end
+
+        private def emit(event : String, payload : Hash(String, ::JSON::Any)) : Nil
+          @on_transition.try(&.call(event, ::JSON::Any.new(payload)))
+        rescue
+          nil # 事件不反噬调度主链
+        end
+
         def flush_all_buckets : Int32
           @mutex.synchronize do
             sealed = 0
@@ -334,6 +360,9 @@ module Sebas
 
           seal_and_queue(batch_id, reason)
           bump("sealed_#{reason.to_s.downcase}")
+          emit("batch.sealed", {"session_key" => ::JSON::Any.new(@session_key),
+                                "batch_id"    => ::JSON::Any.new(batch_id),
+                                "reason"      => ::JSON::Any.new(reason.to_s.downcase)})
           dispatch_locked # 空闲即扫：封存即可派发（不饥饿）
         end
 
@@ -358,6 +387,8 @@ module Sebas
           return unless @store.transition_session_batch(batch_id, BatchStatus::Queued, BatchStatus::Running)
           @running_batch = batch_id
           bump("dispatched")
+          emit("batch.started", {"session_key" => ::JSON::Any.new(@session_key),
+                                 "batch_id"    => ::JSON::Any.new(batch_id)})
           begin
             @dispatch.call(@session_key, dispatch_payload(batch_id))
           rescue ex
