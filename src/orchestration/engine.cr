@@ -27,19 +27,30 @@ module Sebas
 
       # 启动一次 workflow run：意图先落库（效应三明治第①步）→ 逐动作执行（第②步）→ 结果落库（第③步）
       # 返回 run task id。幂等：同 trigger_event_id 二次启动不重跑。
-      def start(workflow : DSL::Workflow, trigger_event_id : String) : String?
+      def start(workflow : DSL::Workflow, trigger_event_id : String,
+                batch_id : String? = nil, batch_event_ids : Array(String)? = nil,
+                ctx_session : String = "agent:main:engine:orchestration") : String?
         run_id = "run:#{workflow.id}:#{trigger_event_id}"
         return unless @store.record_intent(run_id, "workflow_run", workflow.id)
         @store.finish_intent(run_id, "dispatched")
-        task = @store.create_task(run_id, "run", payload: %({"workflow": "#{workflow.id}"}))
-        spawn_run(task.id, workflow, trigger_event_id)
+        # 批量模式（M4.5-WP5）：run payload 记录 batch 与全部 event IDs——
+        # batch→run→events 完整审计；ctx_session 持久化（hook 准入会话贯通
+        # 执行上下文，恢复续跑同上下文——CodeRabbit bn4j）；逐事件保持精简
+        payload = if batch_event_ids
+                    {workflow: workflow.id, batch_id: batch_id, event_ids: batch_event_ids, session: ctx_session}.to_json
+                  else
+                    {workflow: workflow.id, session: ctx_session}.to_json
+                  end
+        task = @store.create_task(run_id, "run", payload: payload)
+        spawn_run(task.id, workflow, trigger_event_id, ctx_session)
         run_id
       end
 
       # 异步启动（gateway 口径）：spawn 逐动作执行
-      private def spawn_run(run_id : String, workflow : DSL::Workflow, trigger_event_id : String) : Nil
+      private def spawn_run(run_id : String, workflow : DSL::Workflow, trigger_event_id : String,
+                            ctx_session : String = "agent:main:engine:orchestration") : Nil
         spawn(name: "sebas-run:#{run_id}") do
-          execute_phases(run_id, workflow, "agent:main:engine:orchestration")
+          execute_phases(run_id, workflow, ctx_session)
           @store.finish_intent("run:#{workflow.id}:#{trigger_event_id}", "done")
         rescue ex : ::Exception
           Log.error(exception: ex) { "run #{run_id} crashed" }
@@ -70,7 +81,14 @@ module Sebas
           workflow = workflows[workflow_id]?
           next unless workflow
           @store.checkpoint(task.id, task.phase) # 保持 checkpoint（续跑起点）
-          execute_phases(task.id, workflow, "agent:main:engine:orchestration", from_phase: task.phase)
+          resume_session = begin
+            raw = @store.db.query_one?("SELECT payload FROM tasks WHERE id = ?", task.id, as: String)
+            parsed = JSON.parse(raw.to_s)
+            parsed["session"]?.try(&.as_s?) || "agent:main:engine:orchestration"
+          rescue
+            "agent:main:engine:orchestration"
+          end
+          execute_phases(task.id, workflow, resume_session, from_phase: task.phase)
           resumed += 1
         end
         resumed

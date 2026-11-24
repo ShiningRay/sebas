@@ -26,6 +26,7 @@ require "../../sessions/scheduling/steer"
 require "../../agents/runtime"
 require "./gateway_dispatch"
 require "./gateway_steer"
+require "./gateway_hooks"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
@@ -35,6 +36,8 @@ require "../../orchestration/fork/executor"
 require "../../orchestration/fork/capability"
 require "../../orchestration/fork/join_writer"
 require "../../orchestration/fork/snapshot_builder"
+require "../../orchestration/engine"
+require "../../orchestration/triggers/triggers"
 require "../../admin/ipc/server"
 require "../../log"
 
@@ -49,6 +52,7 @@ module Sebas
       class Gateway
         include GatewayDispatch
         include GatewaySteer
+        include GatewayHooks
         include GatewaySecrets
 
         Log = Sebas::Log.for("sebas.gateway")
@@ -71,6 +75,8 @@ module Sebas
         getter fork_manager : ::Sebas::Orchestration::Fork::ForkManager
         getter join_writer : ::Sebas::Orchestration::Fork::JoinWriter
         getter steer_registry : Sessions::Scheduling::TurnRegistry
+        getter engine : Orchestration::Engine
+        getter triggers : Orchestration::TriggerManager
         @steer_dispatch_ready : Atomic(Bool)
         getter steer_center : Sessions::Scheduling::SteerCenter
 
@@ -85,9 +91,7 @@ module Sebas
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
           @lifecycle_store = Sessions::Lifecycle::Store.new(@store, @data_dir)
-          # secrets 收敛（M4.2-WP4 §5.3）：配置明文 api_key 迁 vault（幂等），
-          # 配置树抹除明文；provider 构造按 agent 名从 vault 取回（factory
-          # 包装由 GatewaySecrets#wire_secret_factory 提供）。
+          # secrets 收敛（M4.2-WP4 §5.3）：明文迁 vault，factory 包装见 GatewaySecrets
           @vault = Keys::EncryptedFileVault.open(@data_dir / "secrets.vault", platform_keyring)
           migrate_secrets(@config)
           @provider_factory = wire_secret_factory(original_factory)
@@ -100,8 +104,7 @@ module Sebas
           @scheduling = Sessions::Scheduling::Registry.new(@store)
           scheduling.dispatch_handler = ->(session_key : String, payload : String) { @pool.enqueue(session_key, payload) }
           @batch_job_handler = ->(job : Agents::Job) { run_batch_job(job) }
-          # debounce seal 扫描定时器（#5 WP3）：100ms 粒度扫描全部会话的
-          # collecting 桶（idle/max_wait 到期封冻入队）；进程内单调时钟。
+          # debounce seal 扫描定时器（#5 WP3）：100ms 粒度；进程内单调时钟。
           spawn(name: "sebas-schedule-seal-scanner") do
             loop do
               sleep 100.milliseconds
@@ -115,8 +118,7 @@ module Sebas
               end
             end
           end
-          # busy steer 中心（M4.5-WP4）：turn 注册表 + 持久化纠偏通道；
-          # 过期扫描与 seal 扫描同款 100ms 协程粒度
+          # busy steer 中心（M4.5-WP4）：100ms 协程粒度（同 seal 扫描）
           @steer_registry = Sessions::Scheduling::TurnRegistry.new
           @steer_center = Sessions::Scheduling::SteerCenter.new(@store, @steer_registry,
             ->(session : String) { steering_policy(session) })
@@ -147,12 +149,8 @@ module Sebas
             port: @config.gateway.ipc.port,
             &->trigger_reload)
           @ipc.approvals_center = @approvals
-          # fork/join 用户显式触发面接线（M4.1-WP5，Q3：不动生产 agent_turn）：
-          # IPC payload → Executor 执行 → 结果 JSON（回执 + expectation 终态）。
           @ipc.fork_handler = ->(payload : JSON::Any) { handle_fork_command(payload) }
-          @ipc.steer_handler = ->(session_key : String, payload : String, turn_id : String?, generation : Int64?) do
-            @steer_center.submit(session_key, payload, target_turn_id: turn_id, target_generation: generation)
-          end
+          wire_steer_handler
           http_cfg = @config.gateway.http
           @http = Admin::HTTP::Server.new(@channels, @ipc.tap,
             http_cfg.try(&.bind) || "127.0.0.1", http_cfg.try(&.port) || 18790,
@@ -161,20 +159,23 @@ module Sebas
             &->trigger_reload)
           @store.recover!
           Sessions::Scheduling::Recovery.recover_stale(@store)
-          # steer 恢复口径（M4.5-WP4）：崩溃窗口保守降级——injected 且
-          # transcript 无标记 → queued（unknown_not_injected，不伪报成功）
-          @steer_center.recover_unconfirmed # 降级 queued，派发扫描器接管（消费者启动前不 publish）
-          # orchestration 装配置 initialize 尾段（恢复完成后）：组件可达即装配成立；
-          # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
-          # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
+          @steer_center.recover_unconfirmed # 降级 queued，扫描器接管
+          # orchestration 装配（M4.1）：组件可达即成立；后续包填充点见各 mixin
+          fork_factory = -> do # 触发子系统首接线（M4.5-WP5）；fork factory（aD50）
+ cfg = Config::CURRENT.get.agents["main"]?
+          raise Store::StoreError.new("engine fork factory: no main agent") unless cfg
+          @provider_factory.call(cfg, nil)           end
+          @engine = Orchestration::Engine.new(@store, @executor, "engine", nil, fork_factory)
+          @triggers = Orchestration::TriggerManager.new(@engine, @bus)
+          load_workflows
           @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
-          # 管理面注入（M4.4-WP4）：lifecycle/模板 registry 装配后才可见，
-          # IPC/HTTP 两侧同源（构造早于 registry 创建，setter 补注）。
+          # 管理面注入（M4.4-WP4，装配晚于构造 setter 补注）
           @ipc.lifecycle_store = @lifecycle_store
           @ipc.template_registry = @agent_registry
           @http.lifecycle = @lifecycle_store
           @http.templates = @agent_registry
           @http.steer_center = @steer_center
+          wire_hook_handler
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
           @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters
@@ -208,6 +209,7 @@ module Sebas
           @http.listen
           @supervisor.start_all
           replay_unfinished               # 崩溃恢复重放先于调度启动（同会话不出现双 turn）
+          @engine.resume_interrupted      # 中断 workflow run 续跑（aD57；需 workflows 注册表已载）
           scheduling.recover_dispatch     # 持久待发批次重派（§5.2：sealed/queued 重新入队）
           @steer_dispatch_ready.set(true) # 恢复完成后启用 queued steer 派发（QWvO）
           consume_bus

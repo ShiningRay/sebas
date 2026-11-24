@@ -18,6 +18,7 @@ module Sebas
         setter lifecycle : ::Sebas::Sessions::Lifecycle::Store?
         setter templates : ::Sebas::Agents::AgentRegistry?
         setter steer_center : ::Sebas::Sessions::Scheduling::SteerCenter?
+        setter hook_handler : (String, String, String? -> Tuple(Int32, String))?
 
         @server : ::HTTP::Server?
         @running = Atomic(Bool).new(false)
@@ -56,8 +57,56 @@ module Sebas
           @server.try(&.close)
         end
 
+        # hooks 请求体限读（1 MiB）；超限返回 nil 由调用方回 413
+        private def read_limited_body(ctx : ::HTTP::Server::Context) : String?
+          body_io = ctx.request.body
+          String.build do |io|
+            buffer = Bytes.new(8192)
+            total = 0
+            loop do
+              read = body_io.try(&.read(buffer)) || 0
+              break if read == 0
+              total += read
+              return if total > 1_048_576
+              io.write(buffer[0, read])
+            end
+          end
+        end
+
         private def route(ctx : ::HTTP::Server::Context) : Nil
           path = ctx.request.path
+          if path.starts_with?("/hooks/") && ctx.request.method == "POST"
+            # webhook 会话接入（M4.5-WP5）：hooks 入口**独立强制**管理 token
+            # （不随 gateway.http.auth 配置放宽——CWE-306 fail-closed）；未知
+            # hook/缺参 fail-closed，持久 admission 成功即 202 ACK
+            provided = ctx.request.headers["Authorization"]?
+            expected = @token.try(&.empty?) ? nil : @token
+            unless expected && provided == "Bearer #{expected}"
+              ctx.response.status_code = 401
+              ctx.response.headers["WWW-Authenticate"] = "Bearer"
+              ctx.response.print(%({"error": "unauthorized"}))
+              return
+            end
+            handler = @hook_handler
+            unless handler
+              ctx.response.status_code = 503
+              ctx.response.print(%({"error": "hooks not wired"}))
+              return
+            end
+            name = path.lchop("/hooks/").split("/")[0]
+            idempotency_key = ctx.request.headers["Idempotency-Key"]?
+            body = read_limited_body(ctx) # 限读 1 MiB（CWE-400：超大分块不进内存）
+            unless body
+              ctx.response.status_code = 413
+              ctx.response.print(%({"error": "payload too large"}))
+              return
+            end
+            code, hook_body = handler.call(name, body, idempotency_key)
+            ctx.response.status_code = code
+            ctx.response.content_type = "application/json"
+            ctx.response.print(hook_body)
+            return
+          end
           if path.starts_with?("/cb/")
             dispatch_callback(ctx)
             return
