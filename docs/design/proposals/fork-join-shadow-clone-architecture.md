@@ -60,8 +60,7 @@
 | JoinWriter（终态判定+分层回写） | `src/agents/fork/join_writer.cr` | 同上 |
 | expectations 判定器（mode 聚合） | `src/agents/fork/expectation.cr`，读 store.tasks + expectations | [推演]：判定器无独立状态，薄层 |
 | ReAct 工具循环 | `src/platform/cli/gateway.cr` agent_turn 改造（M4.3） | [来源: 仓库:src/platform/cli/gateway.cr:212-223] |
-| 前台接待 | `src/agents/reception/`（M4.3，#51 已落地：Reception module + schedule_input 改投前台 + 前台只读工具面/转介 prompt；无前台配置保持 M0 fail-closed） | [推演]：routing binding 是渠道级接待，接待层在其上做 agent 级包装 |
-| 注册双轨统一 | `src/agents/agents.cr` RegistryDualView（M4.4-WP1，#53 已落地：双轨互查 snapshot + sync 幂等补建——存量 SOUL.md 不覆盖只读兼容不强制迁移；persona_file 悬空校验 + skills 字段补齐） | 前置：M4.4-WP2 模板落位按 SOUL.md=人格 / SKILL.md=技能 各司其职消费 |
+| 前台接待 | `src/agents/reception/`（M4.3） | [推演]：routing binding 是渠道级接待，接待层在其上做 agent 级包装 |
 | sessions 生命周期 | `src/platform/store/store.cr` + `src/agents/lifecycle/`（M4.4） | [来源: analysis.md §4 M4 轴①] |
 
 ---
@@ -144,6 +143,7 @@ initialize 现状链 …
 | **collaboration**（message_agent） | 正交 | fire-and-forget+署名+max_hops=4 防环 [来源: 仓库:src/orchestration/collaboration/collaboration.cr:37-56,83-104]；「找别的 agent」走 collaboration，「分自己」走 fork——两条正交通道并存，互不替代 |
 | **subagent** | 对照保留（非替代） | 派员工 vs 影分身取舍：subagent = 独立 prompt + 受限工具 + 不看父历史 + 末条汇报（「派员工」，design.md §8.2 [来源: design.md §8.2]）；fork = 父快照 + 衰减工具 + 全过程回写（「分自己」）。**保留 subagent** 用于异人格/隔离子任务；fork 用于同人格并行。两机制共用 internal 段键先例与 Semaphore 并发闸（subagent.cr:16,44 先例）[推演] |
 | **busy-interrupt-redirect（#28 已合）** | 复用取消语义 | 控制通道/协作式取消/InterruptReceipt 引用不重设计（semantics §8.1）；PR #31 已合，引用远端 main 路径 [busy-interrupt-redirect.md](busy-interrupt-redirect.md) |
+| **Config::AgentConfig（YAML 轨）** | 双轨统一 | M4.4-WP1 已落地（#53）：`src/agents/agents.cr` `RegistryDualView` 双轨互查（snapshot 全量在位 + `sync_config_agents` 幂等补建——存量 SOUL.md 不覆盖只读兼容不强制迁移）；persona_file 悬空引用 loader 校验报错可读；AgentConfig 增 skills 字段（M4.4-WP2 消费前置）。模板落位定夺：SOUL.md=人格 / SKILL.md=技能 各司其职 |
 
 ---
 
