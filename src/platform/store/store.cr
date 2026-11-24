@@ -154,6 +154,15 @@ module Sebas
             updated_at       TEXT NOT NULL
           )
           SQL
+        "CREATE TABLE IF NOT EXISTS sessions (" \
+        "session_key     TEXT PRIMARY KEY, " \
+        "agent_id        TEXT NOT NULL, " \
+        "kind            TEXT NOT NULL DEFAULT 'user', " \
+        "fork_id         TEXT, " \
+        "status          TEXT NOT NULL DEFAULT 'active', " \
+        "last_active_at  TEXT NOT NULL, " \
+        "created_at      TEXT NOT NULL, " \
+        "archived_path   TEXT)",
         "CREATE TABLE IF NOT EXISTS expectations (" \
         "id             TEXT PRIMARY KEY, " \
         "members_final  INTEGER NOT NULL DEFAULT 0, " \

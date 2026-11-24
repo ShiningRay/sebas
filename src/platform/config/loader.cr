@@ -76,6 +76,14 @@ module Sebas
           errors << "at least one agent must be defined" if config.agents.empty?
           config.agents.each do |name, agent|
             errors << "agents.#{name}.model must not be empty" if agent.model.strip.empty?
+            # persona_file 悬空引用校验（M4.4-WP1：悬空引用报错可读）——
+            # 相对路径基于进程 cwd 解析（与 Gateway 运行目录一致）
+            if pf = agent.persona_file
+              errors << "agents.#{name}.persona_file not found: #{pf}" unless File.exists?(pf)
+            end
+            (agent.skills || [] of String).each do |skill|
+              errors << "agents.#{name}.skills entry must not be empty" if skill.strip.empty?
+            end
           end
         end
 

@@ -205,8 +205,10 @@ module Sebas
           case frame.type
           when "fork", "join"
             io.puts(authenticated_response(io, frame) { fork_join_response(frame) })
-          when "approvals.approve", "approvals.deny", "approvals.pending"
-            io.puts(approvals_dispatch(io, frame))
+          when "approvals.approve", "approvals.deny", "approvals.pending",
+               "sessions.dormant", "sessions.archive", "sessions.gc", "sessions.lifecycle",
+               "templates.clone", "templates.list"
+            io.puts(admin_dispatch(io, frame))
           when "ping"
             io.puts(ok_response(frame.id, {"pong" => JSON::Any.new(Time.utc.to_rfc3339)}))
           when "system.health"
@@ -242,6 +244,90 @@ module Sebas
             block.call(frame)
           else
             error_response(frame.id, "#{frame.type} requires an authenticated hello handshake")
+          end
+        end
+
+        # ameba:disable Metrics/CyclomaticComplexity — 生命周期命令表分发，分支即命令本身
+        private def lifecycle_dispatch(frame : Frame) : String
+          lifecycle = @lifecycle_store
+          return error_response(frame.id, "#{frame.type} not available: lifecycle 组件未装配") unless lifecycle
+
+          data = frame.data
+          case frame.type
+          when "sessions.lifecycle"
+            status = data["status"]?.try(&.as_s?)
+            entries = lifecycle.list(status).map do |entry|
+              JSON::Any.new({
+                "session_key"    => JSON::Any.new(entry.session_key),
+                "status"         => JSON::Any.new(entry.status),
+                "last_active_at" => JSON::Any.new(entry.last_active_at),
+              }.as(Hash(String, JSON::Any)))
+            end
+            ok_response(frame.id, {"sessions" => JSON::Any.new(entries)})
+          when "sessions.dormant"
+            days = 14
+            if raw_days = data["older_than_days"]?
+              parsed = raw_days.as_i?
+              # 负数 → cutoff 落在未来全误标；越界/非整数不静默回退默认（CodeRabbit）
+              return error_response(frame.id, "older_than_days must be a non-negative integer") if parsed.nil? || parsed < 0 || parsed > ::Sebas::Sessions::Lifecycle::MAX_DORMANT_DAYS
+              days = parsed.to_i32
+            end
+            dormant = lifecycle.mark_dormant(days)
+            ok_response(frame.id, {"dormant" => JSON::Any.new(dormant.map { |k| JSON::Any.new(k) })})
+          when "sessions.archive"
+            key = data["session_key"]?.try(&.as_s?)
+            return error_response(frame.id, "session_key is required") unless key
+            lifecycle.archive(key) ? ok_response(frame.id, {"archived" => JSON::Any.new(key)}) : error_response(frame.id, "session not found or already archived")
+          when "sessions.gc"
+            confirm = data["confirm"]?.try(&.as_bool?) || false
+            cleaned = lifecycle.gc_archived(data["archive_dir"]?.try(&.as_s?) || "archived", confirm)
+            ok_response(frame.id, {"collected" => JSON::Any.new(cleaned.to_i64)})
+          else
+            error_response(frame.id, "unknown lifecycle command")
+          end
+        end
+
+        private def templates_dispatch(frame : Frame) : String
+          templates = @template_registry
+          return error_response(frame.id, "#{frame.type} not available: template registry 未装配") unless templates
+
+          data = frame.data
+          case frame.type
+          when "templates.clone"
+            template_id = data["template"]?.try(&.as_s?)
+            new_id = data["new_id"]?.try(&.as_s?)
+            patch = data["persona_patch"]?.try(&.as_s?)
+            return error_response(frame.id, "template and new_id are required") unless template_id && new_id
+            begin
+              clone = templates.clone_from_template(template_id, new_id, patch)
+              ok_response(frame.id, {"id" => JSON::Any.new(clone.id)})
+            rescue ex : ::Sebas::Agents::RegistryError
+              error_response(frame.id, ex.message.to_s)
+            end
+          else # templates.list
+            ok_response(frame.id, {"templates" => JSON::Any.new(templates.disk_ids.map { |k| JSON::Any.new(k) })})
+          end
+        end
+
+        # M4.4-WP4 管理面命令路由：approvals.*（既有）/sessions 生命周期/
+        # templates（本卡新增）。写命令认证强制（CWE-863 同口径）；查询读
+        # 匿名可用。
+        private def admin_dispatch(io : TCPSocket, frame : Frame) : String
+          frame_type = frame.type
+          return error_response(frame.id, "missing frame type") unless frame_type
+          needs_auth = frame_type != "approvals.pending" &&
+                       frame.type != "sessions.lifecycle" && frame.type != "templates.list"
+          if needs_auth && !caller_authenticated?(io)
+            return error_response(frame.id, "#{frame.type} requires an authenticated hello handshake")
+          end
+          return error_response(frame.id, "missing frame type") if frame_type.nil?
+          case frame_type
+          when .starts_with?("approvals.")
+            approvals_dispatch(io, frame)
+          when .starts_with?("sessions.")
+            lifecycle_dispatch(frame)
+          else # templates.*
+            templates_dispatch(frame)
           end
         end
 
@@ -309,6 +395,14 @@ module Sebas
         # 审批装配接线（M4.2-WP3）：approvals.approve/deny/pending 命令的处理体。
         setter approvals_center
         getter approvals_center : ::Sebas::Orchestration::Approvals::Center?
+
+        # 会话生命周期接线（M4.4-WP4）：sessions.dormant/archive/gc 命令的处理体。
+        setter lifecycle_store
+        getter lifecycle_store : ::Sebas::Sessions::Lifecycle::Store?
+
+        # 模板注册表接线（M4.4-WP4）：templates.clone/list 命令的处理体。
+        setter template_registry
+        getter template_registry : ::Sebas::Agents::AgentRegistry?
 
         # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。
         # 认证绑定 socket 引用本身（非 object_id——内存地址可复用）。
