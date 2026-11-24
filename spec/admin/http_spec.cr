@@ -194,6 +194,12 @@ module Sebas
         listed.status_code.should eq(200)
         JSON.parse(listed.body)["sessions"].as_a.size.should eq(1)
 
+        # dormant：与 IPC 同口径——负数 400，older_than_days=0 真实休眠转换（先于 archive）
+        neg = HTTP::Client.post("#{base}/api/v1/sessions.dormant?older_than_days=-1", headers: headers)
+        neg.status_code.should eq(400)
+        zero = HTTP::Client.post("#{base}/api/v1/sessions.dormant?older_than_days=0", headers: headers)
+        JSON.parse(zero.body)["dormant"].as_a.should eq(["agent:main:acc:email:wp4@example.com"])
+
         archived = HTTP::Client.post(
           "#{base}/api/v1/sessions.archive?session_key=agent:main:acc:email:wp4@example.com", headers: headers)
         JSON.parse(archived.body)["archived"].as_s.should eq("agent:main:acc:email:wp4@example.com")

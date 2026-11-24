@@ -97,8 +97,7 @@ module Sebas
           when {"GET", "/api/v1/sessions.lifecycle"}
             serve_sessions_lifecycle(ctx)
           when {"POST", "/api/v1/sessions.dormant"}
-            ctx.response.content_type = "application/json"
-            ctx.response.print({dormant: @lifecycle.try(&.mark_dormant) || [] of String}.to_json)
+            serve_sessions_dormant(ctx)
           when {"POST", "/api/v1/sessions.archive"}
             serve_sessions_archive(ctx)
           when {"POST", "/api/v1/sessions.gc"}
@@ -132,6 +131,24 @@ module Sebas
             end
           end
           ctx.response.print({sessions: entries || [] of JSON::Any}.to_json)
+        end
+
+        # 与 IPC 同口径：older_than_days 负数/越界/非整数 400，缺省 14
+        private def serve_sessions_dormant(ctx : ::HTTP::Server::Context) : Nil
+          ctx.response.content_type = "application/json"
+          raw = ctx.request.query_params["older_than_days"]?
+          days = 14
+          if raw
+            parsed = raw.to_i64?
+            if parsed.nil? || parsed < 0 || parsed > Int32::MAX
+              ctx.response.status_code = 400
+              ctx.response.print(%({"error": "older_than_days must be a non-negative integer"}))
+              return
+            end
+            days = parsed.to_i32
+          end
+          dormant = @lifecycle.try(&.mark_dormant(days)) || [] of String
+          ctx.response.print({dormant: dormant}.to_json)
         end
 
         private def serve_sessions_archive(ctx : ::HTTP::Server::Context) : Nil
