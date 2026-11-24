@@ -95,6 +95,9 @@ module Sebas
         setter api_key : String?
         getter memory : MemoryConfig?
         getter tools : ToolsConfig?
+        # skills 引用（M4.4-WP1 双轨统一前置）：SKILL.md 名称列表（skills/
+        # 目录发现机制消费；nil = 不限定，继承全局 skills 目录全量注入）
+        getter skills : Array(String)?
         # 会话输入调度定向覆盖（session-input-scheduling.md §3.1；nil = 全继承 gateway.session）
         getter session : SessionPolicyConfig?
       end

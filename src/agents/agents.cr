@@ -60,12 +60,55 @@ module Sebas
         @mutex.synchronize { @agents[id]? }
       end
 
+      # 目录轨 id 清单（M4.4-WP1 双轨互查用）
       def ids : Array(String)
         @mutex.synchronize { @agents.keys }
       end
 
       def size : Int32
         @mutex.synchronize { @agents.size }
+      end
+    end
+
+    # 双轨统一视图（M4.4-WP1）：Config::AgentConfig（YAML 轨）与
+    # AgentRegistry（目录/SOUL.md 轨）一致可互查。
+    # 存量兼容：目录轨已有 SOUL.md 不强制迁移（config 轨缺失仅列出不报错）。
+    class RegistryDualView
+      private getter registry : AgentRegistry
+      private getter config_agents : Hash(String, ::Sebas::Platform::Config::AgentConfig)
+
+      def initialize(@registry, @config_agents)
+      end
+
+      record AgentView, id : String, in_config : Bool, in_registry : Bool,
+        persona_file : String?, model : String?
+
+      # 全量互查：每个 agent 的双轨在位情况。config 轨权威（model 必有）；
+      # 目录轨缺失 = get_or_create 会建默认 SOUL.md（不强制迁移，只列明）。
+      def snapshot : Array(AgentView)
+        names = (@config_agents.keys + @registry.ids).uniq.sort
+        names.map do |name|
+          cfg = @config_agents[name]?
+          in_registry = !@registry.get(name).nil?
+          AgentView.new(
+            id: name,
+            in_config: !cfg.nil?,
+            in_registry: in_registry,
+            persona_file: cfg.try(&.persona_file),
+            model: cfg.try(&.model)
+          )
+        end
+      end
+
+      # 幂等补建：config 定义的 agent 在目录轨缺实例时 get_or_create 默认
+      # SOUL.md（存量已有 SOUL.md 不覆盖——只读兼容不强制迁移）
+      def sync_config_agents : Nil
+        @config_agents.keys.each { |name| @registry.get_or_create(name) }
+      end
+
+      # 双轨一致：config 定义的 agent 在目录轨均有 SOUL.md 实例（sync 后恒真）
+      def consistent_for_config_agents? : Bool
+        @config_agents.keys.all? { |name| !@registry.get(name).nil? }
       end
     end
   end
