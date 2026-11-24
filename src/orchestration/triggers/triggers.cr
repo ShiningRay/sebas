@@ -60,7 +60,8 @@ module Sebas
       # event_id 优先取外部 Idempotency-Key 派生值（重试幂等，M4.5-WP5）；
       # 缺省用明确的服务端一次接收 ID——不宣称跨重试去重（原 SHA1+时间戳
       # 每次重试生成新 id，非幂等语义移除）
-      def fire_webhook(name : String, payload : String, event_id : String? = nil) : Bool
+      def fire_webhook(name : String, payload : String, event_id : String? = nil,
+                       ctx_session : String = "agent:main:engine:orchestration") : Bool
         wf_id = nil
         @mutex.synchronize do
           next unless @webhook_names.includes?(name)
@@ -68,7 +69,7 @@ module Sebas
         end
         return false unless wf_id
         final_event = event_id || "webhook:#{name}:recv-#{::Random::Secure.hex(8)}"
-        @engine.start(@engine.workflows[wf_id], final_event) != nil
+        @engine.start(@engine.workflows[wf_id], final_event, ctx_session: ctx_session) != nil
       end
 
       # 消息/账号事件触发：bus 消费循环调用；source 与事件形状匹配（通配尾段）

@@ -156,25 +156,25 @@ module Sebas
       gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |_agent, _key|
         provider
       end
-      gateway.run
-      base = "http://127.0.0.1:28902"
-
-      r1 = HTTP::Client.post("#{base}/hooks/events", headers: HTTP::Headers{
-        "Authorization"   => "Bearer #{HOOK_TOKEN}",
-        "Idempotency-Key" => "b1",
-      }, body: "{}")
-      r2 = HTTP::Client.post("#{base}/hooks/events", headers: HTTP::Headers{
-        "Authorization"   => "Bearer #{HOOK_TOKEN}",
-        "Idempotency-Key" => "b2",
-      }, body: "{}")
-      r1.status_code.should eq(202)
-      r2.status_code.should eq(202)
-      batch_id = JSON.parse(r1.body)["batch_id"].as_s
-      batch_id.should eq(JSON.parse(r2.body)["batch_id"].as_s) # 同 hook 同批
-
-      # debounce seal → 合成一个 run：payload 记录 batch_id + 全部 event IDs
-      run_id = "run:events-hook:webhook:events:b1"
       begin
+        gateway.run
+        base = "http://127.0.0.1:28902"
+
+        r1 = HTTP::Client.post("#{base}/hooks/events", headers: HTTP::Headers{
+          "Authorization"   => "Bearer #{HOOK_TOKEN}",
+          "Idempotency-Key" => "b1",
+        }, body: "{}")
+        r2 = HTTP::Client.post("#{base}/hooks/events", headers: HTTP::Headers{
+          "Authorization"   => "Bearer #{HOOK_TOKEN}",
+          "Idempotency-Key" => "b2",
+        }, body: "{}")
+        r1.status_code.should eq(202)
+        r2.status_code.should eq(202)
+        batch_id = JSON.parse(r1.body)["batch_id"].as_s
+        batch_id.should eq(JSON.parse(r2.body)["batch_id"].as_s) # 同 hook 同批
+
+        # debounce seal → 合成一个 run：payload 记录 batch_id + 全部 event IDs
+        run_id = "run:events-hook:webhook:events:b1"
         ok = wait_for(15.seconds) do
           status = begin
             gateway.store.task(run_id).status

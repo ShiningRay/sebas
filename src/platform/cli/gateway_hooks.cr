@@ -113,7 +113,7 @@ module Sebas
           if workflow.batch # 显式批量：一个 run 收整批
             event_ids = inputs.map(&.event_id)
             head = event_ids.first
-            started = @engine.start(workflow, head, batch_id, event_ids) != nil
+            started = @engine.start(workflow, head, batch_id, event_ids, ctx_session: session_key) != nil
             run_ok = false
             if started
               # 等待 run 终态再收敛批次（同会话同时只允许一个活动批次——
@@ -143,7 +143,7 @@ module Sebas
           inputs.each do |input|
             msg = message_from_payload(input.payload)
             @store.record_intent(msg.event_id, "message", input.payload)
-            ok = @triggers.fire_webhook(name, msg.content, msg.event_id)
+            ok = @triggers.fire_webhook(name, msg.content, msg.event_id, ctx_session: session_key)
             @store.finish_intent(msg.event_id, ok ? "done" : "failed")
             failed << msg.event_id unless ok
             Log.info { "hook event fired (hook=#{name} event=#{msg.event_id} ok=#{ok})" }
