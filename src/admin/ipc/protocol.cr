@@ -13,8 +13,9 @@ module Sebas
 
       # 首帧 hello（客户端→服务端）
       record Hello, protocol : String, version : Int32, caps : Array(String), token : String? = nil do
+        # token 随 hello 上行（discovery.json 同源回读）：写命令认证闸的凭据通道
         def to_frame : String
-          {type: "hello", protocol: protocol, version: version, caps: caps}.to_json
+          {type: "hello", protocol: protocol, version: version, caps: caps, token: token}.to_json
         end
 
         def self.parse(frame : JSON::Any) : Hello?

@@ -82,5 +82,80 @@ module Sebas
       store.transcripts(key).size.should eq(1) # 未清理
       store.close
     end
+
+    it "mark_dormant 条件 UPDATE：查改间隙被 touch 刷新的会话不误标" do
+      store, lifecycle, _dir = lifecycle_env
+      key = "agent:main:acc:email:racy@example.com"
+      store.append_transcript(key, "user", "racy touch")
+      lifecycle.touch(key, "main", "user")
+      store.db.exec(
+        "UPDATE sessions SET last_active_at = ? WHERE session_key = ?",
+        (::Time.utc - 30.days).to_rfc3339, key
+      )
+
+      # 查询出 stale 集、再 touch 刷新（模拟查改间隙竞态），条件 UPDATE 不再命中
+      cutoff = (::Time.utc - 14.days).to_rfc3339
+      stale = [] of String
+      store.db.query(
+        "SELECT session_key FROM sessions WHERE status = 'active' AND last_active_at < ?",
+        cutoff) do |result_set|
+        while result_set.move_next
+          stale << result_set.read(String)
+        end
+      end
+      stale.should eq([key])
+      lifecycle.touch(key, "main", "user") # 竞态点
+
+      affected = store.db.exec(
+        "UPDATE sessions SET status = 'dormant' WHERE session_key = ? AND status = 'active' AND last_active_at < ?",
+        key, cutoff).rows_affected
+      affected.should eq(0)
+      row = lifecycle.get(key).as(::Sebas::Sessions::Lifecycle::SessionRow)
+      row.status.should eq("active")
+      store.close
+    end
+
+    it "gc 目录限定：base_dir 注入后越界目录拒收（不写盘），界内正常" do
+      store = ::Sebas::Platform::Store::Store.new(Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4), "sebas.db"])
+      data_dir = Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4)]
+      FileUtils.mkdir_p(data_dir)
+      lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store, data_dir)
+      key = "agent:main:acc:email:erin@example.com"
+      store.append_transcript(key, "user", "gc guard")
+      lifecycle.touch(key, "main", "user")
+      lifecycle.archive(key).should be_true
+
+      outside = Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4)]
+      lifecycle.gc_archived((outside / "evil").to_s, archive_confirm: true).should eq(0)
+      Dir.exists?(outside / "evil").should be_false # 越界不写盘
+
+      lifecycle.gc_archived((data_dir / "archive").to_s, archive_confirm: true).should eq(1)
+      Dir.children(data_dir / "archive").size.should eq(1)
+      store.close
+    end
+
+    {% if flag?(:windows) %}
+      pending "gc symlink 复核（Windows symlink 需特权，跳过）"
+    {% else %}
+      it "gc 目录限定：界内 symlink 指向界外时 realpath 复核拒收（CWE-59）" do
+        store = ::Sebas::Platform::Store::Store.new(Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4), "sebas.db"])
+        data_dir = Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4)]
+        FileUtils.mkdir_p(data_dir)
+        outside = Path[Dir.tempdir, "sebas-lifecycle-spec", Random::Secure.hex(4)]
+        FileUtils.mkdir_p(outside)
+        link = data_dir / "archive"
+        File.symlink(outside, link) # 界内 symlink 指向界外
+
+        lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store, data_dir)
+        key = "agent:main:acc:email:symlink@example.com"
+        store.append_transcript(key, "user", "no leak")
+        lifecycle.touch(key, "main", "user")
+        lifecycle.archive(key).should be_true
+
+        lifecycle.gc_archived("archive", archive_confirm: true).should eq(0)
+        Dir.children(outside).should be_empty # 界外零写入
+        store.close
+      end
+    {% end %}
   end
 end

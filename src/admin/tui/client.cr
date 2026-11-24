@@ -11,9 +11,12 @@ module Sebas
       class Client
         getter? protocol_ok : Bool
 
+        @token : String?
+
         def initialize(discovery_path : String | Path, @read_timeout : Time::Span = 10.seconds)
           meta = JSON.parse(File.read(discovery_path))
           raise ::Exception.new("discovery protocol mismatch") unless meta["protocol"].as_s == IPC::PROTOCOL
+          @token = meta["token"]?.try(&.as_s?) # discovery.json 同源：写命令认证凭据
           @io = TCPSocket.new(meta["host"].as_s, meta["port"].as_i)
           @io.sync = true
           @io.write_timeout = @read_timeout
@@ -21,9 +24,10 @@ module Sebas
           @protocol_ok = false
         end
 
-        # hello 握手；caps 协商
+        # hello 握手；caps 协商；token 随帧上行（写命令认证）
         def handshake(caps : Array(String) = IPC::CAPABILITIES) : Hash(String, JSON::Any)?
-          @io.puts(IPC::Hello.new(IPC::PROTOCOL, IPC::VERSION, caps).to_frame)
+          hello = IPC::Hello.new(IPC::PROTOCOL, IPC::VERSION, caps, @token)
+          @io.puts(hello.to_frame)
           frame = read_response do |data|
             data["type"]?.try(&.as_s?) == "hello_ack"
           end

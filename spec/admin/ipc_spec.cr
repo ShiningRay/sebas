@@ -3,6 +3,10 @@ require "file_utils"
 require "../../src/admin/ipc/server"
 require "../../src/admin/tui/client"
 require "../../src/platform/store/store"
+require "../../src/platform/config/schema"
+require "../../src/sessions/lifecycle/lifecycle"
+require "../../src/agents/agents"
+require "../../src/orchestration/approvals/approvals"
 
 def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
   deadline = Time.instant + seconds
@@ -106,6 +110,71 @@ module Sebas
         got = client.read_response(3.seconds) { |frame_data| frame_data["type"]?.try(&.as_s?) == "event.inbound.message" }
         content = got.try(&.["payload"]["content"].as_s?)
         content.should eq("live stream")
+        client.close
+      ensure
+        server.close
+        store.close
+      end
+    end
+
+    it "lifecycle/templates 命令面（M4.4-WP4）：dormant 执行 + 负数拒绝 + 未装配报错" do
+      store = ipc_store
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
+      server.listen
+      begin
+        client = Admin::TUI::Client.new(server.discovery_path) # discovery 同源 token → 认证
+        client.handshake
+
+        # 未装配 → 可读错误
+        missing = client.request("sessions.dormant").should_not be_nil
+        missing["error"].as_s.should contain("lifecycle 组件未装配")
+
+        lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store, data_dir) # 与 gateway 装配同参
+        server.lifecycle_store = lifecycle
+        lifecycle.touch("agent:main:acc:email:ipc4@example.com", "main", "user")
+
+        dormant = client.request("sessions.dormant").should_not be_nil
+        dormant["payload"]["dormant"].as_a.should be_empty # 默认阈值下刚 touch 不休眠
+
+        # older_than_days=0：真实休眠转换覆盖（防过滤条件写反仍通过）
+        zero = client.request("sessions.dormant", {"older_than_days" => JSON::Any.new(0_i64)}).should_not be_nil
+        zero["payload"]["dormant"].as_a.should eq(["agent:main:acc:email:ipc4@example.com"])
+
+        rejected = client.request("sessions.dormant", {"older_than_days" => JSON::Any.new(-1_i64)}).should_not be_nil
+        rejected["error"].as_s.should contain("non-negative")
+
+        client.close
+      ensure
+        server.close
+        store.close
+      end
+    end
+
+    it "templates 命令面（M4.4-WP4）：clone 成功与冲突报错" do
+      store = ipc_store
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
+      FileUtils.mkdir_p(data_dir / "agents")
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
+      server.listen
+      begin
+        registry = ::Sebas::Agents::AgentRegistry.new(data_dir / "agents")
+        registry.get_or_create("ipc-tpl")
+        server.template_registry = registry
+
+        client = Admin::TUI::Client.new(server.discovery_path)
+        client.handshake
+        cloned = client.request("templates.clone", {
+          "template" => JSON::Any.new("ipc-tpl"),
+          "new_id"   => JSON::Any.new("ipc-clone"),
+        }).should_not be_nil
+        cloned["payload"]["id"].as_s.should eq("ipc-clone")
+
+        conflict = client.request("templates.clone", {
+          "template" => JSON::Any.new("ipc-tpl"),
+          "new_id"   => JSON::Any.new("ipc-clone"),
+        }).should_not be_nil
+        conflict["error"].as_s.should contain("already exists")
         client.close
       ensure
         server.close
