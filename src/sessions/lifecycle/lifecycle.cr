@@ -125,7 +125,7 @@ module Sebas
           FileUtils.mkdir_p(archive_dir) unless Dir.exists?(archive_dir)
           cleaned = 0
           list("archived").each do |row|
-            next if row.archived_path # 已回收过
+            next if row.archived_path # 已回收过（调用开始时快照判重）
             safe_name = row.session_key.gsub(/[^a-zA-Z0-9._-]/, "_")
             export_path = Path[archive_dir, "#{safe_name}-#{::Random::Secure.hex(4)}.json"]
             tmp_path = Path[archive_dir, ".tmp-#{::Random::Secure.hex(6)}.json"]
@@ -144,16 +144,23 @@ module Sebas
                   end
                 end
               end
-              # 单事务：标记 + 删除 transcripts 原子提交（archived_path 已写而
-              # transcripts 残留的不一致不会发生）；rename 原子发布导出文件
+              # 单事务三步（CodeRabbit Lat3/Latx）：①事务内重读 status 守卫
+              # （重叠调用已把它归档/回收时跳过，防覆盖他人 archived_path）；
+              # ②rename 原子发布导出文件（发布失败抛错→事务回滚，transcripts
+              # 不丢）；③发布成功后才 DELETE transcripts + 标记 archived_path。
               @store.db.transaction do |tx|
+                status = tx.connection.query_one?(
+                  "SELECT status FROM sessions WHERE session_key = ?", row.session_key,
+                  &.read(String)
+                )
+                next if status != "archived"
+                File.rename(tmp_path, export_path) # 发布（同目录 rename 原子）
+                tx.connection.exec("DELETE FROM transcripts WHERE session_key = ?", row.session_key)
                 tx.connection.exec(
                   "UPDATE sessions SET archived_path = ? WHERE session_key = ?",
                   export_path.to_s, row.session_key
                 )
-                tx.connection.exec("DELETE FROM transcripts WHERE session_key = ?", row.session_key)
               end
-              File.rename(tmp_path, export_path)
               cleaned += 1
               Log.info { "archived session collected: #{row.session_key} -> #{export_path}" }
             rescue ex : ::Exception
