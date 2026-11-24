@@ -140,7 +140,7 @@ module Sebas
           days = 14
           if raw
             parsed = raw.to_i64?
-            if parsed.nil? || parsed < 0 || parsed > Int32::MAX
+            if parsed.nil? || parsed < 0 || parsed > ::Sebas::Sessions::Lifecycle::MAX_DORMANT_DAYS
               ctx.response.status_code = 400
               ctx.response.print(%({"error": "older_than_days must be a non-negative integer"}))
               return

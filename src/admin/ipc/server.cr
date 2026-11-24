@@ -269,7 +269,7 @@ module Sebas
             if raw_days = data["older_than_days"]?
               parsed = raw_days.as_i?
               # 负数 → cutoff 落在未来全误标；越界/非整数不静默回退默认（CodeRabbit）
-              return error_response(frame.id, "older_than_days must be a non-negative integer") if parsed.nil? || parsed < 0 || parsed > Int32::MAX
+              return error_response(frame.id, "older_than_days must be a non-negative integer") if parsed.nil? || parsed < 0 || parsed > ::Sebas::Sessions::Lifecycle::MAX_DORMANT_DAYS
               days = parsed.to_i32
             end
             dormant = lifecycle.mark_dormant(days)

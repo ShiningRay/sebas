@@ -17,6 +17,9 @@ module Sebas
         created_at : String, archived_path : String?
 
       DEFAULT_DORMANT_DAYS = 14
+      # 休眠阈值业务上限（约 1 万年）：Time 可表示范围有限，Int32::MAX 天会使
+      # cutoff 计算溢出抛 ArgumentError（CodeRabbit 五轮）
+      MAX_DORMANT_DAYS = 3_652_059
 
       class LifecycleError < ::Exception; end
 

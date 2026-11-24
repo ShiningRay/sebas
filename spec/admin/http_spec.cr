@@ -197,6 +197,9 @@ module Sebas
         # dormant：与 IPC 同口径——负数 400，older_than_days=0 真实休眠转换（先于 archive）
         neg = HTTP::Client.post("#{base}/api/v1/sessions.dormant?older_than_days=-1", headers: headers)
         neg.status_code.should eq(400)
+        # Int32::MAX 天使 cutoff 计算溢出 Time 下界——业务上限拒收（CodeRabbit 五轮）
+        huge = HTTP::Client.post("#{base}/api/v1/sessions.dormant?older_than_days=2147483647", headers: headers)
+        huge.status_code.should eq(400)
         zero = HTTP::Client.post("#{base}/api/v1/sessions.dormant?older_than_days=0", headers: headers)
         JSON.parse(zero.body)["dormant"].as_a.should eq(["agent:main:acc:email:wp4@example.com"])
 
