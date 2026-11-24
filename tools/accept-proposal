@@ -21,6 +21,9 @@ require "json"
 require "open3"
 require_relative "agents/lib/sebas_agents"
 
+# 脚本位于 <repo>/tools/；配置与 git remote 都从仓库根取，不依赖调用方 cwd。
+REPO_ROOT = File.expand_path("..", __dir__)
+
 module AcceptProposal
   module_function
 
@@ -249,7 +252,7 @@ module AcceptProposal
   end
 
   # 从仓库根 .github/agents.yml 读 maintainers（不引入 YAML gem）。
-  def read_maintainers(root: Dir.pwd)
+  def read_maintainers(root: REPO_ROOT)
     path = File.join(root, ".github", "agents.yml")
     raise Failure, "缺少 #{path}，无法校验裁决人身份" unless File.file?(path)
 
@@ -324,7 +327,7 @@ if $PROGRAM_NAME == __FILE__
     end
 
     repo = opts[:repo] || begin
-      url, = Open3.capture3("git", "remote", "get-url", "origin")
+      url, = Open3.capture3("git", "-C", REPO_ROOT, "remote", "get-url", "origin")
       match = url.strip.match(%r{[:/]([^/:]+/[^/:]+?)(?:\.git)?\z})
       raise ArgumentError, "无法从 origin 推断仓库；请用 --repo OWNER/NAME" unless match
 

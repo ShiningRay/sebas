@@ -10,6 +10,7 @@ load File.expand_path("accept-proposal", __dir__)
 
 class AcceptProposalTest < Minitest::Test
   def test_verdict_comment_has_marker_on_own_line_and_reason
+    assert_equal File.expand_path("..", __dir__), REPO_ROOT
     body = AcceptProposal.verdict_comment("方向成立，排期另议。\n")
     assert body.start_with?("<!-- proposal-verdict: accepted-design -->\n")
     assert_includes body, "方向成立，排期另议。"
