@@ -190,9 +190,8 @@ module Sebas
       channel = gateway.ipc.tap.register("sched-sse-spec")
 
       update_params = ::JSON::Any.new({
-        "scope" => ::JSON::Any.new("gateway"),
-        "yaml"  => ::JSON::Any.new("batch_mode: debounce
-"),
+        "scope"    => ::JSON::Any.new("gateway"),
+        "yaml"     => ::JSON::Any.new("batch_mode: debounce"),
         "operator" => ::JSON::Any.new("spec"),
       } of String => ::JSON::Any)
       gateway.handle_scheduling_admin("config.scheduling.update", update_params)
