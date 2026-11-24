@@ -6,26 +6,14 @@
 
 ## 消歧定案
 
-**主对象**：Nous Research 的开源项目 **Hermes Agent**
-（github.com/NousResearch/hermes-agent，官网 hermes-agent.nousresearch.com，MIT License）。
-它是一个 self-hosted 个人 AI Agent：终端原生（terminal-native）的自主编码/任务 agent，
-带持久记忆、agent 自建 skills，以及一个驻留在 21+ 消息平台的 messaging gateway
-（Telegram、Discord、Slack、SMS、Matrix 等；官方 docs 索引原句：19 native +
-IRC/Microsoft Teams via plugins）。
+**主对象**：Nous Research 的开源项目 **Hermes Agent**（github.com/NousResearch/hermes-agent，官网 hermes-agent.nousresearch.com，MIT License）——一个 self-hosted 个人 AI Agent：终端原生（terminal-native）的自主编码/任务 agent，带持久记忆、agent 自建 skills、以及一个驻留在 21+ 消息平台的 messaging gateway（Telegram、Discord、Slack、SMS、Matrix 等，官方 docs 索引原句：19 native + IRC/Microsoft Teams via plugins）。
 （来源：https://hermes-agent.nousresearch.com/docs/llms.txt ；https://raw.githubusercontent.com/NousResearch/hermes-agent/main/README.md）
 
 两条消歧线索均指向同一对象：
 - Clawrium（多机 agent fleet 管理工具）将 OpenClaw / Hermes / ZeroClaw 并列为可治理的 agent 运行时，其中 Hermes 标注 (Nous Research)、OpenAI-compatible local API——「Hermes」确为 OpenClaw 同生态的独立运行时（依据既有调研记忆 id 2a397aee，本次未重抓 Clawrium 文档核验，见「未验证」）。
 - Nous Research 的 Hermes **模型**系列（Hermes LLM 家族）是同门另一条产品线，不是本调研对象；hermes-agent 可接任意模型端点（含但不限于 Hermes 模型），二者勿混。
 
-第三方热度（仅作背景，star 数未直接核验）：
-
-- 36kr 报道上线两个月 47k star（<https://eu.36kr.com/en/p/3760771429958403>）。
-- 钛媒体 2026-04-23 称超 10 万 star、社区外号「爱马仕」（<https://www.tmtpost.com/7960448.html>）。
-- 第三方对比文将其定位为 OpenClaw 的头号对比对象：
-  Hermes = 可持续积累能力的统一 runtime（共享 runner、环境框架/benchmark/rollout 基建一等公民），
-  OpenClaw = 以 gateway/routing/session/delivery 为中心的 control plane
-  （<https://kanaries.net/zh/articles/hermes-agent-vs-openclaw>）。
+第三方热度（仅作背景，star 数未直接核验）：36kr 报道上线两个月 47k star（https://eu.36kr.com/en/p/3760771429958403 ）；钛媒体 2026-04-23 称超 10 万 star、社区外号「爱马仕」（https://www.tmtpost.com/7960448.html ）。第三方对比文将其定位为 OpenClaw 的头号对比对象：Hermes=可持续积累能力的统一 runtime（共享 runner、环境框架/benchmark/rollout 基建一等公民），OpenClaw=以 gateway/routing/session/delivery 为中心的 control plane（https://kanaries.net/zh/articles/hermes-agent-vs-openclaw ）。
 
 ---
 
@@ -40,14 +28,7 @@ IRC/Microsoft Teams via plugins）。
 | 运行环境 | $5 VPS 到 GPU cluster 到 serverless（Daytona、Modal：空闲休眠按需唤醒）；本地/Docker/SSH/Daytona/Modal/Vercel Sandbox 六种 terminal backends + 插件后端（Singularity/Apptainer）；Windows 原生支持 + WSL2 双路线；Android/Termux 签名 APT 仓 | README、docs/llms.txt |
 | 模型层 | Nous Portal（300+ 模型 + Tool Gateway 一订阅全包）、OpenRouter、OpenAI、Anthropic、Google、任意 OpenAI-compatible endpoint；`hermes model` 随意切换无锁定 | README、docs/llms.txt |
 
-入口与平台覆盖（对多账号设计最相关）：CLI/TUI/Desktop/Dashboard/API server 之外，
-messaging 平台目录含 **21+ 个渠道**，与本平台目标渠道（多 email / 多 WeCom / 多 Lark）完全同域：
-
-- **国内**：wecom（企业微信 AI Bot WebSocket gateway）、wecom-callback（自建应用回调）、
-  feishu（Feishu/Lark）、dingtalk、qqbot、weixin（个人微信 iLink Bot API）。
-- **国际**：telegram、discord、slack、whatsapp、whatsapp_cloud、signal、matrix、line。
-- **邮件与其他**：email（IMAP/SMTP）、sms、teams（插件）、google_chat、msgraph-webhook、
-  webhooks（GitHub/GitLab 事件）。
+入口与平台覆盖（对多账号设计最相关）：CLI/TUI/Desktop/Dashboard/API server 之外，messaging 平台目录含 **wecom（企业微信 AI Bot WebSocket gateway）、wecom-callback（自建应用回调）、feishu（Feishu/Lark）、dingtalk、qqbot、weixin（个人微信 iLink Bot API）、telegram、discord、slack、whatsapp、whatsapp_cloud、signal、email（IMAP/SMTP）、sms、matrix、line、teams（插件）、google_chat、msgraph-webhook、webhooks（GitHub/GitLab 事件）** 等 21+ 个——与本平台目标渠道（多 email / 多 WeCom / 多 Lark）完全同域。
 （来源：https://hermes-agent.nousresearch.com/docs/llms.txt ）
 
 ---
@@ -66,12 +47,7 @@ messaging 平台目录含 **21+ 个渠道**，与本平台目标渠道（多 ema
 4. 命中 profile 后经 `_profile_runtime_scope(profile_home)` 设定 HERMES_HOME override + secret scope（均以 contextvars 存放，经 `copy_context()` 传播给执行 agent turn 的 worker thread，**绝不写 os.environ**）；
 5. session 以 key `agent:<profile>:…` 命名空间隔离（default profile 保持 `agent:main:…` 不变），落到该 profile 自己的 `profiles/<name>/state.db`。
 
-**agent 执行单元**：每条入站消息触发一个 agent turn（worker thread）。
-secret 读取经 `get_secret(name)`，按「全局 allowlist（仅监听类设置）→ 当前 scope → fallback」
-三级查找；multiplexing 开启而无 scope 时直接 `raise UnscopedSecretError`
-（fail-closed，防止读到别人的凭据）。
-云端 SDK 的 ambient default chains（google.auth.default / DefaultAzureCredential / boto3）
-被主动禁用：profile 无完整凭据则对应 provider adapter 拒绝。
+**agent 执行单元**：每条入站消息触发一个 agent turn（worker thread）；secret 读取经 `get_secret(name)`：全局 allowlist（仅监听类设置）→ 当前 scope → fallback；multiplexing 开启而无 scope 时直接 `raise UnscopedSecretError`（fail-closed，防止读到别人的凭据）。云端 SDK 的 ambient default chains（google.auth.default / DefaultAzureCredential / boto3）被主动禁用：profile 无完整凭据则对应 provider adapter 拒绝。
 
 **模型/工具层**：provider-runtime 统一多厂商；provider-routing、fallback-providers（主模型故障自动切换）、credential-pools（每 provider 池化多 API key 自动轮换应对限流）为目录级集成（docs/llms.txt）。
 
@@ -116,21 +92,7 @@ secret 读取经 `get_secret(name)`，按「全局 allowlist（仅监听类设�
 1. **per-credential 轮询型**（Telegram/Discord/Slack/Matrix 等）：多 profile 各自持有自己的 bot token 长轮询——天然支持同平台 N 账号；同 (platform, token) 重复出现 → duplicate adapter 被 park（fatal/duplicate_credential），gateway 不退出。
 2. **port-binding/HTTP webhook 型**（Twilio、LINE、Teams、BlueBubbles、msgraph、WhatsApp Cloud、**WeCom callback**、**Feishu webhook** 等）：共享同一监听器，按 URL 前缀 `/p/<profile>/<path>` 路由，各 named profile 用自己的 secret 验签；无对应 adapter → 404，secret 不对 → 401/403（fail-closed）。**这正是 WeCom/Feishu 多账号在 Hermes 里的实际接线方式**。
 
-**每 profile 隔离清单**（官方 "What is isolated per profile" 大表摘录）：
-
-| 隔离项 | 说明 |
-|---|---|
-| provider keys / bot tokens | 各自 `.env` |
-| authorization 配置 | 独立 |
-| slash 命令 admin gating | 未加载 config → 空 admin 列表，fail-closed |
-| HTTP 端点 | 401/404/502/503 fail-closed |
-| adapter 设置 | 独立 |
-| 附件 denylist | 覆盖 `profiles/` 全体，防跨 profile 泄 `.env`/`state.db` |
-| stdio MCP 子进程环境 | 缺就是缺，不回退 default |
-| 出站身份 | 发消息/关机通知/loop 唤醒走该 profile 自己的 bot，无则失败不借 default |
-| memory-provider 身份 | `MEM0_USER_ID` / `HONCHO` host 各归各 |
-| terminal sandbox | 沙箱 / 时区 / `max_turns` / hooks 目录 |
-| cron | 调优参数独立 |
+**每 profile 隔离清单**（官方 "What is isolated per profile" 大表摘录）：provider keys/bot tokens（各自 .env）；authorization 配置；slash 命令 admin gating（未加载 config → 空 admin 列表，fail-closed）；HTTP 端点 401/404/502/503 fail-closed；adapter 设置；附件 denylist（覆盖 profiles/ 全体防跨 profile 泄 .env/state.db）；stdio MCP 子进程环境（缺就是缺，不回退 default）；出站身份（发消息/关机通知/loop 唤醒走该 profile 自己的 bot，无则失败不借 default）；memory-provider 身份（MEM0_USER_ID/HONCHO host 各归各）；terminal sandbox/时区/max_turns/hooks 目录；cron 调优。
 
 **Known limitations（process-global 未 scope 化，官方明列）**：MCP discovery + 工具注册（首个 profile 占位，issue #67605）；TERMINAL_* sandbox env 全局；内置工具/provider 注册表 overlay；HTTP listener / relay ingress / 进程锁每 process 一个。
 

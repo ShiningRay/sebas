@@ -9,24 +9,9 @@
 
 ## 0. 结论速览（推荐路线）
 
-**推荐路线一句话**：配置对象做成不可变快照，用文件监听（naqvis/file_watcher，Windows 走
-ReadDirectoryChangesW）+ POSIX SIGHUP / Windows 复用 autobot 现成 IPC 管理命令双通道触发
-「读盘 → 展开环境变量 → YAML 解析 → schema 校验 → 成功才 Atomic 整根换引用，失败保留旧配置并报警」
-的先验后换管线；所有消费方统一「每 turn 开头取一次配置快照」，组件级热换按第 6 节矩阵分层执行
-（路由/编排/限流/凭据热换，账号增删走监督体管理的 fiber 启停）。
+**推荐路线一句话：配置对象做成不可变快照，用文件监听（naqvis/file_watcher，Windows 走 ReadDirectoryChangesW）+ POSIX SIGHUP / Windows 复用 autobot 现成 IPC 管理命令双通道触发「读盘 → 展开环境变量 → YAML 解析 → schema 校验 → 成功才 Atomic 整根换引用，失败保留旧配置并报警」的先验后换管线；所有消费方统一「每 turn 开头取一次配置快照」，组件级热换按第 6 节矩阵分层执行（路由/编排/限流/凭据热换，账号增删走监督体管理的 fiber 启停）。**
 
-该路线的每个环节都有已验证先例：
-
-| 环节 | 先例 |
-|---|---|
-| 先验后换 | autobot cron `reload_if_changed`（`cron/service.cr:275-290`） |
-| 文件监听 | OpenClaw `gateway.reload`（watch active config path） |
-| IPC 触发 | autobot `Ipc::Server`（`cli/gateway.cr:102-143`） |
-| 整根换引用 | Crystal `Atomic(T)` 支持 reference type |
-| 优雅交接语义 | nginx SIGHUP master/worker 模型 |
-
-设计文档应把「热更新」拆成四个正交件：**触发（watch/signal/IPC）→ 解析校验（先验后换）→
-换引用（Atomic/快照）→ 组件重应用（矩阵分派）**，每件独立演进。
+该路线的每个环节都有已验证先例：先验后换 = autobot cron `reload_if_changed`（cron/service.cr:275-290）；文件监听 = OpenClaw `gateway.reload`（watch active config path）；IPC 触发 = autobot `Ipc::Server`（cli/gateway.cr:102-143）；整根换引用 = Crystal `Atomic(T)` 支持 reference type；优雅交接语义 = nginx SIGHUP master/worker 模型。设计文档应把「热更新」拆成这四个正交件：**触发（watch/signal/IPC）→ 解析校验（先验后换）→ 换引用（Atomic/快照）→ 组件重应用（矩阵分派）**，每件独立演进。
 
 ---
 
@@ -80,15 +65,7 @@ autobot（工作区根目录，Crystal）有 **两套** 免重启重载机制 + 
 | jbox-web/watch.cr (~>>0.1) | inotify/FSEvents/其余 polling | shards.info | path filter + event coalescing + 自动后端兜底；小而完整 |
 | agatan/watchbird | inotify 绑定 | shards.info 标「over 7 years ago」未更新 | **判死**，不采用 |
 
-**对本平台结论**：主路用 file_watcher（Windows ReadDirectoryChangesW 原生 + 失败自动轮询，
-单 shard 覆盖两目标平台）；**同时必须保留 autobot cron 式 mtime(+size) 轮询作为兜底**
-（间隔缩到 1–5s）。理由两条：
-
-1. inotify/ReadDirectoryChangesW 在网络盘、编辑器原子写（rename 替换）、watch 实例数耗尽等场景
-   会丢事件，轮询是最后防线。
-2. 轮询逻辑 ~20 行、零依赖，已在本仓库 cron 中验证。
-
-触发去抖：watch 事件合并 200–500ms 窗口后再进入「读盘校验」管线，避免编辑器半写状态。
+**对本平台结论**：主路用 file_watcher（Windows ReadDirectoryChangesW 原生 + 失败自动轮询，单 shard 覆盖两目标平台）；**同时必须保留 autobot cron 式 mtime(+size) 轮询作为兜底**（间隔缩到 1–5s），理由：①inotify/ReadDirectoryChangesW 在网络盘、编辑器原子写（rename 替换）、watch 实例数耗尽等场景会丢事件，轮询是最后防线；②轮询逻辑 ~20 行、零依赖，已在本仓库 cron 中验证。触发去抖：watch 事件合并 200–500ms 窗口后再进入「读盘校验」管线，避免编辑器半写状态。
 
 ---
 
@@ -212,23 +189,8 @@ end
 ### 8a. 仓库现状（本地 + 记忆链核对）
 
 - 仓库：github.com/ShiningRay/mrb.cr（本地 C:\Users\ShiningRay\projects\ShiningRay\mrb.cr）；issue #1 = https://github.com/ShiningRay/mrb.cr/issues/1。
-- Windows 可用性已验证（记忆 26fed42e）：MSYS2 UCRT64 gcc 16.2.0 构建 mruby 4.0.0（831da26），
-  `libmruby.a` 4,934,196B（nm 见 `T mrb_init_mrblib`），shim.c 57 个 `mrb_cr_*` 导出，
-  链接 Crystal 1.22.1 x86_64-w64-windows-gnu；smoke eval/host/error 全过。
-  两个构建坑（Windows 分支硬编码 MSVC 产物名、`MRUBY_CONFIG` 只读目录 .lock EACCES）
-  已在 task-2 解决（Makefile 复制 build_config 至可写目录、
-  canonical `lib/mrb_shim.o + lib/libmruby.a` 链接路径）。
-- API 面（task-2/3/4 修复链 f4d2ccc7→8cded03c→6adcbc15）：
-
-  - `mrb_cr_proc_p/block_given/get_block/yield/funcall` 已补。
-  - Crystal 侧 `Args#block/block_given?`、`Value#proc?`、
-    `State#create_proc/block_given?/current_block/yield/funcall`、
-    `Ref.open_proc/proc`（跨 state 校验）。
-  - yield 异常传播已修（`mrb_cr_yield` 在 protect_error 时
-    `mrb->exc = mrb_obj_ptr(result); *error=TRUE`，适配 mruby 4.0.0 `mrb_protect_error` 语义）。
-  - funcall 补 `mrb_protect`（task-4 唯一 P2 已闭合）；全量 84/0。
-
-  **结论：mrb.cr 已达「可选插件脚本层」的可用度。**
+- Windows 可用性已验证（记忆 26fed42e）：MSYS2 UCRT64 gcc 16.2.0 构建 mruby 4.0.0（831da26），libmruby.a 4,934,196B（nm 见 `T mrb_init_mrblib`），shim.c 57 个 `mrb_cr_*` 导出，链接 Crystal 1.22.1 x86_64-w64-windows-gnu；smoke eval/host/error 全过。两个构建坑（Windows 分支硬编码 MSVC 产物名、MRUBY_CONFIG 只读目录 .lock EACCES）已在 task-2 解决（Makefile 复制 build_config 至可写目录、canonical `lib/mrb_shim.o + lib/libmruby.a` 链接路径）。
+- API 面（task-2/3/4 修复链 f4d2ccc7→8cded03c→6adcbc15）：`mrb_cr_proc_p/block_given/get_block/yield/funcall` 已补；Crystal 侧 `Args#block/block_given?`、`Value#proc?`、`State#create_proc/block_given?/current_block/yield/funcall`、`Ref.open_proc/proc`（跨 state 校验）；yield 异常传播已修（mrb_cr_yield 在 protect_error 时 `mrb->exc = mrb_obj_ptr(result); *error=TRUE`，适配 mruby 4.0.0 `mrb_protect_error` 语义）；funcall 补 `mrb_protect`（task-4 唯一 P2 已闭合）；全量 84/0。**结论：mrb.cr 已达「可选插件脚本层」的可用度。**
 
 ### 8b. 沙箱边界（技术事实）
 

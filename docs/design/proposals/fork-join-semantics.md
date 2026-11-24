@@ -2,11 +2,7 @@
 
 > **状态**：已定稿并吸收（M4.0-WP1 评审定稿 + M4.0-WP2 吸收回写完成：契约摘要落 spec/08-multi-agent.md §8.4、M4 期落 spec/14-roadmap.md §14；本文转为语义细则的权威参考）
 > **日期**：2026-11-20 · **作者**：工部尚书（受首辅分派）
-> **定位**：本文是 Fork/Join 影分身的**方案核心**——原语契约、Join 语义矩阵、分层回写、
-> expectations 表、能力衰减、触发权、成本与失败语义。
-> 架构落位见 [fork-join-shadow-clone-architecture.md](fork-join-shadow-clone-architecture.md)；
-> 现状差距见 [fork-join-shadow-clone-analysis.md](../fork-join-shadow-clone-analysis.md)；
-> 定位立论见 [fork-join-shadow-clone-positioning.md](fork-join-shadow-clone-positioning.md)。
+> **定位**：本文是 Fork/Join 影分身的**方案核心**——原语契约、Join 语义矩阵、分层回写、expectations 表、能力衰减、触发权、成本与失败语义。架构落位见 [fork-join-shadow-clone-architecture.md](fork-join-shadow-clone-architecture.md)；现状差距见 [fork-join-shadow-clone-analysis.md](../fork-join-shadow-clone-analysis.md)；定位立论见 [fork-join-shadow-clone-positioning.md](fork-join-shadow-clone-positioning.md)。
 > **命名**：原语名 `fork` / `join`（POSIX 直觉）；UI 层叫「影分身」。
 > **证据纪律**：`[来源: 仓库:路径:行]` 为翰林报告（analysis.md）已核实锚点，关键处已经工部抽查复核；`[推演]` 为本文新增设计判断；`[未验证]` 为待实测项。九问裁断（Q1–Q9）为设计硬约束，全部落实。
 
@@ -60,16 +56,7 @@ fork 调用（DSL action / IPC / HTTP 显式命令，M4.1；对话流内自然�
 ### 1.3 分身键与任务树（Q1 裁断）
 
 - **session_key 五段结构不动** [来源: design.md §3.3]：`agent:<agent_id>:<account_id>:<channel_type>:<peer>`。
-- fork 分身五段取值：
-  - **agent 段 = 父 agent_id**（分身以父人格运行）。
-  - **account 段 = `"internal"`**。
-  - **channel_type 段新增枚举值 `"fork"`**。
-  - **peer 段 = `fork_id:member_index`**——fork_id 标识一次 fork 调用，member_index 标识同次
-    fork 内的成员序号 1..N；成员级独立会话与 transcript，是 §3 分层回写按成员记录
-    session/行数范围的前提。
-
-  成员完整键 = `agent:<父agent_id>:internal:fork:<fork_id>:<member_index>`；
-  成员 task_id 与之一一对应（§1.4 成员列表、§3 members[].session）。
+- fork 分身五段取值：**agent 段 = 父 agent_id**（分身以父人格运行）；**account 段 = `"internal"`**；**channel_type 段新增枚举值 `"fork"`**；**peer 段 = `fork_id:member_index`**（fork_id 标识一次 fork 调用，member_index 标识同次 fork 内的成员序号 1..N——成员级独立会话与 transcript，是 §3 分层回写按成员记录 session/行数范围的前提）。成员完整键 = `agent:<父agent_id>:internal:fork:<fork_id>:<member_index>`；成员 task_id 与之一一对应（§1.4 成员列表、§3 members[].session）。
 - 先例对齐：subagent 已用 `(agent_id, "internal", "subagent", subtask_key)` 四参数先例 [来源: 仓库:src/agents/subagent.cr:44,56]——fork 与之同构，仅 channel_type 枚举值不同，Pool 分片、transcripts 键、调度 admit 三处无需新机制 [来源: analysis.md §3.1]。
 - fork_id 格式：`fork:<uuid4 短码>`（[推演]：循 subagent `task_id="sub:#{subtask_key}"` 可读前缀先例 [来源: 仓库:src/agents/subagent.cr:33]）。
 - **任务树登记**：每个分身一行 tasks，`kind="fork_child"`，`parent_id = owner_task_id = 父任务 id`——直接复用现成 `TaskRow(id,parent_id,kind,status,phase,restart_count,owner_task_id)` 字段，不加列 [来源: 仓库:src/platform/store/store.cr:23-25]。
@@ -116,7 +103,7 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 | **L0 只读** | 结论全量并入 L1 回写；无冲突 | 已完成成员结论照常回写，标 `partial` | 失败原因 + 已获只读结论回写 | 取消回执回写；已获结论标 `discarded` 仅落 L2 |
 | **L1 文件写** | 副作用清单（文件路径×动作×时间）必进 L1 回写；**文件指纹冲突检测**：fork 快照记录工作区相关文件摘要，回写时与父当前状态对比，不一致 → 该文件标 `CONFLICT` 进「需父裁决清单」，**不自动 merge** | 同左 + `partial` 标注；未完成成员已写文件照列 | 已发生写**不回滚**，清单 + 失败上下文回写 | 已发生写不回滚（写即事实），清单 + 取消回执回写 |
 | **L2 网络写** | 副作用清单（目标×内容摘要×幂等键）进 L1 回写；同目标重复发送标注（幂等键已防重复投递 [来源: 仓库:src/platform/cli/gateway.cr:178-188]） | 同左 + `partial`；在途请求不追杀（发出即事实） | 已发部分照列清单 + 失败上下文 | 尽力停在发送前；已发不可撤回，照列清单 |
-| **L3 不可逆** | 仅当 Approvals::Center 批准过才可能发生（§7）——**审批凭证 + 副作用清单**进 L1 回写 | 已批准已执行的照常回写 + `partial`；**排队未批准的审批请求自动作废**（超时 deny 语义 [来源: 仓库:src/orchestration/approvals/approvals.cr:81-83]） | 不可逆工具必须「先审批后执行、失败不半途」；半途失败标 `CRITICAL` 进审计 | 排队未批准的直接撤回；已批准执行中的尽力停在审批点前；已执行不可撤回，凭证 + 清单回写 |
+| **L3 不可逆** | 仅当 Approvals::Center 批准过才可能发生（§7）——**审批凭证 + 副作用清单**进 L1 回写 | 已批准已执行的照常回写 + `partial`；**排队未批准的审批请求自动作废**（超时 deny 语义 [来源: 仓库:src/orchestration/approvals/approvals.cr:81-83]） | 不可逆工具必须「先审批后执行、失败不半途」（原子性要求）；半途失败标 `CRITICAL` 进审计 | 排队未批准的直接撤回；已批准执行中的尽力停在审批点前；已执行不可撤回，凭证 + 清单回写 |
 
 矩阵通则（贯穿 16 格）：[推演]
 1. **副作用已发生不隐瞒**：任何格的 L1/L2/L3 清单必回写（「告知本体」先于「结论合并」）。
@@ -127,12 +114,7 @@ fork 成员并发沿用命名信号量先例：`SubagentManager::Semaphore`（DE
 
 `any` 模式首个成员成功终态即 settle expectation 并触发 L1 回写（首个成功者结论）。残余分身三步处置：[推演]
 
-1. **尽力取消**：向残余分身发协作式取消——复用已落地的 busy-interrupt-redirect 控制通道与协作式
-   取消语义（[busy-interrupt-redirect.md](busy-interrupt-redirect.md)，PR #31 已合，issue #28 已关），
-   **本文不重设计 interrupt**。分身处于安全点（未开始/未进 effectful 段）→ 任务置 `cancelled`——
-   这是分身任务层新终态（M4.1 落地）：显式取消不参与 restartLimit 恢复，区别于 busy-interrupt
-   落账用的 turn 终态 `interrupted`（后者属崩溃恢复语义
-   [来源: 仓库:src/platform/store/store.cr:328-330]）。
+1. **尽力取消**：向残余分身发协作式取消——复用已落地的 busy-interrupt-redirect 控制通道与协作式取消语义（[busy-interrupt-redirect.md](busy-interrupt-redirect.md)，PR #31 已合，issue #28 已关），**本文不重设计 interrupt**。分身处于安全点（未开始/未进 effectful 段）→ 任务置 `cancelled`——这是分身任务层新终态（M4.1 落地）：显式取消不参与 restartLimit 恢复，区别于 busy-interrupt 落账用的 turn 终态 `interrupted`（后者属崩溃恢复语义 [来源: 仓库:src/platform/store/store.cr:328-330]）。
 2. **已写副作用不丢弃**：残余分身已发生的 L1/L2 副作用清单仍并入回写（副作用是事实）；结论不并入主上下文，全量 transcript 按分身会话键照常落盘（L2 不变，[来源: 仓库:src/platform/store/store.cr:387-395]）。
 3. **越过取消点者**：正在执行 L3 不可逆动作的分身不中断（原子性要求 §2.2），等待终态；其结果登记为「迟到成员」——副作用照列、结论仅落 L2。
 
@@ -164,19 +146,7 @@ L1 回写消息 JSON 草案：[推演]
 }
 ```
 
-枚举口径：
-
-- `outcome` 的 `settled/cancelled/expired` 与 §4.2 回写状态机终态同名对应；`failed` 为折叠态——
-  expectation 状态机仍落 `settled`、判定失败由 `result` 字段承载（§4.3 all 行；
-  §9.2 全部失败行 settle(result=failed)）。
-- `partial` **不是** outcome 值。超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载
-  （§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）。
-- `members[].state` 中 `done/failed` 即 tasks.status 原值
-  （单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]）；`cancelled` 为分身显式取消终态
-  （§2.3 步骤 1）；`running` 为回写时刻仍未达终态的成员（超时/过期场景尽力取消未及者，
-  §9.2 超时行）——其最终终态以 tasks.status 为准，循 owner_task_id 找回（§9.2 父崩溃恢复行）。
-- 迟到与终态正交记录：`late` 布尔标注 any 残余越过取消点者（§2.3 步骤 3），
-  成员终态仍由 `state` 如实承载，不互斥。
+枚举口径：`outcome` 的 `settled/cancelled/expired` 与 §4.2 回写状态机终态同名对应，`failed` 为折叠态——expectation 状态机仍落 `settled`、判定失败由 `result` 字段承载（§4.3 all 行；§9.2 全部失败行 settle(result=failed)）；`partial` **不是** outcome 值，超时/失败/取消场景的不完整信息由 `members[].state` 终态数组承载（§2.2 通则 3；§4.2 expired 同样产出带 partial 标注的报告）；`members[].state` 中 `done/failed` 即 tasks.status 原值（单一事实源 [来源: 仓库:src/platform/store/store.cr:308-315]），`cancelled` 为分身显式取消终态（§2.3 步骤 1），`running` 为回写时刻仍未达终态的成员（超时/过期场景尽力取消未及者，§9.2 超时行）——其最终终态以 tasks.status 为准，循 owner_task_id 找回（§9.2 父崩溃恢复行）；迟到与终态正交记录：`late` 布尔标注 any 残余越过取消点者（§2.3 步骤 3），成员终态仍由 `state` 如实承载，不互斥。
 
 回写幂等：以 memo 键 `join:<fork_id>:written` 先写后发（first-write-wins 先例 [来源: 仓库:src/platform/store/store.cr:369-383]），崩溃重放不重复回写。
 
@@ -363,7 +333,38 @@ CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id);
 3. 与架构文档勾稽：session_key（§1.3）、expectations DDL（§4.1）、装配改造、DSL KNOWN_TOOLS 扩展在架构文档有对应组件落位。
 4. 定稿后按既有流吸收进 design.md（§8 协作扩展 + §14 路线图延至 M4）——M4.0-WP2 工作包，非本文动作。
 
-> 管理面命令面（sessions 生命周期 / templates）已归入 [spec/09-admin-protocol.md](../spec/09-admin-protocol.md) §9.3。
+---
+
+## 11. 管理面命令面（M4.4-WP4 补遗）
+
+生命周期与模板经 IPC/HTTP 可查可操作。鉴权口径按传输面分：IPC 读命令匿名、写命令认证（M1-WP9 口径）；HTTP 全部 /api/v1/ 路由外层统一 Bearer token（token 模式下无匿名读）。
+
+| 命令 | IPC | IPC 认证 | HTTP | HTTP 认证 |
+|---|---|---|---|---|
+| sessions.lifecycle（status 过滤查询） | ✓ | 匿名 | GET /api/v1/sessions.lifecycle | token |
+| sessions.dormant（older_than_days 负数/越界拒绝） | ✓ | 写认证 | POST /api/v1/sessions.dormant | token |
+| sessions.archive | ✓ | 写认证 | POST /api/v1/sessions.archive | token |
+| sessions.gc（confirm 闸 + 目录限定） | ✓ | 写认证 | POST /api/v1/sessions.gc | token |
+| templates.list | ✓ | 匿名 | GET /api/v1/templates.list | token |
+| templates.clone（冲突 → error/409） | ✓ | 写认证 | POST /api/v1/templates.clone | token |
+
+语义要点：
+
+- **装配**：lifecycle store 与 AgentRegistry 构造后经 setter 注入 IPC/HTTP 两侧（registry 创建晚于两侧构造）；IPC hello 帧随 token 上行（discovery.json 同源回读），写命令认证闸由此打通。
+- **GC 目录限定**（base_dir= gateway data_dir）：词法 expand 拦 `../`（CWE-22）；「最深已存在祖先 realpath + 词法尾段回拼」复核拦中间组件 symlink（CWE-59），检查与写盘同用 realpath 原生值，分隔符归一仅 Windows flag 生效。越界拒收且不预创建目录。
+- **休眠原子性**：mark_dormant 条件 UPDATE（`status='active' AND last_active_at < cutoff`）原子查改，查改间隙被 touch 刷新的会话不误标；last_active_at 纳秒精度（默认 rfc3339 无小数秒，同秒相等使 older_than_days=0 判定失效）。
+
+### 锚点（工部复核）
+
+| 断言 | 锚点 |
+|---|---|
+| admin_dispatch 统一路由 + 写命令认证闸 | src/admin/ipc/server.cr:315-322 |
+| lifecycle/templates 命令分发 | src/admin/ipc/server.cr:251-333 |
+| HTTP 路由表 | src/admin/http/server.cr:79-115 |
+| gateway 注入接线 | src/platform/cli/gateway.cr:140-145 |
+| GC 目录限定 | src/sessions/lifecycle/lifecycle.cr:139-167 |
+
+---
 
 ## 附：关键证据锚点（工部抽查复核 + 翰林报告转引）
 

@@ -136,14 +136,7 @@ workflows:
 
 seal 条件（任一满足）：idle 到时（可被新输入重置；`idle_ms=0` 时该条件禁用，仅由其余条件封冻）；max_wait 到时（不可重置）；达 `max_messages`；达 `max_bytes`；显式 flush；`flush_on_turn_end` 且前一批 running turn 已结束；shutdown/recovery 保守 seal。
 
-- 聚合桶键按 `group_by` 取值定义：
-  - `sender`（默认）= `session_key + sender/source + security_context`，按发送者/来源隔离；
-  - `session` = `session_key + security_context`，允许跨发送者合并，但每个成员保留署名与安全上下文。
-
-  同桶按接收序保序；跨桶的 seal 判定按各自条件**独立即时触发、互不等待**。
-  dispatch 保持会话级接收序 FIFO——以各批首条输入接收序为键，前序桶仍在 collecting 时
-  后续已 seal 批次排队等待（不重排、不插队，等待时长计入等待指标；前序桶自身受
-  `max_wait_ms` 约束不会无限阻塞）。活跃桶有硬上限，防伪造 sender 绕过限制。
+- 聚合桶键按 `group_by` 取值定义：`sender`（默认）= `session_key + sender/source + security_context`，按发送者/来源隔离；`session` = `session_key + security_context`，允许跨发送者合并但每个成员保留署名与安全上下文。同桶按接收序保序；跨桶的 seal 判定按各自条件**独立即时触发、互不等待**，dispatch 保持会话级接收序 FIFO——以各批首条输入接收序为键，前序桶仍在 collecting 时后续已 seal 批次排队等待（不重排、不插队，等待时长计入等待指标；前序桶自身受 `max_wait_ms` 约束不会无限阻塞）。活跃桶有硬上限，防伪造 sender 绕过限制。
 - 字节预算 admission：新输入放不进当前 collecting 批次剩余 `max_bytes` 预算时，先按当前策略 seal 当前批（`seal_reason: bytes`）并原子开启新批，该输入进入新批，不丢弃；仅当单条自身超过 `max_bytes` 硬限制才明确拒绝。seal、建批、入批发生在同一次 admission 事务内，成功后才 ACK（§4.2 原子性同样适用于 seal-再-admit 路径）。
 - 给 LLM 的是带 sender、event type、时间边界的结构化批次；原始 envelope 永久可查，不只保存拼接文本。
 - 空批次、重复事件、定时器重入和 seal/dispatch 竞态必须可测试且无副作用。

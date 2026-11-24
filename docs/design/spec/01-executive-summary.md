@@ -12,18 +12,8 @@
 |---|---|
 | 「同时绑定多个比如 email、多个企业微信、多个 Lark 等等账号」 | **Account / Agent / Binding 三正交概念模型**：账号是配置树节点（`channels.<type>.accounts[]` 数组，每账号一套凭据+一条受监督的长连接），路由是显式绑定表；「账号数」不硬编码进任何渠道实现（OpenClaw §3 三概念正交 + Hermes RoutingIdentity 双身份解耦） |
 | 「允许用户进行编排」 | **编排引擎**：触发（cron/事件/webhook 统一模型）→条件→动作三段式 DSL；执行采用持久 Task 状态机（意图先落库→执行效应→结果落库），幂等三件套保证崩溃恢复不重复发信（Pi §2/§4）；多 agent 协作带防环上限（Hermes Bot Mode §4.3） |
-| 「修改了配置之后就要重启 gateway 感到十分厌烦……不重启热更新配置」 | **配置热更新四正交件**（§11），见下条 |
+| 「修改了配置之后就要重启 gateway 感到十分厌烦……不重启热更新配置」 | **配置热更新四正交件**（§11）：触发（文件监听+IPC reload 双通道）→先验后换（校验失败保旧配置）→Atomic 整根换引用→组件重应用矩阵（数据类全热换、端口类标 restart，OpenClaw hybrid 语义）；「每 turn 取配置快照」保证 turn 内语义一致。Hermes 确认无热重载=反面教材（issue #48693 四证据链），OpenClaw reload 默认 hybrid=正面教材（热更新笔记 §0/§6/§7） |
 | 「利用 mrb.cr 嵌入 mruby 来进行扩展……设计插件机制」 | **插件脚本层**（§12）：每动作独立裁剪 mruby 子进程（watchdog 可 kill）；gembox 无文件/网络 IO + 宿主能力白名单；JSON-like 协议；单文件 `.sebas-plugin` 分发与托管生命周期，不做市场；SKILL.md 承载知识文档（热更新笔记 §8；子进程修订见[可行性报告](../review/m3-plugin-feasibility.md)） |
-
-热更新的四正交件明细：
-
-1. **触发**：文件监听 + IPC `reload` 双通道。
-2. **先验后换**：校验失败保留旧配置。
-3. **Atomic 换引用**：整根替换，不留半新半旧。
-4. **组件重应用矩阵**：数据类全热换，端口类标 `restart`（OpenClaw hybrid 语义）。
-
-「每 turn 取配置快照」保证 turn 内语义一致。Hermes 确认无热重载＝反面教材
-（issue #48693 四证据链）；OpenClaw reload 默认 hybrid＝正面教材（热更新笔记 §0/§6/§7）。
 
 **核心架构（文字版分层图）**：
 

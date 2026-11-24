@@ -12,25 +12,9 @@
 
 配置三要素：**URL、Token、EncodingAESKey**（[回调配置](https://developer.work.weixin.qq.com/document/path/90930)）。
 
-- **URL 验证（GET）**：企微发 GET，带 `msg_signature`、`timestamp`、`nonce`、`echostr`。
-  开发者解密 `echostr` 得明文（含 `random`、`msg_len`、`msg` 三段），**1 秒内**回显明文 msg
-  （不能加引号、不能带 BOM、不能带换行）。
-  依据：[回调和回复的加解密方案](https://developer.work.weixin.qq.com/document/path/101033)；
-  官方社区确认 GET 1 秒、POST 5 秒要求（[社区回复](https://developer.work.weixin.qq.com/community/question/detail?content_id=16852975329130074534)）。
-- **消息推送（POST）**：企微以 XML 密文 POST 到 URL；被动回复也需加密后返回
-  （[加解密方案说明](https://developer.work.weixin.qq.com/document/path/90968)）。
-- **加解密**：AES-256-CBC，四步——
-  ① `AESKey = Base64_Decode(EncodingAESKey + "=")`，43 字符 → 32 字节；
-  ② IV 取 AESKey 前 16 字节；
-  ③ PKCS#7 填充至 32 字节倍数；
-  ④ 解密后明文布局为 `random(16B) + msg_len(4B 大端) + msg + receiveid`。
-
-  依据：官方 [90968](https://developer.work.weixin.qq.com/document/path/90968) 与
-  [101033](https://developer.work.weixin.qq.com/document/path/101033) 说明解密后字段；
-  第三方实现一致佐证（[wxkefu-rs](https://docs.rs/wxkefu-rs/latest/wxkefu_rs/callback/struct.CallbackCrypto.html)、
-  [WeKnora 错误说明](https://errors.standardbeagle.com/Tencent/WeKnora/plaintext-too-short/)）。
-
-  `receiveid` 即 corpid——**校验它可防跨企业回调混串**，是天然的多企业路由/校验锚点。
+- **URL 验证（GET）**：企微发 GET，带 `msg_signature`、`timestamp`、`nonce`、`echostr`；开发者解密 `echostr` 得明文（解密后含 `random`、`msg_len`、`msg` 三段），**1 秒内**回显明文 msg（不能加引号、不能带 BOM、不能带换行）（[回调和回复的加解密方案](https://developer.work.weixin.qq.com/document/path/101033)；官方社区确认 GET 1 秒、POST 5 秒要求：[社区回复](https://developer.work.weixin.qq.com/community/question/detail?content_id=16852975329130074534)）。
+- **消息推送（POST）**：企微以 XML 密文 POST 到 URL；被动回复也需加密后返回（[加解密方案说明](https://developer.work.weixin.qq.com/document/path/90968)）。
+- **加解密**：AES-256-CBC；`AESKey = Base64_Decode(EncodingAESKey + "=")`，43 字符 → 32 字节；IV 取 AESKey 前 16 字节；PKCS#7 填充至 32 字节倍数（[90968](https://developer.work.weixin.qq.com/document/path/90968)）。解密后明文布局为 `random(16B) + msg_len(4B 大端) + msg + receiveid`（官方 [101033](https://developer.work.weixin.qq.com/document/path/101033) 说明解密后字段；第三方实现一致佐证：[wxkefu-rs](https://docs.rs/wxkefu-rs/latest/wxkefu_rs/callback/struct.CallbackCrypto.html)、[WeKnora 错误说明](https://errors.standardbeagle.com/Tencent/WeKnora/plaintext-too-short/)）。`receiveid` 即 corpid——**校验它可防跨企业回调混串**，是天然的多企业路由/校验锚点。
 - **验签**：`msg_signature = SHA1(字典序排序(token, timestamp, nonce, encrypt))`，用于确认来源与内容完整性（[90930](https://developer.work.weixin.qq.com/document/path/90930)、[90968](https://developer.work.weixin.qq.com/document/path/90968)）。
 - **超时与重试**：POST **5 秒内**收不到响应会断开连接并重新发起请求，**总共重试 3 次**；回调可能重复，须按 `msgid` 排重；官方建议「立即应答、业务异步处理」（[社区官方回复 1](https://developer.work.weixin.qq.com/community/question/detail?content_id=16852975329130074534)、[回复 2](https://developer.work.weixin.qq.com/community/question/detail?content_id=16729413638223055356)）。
 - 官方提供加解密库（C++/Python/PHP/Java/Go/C# 等），Crystal 无官方库需自行实现（AES-CBC + SHA1 + Base64，工作量可控）（[90968](https://developer.work.weixin.qq.com/document/path/90968)）。
@@ -68,11 +52,7 @@
 
 ### a6. 可信域名 / 可信IP
 
-- **企业可信IP（出向 API 调用必需）**：自建应用调用服务端 API 的出口公网 IP 必须配到
-  「管理后台-应用管理-应用详情-企业可信IP」，否则报错 **60020 `not allow to access from your ip`**。
-  依据：[社区案例 1](https://developer.work.weixin.qq.com/community/question/detail?content_id=16798088819581233102)、
-  [案例 2](https://developer.work.weixin.qq.com/community/question/detail?content_id=16855989729235200518)；
-  官方排查工具 [devtool/query](https://developer.work.weixin.qq.com/devtool/query)。
+- **企业可信IP（出向 API 调用必需）**：自建应用调用服务端 API 的出口公网 IP 必须配到「管理后台-应用管理-应用详情-企业可信IP」，否则报错 **60020 `not allow to access from your ip`**（[社区案例 1](https://developer.work.weixin.qq.com/community/question/detail?content_id=16798088819581233102)、[案例 2](https://developer.work.weixin.qq.com/community/question/detail?content_id=16855989729235200518)；官方排查工具 [devtool/query](https://developer.work.weixin.qq.com/devtool/query)）。
 - 已认证企业须**先配置可信域名才能配置可信IP**（[社区回复](https://developer.work.weixin.qq.com/community/question/detail?content_id=16855989729235200518)）；可信域名用于网页授权/JS-SDK 场景，每企业设置上限 **20 个/月**（[访问频率限制 90312](https://developer.work.weixin.qq.com/document/path/90312)）。
 - 工程含义：多账号平台的出口 IP 是共享资源，所有企业/应用共用同一出口 IP 池；IP 变更（云厂商浮动）须同步更新各应用配置。
 
@@ -158,12 +138,7 @@
 
 - 端口：465（隐式 TLS）/ 587（STARTTLS）/ 25（明文中继，基本被封禁，禁用）。
 - 认证：Gmail/Outlook 均要求 **SASL XOAUTH2**（OAuth2 access token）或应用专用密码（Gmail），见 c3；XOAUTH2 同时用于 IMAP/POP/SMTP AUTH（[XOAUTH2 机制](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol)）。
-- Gmail 发送限额：单封 > 500 收件人或 > 500 封/日触发限流，封 1–24 小时
-  （[Gmail 官方限额](https://support.google.com/mail/answer/22839)）。
-  第三方邮件客户端（IMAP/POP）发信另有更低限额：产品专家口径约 100 封/24h 滚动窗口，
-  官方页该小节未逐字核对（见未验证；
-  [社区佐证](https://support.google.com/mail/thread/364755365/you-have-reached-a-limit-for-sending-mail-not-resolved-after-24-hours)）。
-  Google Workspace 版限额未核。
+- Gmail 发送限额：单封 > 500 收件人或 > 500 封/日触发限流，封 1–24 小时（[Gmail 官方限额](https://support.google.com/mail/answer/22839)）；第三方邮件客户端（IMAP/POP）发信另有更低限额（产品专家口径约 100 封/24h 滚动窗口，官方页该小节未逐字核对，见未验证；[社区佐证](https://support.google.com/mail/thread/364755365/you-have-reached-a-limit-for-sending-mail-not-resolved-after-24-hours)）。Google Workspace 版限额未核。
 
 ### c3. Gmail OAuth2 与应用专用密码现状
 
@@ -181,11 +156,7 @@
 
 ### c5. 多邮箱并存注意点
 
-- **连接数上限**：Gmail 每账号同时 **15 个 IMAP 连接**，超过报 `Too many simultaneous connections`。
-  依据：[Microsoft Q&A 引 Google 文档](https://learn.microsoft.com/en-us/answers/questions/4473979/too-many-simultaneous-connections-error-with-gmail)、
-  [Atlassian KB](https://support.atlassian.com/jira/kb/email-handler-for-gmail-does-not-process-all-email-requests/)——
-  均非 Google 官方页数值（见未验证）。
-  IDLE 每文件夹占一条连接 → 通常只 IDLE INBOX（或收件文件夹）。
+- **连接数上限**：Gmail 每账号同时 **15 个 IMAP 连接**，超过报 `Too many simultaneous connections`（[Microsoft Q&A 引 Google 文档](https://learn.microsoft.com/en-us/answers/questions/4473979/too-many-simultaneous-connections-error-with-gmail)、[Atlassian KB](https://support.atlassian.com/jira/kb/email-handler-for-gmail-does-not-process-all-email-requests/)——均非 Google 官方页数值，见未验证）。IDLE 每文件夹占一条连接 → 通常只 IDLE INBOX（或收件文件夹）。
 - **心跳/断线重连**：每 ≤29 分钟 NOOP 或重发 IDLE；处理服务器 `BYE`/autologout；指数退避；重连后恢复 SELECT 状态与 UID 同步（UIDVALIDITY 变化需全量重扫）。
 - **OAuth 生命周期**：每账号独立 refresh token；access token 过期时 XOAUTH2 失败返回 JSON 错误，须刷新 token 后重认证连接；token 存储与刷新调度按账号隔离。
 - **多账号调度**：统一连接池 + 每账号并发上限 + 全局 QPS；避免同一账号多组件各开多连接（15 上限含全部后台连接）。
@@ -199,11 +170,7 @@
 - 官方底线（三家一致）：secret/token **只存服务端**，不入前端、安装包、日志：
   - 飞书原文「App Secret 只能保存在应用服务端，勿写入前端代码、客户端安装包或日志」（[tenant doc](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token)）；
   - 企微「请勿将 access_token 返回给前端」（[91039](https://developer.work.weixin.qq.com/document/path/91039)）。
-- 平台级建议（工程指南，非官方强制）：多账号凭据集中存储须**静态加密**（AES-256-GCM 等），
-  主密钥托管于 OS 凭据库（Windows Credential Manager/DPAPI、macOS Keychain、Linux secret service）
-  或专用 Vault。按 `(渠道类型, 账号ID)` 命名空间隔离；日志全程脱敏 token/secret。
-  支持轮换——企微 secret、飞书 secret 均可在管理后台重置，OAuth refresh token 可撤销
-  （参考 [OWASP Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)）。
+- 平台级建议（工程指南，非官方强制）：多账号凭据集中存储须**静态加密**（AES-256-GCM 等），主密钥托管于 OS 凭据库（Windows Credential Manager/DPAPI、macOS Keychain、Linux secret service）或专用 Vault；按 `(渠道类型, 账号ID)` 命名空间隔离；日志全程脱敏 token/secret；支持轮换——企微 secret、飞书 secret 均可在管理后台重置，OAuth refresh token 可撤销（参考 [OWASP Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)）。
 
 ### d2. 最小权限
 

@@ -10,13 +10,7 @@
 
 **M6.0-WP1 适配器契约、同步元数据与能力矩阵定稿**（1–2 pd）
 - 目标：三 provider 共用一个契约，差异落在矩阵而非分支。
-- 范围：三部分。
-  ① 适配器接口（列集合/取页/取增量/能力探测/保原文）。
-  ② 同步元数据六类——provider+account+collection、resource id+href、
-  UID+series+original recurrence key、ETag·changeKey·sequence·updated、
-  sync-token·syncToken·deltaLink+时间窗、watch-subscription id+expiration [来源: 提案 §7.4]。
-  ③ 能力矩阵模板（VEVENT/VTODO/VALARM/重复/条件写/通知），每格三值「支持/不支持/不宣称」；
-  失败语义 `stale/conflicted/partial_failure/unknown` 与隐私档（跨账户仅 busy）[来源: 提案 §6.4]。
+- 范围：适配器接口（列集合/取页/取增量/能力探测/保原文）；同步元数据六类（provider+account+collection / resource id+href / UID+series+original recurrence key / ETag·changeKey·sequence·updated / sync-token·syncToken·deltaLink+时间窗 / watch-subscription id+expiration）[来源: 提案 §7.4]；能力矩阵模板（VEVENT/VTODO/VALARM/重复/条件写/通知），每格三值「支持/不支持/不宣称」；失败语义 `stale/conflicted/partial_failure/unknown` 与隐私档（跨账户仅 busy）[来源: 提案 §6.4]。
 - 交付物：契约文档（`docs/design/proposals/calendar-adapter-contract.md`）。
 - 依赖：M5.4 门禁。
 - 验收：评审通过；三 provider 在矩阵上无「假设支持」空格；每个不宣称项写明后果。
@@ -82,29 +76,12 @@
 - 目标：把「声称支持」换成「实测支持」。
 - 范围：真实 Google/Microsoft/CalDAV 账户（E.1#9）各跑一轮：全量→增量→改期/取消/完成→游标失效→物删除；填实能力矩阵；`docs/design/review/m6-gate.md`；tag `v0.4.0`。
 - **时间边界的端到端验收（与 M5.0-WP2 的纯函数 spec 分开）**：M5.0-WP2 只在本地语义层验 DST/全天/跨时区；本包须在**真实 provider 往返链路上**再验一遍，各自给确定期望：
-  - ①DST 缺口（`America/New_York` 2026-03-08 02:30 的 VEVENT）——**两个分支分开验收，
-    证据表各占一格**：
-    - ⓐ**接受分支**（provider 按 03:30 或等价 UTC 存储）→ 回读已存对象，显示 provider
-      归一化后的时间，并标 `ambiguous_local_time`；**不得**本地静默改写成 03:30 却仍显示原文 02:30。
-      证据格填「对象 id + provider 返回时间 + 本地显示时间 + 标记」。
-    - ⓑ**拒绝分支**（provider 返回错误）→ 记录 provider 原始拒绝响应
-      （HTTP 状态/错误码/原文），并显式声明**不创建本地镜像 ExternalLink**
-      （该 Attempt 失败即止，不留半条记录）；证据格填「原始错误响应 + 断言 `external_links` 无新增行」。
-
-    两分支任一路径走通即该项通过，但**证据必须写明走的是哪一支**，不得只写「已验证」。
+  - ①DST 缺口（`America/New_York` 2026-03-08 02:30 的 VEVENT）——**两个分支分开验收，证据表各占一格**：ⓐ**接受分支**（provider 按 03:30 或等价 UTC 存储）→ 回读已存对象，显示 provider 归一化后的时间，并标 `ambiguous_local_time`；**不得**本地静默改写成 03:30 却仍显示原文 02:30；证据格填「对象 id + provider 返回时间 + 本地显示时间 + 标记」。ⓑ**拒绝分支**（provider 返回错误）→ 记录 provider 原始拒绝响应（HTTP 状态/错误码/原文），并显式声明**不创建本地镜像 ExternalLink**（该 Attempt 失败即止，不留半条记录）；证据格填「原始错误响应 + 断言 `external_links` 无新增行」。两分支任一路径走通即该项通过，但**证据必须写明走的是哪一支**，不得只写「已验证」。
   - ②秋季重复——2026-11-01 01:30 建事件后回读，须仍对应同一 UTC 时刻（不是差一小时）。
   - ③全天跨时区——在 `Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 账户/时区读取，`DATE` 值不变。
   - 三条（含①的两分支）须全部进入 m6-gate.md 证据表。
 - 交付物：实测矩阵 + m6-gate.md + tag。
 - 依赖：M6.3 门禁、E.1#9。
 - 验收：**至少两 provider 真机 round-trip 全绿方可发版**（提案 §9「必须验证的边界」第 6 条）；未实测 provider 在产品面标「实验/未验证」并列入 gate 未验证项。
-- **provider 数与 CalDAV 顺延的口径裁断（CodeRabbit 问）**：
-
-  1. 「至少两 provider」指**真机实测通过数**，不是「已实现数」——回放通过不计入。
-  2. CalDAV 若超期顺延 v0.4.1，**Google + Graph 两 provider 真机全绿仍满足 M6 门禁**，
-     v0.4.0 按原计划发布，release notes 明写「CalDAV 顺延 v0.4.1」。
-  3. 反向不允许：若只有 CalDAV 一家真机通过而 Google/Graph 均未实测，则 provider 数 = 1，
-     **不足两 provider → 不发 v0.4.0**，整期按 B.3 第 6 条降级为「引擎+回放就绪」并记入 §15.1，
-     v0.4.0 顺延待第二家真机通过。
-  4. 顺延 v0.4.1 不改变 M6.0–M6.3 的验收有效性，只移动 M6.2-WP1 与 M6.4 的完成时点。
+- **provider 数与 CalDAV 顺延的口径裁断（CodeRabbit 问）**：①「至少两 provider」指**真机实测通过数**，不是「已实现数」——回放通过不计入。②CalDAV 若超期顺延 v0.4.1，**Google + Graph 两 provider 真机全绿仍满足 M6 门禁**，v0.4.0 按原计划发布，release notes 明写「CalDAV 顺延 v0.4.1」。③反向不允许：若只有 CalDAV 一家真机通过而 Google/Graph 均未实测，则 provider 数=1，**不足两 provider → 不发 v0.4.0**，整期按 B.3 第 6 条降级为「引擎+回放就绪」并记入 §15.1，v0.4.0 顺延待第二家真机通过。④顺延 v0.4.1 不改变 M6.0–M6.3 的验收有效性，只移动 M6.2-WP1 与 M6.4 的完成时点。
 - 风险：外部账户未就绪则本期降级为「引擎 + 回放就绪、集成未验证」，按 B.3 第 5 条记入 §15.1 口径，不发 v0.4.0。[推演]

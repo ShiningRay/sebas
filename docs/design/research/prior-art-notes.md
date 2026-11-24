@@ -33,34 +33,13 @@
 
 ### 3. autobot 架构 = 单进程事件总线分层单体（7731b342）｜可直接采信（源码级）
 
-**旧结论**：装配根 `gateway.cr:19-32`
-（bus→session→tools/mcp→provider→plugins→cron→channels→agent loop）；并发靠 fiber +
-两个有界 Channel(100)。关键事实：
-
-1. `Agent::Loop` 只 spawn 一个 `"agent-loop"` fiber 顺序消费（`queue.cr:26-27`、`loop.cr:111`）
-   → **全局串行，一个慢 turn 阻塞所有会话**；session 隔离只靠 key `"#{channel}:#{chat_id}"`
-   （`events.cr:29-31`）。
-2. 一次 turn：语音未转写固定话术 → 记忆 consolidate/trim → `update_tool_contexts` →
-   `Context::Builder` → ToolExecutor（`max_iterations=20`，单工具结果截 20000 字符）。
-3. `autobot agent` CLI 不走 Loop，是单次 `provider.chat` 拼字符串（`agent.cr:119-177`），
-   docs 未记载这条分叉。
-4. cron 经 `bus.publish_inbound` 复用完整 turn（`gateway.cr:64-96`）。
-5. gateway 实为无 HTTP 面的常驻进程。
+**旧结论**：装配根 gateway.cr:19-32（bus→session→tools/mcp→provider→plugins→cron→channels→agent loop）；并发靠 fiber + 两个有界 Channel(100)。关键事实：①Agent::Loop 只 spawn 一个 "agent-loop" fiber 顺序消费（queue.cr:26-27、loop.cr:111）→ **全局串行，一个慢 turn 阻塞所有会话**；session 隔离只靠 key `"#{channel}:#{chat_id}"`（events.cr:29-31）。②一次 turn：语音未转写固定话术→记忆 consolidate/trim→update_tool_contexts→Context::Builder→ToolExecutor（max_iterations=20，单工具结果截 20000 字符）。③`autobot agent` CLI 不走 Loop，是单次 provider.chat 拼字符串（agent.cr:119-177），docs 未记载这条分叉。④cron 经 bus.publish_inbound 复用完整 turn（gateway.cr:64-96）。⑤gateway 实为无 HTTP 面的常驻进程。
 
 **关联/启示**：多账号 = 会话数 × N。若新平台沿用此分层，**单 fiber 串行是第一个要打破的瓶颈**：多账号下任一账号一个慢 turn 会阻塞全部账号。分层本体（事件总线 + session key 路由 + cron 复用 turn）可复用，调度模型必须重构为 per-session/per-account 并发。
 
 ### 4. autobot 1 个 Loop、N 会话串行共享；subagent 无并发上限（292254d9）｜可直接采信（源码级）
 
-**旧结论**：①主 agent 固定 1（一个 `Agent::Loop`、一条 fiber）；session 无上限但共享同一 Loop，
-仅靠 `session_key` 隔离，全部消息单 fiber 排队。
-② `SubagentManager#spawn` 直接 `::spawn`（`subagent.cr:83-85`），
-**无并发上限、无 `max_concurrent` 配置**（grep 0 命中）；模型可一个 turn 连开多 fiber 并行打 LLM，
-无排队无拒绝；已提议加 `max_concurrent`（默认 3）但未实现。
-③ subagent 是轻量实例：独立 ToolExecutor（`MAX_ITERATIONS=15`），工具只有文件/exec/web/bash
-（无 message/spawn/cron），不能递归、不能直连用户，看不到主会话历史。
-④ 结果回注 = 主 agent 一次新 turn（`announce_result` 发 `CHANNEL_SYSTEM` 消息带完整历史再跑 LLM）。
-⑤ cron 不是独立 agent，同样进同一 Loop；「多 agent」只能多进程或改码 new 多个 Loop，
-无 OpenClaw 式 `subagents.allowAgents` 编排。
+**旧结论**：①主 agent 固定 1（一个 Agent::Loop、一条 fiber）；session 无上限但共享同一 Loop，仅靠 session_key 隔离，全部消息单 fiber 排队。②SubagentManager#spawn 直接 `::spawn`（subagent.cr:83-85），**无并发上限、无 max_concurrent 配置**（grep 0 命中）；模型可一个 turn 连开多 fiber 并行打 LLM，无排队无拒绝；已提议加 max_concurrent（默认 3）但未实现。③subagent 是轻量实例：独立 ToolExecutor（MAX_ITERATIONS=15），工具只有文件/exec/web/bash（无 message/spawn/cron），不能递归、不能直连用户，看不到主会话历史。④结果回注 = 主 agent 一次新 turn（announce_result 发 CHANNEL_SYSTEM 消息带完整历史再跑 LLM）。⑤cron 不是独立 agent，同样进同一 Loop；「多 agent」只能多进程或改码 new 多个 Loop，无 OpenClaw 式 subagents.allowAgents 编排。
 
 **关联/启示**：给「编排」提供反面教材与正面零件——反面：任务分发无上限、无 lease、无回收（与 2a397aee 坑 6「任务须 lease+过期回收」互相印证）；正面：**轻量 subagent + 受限工具集 + 结果以系统消息回注主 turn** 的模式可直接作为编排「动作节点」的执行机制。新平台编排器应内置：并发上限、任务队列、lease/超时回收、（可借鉴 OpenClaw 的）allowAgents 式声明编排。
 
@@ -72,37 +51,13 @@
 
 ### 6. autobot 无现成 TUI/Web UI，OpenClaw dashboard/ClawPanel 接不上（dca44a9b）｜需一线调研复核（快照时点：TUI 实现之前）
 
-**旧结论**：
-
-1. 官方与社区都没有 autobot 的 TUI/Web UI（issue/PR 连提案都没有）。
-2. OpenClaw 有官方 web dashboard 与第三方 ClawPanel（TUI+Web，`clawpanel web --port 4231`），
-   但写死 OpenClaw 的 CLI 与配置 schema（`models.providers`、`agents.defaults.memorySearch.*`、
-   `subagents.allowAgents`），且 autobot gateway 无 HTTP 面接不上。
-3. 现实可用「Web UI」= IM 前端本身（Telegram Web 等）。
-4. 自建 `extension-roadmap.md` 也只规划了 generic HTTP webhook channel 与 MCP HTTP/SSE；
-   做 Web UI 应顺着 webhook channel 升级（POST→`publish_inbound`，SSE→`consume_outbound`）。
-
-搜索易撞名：mrveiss/AutoBot-AI 等无关项目。
+**旧结论**：①官方与社区都没有 autobot 的 TUI/Web UI（issue/PR 连提案都没有）；②OpenClaw 有官方 web dashboard 与第三方 ClawPanel（TUI+Web，`clawpanel web --port 4231`），但写死 OpenClaw 的 CLI 与配置 schema（models.providers、agents.defaults.memorySearch.*、subagents.allowAgents），且 autobot gateway 无 HTTP 面接不上；③现实可用「Web UI」= IM 前端本身（Telegram Web 等）；④自建 extension-roadmap.md 也只规划了 generic HTTP webhook channel 与 MCP HTTP/SSE，做 Web UI 应顺着 webhook channel 升级（POST→publish_inbound，SSE→consume_outbound）。搜索易撞名：mrveiss/AutoBot-AI 等无关项目。
 
 **关联/启示**：教训 = **没有管理面协议，任何编排面板都接不上**。新平台的「编排控制台」（看流程状态、账号状态、审批动作）必须先定通信契约（HTTP 或 IPC），这是架构级前置决策，不能后补。注意时序：本条是 TUI 落地前的调研快照，autobot 后续已用 IPC 路线补上（见第 7 条）。
 
 ### 7. autobot TUI 已实现：独立进程 + NDJSON + Channels::Ipc（713ed632）｜可直接采信（spec/冒烟已验收）
 
-**旧结论**：按 `docs/tui-plan.md` 落地，交付面分三块：
-
-- 代码：`src/autobot/ipc/{protocol,transport,discovery,server,tracer,bridge,interrupts,commands}.cr`
-  + `channels/ipc.cr` + `src/tui/*`。
-- gateway 参数：新增 `--ipc auto|unix:PATH|tcp:HOST:PORT|stdio`。
-- 协议：NDJSON 一帧一行、8MiB 上限、首帧 hello、caps/版本校验。
-
-行为约束：
-
-- 工具事件经 ToolExecutor Observer 只注入 ipc 渠道（预览 500 字符）。
-- Ctrl-C 中断在工具迭代与 LLM 调用之间检查 InterruptFlag，返回 `turn_ended{cut_off}`。
-- `--connect` 从 discovery 文件复用 token；`--spawn` 起 `gateway --ipc stdio` 子进程。
-
-验收：43 examples 0 failures；Windows 真机冒烟通过（`tcp:18791` 握手 attach/detach、
-`--spawn` exit 0）。v1 纯文本不渲染 markdown。
+**旧结论**：按 docs/tui-plan.md 落地：`src/autobot/ipc/{protocol,transport,discovery,server,tracer,bridge,interrupts,commands}.cr` + channels/ipc.cr + src/tui/*；gateway 新增 `--ipc auto|unix:PATH|tcp:HOST:PORT|stdio`；协议 = NDJSON 一帧一行、8MiB 上限、首帧 hello、caps/版本校验；工具事件经 ToolExecutor Observer 只注入 ipc 渠道（预览 500 字符）；Ctrl-C 中断在工具迭代与 LLM 调用之间检查 InterruptFlag 返回 turn_ended{cut_off}；`--connect` 从 discovery 文件复用 token；`--spawn` 起 gateway --ipc stdio 子进程。43 examples 0 failures；Windows 真机冒烟通过（tcp:18791 握手 attach/detach、--spawn exit 0）。v1 纯文本不渲染 markdown。
 
 **关联/启示**：证明 **「无 HTTP 也能做控制面」** 的替代路线已走通：NDJSON/IPC + 独立前端进程，且踩平了协议帧/caps 校验/discovery token/中断传播等坑。新平台编排 UI 可二选一：A) HTTP+SSE（顺 webhook 路线，与企微/飞书回调同构，见 dca44a9b）；B) NDJSON/IPC（本条已验证）。若编排面板只在本地用，B 路线可少开 HTTP 面。
 

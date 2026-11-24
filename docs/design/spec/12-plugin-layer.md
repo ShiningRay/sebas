@@ -17,37 +17,11 @@
 - **每动作一个裁剪 mruby 子进程**：每次调用启动新进程，结束即释放 VM。mrb.cr 进程内绑定复核为 **84/84 通过**，但 mruby 无指令级执行配额，进程内死循环无法由宿主 watchdog 打断，故不作为首版运行形态。
 - **静态声明 + 精确注册**：manifest 的 `hooks` 是插件意图和授权上限，宿主据此建立 `hook_name → [(plugin_id, version, priority)]` 索引；`on_hook(name)` 只在该次进程内登记具体 handler。manifest 未声明、handler 未注册、插件未启用或版本不一致均不派发，**不向全部插件广播所有钩子**。
 - **声明校验**：安装时校验 manifest 中 hook 名称、类型、所需 capability 与配置 schema；开发/启用冒烟在无副作用沙箱中加载脚本，收集 handler 并验证 manifest 与注册集合相符。handler 重复、未知 hook、缺 handler、额外注册均拒绝激活。
-- **每次调用的注入**：runner 校验请求后注入 `$action`、`$config`、`$context`、`$payload`、
-  `$idempotency_key`，执行 `plugin.rb` 完成注册，再按 `$action` 精确调用 handler。
-  **handler 以该 hook/action 的 `$payload` 作为唯一业务参数**（on_hook 块参数即 payload；
-  如 `memory.remember.before` 的 payload 含 `entry`），参数形状由 §12.11 钩子目录与 manifest 声明定义。
-  `$context` 的授权身份以宿主保存的原始值为准，插件修改全局变量不能扩大权限。
-- **无跨调用 Ruby 状态**：全局变量、block 和对象只在本次进程有效，不能当缓存或持久状态；
-  持久状态经白名单 capability 保存并带 schema 版本。
-- **JSON-like 协议**：只传数字/字符串/布尔/null/数组/哈希，不传 Crystal/Ruby 对象或 Proc。
-  请求包含 `protocol_version`、`request_id`、`plugin_id`、`action`、`context`、`payload`、`config`；
-  stdin 输入请求，stdout 返回结果，stderr 仅受限诊断。
-  采用有长度上限的 NDJSON，校验恰好一个结果、schema、大小和请求 ID；预研 `RESULT` 行不是兼容承诺。
-- **capability 宿主调用（host-call）帧**：handler 执行期间经宿主 driver 访问外部服务的协议按双向帧定义。
-  插件向 stdout 输出 `{"type": "capability_call", "call_id", "capability", "params"}`；
-  宿主校验三件事后才执行 driver：该 capability 已在 manifest 声明、在授权快照内、`params` 通过
-  该 capability 的 schema 校验。随后向 stdin 写回
-  `{"type": "capability_result", "call_id", "ok", "result" | "error"}`。
-  执行期间 stdin 保持打开，宿主不发任何非应答帧。
-
-  **授权绑定到 capability 名称本身**，即其代表的一类 driver 操作；帧内无独立 `op` 字段，
-  capability 内不存在越权操作面。**`capability_call` 帧字段闭集**：仅接受
-  `type/call_id/capability/params` 顶层字段；capability 需要区分多种操作时必须声明为独立
-  capability 名称（如 `memory_driver.write/query/delete`）。任何额外或未知的顶层字段（含帧内操作字段）
-  一律**拒绝**——宿主返回 `ok: false` 的 `capability_result`（结构化错误）且不执行 driver，
-  不做静默忽略。
-- **host-call 语义**：注入脚本的 `capability(capability, params)` 是上述协议的同步封装，
-  按 `call_id` 关联请求与应答；`params` 为该 capability/driver 定义的结构化参数。
-  `capability_call`/`capability_result` 属传输帧，**不计入「恰好一个结果」**——最终结果必须是
-  最后一行 result 帧，其后再有任何输出（含新 host-call）即拒绝该次调用。
-  单次调用的 host-call 次数、单帧大小与总时长上限取 manifest 声明与宿主全局上限的较小者，
-  超限按结构化错误终止。driver 调用一律以宿主注入的 agent/session scope 执行，插件不能传任意 URL、
-  路径或凭据；host-call 失败以结构化 error 交付插件，插件仍须产出唯一最终结果。
+- **每次调用的注入**：runner 校验请求后注入 `$action`、`$config`、`$context`、`$payload`、`$idempotency_key`，执行 `plugin.rb` 完成注册，再按 `$action` 精确调用 handler。**handler 以该 hook/action 的 `$payload` 作为唯一业务参数**（on_hook 块参数即 payload；如 `memory.remember.before` 的 payload 含 `entry`），参数形状由 §12.11 钩子目录与 manifest 声明定义。`$context` 的授权身份以宿主保存的原始值为准，插件修改全局变量不能扩大权限。
+- **无跨调用 Ruby 状态**：全局变量、block 和对象只在本次进程有效，不能当缓存或持久状态；持久状态经白名单 capability 保存并带 schema 版本。
+- **JSON-like 协议**：只传数字/字符串/布尔/null/数组/哈希，不传 Crystal/Ruby 对象或 Proc。请求包含 `protocol_version`、`request_id`、`plugin_id`、`action`、`context`、`payload`、`config`；stdin 输入请求，stdout 返回结果，stderr 仅受限诊断。采用有长度上限的 NDJSON，校验恰好一个结果、schema、大小和请求 ID；预研 `RESULT` 行不是兼容承诺。
+- **capability 宿主调用（host-call）帧**：handler 执行期间经宿主 driver 访问外部服务的协议按双向帧定义——插件向 stdout 输出 `{"type": "capability_call", "call_id", "capability", "params"}`；宿主校验该 capability 已在 manifest 声明且在授权快照内（**授权绑定到 capability 名称本身，即其代表的一类 driver 操作；帧内无独立 `op` 字段，capability 内不存在越权操作面**）、`params` 通过该 capability 的 schema 校验后执行 driver，并向 stdin 写回 `{"type": "capability_result", "call_id", "ok", "result" | "error"}`。执行期间 stdin 保持打开，宿主不发任何非应答帧。**`capability_call` 帧字段闭集**：仅接受 `type/call_id/capability/params` 顶层字段；capability 需要区分多种操作时必须声明为独立 capability 名称（如 `memory_driver.write/query/delete`），任何额外或未知的顶层字段（含帧内操作字段）一律**拒绝**——宿主返回 `ok: false` 的 `capability_result`（结构化错误）且不执行 driver，不做静默忽略。
+- **host-call 语义**：注入脚本的 `capability(capability, params)` 是上述协议的同步封装，按 `call_id` 关联请求与应答；`params` 为该 capability/driver 定义的结构化参数。`capability_call`/`capability_result` 属传输帧，**不计入「恰好一个结果」**——最终结果必须是最后一行 result 帧，其后再有任何输出（含新 host-call）即拒绝该次调用；单次调用的 host-call 次数、单帧大小与总时长上限取 manifest 声明与宿主全局上限的较小者，超限按结构化错误终止；driver 调用一律以宿主注入的 agent/session scope 执行，插件不能传任意 URL、路径或凭据；host-call 失败以结构化 error 交付插件，插件仍须产出唯一最终结果。
 - **能力声明**：`memory.backend` 等扩展点和 capability 由 manifest 静态声明，宿主按 active 版本及授权快照派发。外部服务由宿主 driver 执行，agent/session scope 由宿主注入。
 - **单入口、无原生依赖**：首版只有 `plugin.rb`，不支持包内 DLL/so、安装脚本、自动依赖下载或其他 `require` 文件。复杂插件的受控多文件、显式初始化和按插件常驻 worker 属于后续演进，见[插件复杂化演进规划](../review/plugin-evolution.md)，不改变当前包契约或 M3 验收。
 
@@ -62,12 +36,7 @@
 | 每个 action/hook | 新进程 → 注入本次请求 → 执行脚本声明 → 精确 dispatch 一个 handler | 只执行本次 handler 及其 capability |
 | 禁用/卸载 | 原子摘除注册快照，保留或按 purge 规则处理数据 | 不承诺运行 cleanup；外部资源由宿主 driver 回收 |
 
-- 如插件确需一次性建 schema / 检查外部服务，声明 `actions: ["install", "enable", "disable"]`
-  及对应 `on_action`，由宿主在生命周期节点显式调用，遵循幂等、审批、超时与迁移事务。
-  **它不是包安装脚本，不在 pack/validate 时执行**：显式 `install` action 属包安装完成后的
-  独立生命周期调用（宿主在 `install`/`enable` 命令节点执行），其外部效应不属于包安装——
-  生命周期表『安装/升级』行的包安装本身始终只解析/注册；action 失败不回滚包安装，
-  包保持在 disabled/staged 状态。
+- 如插件确需一次性建schema/检查外部服务，声明 `actions: ["install", "enable", "disable"]` 及对应 `on_action`，由宿主在生命周期节点显式调用，遵循幂等、审批、超时与迁移事务；**不是包安装脚本，不在 pack/validate 时执行**。显式 `install` action 属包安装完成后的独立生命周期调用（宿主在 `install`/`enable` 命令节点执行），其外部效应不属于包安装——生命周期表『安装/升级』行的包安装本身始终只解析/注册；action 失败不回滚包安装，包保持在 disabled/staged 状态。
 - `gateway.start` / `gateway.stop` 是生命周期观察钩子，不等于 init/cleanup；需要常驻 worker 的插件不属于首版模型。
 - `enable` 失败保旧版；action 崩溃只影响该次调用，不自动重试副作用。重复 enable/disable 应幂等，升级数据迁移成功与版本指针切换保持原子语义。
 
@@ -165,28 +134,7 @@ sebas plugin rollback remote-memory 1.2.0
 ```
 
 1. 按安装流程校验新版本；`api_version` 主版本不兼容拒绝自动升级。新增/提升 capability、扩展点或风险等级必须再次显式批准，未批准不激活。
-2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：
-   **排空在途旧版本调用 → 取数据检查点 → 迁移 → 验证**。指针切换只随第 3 步 `activate`
-   成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。三个不变量：
-
-   **(a) 排空是唯一边界**——旧版本代码永远不读迁移后的新 schema。做法：有界等待在途旧快照调用
-   及其已发出的宿主 driver 操作完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作
-   一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分
-   受幂等/memo 保护）。无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。
-
-   **(b) 检查点在排空边界之后取得，恢复不静默丢弃已确认写入**。已排空调用的全部已确认写入
-   包含在检查点内；兼容视图调用写入版本化兼容数据、不写被迁移 schema——检查点之后被迁移 schema
-   上无新写入，恢复检查点不丢已确认数据。兼容视图写入按迁移声明的回放规则并入，无法回放的差异
-   在 activate 校验中显式报告。
-
-   **(c) 从迁移开始到恢复路径完成前，对该插件的新调用保持拒绝或排队**。active 指针仍指旧版本，
-   放行即让旧代码访问新 schema。封锁解除为二选一：`activate` 成功换指针；或迁移失败后宿主恢复
-   旧版本数据并校验版本/数据一致性通过，此时直接放行恢复服务，不要求也不触发 `activate`——
-   迁移失败不得使已恢复的插件无限期不可用。
-
-   **迁移成功但 `activate` 校验失败**：数据已在新 schema，禁止回退旧版本——宿主保持封锁并重试
-   `activate`，或执行迁移声明的回退事务恢复迁移前检查点后按 (b) 解封；不出现「数据已迁移、
-   指针未换、封锁又解除」的中间态。
+2. 升级只新增 `versions/<semver>`，不覆盖配置与数据。schema 变化须声明迁移版本，由宿主事务执行：**排空在途旧版本调用 → 取数据检查点 → 迁移 → 验证**，指针切换只随第 3 步 `activate` 成功发生；失败恢复旧版本，禁止代码回滚而数据静默留在不兼容的新 schema。三个不变量：**(a) 排空是唯一边界**——旧版本代码永远不读迁移后的新 schema：有界等待在途旧快照调用及其已发出的宿主 driver 操作完成；超时未结束的调用按结构化错误终止，其未完成的 driver 操作一并取消并确认不提交（driver 操作与插件调用同生命周期，不得在迁移开始后落库；已提交部分受幂等/memo 保护）；无法排空时须为旧调用提供版本化兼容数据视图（同样读不到新 schema）。**(b) 检查点在排空边界之后取得，恢复不静默丢弃已确认写入**：已排空调用的全部已确认写入包含在检查点内；兼容视图调用写入版本化兼容数据、不写被迁移 schema——检查点之后被迁移 schema 上无新写入，恢复检查点不丢已确认数据；兼容视图写入按迁移声明的回放规则并入，无法回放的差异在 activate 校验中显式报告。**(c) 从迁移开始到恢复路径完成前，对该插件的新调用保持拒绝或排队**——active 指针仍指旧版本，放行即让旧代码访问新 schema。封锁解除为二选一：`activate` 成功换指针；或迁移失败后宿主恢复旧版本数据并校验版本/数据一致性通过，此时直接放行恢复服务，不要求也不触发 `activate`——迁移失败不得使已恢复的插件无限期不可用。**迁移成功但 `activate` 校验失败**：数据已在新 schema，禁止回退旧版本——宿主保持封锁并重试 `activate`，或执行迁移声明的回退事务恢复迁移前检查点后按 (b) 解封；不出现「数据已迁移、指针未换、封锁又解除」的中间态。
 3. `activate` 原子换指针；当前 turn/调用继续旧快照，新调用用新版本。默认保留当前版及上一已知可回滚版；未被引用的旧版按保留策略清理，不立即删除唯一回滚点。
 4. 降级安装默认拒绝；`rollback` 只允许 registry 中且与当前数据 schema 兼容的已安装版本，否则提示恢复相应备份。升级不重试未完成的副作用动作，幂等键按 §7.3 执行。
 
@@ -220,11 +168,7 @@ sebas plugin uninstall remote-memory --purge
 
 ### 12.11 钩子目录与执行语义（首版闭集）
 
-对照 [OpenClaw typed hooks](https://docs.openclaw.ai/plugins/hooks)、
-[Hermes plugin hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks)
-与 [Pi Durable task hooks](https://earendil.com/posts/pi-durable/#hooks)，首版采用 22 个明确命名的钩子
-（`gateway.start` 与 `gateway.stop` 是两个独立名称，验收分别覆盖）；未列出的专属能力不自动成为
-Sebas 契约。同步 `before/transform` 与 `observe` 必须分开实现，不能一律当异步事件处理。
+对照 [OpenClaw typed hooks](https://docs.openclaw.ai/plugins/hooks)、[Hermes plugin hooks](https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks) 与 [Pi Durable task hooks](https://earendil.com/posts/pi-durable/#hooks)，首版采用 22 个明确命名的钩子（`gateway.start` 与 `gateway.stop` 是两个独立名称，验收分别覆盖）；未列出的专属能力不自动成为 Sebas 契约。同步 `before/transform` 与 `observe` 必须分开实现，不能一律当异步事件处理。
 
 | 域 | 钩子 | 类型 | 宿主注入点与契约 |
 |---|---|---|---|
@@ -255,22 +199,7 @@ Sebas 契约。同步 `before/transform` 与 `observe` 必须分开实现，不�
 **统一执行规则**：
 
 - `on_hook` 的 handler 块参数是该 hook 的 **payload 对象（唯一业务参数）**——如 `memory.remember.before` 的 payload 含 `entry`；各 hook 的 payload 字段由本目录『宿主注入点与契约』列与 manifest 声明约定，runner 按此契约实现；`$config`/`$context`/`$idempotency_key` 经注入变量提供，不占用块参数。
-- **payload 键与类型契约**：表中列出字段的行，其字段即该 hook payload 的必需键，值类型限于
-  §12.2 JSON-like 原语（string/int/bool/enum/null/数组/哈希）。宿主不得臆加未列字段，
-  manifest 与宿主实现必须使用同一键名与类型。
-
-  哈希值按 JSON-like 递归规则校验：键为 string，值为本表所列原语之一，嵌套深度与总大小受
-  §12.2 的 NDJSON 上限约束。需要结构化的字段（当前只有 `task.end.error`）按此校验，
-  不得传入 Crystal/Ruby 对象。
-
-  完整示例：`tool.call.after` payload 含 `tool_id: string`、`request_id: string`、
-  `session_key: string`、`status: success|error|exception`、`duration_ms: int`、
-  `result_summary: string`（受限文本，不含敏感原文）；`message.sent` 含 `status: success|error`、
-  `message_id: string|null`、`error_code: string|null`；`memory.remember.after` 含
-  `memory_id: string`、`kind: string`、`tags: string[]`；`task.start` 含 `run_id: string`、
-  `workflow_id: string`；`task.end` 含 `task_id: string`、`status: string`、
-  `error: object|null`（结构化错误，键集由宿主在 WP5 定稿，出现时至少含 `code: string`，
-  可含 `message: string`）。其余 hook 在 WP5 实现时按本规则定稿。
+- **payload 键与类型契约**：表中列出字段的行，其字段即该 hook payload 的必需键，值类型限于 §12.2 JSON-like 原语（string/int/bool/enum/null/数组/哈希），宿主不得臆加未列字段，manifest 与宿主实现必须使用同一键名与类型。哈希值按 JSON-like 递归规则校验：键为 string，值为本表所列原语之一，嵌套深度与总大小受 §12.2 的 NDJSON 上限约束；需要结构化的字段（当前只有 `task.end.error`）按此校验，不得传入 Crystal/Ruby 对象。完整示例——`tool.call.after` payload：`tool_id: string`、`request_id: string`、`session_key: string`、`status: success|error|exception`、`duration_ms: int`、`result_summary: string`（受限文本，不含敏感原文）；`message.sent`：`status: success|error`、`message_id: string|null`、`error_code: string|null`；`memory.remember.after`：`memory_id: string`、`kind: string`、`tags: string[]`；`task.start`：`run_id: string`、`workflow_id: string`；`task.end`：`task_id: string`、`status: string`、`error: object|null`（结构化错误，键集由宿主在 WP5 定稿，出现时至少含 `code: string`，可含 `message: string`）。其余 hook 在 WP5 实现时按本规则定稿。
 - manifest `hooks` 与脚本 `on_hook(name)` 注册集合必须一致，宿主按 §12.2 的索引只调用订阅者；同插件重复注册拒绝，不同插件按 priority（数值大者优先）再按插件 ID/注册序稳定排序。
 - `gate + transform` 同步按序执行，每个处理器接收上一个已校验结果；任一 deny 停止后续处理器。`observe` 按注册快照执行、忽略返回值，可并发但不得阻塞主流程；观察副作用不保证持久化或严格全序。
 - 所有插件调用遵守独立进程、schema/大小限制和 watchdog。gate/transform 的异常、超时、非法结果默认 **deny**；observe 的异常、超时记录脱敏日志并跳过。宿主 hardline 不可被返回结果覆盖。

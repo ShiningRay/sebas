@@ -13,21 +13,7 @@
 | 质量门禁惯例 | [CONTRIBUTING.md](../../../CONTRIBUTING.md) 质量门禁节 | `crystal spec` 全过 / `crystal tool format --check` / `./bin/ameba` 无警告 / `make release` 成功 / 改动须同步 docs | [来源: 仓库:CONTRIBUTING.md Quality gates 节] |
 | 格式范本 | tessell/docs/plan.md、plan-execution.md | `M*-WP*` 编号、pd 区间估算、相对周、EX-W1-01 执行分块、DoD 分层、状态与证据边界纪律 | [来源: 任务输入] |
 | 平台命名 | design.md 附录 1 | **已定名 Seneschal**（[naming.md](../naming.md) 14 候选撞名全核实；用户保留推翻权，推翻则全文再替换） | [来源: design.md 附录] |
-| 承诺与日历提案（M5–M7 输入） | [commitments-calendar-integration.md](../proposals/commitments-calendar-integration.md) | 338 行，九节契约，逐节见下表 | [来源: 仓库:docs/design/proposals/commitments-calendar-integration.md；PR #61] |
-
-承诺与日历提案的分节索引（M5–M7 的契约来源）：
-
-| 节 | 内容 |
-|---|---|
-| §1 | 核心判断：Calendar = 持久意图与时间上下文层 |
-| §2 | 七原则 |
-| §3 | 九态与提醒纪律 + Today 六段 |
-| §4 | 十对象与四类时间表示 |
-| §5 | cron 退到唤醒层 |
-| §6 | 三种接入深度与失败四态 |
-| §7 | canonical superset + CalDAV / Google / Graph adapter |
-| §8 | 非目标 |
-| §9 | 首闭环保留与必须验证边界 |
+| 承诺与日历提案（M5–M7 输入） | [proposals/commitments-calendar-integration.md](../proposals/commitments-calendar-integration.md) | 338 行：§1 核心判断（Calendar=持久意图与时间上下文层）/§2 七原则/§3 九态与提醒纪律/Today 六段/§4 十对象与四类时间表示/§5 cron 退到唤醒层/§6 三种接入深度与失败四态/§7 canonical superset + CalDAV·Google·Graph adapter/§8 非目标/§9 首闭环保留与必须验证边界 | [来源: 仓库:docs/design/proposals/commitments-calendar-integration.md；PR #61 合入 main] |
 
 **估算口径**：单人全职（每周 5 人日），工作量单位 **人日（pd）区间**；时间只用相对周 `W1/W2…`，禁止绝对日期；估算为「熟悉 Crystal 语言与 autobot 既有代码模式、渠道文档齐备且账号申请就绪」前提下的工程量，不确定性显式保留 `[未验证]`；禁止编造任何数字。各包估时含单测与门禁自检，不含渠道账号行政审批等待（外部依赖见 E 节）。
 
