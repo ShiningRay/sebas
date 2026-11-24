@@ -15,6 +15,8 @@ module Sebas
         Log = Sebas::Log.for("sebas.admin.http")
 
         getter port : Int32
+        setter lifecycle : ::Sebas::Sessions::Lifecycle::Store?
+        setter templates : ::Sebas::Agents::AgentRegistry?
 
         @server : ::HTTP::Server?
         @running = Atomic(Bool).new(false)
@@ -163,7 +165,17 @@ module Sebas
             return
           end
           body = ctx.request.body.try(&.gets_to_end)
-          params = body.nil? || body.empty? ? {} of String => JSON::Any : JSON.parse(body).as_h
+          # 解析失败或根非对象 → 400（as_h 抛异常会变 500，CodeRabbit）
+          params = begin
+            JSON.parse(body.to_s.empty? ? "{}" : body.to_s).as_h?
+          rescue JSON::ParseException
+            nil
+          end
+          unless params
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "request body must be a JSON object"}))
+            return
+          end
           template_id = params["template"]?.try(&.as_s?)
           new_id = params["new_id"]?.try(&.as_s?)
           patch = params["persona_patch"]?.try(&.as_s?)

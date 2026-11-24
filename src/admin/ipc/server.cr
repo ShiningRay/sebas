@@ -247,6 +247,7 @@ module Sebas
           end
         end
 
+        # ameba:disable Metrics/CyclomaticComplexity — 生命周期命令表分发，分支即命令本身
         private def lifecycle_dispatch(frame : Frame) : String
           lifecycle = @lifecycle_store
           return error_response(frame.id, "#{frame.type} not available: lifecycle 组件未装配") unless lifecycle
@@ -264,7 +265,13 @@ module Sebas
             end
             ok_response(frame.id, {"sessions" => JSON::Any.new(entries)})
           when "sessions.dormant"
-            days = data["older_than_days"]?.try(&.as_i?) || 14
+            days = 14
+            if raw_days = data["older_than_days"]?
+              parsed = raw_days.as_i?
+              # 负数 → cutoff 落在未来全误标；越界/非整数不静默回退默认（CodeRabbit）
+              return error_response(frame.id, "older_than_days must be a non-negative integer") if parsed.nil? || parsed < 0 || parsed > Int32::MAX
+              days = parsed.to_i32
+            end
             dormant = lifecycle.mark_dormant(days)
             ok_response(frame.id, {"dormant" => JSON::Any.new(dormant.map { |k| JSON::Any.new(k) })})
           when "sessions.archive"

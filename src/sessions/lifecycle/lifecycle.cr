@@ -26,7 +26,7 @@ module Sebas
       STATUSES = %w[active dormant archived]
 
       class Store
-        def initialize(@store : ::Sebas::Platform::Store::Store)
+        def initialize(@store : ::Sebas::Platform::Store::Store, @base_dir : Path? = nil)
         end
 
         # upsert：admission 时登记/刷新 last_active_at（status 不回退）
@@ -96,8 +96,11 @@ module Sebas
               dormant << result_set.read(String)
             end
           end
-          dormant.each do |key|
-            @store.db.exec("UPDATE sessions SET status = 'dormant' WHERE session_key = ? AND status = 'active'", key)
+          # 条件 UPDATE 原子化查改（查与写间 touch 刷新 last_active_at 的会话不误标）
+          dormant.select! do |key|
+            @store.db.exec(
+              "UPDATE sessions SET status = 'dormant' WHERE session_key = ? AND status = 'active' AND last_active_at < ?",
+              key, cutoff).rows_affected > 0
           end
           dormant
         end
@@ -122,13 +125,24 @@ module Sebas
         # 导出文件名中的非法字符（含 Windows 禁用的 :）替换为 _。
         def gc_archived(archive_dir : String, archive_confirm : Bool) : Int32
           return 0 unless archive_confirm
-          FileUtils.mkdir_p(archive_dir) unless Dir.exists?(archive_dir)
+          # 目录限定：base_dir 注入时，归档目录解析后必须落在其下（防 ../ 逃逸）
+          archive_base = @base_dir
+          dir = if archive_base
+                  resolved = Path[archive_dir].expand(archive_base)
+                  base_s = archive_base.to_s.chomp('/')
+                  resolved_s = resolved.to_s
+                  return 0 unless resolved_s == base_s || resolved_s.starts_with?(base_s + "/")
+                  resolved
+                else
+                  Path[archive_dir]
+                end
+          FileUtils.mkdir_p(dir) unless Dir.exists?(dir)
           cleaned = 0
           list("archived").each do |row|
             next if row.archived_path # 已回收过（调用开始时快照判重）
             safe_name = row.session_key.gsub(/[^a-zA-Z0-9._-]/, "_")
-            export_path = Path[archive_dir, "#{safe_name}-#{::Random::Secure.hex(4)}.json"]
-            tmp_path = Path[archive_dir, ".tmp-#{::Random::Secure.hex(6)}.json"]
+            export_path = Path[dir, "#{safe_name}-#{::Random::Secure.hex(4)}.json"]
+            tmp_path = Path[dir, ".tmp-#{::Random::Secure.hex(6)}.json"]
             begin
               # 导出先行（JSON.build 产生合法 JSON；temp 名唯一防并发互踩）
               File.open(tmp_path, "w") do |file|

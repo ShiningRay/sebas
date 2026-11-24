@@ -1,10 +1,14 @@
 require "spec"
+require "file_utils"
 require "http/client"
 require "../../src/admin/http/server"
 require "../../src/channels/base"
 require "../../src/channels/registry"
 require "../../src/platform/bus/bus"
 require "../../src/admin/ipc/server"
+require "../../src/platform/store/store"
+require "../../src/sessions/lifecycle/lifecycle"
+require "../../src/agents/agents"
 
 # 回调测试适配器：验签口令头不匹配 → 401（fail-closed）
 class CallbackAdapter < ::Sebas::Channels::ChannelAdapter
@@ -165,6 +169,51 @@ module Sebas
         end
         event_line.should contain("event.account.health.online")
         sock.close
+      ensure
+        server.close
+        bus.close
+      end
+    end
+
+    it "sessions lifecycle 与 templates 管理面（M4.4-WP4）：注入后可查可操作，非法体 400" do
+      server, _channels, bus = started_server("tok-1")
+      begin
+        dir = Path[Dir.tempdir, "sebas-http-wp4-spec", Random::Secure.hex(4)]
+        FileUtils.mkdir_p(dir / "agents")
+        store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
+        lifecycle = ::Sebas::Sessions::Lifecycle::Store.new(store, dir)
+        registry = ::Sebas::Agents::AgentRegistry.new(dir / "agents")
+        registry.get_or_create("tpl-one")
+        server.lifecycle = lifecycle
+        server.templates = registry
+        headers = HTTP::Headers{"Authorization" => "Bearer tok-1"}
+        base = "http://127.0.0.1:#{server.port}"
+
+        lifecycle.touch("agent:main:acc:email:wp4@example.com", "main", "user")
+        listed = HTTP::Client.get("#{base}/api/v1/sessions.lifecycle?status=active", headers: headers)
+        listed.status_code.should eq(200)
+        JSON.parse(listed.body)["sessions"].as_a.size.should eq(1)
+
+        archived = HTTP::Client.post(
+          "#{base}/api/v1/sessions.archive?session_key=agent:main:acc:email:wp4@example.com", headers: headers)
+        JSON.parse(archived.body)["archived"].as_s.should eq("agent:main:acc:email:wp4@example.com")
+
+        gc = HTTP::Client.post("#{base}/api/v1/sessions.gc", headers: headers)
+        JSON.parse(gc.body)["collected"].as_i.should eq(0) # confirm 闸缺省不放行
+
+        list = HTTP::Client.get("#{base}/api/v1/templates.list", headers: headers)
+        JSON.parse(list.body)["templates"].as_a.should contain("tpl-one")
+
+        bad_json = HTTP::Client.post("#{base}/api/v1/templates.clone", headers: headers, body: "[1,2]")
+        bad_json.status_code.should eq(400) # 根非对象 → 400 不再 500
+
+        missing = HTTP::Client.post("#{base}/api/v1/templates.clone", headers: headers, body: "{}")
+        missing.status_code.should eq(400)
+
+        cloned = HTTP::Client.post("#{base}/api/v1/templates.clone", headers: headers,
+          body: %({"template": "tpl-one", "new_id": "tpl-clone"}))
+        JSON.parse(cloned.body)["id"].as_s.should eq("tpl-clone")
+        store.close
       ensure
         server.close
         bus.close

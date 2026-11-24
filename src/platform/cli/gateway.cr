@@ -77,7 +77,7 @@ module Sebas
           @config_path = config_path
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
-          @lifecycle_store = Sessions::Lifecycle::Store.new(@store)
+          @lifecycle_store = Sessions::Lifecycle::Store.new(@store, @data_dir)
           # secrets 收敛（M4.2-WP4 §5.3）：配置明文 api_key 迁 vault（幂等），
           # 配置树抹除明文；provider 构造按 agent 名从 vault 取回（factory
           # 包装由 GatewaySecrets#wire_secret_factory 提供）。
@@ -129,6 +129,7 @@ module Sebas
           @http = Admin::HTTP::Server.new(@channels, @ipc.tap,
             http_cfg.try(&.bind) || "127.0.0.1", http_cfg.try(&.port) || 18790,
             http_cfg.try(&.auth) || "token", ENV["SEBAS_HTTP_TOKEN"]?,
+            lifecycle: @lifecycle_store,
             &->trigger_reload)
           @store.recover!
           Sessions::Scheduling::Recovery.recover_stale(@store)
@@ -136,6 +137,12 @@ module Sebas
           # fork 执行体（WP3）/ 回写本体（WP4）/ expectations 判定（WP2）后续包填充，
           # Approvals::Center 装配即通——M4.1 默认只读档无 L3 工具，不触发审批链。
           @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
+          # 管理面注入（M4.4-WP4）：lifecycle/模板 registry 装配后才可见，
+          # IPC/HTTP 两侧同源（构造早于 registry 创建，setter 补注）。
+          @ipc.lifecycle_store = @lifecycle_store
+          @ipc.template_registry = @agent_registry
+          @http.lifecycle = @lifecycle_store
+          @http.templates = @agent_registry
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
           @join_writer = Orchestration::Fork::JoinWriter.new(@store)
           spawn_adapters
