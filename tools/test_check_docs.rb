@@ -131,9 +131,19 @@ class DisplayWidthTest < Minitest::Test
 
   # 逐行 ceil 再相加会系统性高估：每行的零头都被各算一整行。
   def test_screen_lines_does_not_overestimate_short_lines
-    # 10 行各 51 列是一个连续段落，合计 510 列 → 6 屏行；逐行 ceil 会算成 10。
+    # 10 行各 51 列加 9 个分隔空格 = 519 列 → 6 屏行；逐行 ceil 会算成 10。
     lines = Array.new(10) { "文" * 25 + "a" }
     assert_equal 6, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_screen_lines_counts_soft_break_spaces
+    lines = Array.new(400) { "文" * 50 }
+    assert_equal 404, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_screen_lines_closes_heading_before_body
+    lines = Array.new(200) { ["# " + ("文" * 25) + "a", "文" * 74 + "a"] }.flatten
+    assert_equal 600, CheckDocs.screen_lines(lines, 100)
   end
 
   # 相邻列表项不能共享余量：每项各自起行。
@@ -150,6 +160,34 @@ class DisplayWidthTest < Minitest::Test
   def test_long_lines_reports_paragraphs_and_list_items
     lines = ["文" * 201, "- " + ("文" * 200)]
     assert_equal [[1, 402], [2, 2 + 400]], CheckDocs.long_lines(lines, 400)
+  end
+
+  def test_fence_closes_only_with_same_marker_and_sufficient_length
+    lines = [
+      "````ruby",
+      "```",       # 四反引号块内的三反引号不是闭栏
+      "文" * 201,
+      "~~~~",       # 字符不同，也不是闭栏
+      "```` trailing", # 带尾随文本，仍不是闭栏
+      "````",
+      "文" * 201
+    ]
+    assert_equal [[7, 402]], CheckDocs.long_lines(lines, 400)
+    # 前六行代码各占一屏；末行长段落折为五屏。
+    assert_equal 11, CheckDocs.screen_lines(lines, 100)
+  end
+
+  def test_longer_closing_fence_is_allowed
+    lines = ["~~~", "文" * 201, "~~~~", "文" * 201]
+    assert_equal [[4, 402]], CheckDocs.long_lines(lines, 400)
+  end
+
+  def test_backtick_info_string_cannot_contain_backtick
+    assert_nil CheckDocs.opening_fence("```ruby `x`")
+  end
+
+  def test_fence_must_start_within_three_spaces
+    assert_nil CheckDocs.opening_fence("    ```")
   end
 end
 
@@ -217,6 +255,11 @@ class SizeCheckTest < Minitest::Test
   def test_checks_can_be_disabled
     off = OPTIONS.merge(display_columns: 0, max_line_columns: 0, max_lines: 100)
     assert_empty problems_for("文" * 500, off)
+  end
+
+  def test_zero_max_lines_means_unlimited
+    off = OPTIONS.merge(max_lines: 0)
+    assert_empty problems_for(("文" * 2 + "\n") * 10, off)
   end
 
   # 存档是历史快照：新增的两项长行检查跳过 docs/design/review/，

@@ -147,10 +147,10 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
    - **Step 2 · 推进 offset**：持久化成功（含唯一索引冲突被视为已持久化）后，才把
      `persisted_offset = update_id` 落库；下次 `getUpdates(offset=persisted_offset+1)` 才确认旧值。
      **绝不在持久化前推进 offset**——否则崩溃后 Telegram 已确认、本地无记录，静默丢消息。
-     **空闲计时起点**：`last_update_at` 在**退出重置模式时**（本轮全部 update 持久化 + 入总线成功后）
-     记录，而非收到响应时——这样「响应时写入 `last_update_at` 后、批次中途崩溃」的窗口
-     不会导致重启后错误进入活跃模式（`last_update_at` 仍是旧值，重启后仍进入重置模式）。
-     批次内 Step 1–3 的处理延迟不会缩短本地空闲时间。
+     **空闲计时起点**：`last_update_at` 在**每次收到非空 `getUpdates` 响应时立即持久化为该响应的到达时刻**；
+     空响应不刷新。它表示「Telegram 最近一次有 update 交付给本进程的时刻」，不是批次处理完成时刻，
+     因此 Step 1–3 的阻塞不会推迟空闲计时。到达后立即落库也保留崩溃安全：
+     处理中途崩溃重启后不会把空闲基准误推进到尚未交付的后续响应。
    - **Step 3 · 入总线 + 消费者确认**：把该 update 投递到 bus。**`Bus#publish` 成功返回 ≠ 处理完成**——`Bus#publish` 只把事件写入进程内存 Channel，没有落盘或确认机制；消费者在接收事件后才调用 `record_intent` 把 intent 写入 intents 表。因此 `dispatched=true` 的置位必须由**消费者侧**发起：
      - 消费者 `process_message` 在 `record_intent` 落库成功后，回调 Telegram adapter 把对应 `telegram_updates.dispatched` 置 `true`；
      - **已有 intent 分支也要确认**：若消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent（`INSERT OR IGNORE` 返回 false）而提前返回，**也必须**回调把对应 `telegram_updates.dispatched` 置 `true`——否则启动恢复会重投该行，消费者又走「已有 intent」分支提前返回，永远卡在 `dispatched=false`，每次启动都被重复重投。
@@ -192,10 +192,11 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
      同时，在 `replay_unfinished` 完成后的 `recover_dispatch` 中，对 replay 涉及的所有 `event_id`
      统一检查 intent 持久化状态后补置 `telegram_updates.dispatched=true`。
    - **单调排重保留**：`update_id > persisted_offset` 才进入 Step 1，等于或小于直接跳过（同 update_id 重推场景由内容指纹唯一索引兜底，不会重复落库）。
-   - `last_update_at` 在**退出重置模式时**（本轮全部 update 持久化 + 入总线成功后）同步落库；**空响应不刷新**——活跃模式空轮询收到空数组时不更新 `last_update_at`，确保连续空闲能达到 6 天重置阈值。
+   - **非空响应到达即更新空闲基准**：收到非空响应时先把 `last_update_at` 持久化为该响应到达时刻，
+     再执行 Step 1–3；不得推迟到退出重置模式时。空响应不刷新，确保连续空闲能达到 6 天重置阈值。
 2. **空闲检测**：每次启动轮询循环前，读 `last_update_at`；若距今 ≥ **6 天**（留 1 天安全边际，官方阈值是「至少一周」），进入**重置模式**。
 3. **重置模式轮询（持续到收到新 update 才退出）**：调用 `getUpdates()` **不传 offset**（拉取未确认的全集）。对返回的每条 update 走「活跃窗口 Step 1–3」（持久化 → 入总线，暂不推进 offset）。**只有满足下述退出条件才离开重置模式**：
-   - **退出条件**：本轮**至少收到 1 条 update 且全部持久化 + 入总线成功**后，才把 `persisted_offset` 重置为本轮最大 `update_id`，把 `last_update_at` 更新为当前时刻，下一轮回到活跃窗口逻辑（带 offset 轮询）。
+   - **退出条件**：本轮**至少收到 1 条 update 且全部持久化 + 入总线成功**后，才把 `persisted_offset` 重置为本轮最大 `update_id`，下一轮回到活跃窗口逻辑（带 offset 轮询）。`last_update_at` 已在非空响应到达时更新，此处不得再次刷新，避免处理耗时改变空闲计时。
    - **空轮询不退出**：若本轮 `getUpdates()` 返回空数组，**继续保持重置模式**——不重置 offset、不更新 `last_update_at`、不切换回活跃窗口。下一轮仍用无 offset 轮询，直到收到至少 1 条新 update。原因：空轮询时若恢复旧 offset，bot 空闲超过一周后的较小新 ID 仍会被确认跳过，与本策略目的直接冲突。
    - **重置模式与活跃窗口的持久化口径一致**：每一步都先持久化、再入总线，崩溃恢复路径与活跃窗口共用同一「扫 `dispatched=false` 重投」逻辑。
 4. **拒绝跳过新消息**：任何路径下，`getUpdates` 的 `offset` 参数都必须 ≥ 已确认的 `persisted_offset+1`，不允许因为「新值比旧值小」就跳过；重置模式通过内容指纹而非 offset 比较保证幂等。

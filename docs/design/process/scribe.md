@@ -95,7 +95,7 @@ PR 模板里有对应 checklist 项："Design docs updated when architecture, co
 | 等效屏幕行 | 400 | 按 100 列视口折算；CJK 记 2 列；段落内软换行先合并再折算，列表项与标题各自起块；代码块与表格行各占一屏 |
 | 单行显示宽度 | 400 列 | 按宽字符折算后的列数；跳过代码块与表格行（这两类收窄只能删信息，其体量已由屏幕行覆盖） |
 
-选项：`--max-lines`、`--display-columns`、`--max-line-columns`，任一项传 `0` 关闭对应检查。
+选项：`--max-lines`、`--display-columns`、`--max-line-columns`，传 `0` 表示不设上限。
 等效屏幕行只在物理行未超限时才报，避免同一文件被两条告警重复处理。
 `docs/design/review/` 存档豁免后两项（改写存档会破坏证据）；`research/` 可维护，不豁免。
 

@@ -69,6 +69,17 @@
   检查 interrupt（先于 steer）→ drain steer → 下一次模型调用」。interrupt 生效时：turn 终止/重定向，
   **pending steer 不标记 injected，而是按 steer 降级规则转后续批次**——严禁 steer 先被标注入、
   中断又阻止模型调用看到它（否则伪报 injected）。
+- **中断与 steer 的同步边界**：所有会改变 turn 执行方向的操作都纳入同一个 turn 临界区。
+  drain steer 前先读一次中断标记，steer 被追加进 transcript 后再读一次，并且只有在
+  provider 调用已经登记为本轮下一个执行点时，才把 steer 原子标记为 `injected`。
+  如果第二次检查发现 interrupt，已追加的 correction 保留在 transcript（历史不可改写），
+  但该 steer **不得标记为 `injected`**；按降级规则转 queued 后续批次，并在回执里明确
+  `not_consumed / interrupted`，说明它已进入记录但未随模型调用被消费。interrupt 在
+  drain 完成后、provider 调用前到达时，也必须走这条回退路径。
+- **禁止回执早于模型消费**：不能把「写入 transcript」直接当作「模型已看到」。
+  `injected` 只表示该 correction 已包含在一次实际发起的 provider 调用输入中；
+  如果调用因 interrupt 未发起，必须撤销 pending 标记并转 queued，不能留下
+  `injected` 与 turn 终态并存的假成功记录。
 - **管理面**：`sessions.interrupt` / `sessions.redirect`（IPC + HTTP 双入口）、渠道显式 `/interrupt` / `/redirect` 命令（来源须明确控制语义，同 steer 的来源纪律）；事件 `interrupt.accepted/cancelled/redirected/queued/expired/rejected`（expired 为无输入 interrupt 的显式失败终态，订阅者可观察）。
 
 ## 6. 非目标

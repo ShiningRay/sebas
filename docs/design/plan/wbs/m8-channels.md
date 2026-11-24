@@ -98,11 +98,13 @@
     两条都能得到独立 `event_id`，第二条不会被消费者 intent 排重忽略；
   - **空轮询不退重置模式**：mock server 让适配器进入重置模式后，前 N 轮 `getUpdates()` 返回空数组，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——前 N 轮持续无 offset 轮询、不重置 offset；第 N+1 轮该 update 被消费，`persisted_offset` 重置为新值，下一轮回到活跃窗口；
   - **不重启进程的空闲重置**：mock server 让适配器持续运行，前 N 轮 `getUpdates(offset=旧值)` 返回空数组；mock 时间推进 ≥6 天，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——适配器在**不重启进程**的情况下检测到 `last_update_at` 距今 ≥6 天，进入重置模式，该 update 被消费、`persisted_offset` 重置为新值；验证运行期空闲窗口检查生效；
-  - **批次处理延迟不缩短空闲窗口**：mock server 让一次 `getUpdates` 响应包含 update A 和 B。
-    A 的 Step 3 入总线阻塞超过 1 天（fault-injection 挂起 bus 消费者）；Telegram 空闲 7 天后
-    返回一条 `update_id` 小于持久化 offset 的新 update。适配器**必须进入重置模式**
-    （因为 `last_update_at` 在退出重置模式时才记录，而非收到响应时），且**不得跳过该 update**。
-    验证空闲计时起点在退出重置模式时记录，批次内处理延迟不缩短本地空闲时间；
+  - **批次处理延迟不改变空闲计时**：mock server 让一次 `getUpdates` 响应包含 update A 和 B，
+    并把该非空响应的到达时刻持久化为 `last_update_at`。A 的 Step 3 入总线阻塞 2 天
+    （fault-injection 挂起 bus 消费者），期间 `last_update_at` 不得因处理完成或超时再次刷新；
+    Telegram 在响应到达 7 天后返回一条 `update_id` 小于持久化 offset 的新 update。
+    适配器按响应到达时刻已空闲 7 天、而非按处理完成时刻计算，**必须进入重置模式**，
+    且**不得跳过该 update**。另注入处理中途崩溃，重启后保留崩溃前最近一次非空响应的到达时刻，
+    不得回退到退出重置模式时才刷新。
   - **`record_intent` 失败的运行期恢复（前置依赖：调度器 failed 批次重试扩展）**：
     fault-injection 让消费者 `record_intent` 第一次抛 SQLite 临时错误（`SQLITE_BUSY`），
     `dispatched` 保持 `false`、入站事件已完成 admission、`session_inputs` 行已落库。

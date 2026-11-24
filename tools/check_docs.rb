@@ -24,7 +24,8 @@ module CheckDocs
   # 因此新增的两项体量检查（等效屏幕行、超长单行）跳过存档目录；
   # 物理行超限沿用旧行为照报。research/ 是可维护文档，不在豁免内。
   LONG_LINE_SKIP_DIRS = ["docs/design/review/"].freeze
-  FENCE = /\A\s*(?:```|~~~)/
+  FENCE_OPEN = /\A {0,3}(`{3,}|~{3,})(.*)\z/
+  FENCE_CLOSE = /\A {0,3}(`{3,}|~{3,})\s*\z/
 
   # 东亚宽字符：终端、编辑器与浏览器按 2 列渲染。
   # 覆盖 CJK 标点/假名/谚文/全角符号/emoji 与 CJK 扩展区；
@@ -59,45 +60,79 @@ module CheckDocs
   end
 
   # 等效屏幕行：按 CommonMark 的渲染语义估算阅读行数。
-  # 段落内的软换行会被渲染成空格后重新折行，所以连续的普通行先累加列数、
-  # 再整段除视口宽度向上取整；列表项与标题各自成块，不能跨行共享余量。
+  # 段落续行合并时各计一个分隔空格；列表项可含续行，标题必须立即收块。
   # 表格行与代码块横向滚动不折行，每行占一屏。
-  # 逐行 ceil 再相加会系统性高估（每行零头各占一满行）；只看总量又会低估
-  # （相邻列表项的剩余空间不能合并）。按块累加两个偏差都避开。
+  # 逐行 ceil 会高估，全篇总量又会低估，故按块累加。
   def screen_lines(lines, columns)
-    fenced = false
+    fenced = nil
     rows = 0
     block_width = 0
+    block_open = false
     flush = lambda do
-      rows += [(block_width.to_f / columns).ceil, 1].max if block_width.positive?
+      rows += [(block_width.to_f / columns).ceil, 1].max if block_open
       block_width = 0
+      block_open = false
+    end
+    append = lambda do |width|
+      block_width += 1 if block_open # 软换行渲染为一个空格
+      block_width += width
+      block_open = true
     end
 
     lines.each do |line|
-      width = display_width(line)
-      if line.match?(FENCE)
+      if fenced
+        rows += 1
+        fenced = nil if closing_fence?(line, fenced)
+      elsif (opening = opening_fence(line))
         flush.call
         rows += 1
-        fenced = !fenced
-      elsif fenced
-        rows += 1
+        fenced = opening
       elsif line.strip.empty?
         flush.call
-      elsif table_line?(line) || block_start?(line)
+      elsif table_line?(line)
         flush.call
-        table_line?(line) ? rows += 1 : block_width += width
+        rows += 1
+      elsif heading?(line)
+        flush.call
+        append.call(display_width(line))
+        flush.call
+      elsif list_item?(line)
+        flush.call
+        append.call(display_width(line))
       else
-        block_width += width
+        append.call(display_width(line))
       end
     end
     flush.call
     rows
   end
 
-  # 列表项与标题各自成块：Markdown 不为它们合并软换行。
-  def block_start?(line)
-    stripped = line.lstrip
-    stripped.match?(/\A(?:[-*+]|\d+\.)\s/) || stripped.start_with?("#")
+  # 记录开栏字符与长度；闭栏须同字符、长度不短于开栏且后面只有空白。
+  def opening_fence(line)
+    match = FENCE_OPEN.match(line)
+    return nil unless match
+
+    marker = match[1]
+    # 反引号开栏的 info string 不得再含反引号；否则该围栏不成立。
+    return nil if marker.start_with?("`") && match[2].include?("`")
+
+    {char: marker[0], length: marker.length}
+  end
+
+  def closing_fence?(line, opening)
+    match = FENCE_CLOSE.match(line)
+    return false unless match
+
+    marker = match[1]
+    marker[0] == opening[:char] && marker.length >= opening[:length]
+  end
+
+  def list_item?(line)
+    line.lstrip.match?(/\A(?:[-*+]|\d+\.)\s/)
+  end
+
+  def heading?(line)
+    line.lstrip.start_with?("#")
   end
 
   # 每个文件的超长物理行：返回 [行号, 显示宽度] 列表。
@@ -107,14 +142,18 @@ module CheckDocs
   # 段落与列表项超宽可以拆成子列表或小节，是本检查要报的信号。
   # 表格的阅读体量由等效屏幕行（每行占一屏）覆盖。
   def long_lines(lines, max_columns)
-    fenced = false
+    fenced = nil
     long = []
     lines.each_with_index do |line, index|
-      if line.match?(FENCE)
-        fenced = !fenced
+      if fenced
+        fenced = nil if closing_fence?(line, fenced)
         next
       end
-      next if fenced || table_line?(line)
+      if (opening = opening_fence(line))
+        fenced = opening
+        next
+      end
+      next if table_line?(line)
 
       width = display_width(line)
       long << [index + 1, width] if width > max_columns
@@ -161,13 +200,13 @@ module CheckDocs
   def check_size(path, lines, problems, options, repo_root: Dir.pwd)
     max_lines = options[:max_lines]
     columns = options[:display_columns]
-    if lines.length > max_lines
+    if max_lines.positive? && lines.length > max_lines
       problems << ["WARN", path, 0, "体量 #{lines.length} 行 > 阈值 #{max_lines} 行，建议拆分或收敛"]
     end
 
     return if skip_long_lines?(path, repo_root)
 
-    if lines.length <= max_lines && columns.positive?
+    if max_lines.positive? && lines.length <= max_lines && columns.positive?
       screen = screen_lines(lines, columns)
       if screen > max_lines
         problems << ["WARN", path, 0,
@@ -199,7 +238,9 @@ module CheckDocs
     }
     OptionParser.new do |parser|
       parser.on("--root PATH") { |value| options[:root] = value }
-      parser.on("--max-lines N", Integer, "单文件物理行阈值（默认 400）") { |value| options[:max_lines] = value }
+      parser.on("--max-lines N", Integer, "单文件物理行阈值（默认 400，0 表示不设上限）") do |value|
+        options[:max_lines] = value
+      end
       parser.on("--display-columns N", Integer, "折算屏幕行的视口列数（默认 100，0 关闭该检查）") do |value|
         options[:display_columns] = value
       end
