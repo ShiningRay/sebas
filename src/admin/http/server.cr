@@ -78,7 +78,6 @@ module Sebas
 
         private def route(ctx : ::HTTP::Server::Context) : Nil
           path = ctx.request.path
-          return if scheduling_routes(ctx)
           if path.starts_with?("/hooks/") && ctx.request.method == "POST"
             # webhook 会话接入（M4.5-WP5）：hooks 入口**独立强制**管理 token
             # （不随 gateway.http.auth 配置放宽——CWE-306 fail-closed）；未知
@@ -126,6 +125,7 @@ module Sebas
             ctx.response.print(%({"error": "unauthorized"}))
             return
           end
+          return if scheduling_routes(ctx) # 调度管理面（/api/v1 闸后——token 统一，CWE-862）
           route_api(ctx, path)
         end
 

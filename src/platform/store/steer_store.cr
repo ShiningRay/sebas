@@ -16,6 +16,19 @@ module Sebas
         ) { true } || false
       end
 
+      # 有调度状态的会话键（collecting/sealed/queued 批次或 steer 行——
+      # 与 transcripts 解耦：debounce 待调度会话无 transcript 也可枚举，hlIq）
+      def scheduled_session_keys : Array(String)
+        keys = Array(String).new
+        @db.query("SELECT DISTINCT session_key FROM session_batches WHERE status IN ('collecting', 'sealed', 'queued')") do |result_set|
+          result_set.each { keys << result_set.read(String) }
+        end
+        @db.query("SELECT DISTINCT session_key FROM session_steers") do |result_set|
+          result_set.each { keys << result_set.read(String) }
+        end
+        keys.uniq!.sort!
+      end
+
       # 会话全部批次行（M4.5-WP6 queue.get/metrics 聚合）
       def session_batches_by_session(session_key : String) : Array(::Sebas::Platform::Store::Store::SessionBatchRow)
         rows = [] of ::Sebas::Platform::Store::Store::SessionBatchRow

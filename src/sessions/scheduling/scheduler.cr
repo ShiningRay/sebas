@@ -122,11 +122,8 @@ module Sebas
 
             # queue 模式：每消息独立批次，admit 成功后立即 seal（flush）并入队
             seal_and_queue(batch.batch_id, SealReason::Flush)
-            # queued 事件：成功入队后、派发前（观察序 queued→started，gzkA）
-            emit("batch.queued", {"session_key" => ::JSON::Any.new(@session_key),
-                                  "batch_id"    => ::JSON::Any.new(batch.batch_id),
-                                  "event_id"    => ::JSON::Any.new(env.event_id)})
             # 空闲即派发；回执排队位 = 本批之前的 pending 批数（自身被派发则为 0）
+            # batch.queued 已在 seal_and_queue 共享路径发送（hlIz）
             dispatched = dispatch_locked
             position = if dispatched == batch.batch_id
                          0
@@ -375,11 +372,17 @@ module Sebas
         private def seal_and_queue(batch_id : String, reason : SealReason) : Nil
           sealed = @store.transition_session_batch(batch_id, BatchStatus::Collecting,
             BatchStatus::Sealed, reason.to_s)
-          @store.transition_session_batch(batch_id, BatchStatus::Sealed, BatchStatus::Queued)
+          queued = @store.transition_session_batch(batch_id, BatchStatus::Sealed, BatchStatus::Queued)
           if sealed
             emit("batch.sealed", {"session_key" => ::JSON::Any.new(@session_key),
                                   "batch_id"    => ::JSON::Any.new(batch_id),
                                   "reason"      => ::JSON::Any.new(reason.to_s.downcase)})
+          end
+          # queued 事件在共享入队路径发送（hlIz：覆盖 debounce seal_due 路径；
+          # queue admission 处删除避免 started→queued 逆序）
+          if queued
+            emit("batch.queued", {"session_key" => ::JSON::Any.new(@session_key),
+                                  "batch_id"    => ::JSON::Any.new(batch_id)})
           end
         end
 

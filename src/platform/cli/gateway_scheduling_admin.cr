@@ -169,8 +169,7 @@ module Sebas
           # 一次性 flush_on_policy_change（gzjW）：管理操作非持久配置——
           # debounce→queue 切换后立即收敛全部 collecting 桶
           if params["flush_on_policy_change"]?.try(&.as_bool?) == true
-            sessions = @store.session_keys
-            sessions.each { |session| @scheduling.flush_session(session) }
+            @store.scheduled_session_keys.each { |session| @scheduling.flush_session(session) }
           end
           {200, {revision: revision, scope: scope}.to_json}
         end
@@ -239,7 +238,7 @@ module Sebas
 
         # 指标聚合（内存计数器 + 持久聚合）
         private def scheduling_metrics : Tuple(Int32, String)
-          sessions = @store.session_keys
+          sessions = (@store.session_keys + @store.scheduled_session_keys).uniq
           counters = sessions.map do |session|
             {session_key: session, metrics: @scheduling.session_metrics(session)}
           end
