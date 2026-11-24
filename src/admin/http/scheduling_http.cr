@@ -17,14 +17,17 @@ module Sebas
             scheduling_admin_call(ctx, "config.scheduling.get", ::JSON::Any.new(Hash(String, ::JSON::Any).new))
             true
           when {"POST", "/api/v1/config.scheduling.validate"}
-            scheduling_admin_call(ctx, "config.scheduling.validate", body_params_json(ctx))
-            true
+            code, params = body_params_with_code(ctx)
+            scheduling_admin_call(ctx, "config.scheduling.validate", params, gate: code == 200)
+            code == 200
           when {"POST", "/api/v1/config.scheduling.update"}
-            scheduling_admin_call(ctx, "config.scheduling.update", body_params_json(ctx))
-            true
+            code, params = body_params_with_code(ctx)
+            scheduling_admin_call(ctx, "config.scheduling.update", params, gate: code == 200)
+            code == 200
           when {"POST", "/api/v1/config.scheduling.reset"}
-            scheduling_admin_call(ctx, "config.scheduling.reset", body_params_json(ctx))
-            true
+            code, params = body_params_with_code(ctx)
+            scheduling_admin_call(ctx, "config.scheduling.reset", params, gate: code == 200)
+            code == 200
           when {"GET", "/api/v1/sessions.queue.get"}
             scheduling_admin_call(ctx, "sessions.queue.get", query_params_json(ctx))
             true
@@ -50,7 +53,7 @@ module Sebas
         end
 
         private def scheduling_admin_call(ctx : ::HTTP::Server::Context, command : String,
-                                          params : ::JSON::Any? = nil) : Nil
+                                          params : ::JSON::Any, gate : Bool = true) : Nil
           handler = @scheduling_admin_handler
           unless handler
             ctx.response.status_code = 503
@@ -58,10 +61,9 @@ module Sebas
             ctx.response.print(%({"error": "scheduling admin not wired"}))
             return
           end
-          unless params
-            ctx.response.status_code = 400
+          unless gate # 413/400 前置拒绝（itOg：超限/非法体不进 handler）
             ctx.response.content_type = "application/json"
-            ctx.response.print(%({"error": "request body must be a JSON object"}))
+            ctx.response.print(params.to_json)
             return
           end
           code, body = handler.call(command, params)
@@ -70,14 +72,17 @@ module Sebas
           ctx.response.print(body)
         end
 
-        # 请求体 → JSON params（gzis）：空体 = 空对象（缺参走 handler 校验），
-        # 非法 JSON/非对象 → nil（scheduling_admin_call 回 400）
-        private def body_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any?
-          raw = read_limited_body(ctx).to_s
+        # 返回 {code, params}：code 非 200 = 拒绝（413 超限 / 400 非法体），
+        # 调用方原样回写不进 handler（itOg：超限不按空对象处理）
+        private def body_params_with_code(ctx : ::HTTP::Server::Context) : Tuple(Int32, ::JSON::Any)
+          raw = read_limited_body(ctx) # nil = 超 1 MiB
+          return {413, ::JSON::Any.new(Hash(String, ::JSON::Any).new)} if raw.nil?
           parsed = JSON.parse(raw.empty? ? "{}" : raw)
-          parsed.as_h?.try { |hash_value| ::JSON::Any.new(hash_value) }
+          hash = parsed.as_h?
+          return {400, ::JSON::Any.new(Hash(String, ::JSON::Any).new)} unless hash
+          {200, ::JSON::Any.new(hash)}
         rescue JSON::ParseException
-          nil # 非法 JSON/非对象 → nil，scheduling_admin_call 回 400（iFT2）
+          {400, ::JSON::Any.new(Hash(String, ::JSON::Any).new)}
         end
       end
     end
