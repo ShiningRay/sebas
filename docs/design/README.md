@@ -28,16 +28,20 @@
 - `plan/schedule/`：B.1 DAG、B.2 逐周排期、B.3 门禁、B.4–B.7 门禁结论、B.8 M4 排期、B.9 M5–M7 排期与版本计划。
 - 顶层四篇：首迭代、覆盖矩阵、外部依赖。
 
-## 提案 `proposals/`（6 篇）
+## 提案 `proposals/`（10 篇）
 
 | 文件 | 行数 | 主题 |
 |---|---|---|
+| [fork-join-semantics.md](proposals/fork-join-semantics.md) | 391 | fork/join 影分身语义 |
+| [parallel-implementers.md](proposals/parallel-implementers.md) | 377 | 多任务并行开发：每卡独立租约与集中合并收口（#190 定稿候选，未定稿） |
 | [commitments-calendar-integration.md](proposals/commitments-calendar-integration.md) | 338 | 承诺与日历整合：Calendar 作为持久意图与时间上下文层（M5–M7 输入） |
-| [fork-join-semantics.md](proposals/fork-join-semantics.md) | 310 | fork/join 影分身语义 |
+| [m8-channel-expansion-slack-telegram.md](proposals/m8-channel-expansion-slack-telegram.md) | 237 | M8 渠道扩展（Slack + Telegram）——对标 Hermes/OpenClaw |
 | [session-input-scheduling.md](proposals/session-input-scheduling.md) | 216 | 会话输入调度（队列/debounce/正交 steer） |
-| [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 175 | 影分身架构 |
+| [fork-join-shadow-clone-architecture.md](proposals/fork-join-shadow-clone-architecture.md) | 185 | 影分身架构 |
 | [fork-join-shadow-clone-positioning.md](proposals/fork-join-shadow-clone-positioning.md) | 161 | 影分身定位 |
-| [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 81 | 忙时插话与转向 |
+| [parallel-implementers-recovery.md](proposals/parallel-implementers-recovery.md) | 134 | 多任务并行开发续篇：恢复、迁移与验证（未定稿） |
+| [agent-category-tags.md](proposals/agent-category-tags.md) | 109 | Agent 分类与标签：元数据模型与管理面查询 |
+| [busy-interrupt-redirect.md](proposals/busy-interrupt-redirect.md) | 84 | 忙时插话与转向 |
 
 ## 调研 `research/`（7 篇）
 
