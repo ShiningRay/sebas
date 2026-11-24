@@ -25,8 +25,11 @@ module Sebas
         private def load_workflows : Nil
           workflow_dir = @data_dir / "workflows"
           return unless Dir.exists?(workflow_dir)
-          Dir.glob("#{workflow_dir}/*.yaml").sort.each do |file|
-            @engine.register(Orchestration::DSL::Parser.parse_workflow(File.read(file)))
+          # Dir.children + Path 拼接（glob 反斜杠模式 windows 不匹配——
+          # windows CI 实测 workflow 全部漏载）
+          files = Dir.children(workflow_dir).select(&.ends_with?(".yaml")).sort!
+          files.each do |file|
+            @engine.register(Orchestration::DSL::Parser.parse_workflow(File.read(workflow_dir / file)))
           rescue ex
             Log.error(exception: ex) { "workflow load failed: #{file}" }
           end

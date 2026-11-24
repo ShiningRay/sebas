@@ -95,12 +95,14 @@ module Sebas
       retry1.status_code.should eq(202)
       JSON.parse(retry1.body)["status"].as_s.should eq("duplicate")
 
-      _session = "agent:main:hooks:webhook:deploy"
-      ok = wait_for(15.seconds) do
-        gateway.store.intent_status("webhook:deploy:k1") == "done" &&
-          gateway.store.intent_status("webhook:deploy:k2") == "done"
+      begin
+        ok = wait_for(15.seconds) do
+          gateway.store.intent_status("webhook:deploy:k1") == "done" &&
+            gateway.store.intent_status("webhook:deploy:k2") == "done"
+        end
+      ensure
+        gateway.shutdown # 断言失败也释放 IPC 端口（防全量连锁 bind 失败）
       end
-      gateway.shutdown
       ok.should be_true
 
       # 逐事件独立 run（queue 默认一事件一 run）
@@ -173,15 +175,18 @@ module Sebas
 
       # debounce seal → 合成一个 run：payload 记录 batch_id + 全部 event IDs
       run_id = "run:events-hook:webhook:events:b1"
-      ok = wait_for(15.seconds) do
-        status = begin
-          gateway.store.task(run_id).status
-        rescue
-          nil
+      begin
+        ok = wait_for(15.seconds) do
+          status = begin
+            gateway.store.task(run_id).status
+          rescue
+            nil
+          end
+          status == "done" || status == "running"
         end
-        status == "done" || status == "running"
+      ensure
+        gateway.shutdown
       end
-      gateway.shutdown
       ok.should be_true
       payload = JSON.parse(gateway.store.task_payload(run_id).to_s)
       payload["batch_id"].as_s.should eq(batch_id)
