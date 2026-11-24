@@ -43,6 +43,12 @@ module Sebas
         end
 
         # 调度管理面（M4.5-WP6）：handler 由 gateway 注入（IPC/HTTP 同一实现）
+        private def query_params_json(ctx : ::HTTP::Server::Context) : ::JSON::Any
+          hash = Hash(String, ::JSON::Any).new
+          ctx.request.query_params.each { |key, value| hash[key] = ::JSON::Any.new(value) }
+          ::JSON::Any.new(hash)
+        end
+
         private def scheduling_admin_call(ctx : ::HTTP::Server::Context, command : String,
                                           params : ::JSON::Any? = nil) : Nil
           handler = @scheduling_admin_handler
