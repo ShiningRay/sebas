@@ -23,6 +23,8 @@ module Sebas
                        @bind : String = "127.0.0.1", @port : Int32 = 18790,
                        @auth_mode : String = "token", @token : String? = nil,
                        @runs_view : ::Sebas::Orchestration::RunsView? = nil,
+                       @lifecycle : ::Sebas::Sessions::Lifecycle::Store? = nil,
+                       @templates : ::Sebas::Agents::AgentRegistry? = nil,
                        &@on_reload : -> Hash(String, JSON::Any))
         end
 
@@ -71,6 +73,7 @@ module Sebas
           route_api(ctx, path)
         end
 
+        # ameba:disable Metrics/CyclomaticComplexity — 纯路由表转发，分支即路由本身
         private def route_api(ctx : ::HTTP::Server::Context, path : String) : Nil
           case {ctx.request.method, path}
           when {"GET", "/api/v1/system.health"}
@@ -89,10 +92,95 @@ module Sebas
             serve_run(ctx)
           when {"GET", "/api/v1/events"}
             serve_sse(ctx)
+          when {"GET", "/api/v1/sessions.lifecycle"}
+            serve_sessions_lifecycle(ctx)
+          when {"POST", "/api/v1/sessions.dormant"}
+            ctx.response.content_type = "application/json"
+            ctx.response.print({dormant: @lifecycle.try(&.mark_dormant) || [] of String}.to_json)
+          when {"POST", "/api/v1/sessions.archive"}
+            serve_sessions_archive(ctx)
+          when {"POST", "/api/v1/sessions.gc"}
+            serve_sessions_gc(ctx)
+          when {"GET", "/api/v1/templates.list"}
+            ctx.response.content_type = "application/json"
+            ctx.response.print({templates: @templates.try(&.disk_ids) || [] of String}.to_json)
+          when {"POST", "/api/v1/templates.clone"}
+            serve_template_clone(ctx)
           else
             ctx.response.status_code = 404
             ctx.response.content_type = "application/json"
             ctx.response.print(%({"error": "unknown api route"}))
+          end
+        end
+
+        # 模板克隆（M4.4-WP4）：template/new_id/persona_patch 参数；未授权 401
+        # 由外层统一处理（本方法仅在 authorized? 之后被调用）。
+        private def serve_sessions_lifecycle(ctx : ::HTTP::Server::Context) : Nil
+          ctx.response.content_type = "application/json"
+          status = ctx.request.query_params["status"]?
+          entries = @lifecycle.try(&.list(status)).try do |rows|
+            rows.map do |entry|
+              JSON::Any.new({
+                "session_key"    => JSON::Any.new(entry.session_key),
+                "agent_id"       => JSON::Any.new(entry.agent_id),
+                "kind"           => JSON::Any.new(entry.kind),
+                "status"         => JSON::Any.new(entry.status),
+                "last_active_at" => JSON::Any.new(entry.last_active_at),
+              }.as(Hash(String, JSON::Any)))
+            end
+          end
+          ctx.response.print({sessions: entries || [] of JSON::Any}.to_json)
+        end
+
+        private def serve_sessions_archive(ctx : ::HTTP::Server::Context) : Nil
+          ctx.response.content_type = "application/json"
+          key = ctx.request.query_params["session_key"]?
+          if key.nil? || key.empty?
+            ctx.response.status_code = 400
+            ctx.response.print(%({"error": "session_key is required"}))
+          elsif @lifecycle.try(&.archive(key))
+            ctx.response.print({archived: key}.to_json)
+          else
+            ctx.response.status_code = 404
+            ctx.response.print(%({"error": "session not found or already archived"}))
+          end
+        end
+
+        private def serve_sessions_gc(ctx : ::HTTP::Server::Context) : Nil
+          ctx.response.content_type = "application/json"
+          confirm = ctx.request.query_params["confirm"]? == "true" # 人工确认闸（CWE 防误触发）
+          archive_dir = ctx.request.query_params["archive_dir"]? || "archived"
+          collected = @lifecycle.try(&.gc_archived(archive_dir, confirm)) || 0
+          ctx.response.print({collected: collected}.to_json)
+        end
+
+        private def serve_template_clone(ctx : ::HTTP::Server::Context) : Nil
+          templates = @templates
+          unless templates
+            ctx.response.status_code = 503
+            ctx.response.content_type = "application/json"
+            ctx.response.print(%({"error": "template registry not wired"}))
+            return
+          end
+          body = ctx.request.body.try(&.gets_to_end)
+          params = body.nil? || body.empty? ? {} of String => JSON::Any : JSON.parse(body).as_h
+          template_id = params["template"]?.try(&.as_s?)
+          new_id = params["new_id"]?.try(&.as_s?)
+          patch = params["persona_patch"]?.try(&.as_s?)
+          if template_id.nil? || template_id.empty? || new_id.nil? || new_id.empty?
+            ctx.response.status_code = 400
+            ctx.response.content_type = "application/json"
+            ctx.response.print(%({"error": "template and new_id are required"}))
+            return
+          end
+          begin
+            clone = templates.clone_from_template(template_id, new_id, patch)
+            ctx.response.content_type = "application/json"
+            ctx.response.print({id: clone.id, persona: clone.persona[0, 200]}.to_json)
+          rescue ex : ::Sebas::Agents::RegistryError
+            ctx.response.status_code = 409
+            ctx.response.content_type = "application/json"
+            ctx.response.print(%({"error": #{ex.message.inspect}}))
           end
         end
 
