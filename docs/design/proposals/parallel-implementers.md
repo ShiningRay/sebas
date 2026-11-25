@@ -96,7 +96,7 @@ ruby tools/sebas-process plan --capacity 2   # 只读：不写 GitHub，也不�
 1. 全局合法性：milestone 元数据（`Milestones.normalize`）。非法即整体 `invalid_plan`，与现状一致。
 2. 逐租约对账：对每份租约记录算一个动作（§4.1）。任一租约 `invalid_plan` 即整体拒绝，不确定的所有权不能被其他租约的进度掩盖。
 3. 逐轨算新卡候选：复用 `select_new_card` 的过滤与排序。已有 open PR、`needs:human`、`metadata:invalid`、已认领、缺 Automation、`tracking` 与 `manual`、依赖未满足，各有排除原因。
-4. 冲突预算过滤：候选之间、候选与在途租约之间做 scope 重叠检查（§6）。被过滤的候选进 `excluded`，原因写明与哪张卡重叠。
+4. 冲突预算过滤：候选之间、候选与在途租约之间做 scope 重叠检查（§6）；任一在途租约缺 `scope` 时本步不产出候选（§6.2 反向约束）。被过滤的候选进 `excluded`，原因写明与哪张卡重叠。
 5. 补位：在途租约数小于 `capacity` 时，按 `order` 取候选填满空位。
 
 依赖在认领时冻结，不需要新机制：候选的 `depends_on` 指向在途卡时，该卡尚未 `completed`，`Dependencies.evaluate_issue_dependency` 已判 `blocked`。要做的是用测试锁定「同批不得互相依赖」。
@@ -232,7 +232,7 @@ Automation 块新增可选数组字段，值为路径前缀：
 
 | | 强制：缺 `scope` 不可并行 | 不强制：缺 `scope` 可人工确认并行 |
 |---|---|---|
-| 规则 | 缺 `scope` 的卡只在没有其他在途租约时才能认领 | 缺 `scope` 的卡经人工逐次确认后可与其他租约并行 |
+| 规则 | 缺 `scope` 的卡只在没有其他在途租约时才能认领；反向同样成立——任一在途租约缺 `scope` 时不认领任何新卡，否则它与无预算保护的租约并行 | 缺 `scope` 的卡经人工逐次确认后可与其他租约并行 |
 | 对存量卡 | 容量为 1 时行为不变，不必补元数据；要并行才补 `scope` | 存量卡可直接并行 |
 | 漏报面 | 漏写共享文件仍会漏报，但不会被「没声明」放大 | 安全边界取决于人的记性 |
 | 立场 | **裁决采纳**：强制 | 未采纳；安全边界不押在人的记性上 |
@@ -245,7 +245,7 @@ Automation 块新增可选数组字段，值为路径前缀：
 2. CHANGELOG 改由合并队列在合并时统一追加，worker 不改，PR 正文携带待追加条目。两张 PR 可以完全不重叠，但这改变了 scribe.md §5 的约定。
 
 **裁决：选 2**（2026-11-25）。CHANGELOG 若留在 scope 预算内，任意两张在途 PR 都必然重叠，
-等于取消并行；scribe.md §5 须随实现工作包同步修订。
+等于取消并行；scribe.md §5 须随实现工作包同步修订。写入时机与幂等判定在 §7.2 的合并链中落实。
 
 ## 7. 等待、验收背压与集中合并
 
@@ -265,6 +265,7 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 → verify merge <pr> <issue> --pre，退出码 0
 → Verifier 核验与终验（独立进程），结论为「通过」
 → BEHIND 则 update-branch，等 CI 与 verify.yml 重跑
+→ CHANGELOG 追加（§6.3 裁决）：PR 正文携带待追加条目且租约分支尚无等价追加提交时，coordinator 把条目写入 CHANGELOG.md 的 `[Unreleased]` 推到租约分支；head 因此改变按下一行处理
 → head 因此改变时：§7.5 未获裁决，或无法证明只多了同步提交，就回到核验一步重做
 → 合并前再读一次目标分支，仍是 main 才 squash 合并：带 --match-head-commit 绑定已核验的 head；head 已变则 GitHub 拒绝合并，回到 verify merge --pre 重做核验
 → 远端复核已合并且目标分支仍是 main；不是就停下这张卡，转人工
@@ -273,6 +274,8 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 ```
 
 归属校验与合并之间有时间差。核验通过之后、合并之前，PR 若又收到提交，照旧合并就是把没核验过的提交合进去。`gh pr merge --match-head-commit` 让 GitHub 在 head 不等于给定提交时拒绝合并。被拒之后一律重做核验与终验，再用新的 head 绑定，不拿旧结论去套新提交。
+
+CHANGELOG 追加只在合并队列发生（§6.3 裁决）：worker 不写 CHANGELOG，条目由 PR 正文携带，coordinator 在 update-branch 之后、绑定核验 head 之前写入并推送到租约分支，追加提交与其他提交一样过 CI 与核验。幂等判据是条目是否已在 `[Unreleased]` 中：正文条目已全部在则跳过追加，重试与重放都不产生重复条目；核验时核对条目已写入，漏写即本卡不得合并。追加位置在 update-branch 之后，保证追加提交落在新鲜 base 上，不和 main 上新并入的 `[Unreleased]` 条目产生文本冲突。
 
 head 绑定管不到目标分支。`gh pr merge` 没有绑定 base 的参数，核验之后有人把 PR 的基础分支改到别处，head 不变也会照合，合进去的分支不触发 main 上的 CI，等待就没有尽头。所以归属校验、合并前、合并后各读一次目标分支；这只能缩小窗口，关不掉它。
 

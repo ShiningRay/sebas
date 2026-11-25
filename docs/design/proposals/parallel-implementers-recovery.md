@@ -15,7 +15,7 @@
 | `claimed` | 写 `agent:in-progress`，回读标签（Q1 选 B 时一并回读评论），记录置为 `claimed` |
 | `pr_open` | worker 建 worktree 与 PR，回填 `worktree`、`pr`，记录置为 `pr_open` |
 | `merging` | coordinator 取到队首，记录置为 `merging` |
-| `released` | 远端 PR 已合并且 issue completed，移除标签，回读，记录置为 `released` |
+| `released` | 远端 PR 已合并且 issue completed，移除标签，回读；Q1 选 B 时把租约评论的 `state` 改为 `released` 并回读；记录置为 `released` |
 
 两个异常态：`aborted` 表示认领写入未确认；`paused` 只用于「未建 PR 就暂停」，此时认领标签已按 implementer-loop.md §3.2 释放，记录独自承载暂停状态。已有 PR 的暂停不改 `phase`，由卡上的 `needs:human` 标签表达。
 
@@ -101,7 +101,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 1. 容量为 1 且快照里没有暂停卡时，`plan` 的首选候选与 `next` 的 `claim_issue` 恒等，对现有全部选卡用例成立。有暂停卡的快照单列，两者的差异只允许出现在 Q9 的暂停语义上。
 2. 容量为 N：候选按 `order` 稳定排序；`order` 重复与依赖成环仍 `invalid_plan`。
 3. 依赖冻结：候选依赖在途卡时进 `excluded`，原因是前置仍 open。
-4. scope：重叠的候选被过滤，原因写明对方卡；非法 scope 值 `invalid_plan`；缺 scope 的处理随 Q4 的裁决。
+4. scope：重叠的候选被过滤，原因写明对方卡；非法 scope 值 `invalid_plan`；缺 `scope` 的卡只在没有其他在途租约时认领，任一在途租约缺 `scope` 时候选全部进 `excluded`（§6.2 强制的两个方向）。
 5. 逐租约动作：`wait` 的租约不占算力；一张租约 `needs_human` 不影响另一张；任一租约 `invalid_plan` 则整体拒绝；归属不符的租约即使检查全绿也不得给出 `merge_ready`。
 6. 租约唯一性：两张卡共用 `branch`、`worktree` 或 PR 号即 `invalid_plan`；PR 关联多张卡即 `invalid_plan`。
 7. 队列：`merge_ready` 按先后入队；`verify_queue.depth` 正确。
@@ -109,7 +109,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 9. 写守卫：Q1 选 B 时，新增的写意图逐条断言放行形态，其余命令仍被拦截。
 10. 迁移：v1 记录、schema 不是 2 的记录、迁移期容量恒为 1。
 11. 租约评论：评论已发出而评论 id 未落盘时崩溃，恢复按 `lease_id` 复用既有评论，不重发。
-12. 合并后崩溃：恢复不得跳过 main CI 成功与 Evidence 升级直接释放租约。
+12. 合并后崩溃：恢复不得跳过 main CI 成功与 Evidence 升级直接释放租约。正常释放序列（续篇 §1）把租约评论 `state` 置为 `released` 并回读；重放释放不产生第二份未释放凭据（F9 的判据不变）。
 13. 合并绑定：head 与已核验的提交不一致时合并被拒，流程重做核验后用新的 head 绑定。Q1 选 A 或 B 时，标签已删而凭据未释放的 F12 先释放凭据再补写记录；选 C 时不因缺凭据而 `invalid_plan`。
 14. 目标分支：核验后被改到非 `main` 的 PR，合并前的复核拒绝执行；已合并到非 `main` 的卡停下并转人工；等待 main CI 与 Evidence 升级超时后转人工。
 
@@ -120,6 +120,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 - 在认领后、PR 创建后、合并后分别杀进程再重启。这是 implementer-loop.md §6 已有的要求。
 - 两张 PR 相继合并，复现 F13。结果决定主篇 §7.3 的裁决：补偿路径可用就放宽，否则维持串行到 Evidence 升级。
 - `update-branch` 之后 head 变化：只有同步提交时结论保留，含冲突解决提交时失效。
+- CHANGELOG 追加重试：分支已含等价追加提交时不重复追加，重试不产生重复条目（主篇 §7.2）。
 - Windows 与 macOS 各跑一遍锁、原子重命名与路径分隔。
 - 动手前抽查存量 PR 的 head 分支名，确认与 `feat/<issue>` 的约定一致；不一致就放宽为「以记录回填的分支为准」。
 
