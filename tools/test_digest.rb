@@ -110,6 +110,19 @@ class DigestTest < Minitest::Test
     assert_equal digest, D.existing([comment("普通"), digest])
   end
 
+# 普通评论引用标记文本不算摘要：否则会覆盖别人的讨论。
+def test_existing_requires_marker_on_own_line
+  quoted = comment("我在讨论里提到 #{D::MARKER} 这个标记")
+  refute(D.existing([quoted]), "标记内嵌在正文中不应被认作摘要")
+end
+
+def test_existing_rejects_duplicates
+  a = comment("#{D::MARKER}\n第一条")
+  b = comment("#{D::MARKER}\n第二条")
+  err = assert_raises(SebasAgents::InvalidPlan) { D.existing([a, b]) }
+  assert_includes err.message, "无法判定更新目标"
+end
+
   def test_existing_nil_when_absent
     assert_nil D.existing([comment("普通")])
   end

@@ -147,6 +147,9 @@ Proposal issue（proposal + needs-triage）
 - **Maintainer** 将方向接受、设计定稿和排期分开决定；每次裁决在原 issue 留公开理由。
 - **Scribe** 起草定稿候选但不定稿；文档 PR 合入不等于设计定稿。收到明确排期指令后，
   才可执行 WBS、milestone 与工作包的机械落地；不自行决定版本、优先级或容量置换。
+- **Proposal 文档由 Scribe 独占撰写**，外部贡献者只开 issue 参与讨论，不直接投递设计文档 PR
+  （CI 的 `check proposal document authorship` 步骤拦截非白名单作者）；细节见
+  [proposal-lifecycle.md](proposal-lifecycle.md) §7。
 - 原 issue 持续保存讨论记录。设计文档与实现任务必须回链它，不维护两份平行讨论；
   但**当前生效的设计以文档为准**，issue 里的旧评论不作为契约依据。
 

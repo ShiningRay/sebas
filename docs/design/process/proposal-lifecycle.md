@@ -159,3 +159,29 @@ ruby tools/sebas-process digest <proposal> --apply    # 写入并置顶
 - **文档 PR 合入 ≠ 设计定稿。** 定稿只由 Maintainer 的明确 `accepted-design` 裁决产生。
 - **Proposal issue 不需要设计文档才能提。** 因此「不能提文档」不构成提案障碍。
 - **Scribe 是执行者，不是决策者。** 它按 Maintainer 指令整理共识，不自行接受设计或排期。
+
+### 7.1 硬约束：Proposal 文档不接受外部 PR
+
+`docs/design/proposals/` 与 `.github/ISSUE_TEMPLATE/proposal.yml` 是**受保护路径**：
+只有 `.github/agents.yml` 里 `maintainers` 白名单内的账号可以提交改动。
+
+外部贡献者与普通协作者的参与方式是：
+
+- 开 Proposal issue（模板已就绪，无需权限）
+- 在 issue 下讨论、提异议、补事实
+- 提供设计思路供 Scribe 整理
+
+**不包含**直接投递设计文档 PR。CI 的 `check proposal document authorship` 步骤会拦截非白名单作者的
+Proposal 文档改动。
+
+**这条检查的实际边界（必须如实理解）**：Scribe 与 Maintainer 共用同一账号，
+因此检查器只能验证「作者在白名单内」，无法区分「Scribe 在写」还是「维护者本人在写」——
+两者都放行是预期行为。它拦得住外部贡献者和其他协作者，**拦不住同账号下的其他 AI 角色越权**；
+那条边界由角色纪律约束，不由 CI 约束。
+
+### 7.2 为什么这样分工
+
+- **入口开放**：提提案不该有门槛，否则外部想法进不来。
+- **出口收敛**：设计文档是仓库要长期维护的契约，必须有单一责任人对其一致性负责。
+  多人各写一份会导致同一个 Proposal 出现多个平行版本，这正是 §1 要消灭的「两份平行讨论」。
+- **定稿权在 Maintainer**：Scribe 写不等于 Scribe 定稿。`accepted-design` 只能由 Maintainer 裁决产生。

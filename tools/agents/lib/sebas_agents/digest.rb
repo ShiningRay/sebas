@@ -45,8 +45,13 @@ module SebasAgents
       text[(index + MANUAL_MARKER.length)..].to_s
     end
 
+    # 只认「标记独占一行」的评论：正文里引用标记的普通讨论不算摘要，
+    # 否则会把别人的评论当成更新目标覆盖掉。
     def existing(comments)
-      comments.find { |comment| comment["body"].to_s.include?(MARKER) }
+      matches = comments.select { |comment| comment["body"].to_s.lines.map(&:strip).include?(MARKER) }
+      raise InvalidPlan, "存在 #{matches.length} 条摘要评论，无法判定更新目标" if matches.length > 1
+
+      matches.first
     end
 
     # 生成完整索引正文。existing 为当前置顶评论（可能为 nil），用于保留人工区。

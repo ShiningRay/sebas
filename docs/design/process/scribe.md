@@ -11,7 +11,8 @@
 - 新提案的撰写与归档（`docs/design/proposals/`）
 - Proposal issue 需设计文档时，由 Maintainer 指令接续：整理已达成共识、保留异议与开放问题，
   提交 PR 并在文档和 issue 之间建立双向链接；不代替 Maintainer 接受设计或决定排期
-- 外部提案者可自愿 fork 提交设计 PR；仓库写权限和文档 PR 不是开 Proposal issue 的前置条件
+- **Proposal 文档由 Scribe 独占撰写**（`docs/design/proposals/` 与 proposal 模板受 CI 路径守卫保护）；
+  外部贡献者只能开 Proposal issue 参与讨论，不直接投递设计文档 PR
 - spec/ 与 plan/ 的内容更新（与代码变更同步）
 - 文档拆分与索引维护（单文件不超 400 行）
 - 锚点管理：引用一律用 §节号或文件路径，不用行号

@@ -545,42 +545,37 @@ module SebasAgents
 
 # Proposal 处理：把散落的研判评论压成一条置顶索引。
 # 默认 dry-run；--apply 才写评论与置顶。人工摘要区在标记之后，工具永不覆盖。
+#
+# 不读全仓快照：digest 只需要目标 issue 与它的评论。走 snapshot 会拉全仓
+# PR/milestone/依赖闭包，仓库 PR 数触顶时还会因单页上限守卫直接失败。
 def run_digest(argv)
   return help if argv.include?("--help") || argv.include?("-h")
 
   options, (number,) = Argv.parse(argv, required: ["issue"])
   target = parse_number(number, "issue")
-  snap = snapshot(options)
-  issue = snap.issue(target)
-  raise UsageError, "issue ###{number} 不在快照内" unless issue
-  raise UsageError, "###{target} 不是 Proposal（缺 proposal 标签）" unless issue.label?("proposal")
-
-  repo = claim_write_repo(snap, options)
+  repo = options[:repo] || default_repo
   gateway = GithubGateway.new(runner(options), repo: repo)
+
+  raw = gateway.fetch_issue(target)
+  raise UsageError, "##{target} 不是 Proposal（缺 proposal 标签）" unless raw.label?("proposal")
+
   comments = gateway.issue_comments(target)
   existing = Digest.existing(comments)
-  body = Digest.build(
-    {"number" => issue.number, "title" => issue.title},
-    comments,
-    existing_body: existing && existing["body"]
-  )
+  manual_before = existing && Digest.manual_section(existing["body"])
+  body = Digest.build({"number" => raw.number, "title" => raw.title}, comments,
+    existing_body: existing && existing["body"])
 
   payload = {
     "ok" => true,
     "dry_run" => !options[:apply],
-    "issue" => issue.number,
+    "issue" => raw.number,
     "comment" => existing ? "update" : "create",
     "judgments" => comments.count { |comment| Digest.status_of(comment["body"]) && Digest.jarvis?(comment["body"]) },
     "pinned" => !gateway.pinned_comment(target).nil?
   }
 
   if options[:apply]
-    if existing
-      gateway.update_comment(existing["id"], body, allow_write: true)
-      comment = existing
-    else
-      comment = JSON.parse(gateway.create_comment(target, body, allow_write: true))
-    end
+    comment = existing ? update_with_conflict_check(gateway, target, existing, manual_before, body) : create_digest(gateway, target, body)
     pinned = gateway.pinned_comment(target)
     gateway.pin_comment(comment["node_id"], allow_write: true) if pinned.nil? || pinned["id"] != comment["id"]
     payload["comment_id"] = comment["id"]
@@ -590,6 +585,33 @@ def run_digest(argv)
 
   Output.emit(payload, out: @out)
   EXIT_OK
+end
+
+# 写入前重读：人工区在读与写之间被改过就中止，避免用旧摘要覆盖新摘要。
+# 接口不支持条件写入，只能缩小窗口，不能完全消除竞争。
+def update_with_conflict_check(gateway, target, existing, manual_before, body)
+  fresh = gateway.issue_comments(target).find { |item| item["id"] == existing["id"] }
+  raise UsageError, "##{target} 的摘要评论已消失，请重跑 digest" if fresh.nil?
+
+  if Digest.manual_section(fresh["body"]) != manual_before
+    raise UsageError,
+      "##{target} 的人工摘要区在本次运行期间被修改，已中止写入以免覆盖；请重跑 digest"
+  end
+
+  gateway.update_comment(existing["id"], body, allow_write: true)
+  existing
+end
+
+# 创建不做盲目重试：评论创建非幂等，超时后重试会写出第二条摘要。
+# 失败时交由调用方重跑（重跑会走 update 分支，天然去重）。
+def create_digest(gateway, target, body)
+  created = gateway.create_comment(target, body, allow_write: true)
+  JSON.parse(created)
+rescue CommandError => e
+  raise CommandError.new(
+    "创建摘要评论结果未知（#{e.message}）；请重跑 digest——已创建时会走更新分支",
+    command: e.command
+  )
 end
 
     def run_docs_check(argv)

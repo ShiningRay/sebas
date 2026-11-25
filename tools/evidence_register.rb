@@ -41,7 +41,14 @@ module EvidenceRegister
     pr = gh_json("repos/#{repo}/pulls/#{pr_number}")
 
     # 合并前登记（#126）：PR 未合并时走 pre_register，让 `verify merge --pre` 有据可依。
+    # Proposal 两条路径都要跳过：它不是执行单元，写 Evidence 只会污染讨论区。
     unless pr["merged_at"]
+      pre_issue = closing_issue(pr)
+      if pre_issue && proposal_issue?(repo, pre_issue)
+        out.puts "skip: issue ##{pre_issue} 是 Proposal，不登记 Evidence"
+        return 0
+      end
+
       require_relative "evidence_register_twophase"
       return TwoPhase.pre_register(repo: repo, pr: pr, pr_number: pr_number, out: out)
     end
@@ -62,8 +69,7 @@ module EvidenceRegister
     end
 
     issue = gh_json("repos/#{repo}/issues/#{issue_number}")
-    # Proposal 不是执行单元：没有 Evidence 语义，登记评论只会污染讨论区。
-    if Array(issue["labels"]).any? { |label| label["name"] == "proposal" }
+    if proposal_issue?(repo, issue_number)
       out.puts "skip: issue ##{issue_number} 是 Proposal，不登记 Evidence"
       return 0
     end
@@ -341,6 +347,12 @@ module EvidenceRegister
       "untested" => untested,
       "ready" => nil
     }
+  end
+
+  # 两条登记路径（合并前 pre_register / 合并后 register）共用同一排除规则。
+  def proposal_issue?(repo, number)
+    raw = gh_json("repos/#{repo}/issues/#{number}")
+    Array(raw["labels"]).any? { |label| label["name"] == "proposal" }
   end
 
   def closing_issue(pr)
