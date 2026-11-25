@@ -530,22 +530,27 @@ class SetupActionTest < Minitest::Test
 
   # 本 job 被强杀 → 锁被 TTL 接管 → 别的 job 拿着新锁在装。此时旧 job 的
   # release 绝不能删掉这把新锁，也不该替对方打完成标记。
+  #
+  # fixture 必须是「内容物完整、安装步骤也报成功」的：否则 installed_ok 或
+  # 安装结论任一环会先拦住写标记，断言就无法证明是 owner 检查在起作用。
   def test_release_leaves_a_lock_taken_over_by_another_job
     Dir.mktmpdir do |dir|
       env = env_for(dir)
       FileUtils.mkdir_p(env["RUNNER_TEMP"])
       first = prepare(env, dir)
       lock = first["lock"]
+      # 完整工具链，但故意不调用 release —— 交给下面的「非持有者」release。
+      fake_toolchain(first["destination"], VERSION)
 
       # 模拟接管：owner 换人（真实路径是 TTL 过期后由另一个 job 重建）。
       File.write(File.join(lock, "owner"), "another-job")
 
-      _out, status = run_script(["release", lock, first["owner"],
-                                 first["destination"], first["version"]], env)
+      out, status = release(first, env)
       assert status.success?, "release 不该因为不是自己的锁而失败"
       assert File.directory?(lock), "别的 job 的锁必须留着"
       refute File.exist?(File.join(first["destination"], ".sebas-complete")),
         "不是自己的锁，就不该替对方写完成标记"
+      assert_includes out, "no longer owned"
     end
   end
 
