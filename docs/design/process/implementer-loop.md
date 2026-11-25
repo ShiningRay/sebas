@@ -74,8 +74,10 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地记录（`phase=claiming`），
 再把 status 写成 `In progress`，回读确认后才转为 `claimed`；回读失败则记 `claim_aborted`
-（含 `status_written`），不启动 Harness。提 PR 后 `mark-review` 推进到 `In review`，
-`unclaim` 写回 `Todo`。
+（含 `status_written`），不启动 Harness。提 PR 后 `mark-review` 推进到 `In review`，`unclaim` 写回 `Todo`。
+`claim` **不校验 milestone**（只要求 open、无 `needs:human`/`metadata:invalid`、无其它在途认领与 open PR、
+`kind=work_package` 且依赖就绪），所以**独立小修**（type=Task、无 milestone）只能人工点名 claim 开工；
+自动选卡不挑它是设计意图，见 [development-workflow.md](development-workflow.md) 四种归宿第 3 条。
 
 ### 2.3 前置完成的标准
 

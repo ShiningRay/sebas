@@ -273,6 +273,8 @@ module SebasAgents
       def metadata_gaps(milestone, snapshot)
         snapshot.issues.select { |issue| issue.open? }.filter_map do |issue|
           next unless work_package_like?(issue)
+          # 独立小修无 milestone 是正常形态，不算缺口——它走人工认领，不进自动选卡。
+          next if issue.small_fix?
 
           missing = []
           if issue.milestone.nil?

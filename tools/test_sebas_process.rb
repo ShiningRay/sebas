@@ -721,6 +721,57 @@ def test_excluded_lists_every_blocked_candidate
     assert_equal ["milestone"], gap["missing"]
   end
 
+  # 独立小修：Task + 无 milestone + work_package 块 = 正常形态，不是元数据缺口。
+  def test_small_fix_without_milestone_is_not_a_metadata_gap
+    data = snapshot(issues: [
+      issue(903, body: automation(order: [4, 1]), milestone: nil, type: "Task")
+    ])
+    action = select(data)
+    assert(action.metadata_gaps.none? { |item| item["issue"] == 903 })
+  end
+
+# 称小修但带前置：不算小修，缺口检查照常——它需要回到 milestone 体系。
+# 主线只放 manual 卡，确保走到 blocked 分支（gaps 只在 blocked 时产出）。
+  def test_small_fix_with_dependencies_is_still_a_gap
+    data = snapshot(issues: [
+      issue(906, body: automation(order: [4, 1], depends_on: [7]), milestone: nil, type: "Task"),
+      issue(2, body: automation(kind: "manual", order: [4, 2])),
+      issue(7, body: automation(kind: "manual", order: [4, 3]))
+    ])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 906 }
+    refute_nil gap
+    assert_equal ["milestone"], gap["missing"]
+  end
+
+  # 同样无 milestone，但 type 不是 Task 的就不算小修，仍要报缺口。
+  def test_milestone_less_feature_is_still_a_gap
+    data = snapshot(issues: [
+      issue(904, body: automation(order: [4, 1]), milestone: nil, type: "Feature")
+    ])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 904 }
+    refute_nil gap
+    assert_equal ["milestone"], gap["missing"]
+  end
+
+  # 小修不进自动选卡：主线 blocked 时不会拿它补位，只报主线 blocked。
+  def test_small_fix_is_never_auto_selected
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(kind: "manual", order: [4, 1])),
+        issue(905, body: automation(order: [4, 1]), milestone: nil, type: "Task")
+      ],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 1),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 0)
+      ]
+    )
+    action = select(data)
+    assert_equal "blocked", action.action
+    refute_equal 905, action.issue
+  end
+
   def test_non_work_package_without_milestone_is_not_a_gap
     # 普通过 issue（无 plan、无依赖声明、无 Automation）不应污染清单。
     data = snapshot(issues: [
@@ -1751,6 +1802,45 @@ end
       refute payload["ok"]
     end
   end
+
+# 独立小修的唯一开工方式：人工点名 claim。claim 不校验 milestone，但要求它是小修。
+def test_claim_accepts_small_fix_without_milestone
+  data = snapshot(issues: [issue(903, body: automation(order: [4, 1]), milestone: nil, type: "Task")])
+  Dir.mktmpdir do |dir|
+    path = File.join(dir, "snapshot.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+    status, out, = run_cli(["claim", "903", "--snapshot", path, "--record", File.join(dir, "run.json")])
+    assert_equal 0, status
+    assert_equal "ready", JSON.parse(out)["status"]
+  end
+end
+
+# 无 milestone 的 Feature 不能认领：那会绕开 milestone 容量与 DAG 检查。
+def test_claim_rejects_milestone_less_feature
+  data = snapshot(issues: [issue(904, body: automation(order: [4, 1]), milestone: nil, type: "Feature")])
+  Dir.mktmpdir do |dir|
+    path = File.join(dir, "snapshot.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+    status, out, = run_cli(["claim", "904", "--snapshot", path, "--record", File.join(dir, "run.json")])
+    assert_equal 1, status
+    assert_includes JSON.parse(out)["reasons"].join, "不是独立小修"
+  end
+end
+
+# 自称小修却带前置：无 milestone 约束 + 声明依赖属矛盾状态，不得豁免。
+def test_claim_rejects_small_fix_with_dependencies
+  data = snapshot(issues: [
+    issue(905, body: automation(order: [4, 1], depends_on: [7]), milestone: nil, type: "Task"),
+    issue(7, body: automation(order: [4, 2]), blocked_by: [])
+  ])
+  Dir.mktmpdir do |dir|
+    path = File.join(dir, "snapshot.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+    status, out, = run_cli(["claim", "905", "--snapshot", path, "--record", File.join(dir, "run.json")])
+    assert_equal 1, status
+    assert_includes JSON.parse(out)["reasons"].join, "不是独立小修"
+  end
+end
 
   def test_claim_dry_run_does_not_write_record
     data = snapshot(issues: [issue(1, body: automation)])
