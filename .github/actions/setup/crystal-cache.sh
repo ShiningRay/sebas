@@ -28,9 +28,9 @@
 #       RUNNER_OS、RUNNER_TEMP、CRYSTAL_REQUESTED、GITHUB_OUTPUT、GITHUB_PATH
 set -uo pipefail
 
-# 持锁超过这个秒数就当持有者已被强杀，可以接管。正常安装只要几十秒，
+# 持锁超过这么多分钟就当持有者已被强杀，可以接管。正常安装只要几十秒，
 # 留足余量避免误抢正在进行的安装。
-LOCK_TTL=1800
+LOCK_TTL_MIN=30
 
 emit() {
   printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"
@@ -40,9 +40,14 @@ warn() {
   printf '::warning::%s\n' "$1"
 }
 
-# 目录的最后修改时间（BSD/GNU 两种 stat 都试）。
-mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+# 锁是否已经陈旧（持有者被强杀之类）。用 find -mmin 判年龄而不是解析 stat
+# 输出：GNU 与 BSD 的 stat 语法互不兼容，且在对方系统上不一定报错——GNU 的
+# `stat -f %m` 会打印挂载点。find 报错时按「还活着」处理：宁可跳过这一轮，
+# 也不抢别人正在写的缓存目录。
+lock_is_stale() {
+  local lock="$1"
+  [ -e "$lock" ] || return 1
+  [ -n "$(find "$lock" -maxdepth 0 -mmin "+${LOCK_TTL_MIN}" 2>/dev/null)" ]
 }
 
 # 不接管安装目录：destination 留空，install-crystal 用自己默认的
@@ -112,7 +117,7 @@ reusable() {
 }
 
 prepare() {
-  local cache_root base root wanted lock age staging
+  local cache_root base root wanted lock staging
 
   if ! cache_root="$(tool_cache_root)"; then
     miss "cannot locate the tool cache (no RUNNER_TEMP); installing Crystal for this job only"
@@ -155,12 +160,9 @@ prepare() {
 
   # 抢锁要在碰 $root 之前：mkdir 是原子的，同一版本同时未命中时只有一个 job
   # 往缓存目录里写，其余只写自己的 RUNNER_TEMP 暂存目录。
-  if [ -e "$lock" ]; then
-    age=$(( $(date +%s) - $(mtime "$lock") ))
-    if [ "$age" -gt "$LOCK_TTL" ]; then
-      printf 'Taking over stale lock %s (age %ss)\n' "$lock" "$age"
-      rm -rf "$lock" 2>/dev/null || true
-    fi
+  if [ -e "$lock" ] && lock_is_stale "$lock"; then
+    printf 'Taking over stale lock %s\n' "$lock"
+    rm -rf "$lock" 2>/dev/null || true
   fi
   if ! mkdir "$lock" 2>/dev/null; then
     emit "destination" "$staging"
@@ -192,7 +194,7 @@ release() {
   local lock="${1:-}"
   [ -n "$lock" ] || return 0
   rmdir "$lock" 2>/dev/null ||
-    warn "could not remove cache lock ${lock}; it will be taken over after ${LOCK_TTL}s"
+    warn "could not remove cache lock ${lock}; it will be taken over after ${LOCK_TTL_MIN}min"
 }
 
 case "${1:-}" in
