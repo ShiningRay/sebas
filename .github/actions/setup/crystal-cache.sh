@@ -243,19 +243,32 @@ take_over_stale_lock() {
   return "$ok"
 }
 
-# 放锁，只放自己的。owner 与本 job 不匹配时这把锁已被 TTL 接管并换成了别的
-# job 的锁，删掉就会破坏对方的互斥。
+# 放锁，只放自己的。
+#
+# 两件事必须同时成立，否则会删掉别人的锁：
+#   1. 锁里的 owner 是本 job 的——不是就说明这把锁已被 TTL 接管、换成了别的
+#      job 的锁；
+#   2. 整个「读 owner → 删锁」期间握着与接管共用的 takeover 令牌——否则本 job
+#      在读完 owner 之后被暂停，锁随即过期，接管方重建了新锁，本 job 醒来照删
+#      不误。
+# 拿不到令牌就直接放手：这把锁要么正被接管，要么将被接管，交给 TTL 处理。
 release_lock() {
-  local lock="$1" owner="$2"
+  local lock="$1" owner="$2" takeover="${1}.takeover"
   [ -n "$lock" ] || return 0
+  if ! mkdir "$takeover" 2>/dev/null; then
+    warn "cache lock ${lock} is being taken over; leaving it alone"
+    return 0
+  fi
   if [ -n "$owner" ] && [ -f "${lock}/owner" ] &&
     [ "$(cat "${lock}/owner" 2>/dev/null)" != "$owner" ]; then
+    rmdir "$takeover" 2>/dev/null || true
     warn "cache lock ${lock} is no longer owned by this job; leaving it alone"
     return 0
   fi
   # 目录里有 owner 文件，rmdir 必然失败，得用 rm -rf 连带清掉。
   rm -rf "$lock" 2>/dev/null ||
     warn "could not remove cache lock ${lock}; it will be taken over after ${LOCK_TTL_MIN}min"
+  rmdir "$takeover" 2>/dev/null || true
 }
 
 # 认领锁：写 owner 凭据。写不进去就放弃这把锁，免得持有一把无法安全释放的锁。
@@ -363,21 +376,39 @@ prepare() {
 # 收尾：装成功就打完成标记，然后放锁。安装失败时不打标记，下一个 job 会把它
 # 当半成品重装。
 #
-# 只有本 job 仍持有锁、且内容物真的完整时才打标记。持锁判断不能省：本 job 被
-# 强杀后锁可能已被 TTL 接管，此时缓存目录里属于别的 job 的半成品不能被我们
-# 盖章（下一个 job 就会拿它当好的用）。
+# 三件事必须同时成立才盖章：
+#   1. 安装步骤报告成功。install-crystal 的 Linux 分支并行跑依赖安装与工具链
+#      下载，依赖装失败时工具链可能已经解压好——只看内容物会把「缺 libssl-dev」
+#      这种机器状态固化进缓存，之后每个 job 都跳过安装、一直编译失败。用
+#      action.yml 里 Install Crystal 的步骤结论当依据（`CRYSTAL_INSTALL_OK`）。
+#   2. 本 job 仍持有锁。本 job 被强杀后锁可能已被 TTL 接管，此时缓存目录里属于
+#      别的 job 的半成品不能被我们盖章。
+#   3. 内容物确实完整可跑。
+#
+# 整个「读 owner → 校验 → 盖章」期间握着 takeover 令牌：否则本 job 在这一段被
+# 暂停、锁刚好过期，接管方删掉 $root 重建，本 job 醒来会把标记写进对方的半成品
+# 目录。拿不到令牌就放弃盖章——宁可这一轮白装，也不留一个骗人的标记。
 finish() {
   local lock="${1:-}" owner="${2:-}" root="${3:-}" wanted="${4:-}"
+  local install_ok="${5:-}"
   [ -n "$lock" ] || return 0
 
-  if [ -n "$root" ] && [ -n "$wanted" ] &&
-    [ "$(cat "${lock}/owner" 2>/dev/null)" = "$owner" ]; then
-    if installed_ok "$root" "$wanted"; then
-      printf '%s\n' "$wanted" > "${root}/.sebas-complete" 2>/dev/null ||
-        warn "could not write the completion marker in ${root}"
+  if [ "$install_ok" = "true" ] && [ -n "$root" ] && [ -n "$wanted" ]; then
+    if mkdir "${lock}.takeover" 2>/dev/null; then
+      if [ "$(cat "${lock}/owner" 2>/dev/null)" = "$owner" ]; then
+        if installed_ok "$root" "$wanted"; then
+          printf '%s\n' "$wanted" > "${root}/.sebas-complete" 2>/dev/null ||
+            warn "could not write the completion marker in ${root}"
+        else
+          warn "Crystal ${wanted} is not usable in ${root}; the next job will reinstall it"
+        fi
+      fi
+      rmdir "${lock}.takeover" 2>/dev/null || true
     else
-      warn "Crystal ${wanted} is not usable in ${root}; the next job will reinstall it"
+      warn "cache lock ${lock} is being taken over; not marking ${root} as complete"
     fi
+  elif [ -n "$root" ] && [ -n "$wanted" ]; then
+    warn "the install step did not succeed; the next job will reinstall ${root}"
   fi
 
   release_lock "$lock" "$owner"
@@ -385,9 +416,10 @@ finish() {
 
 case "${1:-}" in
   prepare) prepare ;;
-  release) finish "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+  # 第五个参数是安装步骤的结论，由 action.yml 的 `if: success()` 传进来。
+  release) finish "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
   *)
-    printf 'usage: %s {prepare | release <lock> <owner> <root> <version>}\n' "$0" >&2
+    printf 'usage: %s {prepare | release <lock> <owner> <root> <version> <installed>}\n' "$0" >&2
     exit 2
     ;;
 esac

@@ -33,6 +33,7 @@ runs:
     # destination 为空（托管 runner，或缓存不可用）时 install-crystal 回落到
     # 自己默认的 $RUNNER_TEMP/crystal-<version>-<shards>-<arch>，行为不变。
     - name: Install Crystal
+      id: install_crystal
       if: steps.crystal_cache.outputs.hit != 'true'
       uses: crystal-lang/install-crystal@47f17b5ecff0cc09e96fa95f5220311329bf4bc8 # v1
       with:
@@ -50,9 +51,13 @@ runs:
         echo "::add-matcher::${{ github.action_path }}/matchers/crystal.json"
         echo "::add-matcher::${{ github.action_path }}/matchers/crystal-spec.json"
 
-    # 无论安装成没成功都要放锁：失败时残留的目录没有完成标记，下一个 job 会
+    # 无论安装成没成功都要放锁：失败时残留的目录不能盖完成标记，下一个 job 会
     # 判为半成品重装；锁不放则要等 TTL 过期。owner 让 release 只放本 job 那把
     # 锁——本 job 被强杀、锁被 TTL 接管后，这里不能把别的 job 的新锁删掉。
+    #
+    # CRYSTAL_CACHE_INSTALLED 取 Install Crystal 的 outcome 而不是 conclusion：
+    # 该步骤被跳过（缓存命中）时 outcome 是 'skipped'、conclusion 是 'success'，
+    # 拿 conclusion 会让「跳过安装」被当成「装好了」。
     - name: Release Crystal toolchain cache lock
       if: always() && steps.crystal_cache.outputs.lock != ''
       shell: bash
@@ -61,10 +66,12 @@ runs:
         CRYSTAL_CACHE_OWNER: ${{ steps.crystal_cache.outputs.owner }}
         CRYSTAL_CACHE_ROOT: ${{ steps.crystal_cache.outputs.destination }}
         CRYSTAL_CACHE_VERSION: ${{ steps.crystal_cache.outputs.version }}
+        CRYSTAL_CACHE_INSTALLED: ${{ steps.install_crystal.outcome == 'success' }}
       run: |
         bash "${{ github.action_path }}/crystal-cache.sh" release \
           "$CRYSTAL_CACHE_LOCK" "$CRYSTAL_CACHE_OWNER" \
-          "$CRYSTAL_CACHE_ROOT" "$CRYSTAL_CACHE_VERSION"
+          "$CRYSTAL_CACHE_ROOT" "$CRYSTAL_CACHE_VERSION" \
+          "$CRYSTAL_CACHE_INSTALLED"
 
     - name: Install SQLite3 (Linux)
       if: runner.os == 'Linux'

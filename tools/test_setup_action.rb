@@ -87,6 +87,15 @@ class SetupActionTest < Minitest::Test
     assert_equal "${{ steps.crystal_cache.outputs.version }}", env["CRYSTAL_CACHE_VERSION"]
   end
 
+  # 安装失败的目录不能盖章：install-crystal 的 Linux 分支并行装依赖，依赖失败时
+  # 包可能已经解开，只看内容物会把「机器缺 libssl-dev」固化进缓存。
+  def test_install_outcome_is_passed_to_the_release_step
+    update = step("Release Crystal toolchain cache lock").dig("env", "CRYSTAL_CACHE_INSTALLED")
+    assert_equal "${{ steps.install_crystal.outcome == 'success' }}", update,
+      "必须以 Install Crystal 的 outcome 为依据，且该步骤要有 id"
+    assert_equal "install_crystal", step("Install Crystal")["id"]
+  end
+
   def test_matchers_match_upstream_pinned_shape
     %w[crystal.json crystal-spec.json].each do |file|
       parsed = JSON.parse(File.read(File.join(ROOT, ".github", "actions", "setup", "matchers", file)))
@@ -131,9 +140,10 @@ class SetupActionTest < Minitest::Test
   end
 
   # 收尾：写完成标记 + 放锁。参数顺序与 action.yml 一致。
-  def release(result, env)
+  # installed 对应 CRYSTAL_CACHE_INSTALLED，默认 true 表示安装步骤成功。
+  def release(result, env, installed: "true")
     run_script(["release", result["lock"].to_s, result["owner"].to_s,
-                result["destination"].to_s, result["version"].to_s], env)
+                result["destination"].to_s, result["version"].to_s, installed], env)
   end
 
   def outputs(dir)
@@ -221,6 +231,10 @@ class SetupActionTest < Minitest::Test
 
   # wrapper 需要 bash / dirname / realpath 才能起来。只给缓存那两个目录会让它
   # 以 127 退出，完好的缓存被判成未命中——本 PR 在 macOS 上的收益归零。
+  #
+  # 注意先把 marker 删掉再跑第二次 prepare：release 里的 installed_ok 同样会
+  # 执行 wrapper 并留下记录，不清掉的话断言会被上一次的痕迹满足，即使第二次
+  # 的命中校验根本没跑 wrapper 也照样绿。
   def test_macos_wrapper_can_really_run_from_the_cache_path
     Dir.mktmpdir do |dir|
       env = env_for(dir)
@@ -230,6 +244,7 @@ class SetupActionTest < Minitest::Test
       fake_toolchain(first["destination"], VERSION, os: "macOS", marker: marker)
       release(first, env)
 
+      FileUtils.rm_f(marker)
       second = prepare(env, dir)
       assert_equal "true", second["hit"]
       assert File.file?(marker), "校验必须真的执行 wrapper，而不是只检查文件存在"
@@ -556,8 +571,7 @@ class SetupActionTest < Minitest::Test
       # 装了一半：只有 bin，没有 embedded 与标准库。
       FileUtils.mkdir_p(File.join(result["destination"], "bin"))
 
-      out, status = run_script(["release", result["lock"], result["owner"],
-                                result["destination"], result["version"]], env)
+      out, status = release(result, env)
       assert status.success?, out
       refute File.exist?(File.join(result["destination"], ".sebas-complete")),
         "半成品不能有完成标记"
@@ -566,6 +580,60 @@ class SetupActionTest < Minitest::Test
       # 下一个 job 应当判为未命中并重装。
       second = prepare(env, dir)
       assert_equal "false", second["hit"]
+    end
+  end
+
+  # install-crystal 的 Linux 分支并行装 apt 依赖与工具链：依赖装失败时包可能
+  # 已经解好。只看内容物就会把「这台机器缺 libssl-dev」固化进缓存——之后每个
+  # job 都跳过安装，一直编译失败。
+  def test_release_does_not_mark_when_the_install_step_failed
+    Dir.mktmpdir do |dir|
+      env = env_for(dir, "RUNNER_OS" => "Linux")
+      FileUtils.mkdir_p(env["RUNNER_TEMP"])
+      result = prepare(env, dir)
+      fake_toolchain(result["destination"], VERSION, os: "Linux")
+
+      out, status = release(result, env, installed: "false")
+      assert status.success?, out
+      refute File.exist?(File.join(result["destination"], ".sebas-complete")),
+        "安装步骤失败就不能盖章，哪怕文件看起来齐了"
+      refute File.exist?(result["lock"]), "失败路径也要放锁"
+      assert_includes out, "did not succeed"
+    end
+  end
+
+  # release 在「读 owner → 删锁」之间被接管插入时，会删掉接管方的新锁。
+  # 所以它必须与接管共用 takeover 令牌：拿不到令牌就保留锁，交给 TTL。
+  def test_release_yields_to_a_takeover_in_progress
+    Dir.mktmpdir do |dir|
+      env = env_for(dir)
+      FileUtils.mkdir_p(env["RUNNER_TEMP"])
+      result = prepare(env, dir)
+      # 另一个 job 正拿着 takeover 令牌接管这把锁。
+      FileUtils.mkdir_p("#{result["lock"]}.takeover")
+
+      out, status = release(result, env)
+      assert status.success?, out
+      assert File.directory?(result["lock"]), "令牌被占时不能删锁"
+      assert_includes out, "being taken over"
+    end
+  end
+
+  # 盖章同理：读 owner、跑校验、写标记这三步之间若被接管插入，标记会写进接管
+  # 方正在重建的目录，随后被当成完好缓存长期复用。
+  def test_completion_marker_is_not_written_while_a_takeover_is_in_progress
+    Dir.mktmpdir do |dir|
+      env = env_for(dir)
+      FileUtils.mkdir_p(env["RUNNER_TEMP"])
+      result = prepare(env, dir)
+      fake_toolchain(result["destination"], VERSION)
+      FileUtils.mkdir_p("#{result["lock"]}.takeover")
+
+      out, status = release(result, env)
+      assert status.success?, out
+      refute File.exist?(File.join(result["destination"], ".sebas-complete")),
+        "接管进行中时不能盖章"
+      assert_includes out, "being taken over"
     end
   end
 end
