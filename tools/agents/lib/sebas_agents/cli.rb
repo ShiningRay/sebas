@@ -557,7 +557,7 @@ def run_digest(argv)
   gateway = GithubGateway.new(runner(options), repo: repo)
 
   raw = gateway.fetch_issue(target)
-  raise UsageError, "##{target} 不是 Proposal（缺 proposal 标签）" unless raw.label?("proposal")
+  raise UsageError, "##{target} 不是 Proposal（缺 proposal 标签且 type 不是 Proposal）" unless raw.proposal?
 
   comments = gateway.issue_comments(target)
   existing = Digest.existing(comments)

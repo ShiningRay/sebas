@@ -1409,10 +1409,65 @@ class CliTest < Minitest::Test
       assert_equal 0, status
       actions = JSON.parse(out)["actions"]
       assert(actions.any? { |action| action["action"] == "add_label" && action["name"] == "proposal:needs-design" })
-      assert(actions.any? { |action| action["action"] == "set_type" && action["type"] == "Feature" })
+      assert(actions.any? { |action| action["action"] == "set_type" && action["type"] == "Proposal" })
       refute(actions.any? { |action| %w[add_assignee suggest_milestone close].include?(action["action"]) })
     end
   end
+
+# 存量卡迁移期：type=Proposal 但标签已清，仍须走 Proposal 流程。
+def test_proposal_detected_by_type_without_label
+  data = snapshot(issues: [issue(8, labels: ["needs-triage"], type: "Proposal")])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({"decision" => "needs-design", "body" => "待确认"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 0, status
+    assert_includes out, "proposal:needs-design"
+  end
+end
+
+# Proposal 不能走 accepted：那条路径会加 enhancement 并指派，语义不对。
+def test_accepted_rejects_proposal_type
+  data = snapshot(issues: [issue(8, labels: ["proposal"], type: "Proposal")])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({"decision" => "accepted"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 1, status
+    assert_includes out, "accepted-design"
+  end
+end
+
+# 已是 Proposal 的卡不再重复写 type（避免无谓 API 调用）。
+def test_proposal_plan_skips_redundant_set_type
+  data = snapshot(issues: [issue(8, labels: ["proposal"], type: "Proposal")])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({"decision" => "needs-design", "body" => "待确认"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 0, status
+    actions = JSON.parse(out)["actions"]
+    refute(actions.any? { |action| action["action"] == "set_type" })
+  end
+end
+
+# 选卡排除不能只认标签：type=Proposal 的卡即使带 work_package 块也不得进候选。
+def test_selection_excludes_type_proposal_without_label
+  data = snapshot(issues: [
+    issue(1, labels: [], type: "Proposal", body: automation(order: [4, 1])),
+    issue(2, labels: [], body: automation(order: [4, 2]))
+  ])
+  action = select(data)
+  assert_equal "claim_issue", action.action
+  assert_equal 2, action.issue
+  assert(action.excluded.any? { |item| item["issue"] == 1 && item["reason"].include?("proposal") })
+end
 
   def proposal_verdict(data, dir, decision: "accepted-design", url: nil)
     url ||= "https://github.com/o/r/issues/8#issuecomment-123"

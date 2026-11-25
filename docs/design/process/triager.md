@@ -22,8 +22,9 @@
 
 ### 2. Proposal 的状态维护
 
-带 `proposal` 标签的 issue 由 Triager 查重、澄清和整理讨论，但**不接受设计、不指派开发、
-不设置 milestone**。可使用以下提案专用判定：
+带 `proposal` 标签**或原生 `Proposal` type**的 issue 由 Triager 查重、澄清和整理讨论，
+但**不接受设计、不指派开发、不设置 milestone**。二者任一命中即按 Proposal 处理（迁移期五张存量卡
+里仍有 type=Feature 的，不能只认标签）。可使用以下提案专用判定：
 
 | 判定 | 使用条件 | 动作 |
 |---|---|---|
@@ -60,7 +61,7 @@ Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快�
 | 可执行 | `Automation.kind` | 仅 `work_package` 可被 Implementer 认领 |
 | 执行状态 | issue status | Backlog → Todo → In progress → In review → Done |
 
-带 `Automation` 块**且不带 `proposal` 标签**的工作包卡不做研判，只做三件事（Proposal 即使含 Automation 块也走 §2 的专用判定，不得被短路）：
+带 `Automation` 块**且不是 Proposal**（标签与 type 任一命中都算）的工作包卡不做研判，只做三件事（Proposal 即使含 Automation 块也走 §2 的专用判定，不得被短路）：
 - 缺 type → 按 kind 回填（`work_package` → Feature，`tracking`/`manual`/`design` → Task）
 - 无 assignee → 自动补指派 ShiningRay
 - 已挂 milestone 且 status 为 Backlog/空 → 推进到 Todo
@@ -69,7 +70,9 @@ Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快�
 
 ### 4. Issue Type 与 Assignee 规则
 
-- **type 按 issue 性质定**，不按判定定：报 bug 的 Bug、提需求或 Proposal 的 Feature、文档/CI/工具的 Task
+- **type 按 issue 性质定**，不按判定定：报 bug 的 Bug、提需求的 Feature、Proposal 的 `Proposal`（原生类型）、文档/CI/工具的 Task
+- **Proposal 判定一律把 type 推进到 `Proposal`**；已是 Proposal 则跳过 set_type，避免无谓写入
+- Proposal 不能走 `accepted`：那条路径会加 enhancement 并指派，语义不对，直接拒绝并提示改用 `accepted-design`
 - `accepted` **不再硬编码 Feature**：verdict 可显式给 `type`，否则沿用 issue 现有 type，最后才回落 Feature
 - **assignee 唯一规则**：仅普通 issue 的 `bug-confirmed` 或 `accepted` 才指派；Proposal 三判定不指派
 - `escalate` 不指派——它需要人拍板但不是开发任务，靠飞书转告不占 assignee

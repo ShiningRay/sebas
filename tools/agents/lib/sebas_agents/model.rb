@@ -21,10 +21,12 @@ module SebasAgents
     WORKING_STATUSES = [STATUS_IN_PROGRESS, STATUS_IN_REVIEW].freeze
 
     # Issue Type：按性质分派流程。Task 指文档/CI/工具/流程类工作。
+    # Proposal 是账号级原生类型（2026-11 建立）：讨论定稿后才拆实现卡，不进 Implementer 选卡。
     TYPE_BUG = "Bug"
     TYPE_FEATURE = "Feature"
     TYPE_TASK = "Task"
-    TYPES = [TYPE_BUG, TYPE_FEATURE, TYPE_TASK].freeze
+    TYPE_PROPOSAL = "Proposal"
+    TYPES = [TYPE_BUG, TYPE_FEATURE, TYPE_TASK, TYPE_PROPOSAL].freeze
 
     Milestone = Data.define(:number, :title, :state, :order, :track, :open_issues, :description) do
       def main?
@@ -104,6 +106,12 @@ module SebasAgents
 
       def label?(name)
         labels.include?(name)
+      end
+
+      # Proposal 判定：标签与原生 type 任一命中即算。
+      # 迁移期五张存量卡里仍有 type=Feature 的，不能因为 type 缺失就漏判。
+      def proposal?
+        label?("proposal") || type == TYPE_PROPOSAL
       end
 
       def closed?
@@ -246,7 +254,7 @@ module SebasAgents
       # 认领锁只覆盖实现类工作卡：Proposal 可以处于 In progress（讨论设计中），
       # 但它不是 Implementer 的认领对象，不能占用「同时只有一张」的名额。
       def in_progress_issues
-        issues.select { |item| item.open? && item.working? && !item.label?("proposal") }
+        issues.select { |item| item.open? && item.working? && !item.proposal? }
       end
 
       def with(**changes)

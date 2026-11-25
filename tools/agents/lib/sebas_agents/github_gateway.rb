@@ -240,7 +240,7 @@ end
     # 只解析当前目标 Proposal；普通 issue 的文本不会触发外部读取或阻断全仓快照。
     def proposal_decision_evidence(issues, number)
       issue = issues.find { |item| item.number == number.to_i }
-      return empty_proposal_evidence unless issue&.label?("proposal")
+      return empty_proposal_evidence unless issue&.proposal?
 
       proposal_decision_refs(issue.body).each_with_object({}) do |ref, evidence|
         match = Triager::DECISION_URL.match(ref)

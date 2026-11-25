@@ -68,7 +68,7 @@ module SebasAgents
       end
 
       decision = verdict["decision"].to_s
-      if issue.label?("proposal")
+      if issue.proposal?
         return proposal_plan(issue, snapshot, decision, verdict) if PROPOSAL_DECISIONS.include?(decision)
         unless PROPOSAL_GENERAL_DECISIONS.include?(decision)
           raise InvalidPlan, "Proposal 只允许 needs-design / accepted-design / declined 或查重、澄清、升级判定"
@@ -100,7 +100,9 @@ module SebasAgents
         validate_superseded_by(issue, snapshot, verdict)
       end
 
-      actions = [{"action" => "set_type", "type" => Model::TYPE_FEATURE}]
+      # 存量 proposal 卡多为 type=Feature，需要推进到原生 Proposal；
+      # 已是 Proposal 就不重复写，避免无意义的 API 调用与事件噪音。
+      actions = issue.type == Model::TYPE_PROPOSAL ? [] : [{"action" => "set_type", "type" => Model::TYPE_PROPOSAL}]
       actions.concat(PROPOSAL_STATUS_LABELS.map { |label| {"action" => "remove_label", "name" => label} })
       actions << {"action" => "remove_label", "name" => "needs-triage"}
       actions << {"action" => "remove_label", "name" => "question"} unless decision == "needs-design"
@@ -125,7 +127,7 @@ module SebasAgents
 
       target = snapshot.issue(successor.to_i)
       raise InvalidPlan, "superseded_by 指向的 ##{successor} 不在快照内" if target.nil?
-      raise InvalidPlan, "superseded_by 指向的 ##{successor} 不是 Proposal" unless target.label?("proposal")
+      raise InvalidPlan, "superseded_by 指向的 ##{successor} 不是 Proposal" unless target.proposal?
 
       true
     end
@@ -186,6 +188,10 @@ module SebasAgents
         # 模型可在 verdict 里显式给 type 覆盖；否则沿用已有 type，最后才回落 Feature。
         type = verdict["type"] || issue&.type || Model::TYPE_FEATURE
         raise UsageError, "未知 issue type #{type.inspect}；允许：#{Model::TYPES.join("、")}" unless Model::TYPES.include?(type)
+        # Proposal 有独立的状态机与裁决口径，不能走 accepted 的排期路径。
+        if type == Model::TYPE_PROPOSAL
+          raise InvalidPlan, "Proposal 类型不能走 accepted；请用 accepted-design / needs-design / declined"
+        end
 
         [
           {"action" => "set_type", "type" => type},
@@ -213,7 +219,7 @@ module SebasAgents
     # 结构非法抛 InvalidPlan（显式拒绝，不静默放行）。
     # 调用方必须用返回值做类型推断——不要另读 issue.kind。
     def work_package_card?(issue)
-      return nil if issue.label?("proposal")
+      return nil if issue.proposal?
 
       Policy::Dependencies.automation_for(issue)
     end

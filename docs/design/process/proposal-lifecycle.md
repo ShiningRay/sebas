@@ -96,7 +96,7 @@ Scribe 回写文档使两者一致。**不允许「代码改了文档没改」**
 
 | 标签 | 语义 |
 |---|---|
-| `proposal` | Proposal 入口，与 type 并存 |
+| `proposal` | Proposal 入口标签，与原生 `Proposal` type 并存（任一命中即按 Proposal 处理） |
 | `proposal:needs-design` | 讨论中，待收敛 |
 | `proposal:accepted-design` | 设计已定稿（不等于排期批准） |
 | `proposal:declined` | 被拒绝，已关闭 |
@@ -109,6 +109,12 @@ Scribe 回写文档使两者一致。**不允许「代码改了文档没改」**
 `proposal:superseded` 由 Triager 的 `superseded` 判定产生，verdict 必须带
 `superseded_by`（继任 Proposal 编号，不能指向自身）；生成的评论会写明「继任 Proposal：#N」。
 `proposal:done` 目前无工具产出，由 Scribe 在工作包全部关闭后手工打。
+
+**原生 type 与标签的关系**：GitHub 账号级 Issue Type `Proposal` 已建立（紫色，id 950588817，
+2026-11 通过 Settings 网页创建——GraphQL `createIssueType` 对个人账号返回 FORBIDDEN，REST 无写入端点）。
+迁移期判定用「标签或 type 任一命中」：五张存量卡里仍有 type=Feature 的。Triager 的 Proposal 判定会把
+type 推进到 `Proposal`（已是则跳过）。**`proposal:*` 状态标签不可删**：七个 issue status 表达不了
+`needs-design` / `accepted-design` 这类设计裁决态。
 
 ## 6. 评论查阅：置顶索引
 
