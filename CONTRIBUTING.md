@@ -97,10 +97,11 @@ impact is enough; do not start with a full design document or work breakdown. Sm
 uncontroversial improvements can use the Feature request template instead.
 
 Maintainers decide whether to accept the direction, request more design, or decline the
-proposal. When a proposal needs a design document, the Scribe can turn the issue's
-conclusions into a note under `docs/design/proposals/` and submit the PR. Contributors
-may also volunteer a fork-based PR, but write access and a documentation PR are not
-prerequisites for proposing an idea. Discussions are for open-ended exploration; use a
+proposal. When a proposal needs a design document, the Scribe turns the issue's
+conclusions into a note under `docs/design/proposals/` and submits the PR. **Design
+documents under `docs/design/proposals/` are written by the Scribe only** — outside
+contributors participate through the issue discussion, not by submitting a design
+document PR. No repository write access or document is needed to propose an idea. Discussions are for open-ended exploration; use a
 Proposal issue once a specific decision is needed.
 
 The original issue remains the public discussion record. The merged document records the
@@ -121,7 +122,7 @@ ruby tools/check_docs.rb
 
 It fails on dead relative links and on `design.md:L749`-style line anchors (line numbers drift on every edit — cite `§section` or a file path instead). It also warns on three size metrics: physical lines ≤ 400, rendered screen lines ≤ 400 (100-column viewport, CJK counts as 2 columns), and single-line display width ≤ 400 columns. All three are warnings that signal structure needing a split. Never split a long line by inserting a hard newline — Markdown renders an intra-paragraph soft break as a space, which corrupts Chinese prose. Split into sub-lists, tables, or subsections instead.
 
-*中文要点：重大行为、架构、配置或 DSL 变更先开 Proposal issue；简短写清问题、目标、备选与影响即可，不要求先写完整设计文档或提交 PR。开放式想法先在 Discussions 讨论，形成具体待裁决建议后转 Proposal issue。Maintainer 决定接受方向、要求补设计或拒绝；需要设计文档时由 Scribe 依据 Issue 共识整理并代提 PR，贡献者也可自愿 fork 提 PR。原 Issue 保留公开讨论，入库文档回链原 Issue。接受设计不等于承诺排期或实现；Maintainer 另行决定排期后才拆实现工作包。文档分 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `ruby tools/check_docs.rb`：死链与行号锚报错；体量三项（物理行 ≤ 400、等效屏幕行 ≤ 400、单行显示宽度 ≤ 400 列）告警，长行应拆结构而非硬折行。*
+*中文要点：重大行为、架构、配置或 DSL 变更先开 Proposal issue；简短写清问题、目标、备选与影响即可，不要求先写完整设计文档或提交 PR。开放式想法先在 Discussions 讨论，形成具体待裁决建议后转 Proposal issue。Maintainer 决定接受方向、要求补设计或拒绝；**设计文档一律由 Scribe 依据 Issue 共识整理并提 PR，外部贡献者只通过 issue 讨论参与，不直接投递 `docs/design/proposals/` 的文档 PR**（CI 路径守卫校验作者白名单）。原 Issue 保留公开讨论，入库文档回链原 Issue。接受设计不等于承诺排期或实现；Maintainer 另行决定排期后才拆实现工作包。文档分 `spec/`（设计）与 `plan/`（WBS/排期/门禁），入口是 `docs/design/README.md`。改文档须跑 `ruby tools/check_docs.rb`：死链与行号锚报错；体量三项（物理行 ≤ 400、等效屏幕行 ≤ 400、单行显示宽度 ≤ 400 列）告警，长行应拆结构而非硬折行。*
 
 ## Security
 

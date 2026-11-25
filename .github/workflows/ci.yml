@@ -235,6 +235,17 @@ jobs:
       - name: Check docs links, anchors and size
         run: ruby tools/check_docs.rb
 
+      # Proposal 文档只能由 Maintainer/Scribe 一方提交（proposal-lifecycle.md §7）。
+      # 外部贡献与普通协作者只能开 issue 参与讨论。仅在 PR 上校验；
+      # 白名单取自 .github/agents.yml 的 maintainers，读不到即 fail-closed。
+      - name: Check proposal document authorship
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ruby tools/check_proposal_paths.rb
+
       - name: Test agent process tools
         run: |
           ruby tools/test_sebas_process.rb
@@ -246,6 +257,7 @@ jobs:
           ruby tools/test_ruby_version_guard.rb
           ruby tools/test_evidence_register.rb
           ruby tools/test_digest.rb
+          ruby tools/test_check_proposal_paths.rb
 
       - name: Smoke test agent CLI
         run: |
