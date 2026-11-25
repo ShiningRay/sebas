@@ -156,7 +156,8 @@ module Sebas
 
       # 未写端口的 base_url 按 scheme 取默认（http→80 / https→443）：
       # 固定 443 会让环回 http://localhost 静默连 443 失败（CodeRabbit）。
-      private def endpoint_port(uri : URI) : Int32
+      # 公开给 spec 直接断言默认端口解析（CodeRabbit 复审：不靠连接失败侧写端口）。
+      def endpoint_port(uri : URI) : Int32
         uri.port || (uri.scheme == "https" ? 443 : 80)
       end
 
