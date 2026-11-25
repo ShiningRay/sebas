@@ -1413,6 +1413,51 @@ class CliTest < Minitest::Test
     end
   end
 
+# 被取代与被拒绝处置相同（关闭 not planned），但标签与回链不同：
+# 没有继任编号就无法从旧档案跳到新设计，等于断链。
+def test_triage_proposal_superseded_requires_successor
+  data = snapshot(issues: [issue(8, labels: ["proposal", "proposal:accepted-design"])])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    verdict = File.join(dir, "v.json")
+    File.write(verdict, JSON.generate({"decision" => "superseded", "body" => "方向被替换"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 1, status
+    assert_includes out, "superseded_by"
+  end
+end
+
+def test_triage_proposal_superseded_closes_and_links_successor
+  data = snapshot(issues: [issue(8, labels: ["proposal", "proposal:accepted-design"])])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    verdict = File.join(dir, "v.json")
+    File.write(verdict, JSON.generate({"decision" => "superseded", "body" => "方向被替换", "superseded_by" => 9}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 0, status
+    payload = JSON.parse(out)
+    actions = payload["actions"]
+    assert(actions.any? { |action| action["action"] == "add_label" && action["name"] == "proposal:superseded" })
+    assert(actions.any? { |action| action["action"] == "close" && action["reason"] == "not planned" })
+    assert_includes payload["comment"], "继任 Proposal：#9"
+  end
+end
+
+def test_triage_proposal_superseded_rejects_self_reference
+  data = snapshot(issues: [issue(8, labels: ["proposal"])])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    verdict = File.join(dir, "v.json")
+    File.write(verdict, JSON.generate({"decision" => "superseded", "superseded_by" => 8}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 1, status
+    assert_includes out, "自身"
+  end
+end
+
   def test_triage_proposal_rejects_untrusted_or_unbound_verdicts
     data = snapshot(issues: [issue(8, labels: ["proposal"])])
     Dir.mktmpdir do |dir|

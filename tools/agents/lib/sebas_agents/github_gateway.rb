@@ -33,6 +33,33 @@ module SebasAgents
       allow_write ? @runner.with_write(:remove_label) { @runner.run!(*call) } : @runner.run!(*call)
     end
 
+# Proposal 索引需要全部评论与置顶状态：分页取全，避免长讨论被截断。
+def issue_comments(number)
+  paginate("repos/#{@repo}/issues/#{number}/comments")
+end
+
+def pinned_comment(number)
+  raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
+  raw["pinned_comment"]
+end
+
+# 置顶走 GraphQL：gh 2.x CLI 没有 pin 子命令，且入参是评论 node_id。
+def pin_comment(comment_node_id, allow_write: false)
+  query = "mutation { pinIssueComment(input:{issueCommentId:\"#{comment_node_id}\"}) { clientMutationId } }"
+  call = ["gh", "api", "graphql", "-f", "query=#{query}"]
+  allow_write ? @runner.with_write(:pin_comment) { @runner.run!(*call) } : @runner.run!(*call)
+end
+
+def create_comment(number, body, allow_write: false)
+  call = ["gh", "api", "repos/#{@repo}/issues/#{number}/comments", "-f", "body=#{body}"]
+  allow_write ? @runner.with_write(:create_comment) { @runner.run!(*call) } : @runner.run!(*call)
+end
+
+def update_comment(comment_id, body, allow_write: false)
+  call = ["gh", "api", "-X", "PATCH", "repos/#{@repo}/issues/comments/#{comment_id}", "-f", "body=#{body}"]
+  allow_write ? @runner.with_write(:update_comment) { @runner.run!(*call) } : @runner.run!(*call)
+end
+
     # 回读确认：标签写入不是分布式事务，必须核对远端实际状态。
     def label_present?(number, label)
       raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")

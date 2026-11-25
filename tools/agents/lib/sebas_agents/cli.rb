@@ -48,6 +48,7 @@ module SebasAgents
       when "release" then run_release(argv.drop(1))
       when "verify" then run_verify(argv.drop(1))
       when "triage" then run_triage(argv.drop(1))
+      when "digest" then run_digest(argv.drop(1))
       when "mark-review" then run_mark_review(argv.drop(1))
       when "docs-check" then run_docs_check(argv.drop(1))
       when "release" then run_release(argv.drop(1))
@@ -542,6 +543,55 @@ module SebasAgents
       raise UsageError, "--verdict 文件不存在：#{path}"
     end
 
+# Proposal 处理：把散落的研判评论压成一条置顶索引。
+# 默认 dry-run；--apply 才写评论与置顶。人工摘要区在标记之后，工具永不覆盖。
+def run_digest(argv)
+  return help if argv.include?("--help") || argv.include?("-h")
+
+  options, (number,) = Argv.parse(argv, required: ["issue"])
+  target = parse_number(number, "issue")
+  snap = snapshot(options)
+  issue = snap.issue(target)
+  raise UsageError, "issue ###{number} 不在快照内" unless issue
+  raise UsageError, "###{target} 不是 Proposal（缺 proposal 标签）" unless issue.label?("proposal")
+
+  repo = claim_write_repo(snap, options)
+  gateway = GithubGateway.new(runner(options), repo: repo)
+  comments = gateway.issue_comments(target)
+  existing = Digest.existing(comments)
+  body = Digest.build(
+    {"number" => issue.number, "title" => issue.title},
+    comments,
+    existing_body: existing && existing["body"]
+  )
+
+  payload = {
+    "ok" => true,
+    "dry_run" => !options[:apply],
+    "issue" => issue.number,
+    "comment" => existing ? "update" : "create",
+    "judgments" => comments.count { |comment| Digest.status_of(comment["body"]) && Digest.jarvis?(comment["body"]) },
+    "pinned" => !gateway.pinned_comment(target).nil?
+  }
+
+  if options[:apply]
+    if existing
+      gateway.update_comment(existing["id"], body, allow_write: true)
+      comment = existing
+    else
+      comment = JSON.parse(gateway.create_comment(target, body, allow_write: true))
+    end
+    pinned = gateway.pinned_comment(target)
+    gateway.pin_comment(comment["node_id"], allow_write: true) if pinned.nil? || pinned["id"] != comment["id"]
+    payload["comment_id"] = comment["id"]
+    payload["pinned"] = true
+    payload["digest_url"] = comment["html_url"]
+  end
+
+  Output.emit(payload, out: @out)
+  EXIT_OK
+end
+
     def run_docs_check(argv)
       options, = Argv.parse(argv)
       # check_docs.rb 在 tools/ 下，不在 lib/；这里的相对层级是 tools/agents/lib/sebas_agents → tools/
@@ -657,6 +707,7 @@ module SebasAgents
 
         Triager / Scribe / Release Manager
           triage <issue> [--apply]
+          digest <issue>  Proposal 置顶索引：汇总研判时间线；--apply 才写远端
           docs-check
           release plan
           release verify <version> --root <artifact-dir>

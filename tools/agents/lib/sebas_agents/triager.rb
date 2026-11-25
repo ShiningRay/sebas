@@ -12,9 +12,11 @@ module SebasAgents
     # Triager 可产出的判定值：needs_model 提示的候选必须全部在此集合内。
     DECISIONS = %w[bug-confirmed needs-info accepted rejected duplicate escalate fixed by-design].freeze
     # Proposal 的状态维护：设计接受与排期分开，均须已有 Maintainer 的公开裁决。
-    PROPOSAL_DECISIONS = %w[needs-design accepted-design declined].freeze
+    PROPOSAL_DECISIONS = %w[needs-design accepted-design declined superseded].freeze
     PROPOSAL_STATUS_LABELS = PROPOSAL_DECISIONS.map { |decision| "proposal:#{decision}" }.freeze
     PROPOSAL_GENERAL_DECISIONS = %w[needs-info duplicate escalate].freeze
+    # 被取代须写明继任者：没有这个编号就无法回链，旧文档会变成断头档案。
+    PROPOSAL_SUPERSEDED_BY = /\Asuperseded_by\z/
     PROPOSAL_VERDICT_MARKER = "<!-- proposal-verdict: "
     DECISION_URL = %r{\Ahttps://github\.com/(?<repo>[^/]+/[^/]+)/(?<kind>issues|pull)/(?<number>\d+)#(?:(?<anchor>issuecomment|pullrequestreview)-(?<id>\d+)|discussion_r(?<discussion_id>\d+))\z}
 
@@ -92,7 +94,11 @@ module SebasAgents
 
     # 只生成元数据动作计划，不直接写 GitHub。裁决必须绑定当前 Proposal、作者与明确内容。
     def proposal_plan(issue, snapshot, decision, verdict)
-      validate_proposal_decision(issue, snapshot, decision, verdict) if %w[accepted-design declined].include?(decision)
+      if %w[accepted-design declined].include?(decision)
+        validate_proposal_decision(issue, snapshot, decision, verdict)
+      elsif decision == "superseded"
+        validate_superseded_by(issue, verdict)
+      end
 
       actions = [{"action" => "set_type", "type" => Model::TYPE_FEATURE}]
       actions.concat(PROPOSAL_STATUS_LABELS.map { |label| {"action" => "remove_label", "name" => label} })
@@ -100,7 +106,7 @@ module SebasAgents
       actions << {"action" => "remove_label", "name" => "question"} unless decision == "needs-design"
       actions << {"action" => "add_label", "name" => "proposal:#{decision}"}
       actions << {"action" => "add_label", "name" => "question"} if decision == "needs-design"
-      actions << {"action" => "close", "reason" => "not planned"} if decision == "declined"
+      actions << {"action" => "close", "reason" => "not planned"} if %w[declined superseded].include?(decision)
       {
         "ok" => true,
         "issue" => issue.number,
@@ -109,6 +115,13 @@ module SebasAgents
         "comment" => comment_for(decision, verdict),
         "needs_model" => []
       }
+    end
+
+    # 被取代必须有继任 Proposal 编号，且不能指向自己——否则档案断链成死胡同。
+    def validate_superseded_by(issue, verdict)
+      successor = verdict["superseded_by"].to_s
+      raise InvalidPlan, "superseded 需要 superseded_by（继任 Proposal 编号）" unless successor.match?(/\A\d+\z/)
+      raise InvalidPlan, "superseded_by 不能指向自身 ###{issue.number}" if successor.to_i == issue.number
     end
 
     def validate_proposal_decision(issue, snapshot, decision, verdict)
@@ -209,6 +222,8 @@ module SebasAgents
       body = "待模型补充研判正文" if body.empty?
       if %w[accepted-design declined].include?(decision)
         body = "#{body}\n\nMaintainer 裁决：#{verdict["maintainer_decision_url"]}"
+      elsif decision == "superseded"
+        body = "#{body}\n\n继任 Proposal：##{verdict["superseded_by"]}"
       end
       <<~MD
         <!-- status: #{decision} -->
