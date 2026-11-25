@@ -241,8 +241,10 @@ module Sebas
 
             conflict = <<-YAML
               providers:
-                p1: { base_url: https://a.example.com }
-                p2: { base_url: https://b.example.com }
+                p1:
+                  base_url: https://a.example.com
+                p2:
+                  base_url: https://b.example.com
               agents:
                 main: { provider: p1, provider_ref: p2, model: m }
               YAML
