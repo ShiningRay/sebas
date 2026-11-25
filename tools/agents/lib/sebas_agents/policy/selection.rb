@@ -316,6 +316,9 @@ module SebasAgents
       def exclusion_reason(issue)
         return "#{Model::HUMAN_LABEL} 等待人工" if issue.label?(Model::HUMAN_LABEL)
         return Model::INVALID_LABEL if issue.label?(Model::INVALID_LABEL)
+        # 与 in_progress_issues 同口径：Proposal 不是 Implementer 的工作对象，
+        # 即使带合法 work_package Automation 块也不得进入候选。
+        return "proposal 不进入 Implementer 选卡" if issue.label?("proposal")
         return "status=#{issue.status} 已认领" if issue.working?
 
         nil

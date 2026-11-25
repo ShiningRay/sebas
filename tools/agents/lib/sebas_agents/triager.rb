@@ -33,9 +33,11 @@ module SebasAgents
         verdict = verdict.transform_keys(&:to_s)
       end
 
-      if work_package_card?(issue)
+      if (automation = work_package_card?(issue))
         actions = []
-        actions << {"action" => "set_type", "type" => inferred_type(issue)} if issue.type.nil?
+        # 用同一份已校验的块推断 type，不另读 issue.kind：离线快照可显式覆盖
+        # automation 字段，两处读不同来源会得出不一致结论。
+        actions << {"action" => "set_type", "type" => inferred_type(automation)} if issue.type.nil?
         actions << {"action" => "add_assignee", "login" => MAINTAINER} if issue.assignees.empty?
         # 挂了 milestone 即已排期；新建 issue 默认 Backlog，需要推进到 Todo。
         # 未排期的工作包卡保持 Backlog，等 Maintainer 决定归宿。
@@ -188,27 +190,18 @@ module SebasAgents
       end
     end
 
-    # 已登记的工作包卡：有 Automation 块（kind 已明确），且不是 Proposal。
-    # plan 标签已废弃——是否已排期由 milestone 表达，是否可执行由 kind 表达，
-    # 是否需要研判由「有没有 Automation 块」表达。
+    # 已登记的工作包卡：返回通过结构校验的 Automation 块；无块返回 nil；
+    # 结构非法抛 InvalidPlan（显式拒绝，不静默放行）。
+    # 调用方必须用返回值做类型推断——不要另读 issue.kind。
     def work_package_card?(issue)
-      return false if issue.label?("proposal")
+      return nil if issue.label?("proposal")
 
-      automation = Policy::Dependencies.automation_for(issue)
-      return false if automation.nil?
-
-      # 有块不等于合法：缺 kind/order/depends_on/external 的块会由
-      # automation_for 抛 InvalidPlan，显式拒绝而不是静默放行。
-      true
+      Policy::Dependencies.automation_for(issue)
     end
 
-    # 存量 plan 卡没有 type 时按 kind 回填：父卡与人工卡是 Task，可执行卡是 Feature。
-    def inferred_type(issue)
-      kind = issue.kind
-      return Model::TYPE_TASK if %w[tracking manual design].include?(kind)
-      return Model::TYPE_FEATURE if kind == "work_package"
-
-      Model::TYPE_TASK
+    # type 由已校验的块推断：work_package 是 Feature，其余（tracking/manual/design）是 Task。
+    def inferred_type(automation)
+      automation["kind"] == "work_package" ? Model::TYPE_FEATURE : Model::TYPE_TASK
     end
 
     def comment_for(decision, verdict)

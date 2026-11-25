@@ -1627,6 +1627,17 @@ class CliTest < Minitest::Test
     assert_equal [%w[git push origin main]], runner.calls
   end
 
+# Proposal 带合法 work_package Automation 块也不得进入 Implementer 选卡：
+# 与 in_progress_issues 同口径，否则提案会被当作工作认领。
+def test_selection_excludes_proposal_even_with_valid_automation
+  block = "```json automation\n" \
+    "{\"schema\":1,\"kind\":\"work_package\",\"order\":[4,1],\"depends_on\":[],\"external\":[]}\n```\n"
+  data = snapshot(issues: [issue(8, body: block, labels: ["proposal"])])
+  action = select(data)
+  refute_equal "claim_issue", action.action
+  assert(action.excluded.any? { |row| row["reason"].to_s.include?("proposal") }, action.excluded.inspect)
+end
+
   # 有 Automation 块但结构残缺时不能短路成工作包：会按坏元数据写 type/assignee。
   # 也不能静默降级为普通研判——必须显式拒绝。
   def test_triage_rejects_malformed_automation_block
