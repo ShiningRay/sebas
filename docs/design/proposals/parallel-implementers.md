@@ -1,10 +1,11 @@
 # 多任务并行开发：每卡独立租约与集中合并收口（Proposal）
 
-> 状态：**Proposal · 定稿候选，未定稿**（2026-11-24 整理自 issue #190 及其 Triager 研判，当前 `proposal:needs-design`）。
+> 状态：**accepted**（2026-11-25 定稿，[裁决](https://github.com/ShiningRay/sebas/issues/190#issuecomment-7166284273)）；实现排期未定，工作包拆分由排期指令另行决定。
+> 修订记录：2026-11-24 初稿；2026-11-25 定稿 —— §10.1 五项按裁决落定，§1 现状表订正并行轨一行。
 > 关联：讨论与裁决理由的事实源是 [#190](https://github.com/ShiningRay/sebas/issues/190)；单卡现状契约见
 > [implementer-loop.md](../process/implementer-loop.md)；恢复、迁移与验证见续篇 [parallel-implementers-recovery.md](parallel-implementers-recovery.md)。
 > 本文职责：把 #190 的建议方案细化到可实现、可验证的程度，并列出裁决所需的选项与代价。
-> 本文合入只是设计快照入库，不代表设计定稿或排期批准；工作包拆分由排期指令另行决定。
+> 设计已于 2026-11-25 定稿；排期与工作包拆分仍由 Maintainer 的排期指令另行决定。
 
 ## 1. 背景与问题
 
@@ -24,7 +25,7 @@
 | 认领写路径 | `CLI#run_claim` | 本地记录 `claiming` → 写标签 → 回读 → `claimed`；未确认则 `aborted` 并记 `label_written` |
 | 候选已算好 | `Policy::Selection#select_new_card` | 已按 milestone 产出有序候选与逐卡排除原因，但只返回 `order` 最小的一张 |
 | 无只读多候选入口 | `CLI#dispatch` | 选卡入口只有 `next`；`plan` 是 `release` 的子命令 |
-| 并行轨不参与选卡 | `Policy::Milestones.active` | 只计算 `track=main` |
+| 并行轨需回退才参与 | `Policy::Milestones.active`、`Selection#select_parallel` | 先算 `track=main`；主线评估为 `blocked` 时按序号回退到 `track=parallel`（2026-11-25 起） |
 
 文档层是同一口径：[implementer-loop.md](../process/implementer-loop.md) §1 不变量 1、[implementer.md](../process/implementer.md) 的「串行原则」。[development-workflow.md](../process/development-workflow.md) §2 的「并行轨」指 milestone 的 `track=parallel`，与实现并发无关。
 
@@ -70,7 +71,7 @@ GitHub 快照 ─► Plan（只读）：leases / candidates / excluded / verify_
 | 部件 | 职责 | 形态 |
 |---|---|---|
 | Plan | 算候选、算每张租约的下一步动作、报排除原因与队列深度 | `policy/` 下的纯函数，无副作用 |
-| Lease | 一张卡的所有权凭据与执行上下文 | 本地 `.sebas-agent/runs/<issue>.json`，加 GitHub 侧凭据（§5，Q1 待裁决） |
+| Lease | 一张卡的所有权凭据与执行上下文 | 本地 `.sebas-agent/runs/<issue>.json`，加 GitHub 侧凭据（§5，已定：协调评论） |
 | Worker | 实现一张卡：编码、修 review 与 CI、备验收材料 | 一个 Implementer Harness 实例，只持一个租约 |
 | Coordinator | 唯一写者：claim、派发、合并、unclaim | 串行执行 `sebas-process` 写命令的进程 |
 
@@ -95,7 +96,7 @@ ruby tools/sebas-process plan --capacity 2   # 只读：不写 GitHub，也不�
 1. 全局合法性：milestone 元数据（`Milestones.normalize`）。非法即整体 `invalid_plan`，与现状一致。
 2. 逐租约对账：对每份租约记录算一个动作（§4.1）。任一租约 `invalid_plan` 即整体拒绝，不确定的所有权不能被其他租约的进度掩盖。
 3. 逐轨算新卡候选：复用 `select_new_card` 的过滤与排序。已有 open PR、`needs:human`、`metadata:invalid`、已认领、缺 Automation、`tracking` 与 `manual`、依赖未满足，各有排除原因。
-4. 冲突预算过滤：候选之间、候选与在途租约之间做 scope 重叠检查（§6）。被过滤的候选进 `excluded`，原因写明与哪张卡重叠。
+4. 冲突预算过滤：候选之间、候选与在途租约之间做 scope 重叠检查（§6）；在途租约缺 `scope`，或同批候选含缺 `scope` 的卡时，按 §6.2 只允许缺 `scope` 的卡独占容量，其余候选全部进 `excluded`。
 5. 补位：在途租约数小于 `capacity` 时，按 `order` 取候选填满空位。
 
 依赖在认领时冻结，不需要新机制：候选的 `depends_on` 指向在途卡时，该卡尚未 `completed`，`Dependencies.evaluate_issue_dependency` 已判 `blocked`。要做的是用测试锁定「同批不得互相依赖」。
@@ -159,7 +160,7 @@ ruby tools/sebas-process plan --capacity 2   # 只读：不写 GitHub，也不�
 
 `phase` 只对应写入点，不表达「正在做什么」：`claiming` → `claimed` → `pr_open` → `merging` → `released`，异常态 `aborted` 与 `paused`。「下一步做什么」一律由快照推导（§4.1），不存进记录，避免本地状态与 GitHub 分叉。
 
-### 5.2 GitHub 侧凭据：Q1 待裁决
+### 5.2 GitHub 侧凭据：Q1 = B（协调评论）
 
 本地记录只在一台机器上可见，而 implementer-loop.md §1 不变量 2 规定 GitHub 是事实源。「谁持有租约」因此需要一份 GitHub 上可读的凭据。三个候选位置：
 
@@ -179,7 +180,11 @@ A 与 B 的凭据内容相同：`lease_id`、`issue`、`branch`、`base_sha`、`
 | 失效模式 | 正文被人工或 workflow 覆盖后所有权不可证 | 评论被删改，或标签与评论不一致 | 换一台机器即 `invalid_plan` |
 | 立场 | #190 列为候选；Triager 不建议 | #190 列为候选；Triager 建议 | #190 的 Q1 列为候选，正文未展开；Triager 未评 |
 
-三个选项共同的部分，无论怎么裁决都要做：`agent:in-progress` 保留为人类可见信号，并继续作为依赖判定的输入（`evaluate_issue_dependency` 靠它发现「已关闭但仍带认领」）。标签本身永不作为所有权证明；有标签而无有效凭据即 `invalid_plan`。
+**裁决：B 协调评论**（2026-11-25）。理由是 A 与 Evidence 共用正文写入对象、存在丢失更新窗口；
+C 换机即失效且标签不能证明所有权。B 的代价（新增 `post_comment`/`update_comment` 写意图、
+`.github/agents.yml` 身份白名单）已确认接受。
+
+共同部分，无论选哪个都要做：`agent:in-progress` 保留为人类可见信号，并继续作为依赖判定的输入（`evaluate_issue_dependency` 靠它发现「已关闭但仍带认领」）。标签本身永不作为所有权证明；有标签而无有效凭据即 `invalid_plan`。
 
 选 B 时的写入顺序。两步写入没有事务，顺序决定崩溃之后能否幂等补全：
 
@@ -223,21 +228,24 @@ Automation 块新增可选数组字段，值为路径前缀：
 - 冲突判定：两个 scope 里任一路径前缀互相包含即冲突。`src/` 与 `src/bus/x.cr` 冲突，`src/bus/` 与 `src/keys/` 不冲突。判定从保守，不猜测「同目录不同文件能否共存」。
 - 共享文件靠声明进入预算：索引、`docs/design/plan/`、`.github/workflows/`、`src/store/schema.cr` 这类文件，谁要改谁就得写进自己的 `scope`，于是改同一文件的卡自然不并行。
 
-### 6.2 是否强制：Q4 待裁决
+### 6.2 是否强制：Q4 = A（强制）
 
 | | 强制：缺 `scope` 不可并行 | 不强制：缺 `scope` 可人工确认并行 |
 |---|---|---|
-| 规则 | 缺 `scope` 的卡只在没有其他在途租约时才能认领 | 缺 `scope` 的卡经人工逐次确认后可与其他租约并行 |
+| 规则 | 缺 `scope` 的卡只在没有其他在途租约时才能认领；反向同样成立——任一在途租约缺 `scope` 时不认领任何新卡；同批候选含缺 `scope` 的卡时，本批只认领该卡。三条合起来是「缺 `scope` 的卡独占全部容量」 | 缺 `scope` 的卡经人工逐次确认后可与其他租约并行 |
 | 对存量卡 | 容量为 1 时行为不变，不必补元数据；要并行才补 `scope` | 存量卡可直接并行 |
 | 漏报面 | 漏写共享文件仍会漏报，但不会被「没声明」放大 | 安全边界取决于人的记性 |
-| 立场 | Triager 建议；与 triager.md「不猜」的口径一致 | #190 原文列为可选项 |
+| 立场 | **裁决采纳**：强制 | 未采纳；安全边界不押在人的记性上 |
 
-### 6.3 CHANGELOG：Q4 的子项
+### 6.3 CHANGELOG：Q4 子项 = 合并队列统一追加
 
-[scribe.md](../process/scribe.md) §5 要求每个 PR 往 `[Unreleased]` 写一行。按 §6.1 的规则，任何两张在途 PR 都会在 `CHANGELOG.md` 上重叠，也就都不能并行。处置二选一，待裁决：
+[scribe.md](../process/scribe.md) §5 要求每个 PR 往 `[Unreleased]` 写一行。按 §6.1 的规则，任何两张在途 PR 都会在 `CHANGELOG.md` 上重叠，也就都不能并行。处置二选一，已裁决选 2：
 
 1. worker 照旧自写 CHANGELOG，把该文件排除出冲突预算，接受 `strict=true` 下后合并者 `update-branch` 时的文本冲突由 worker 解决并重跑 CI。
 2. CHANGELOG 改由合并队列在合并时统一追加，worker 不改，PR 正文携带待追加条目。两张 PR 可以完全不重叠，但这改变了 scribe.md §5 的约定。
+
+**裁决：选 2**（2026-11-25）。CHANGELOG 若留在 scope 预算内，任意两张在途 PR 都必然重叠，
+等于取消并行；scribe.md §5 须随实现工作包同步修订，并规定条目以 PR 引用为唯一标识（幂等与核验判据依赖它，见 §7.2）。
 
 ## 7. 等待、验收背压与集中合并
 
@@ -257,6 +265,7 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 → verify merge <pr> <issue> --pre，退出码 0
 → Verifier 核验与终验（独立进程），结论为「通过」
 → BEHIND 则 update-branch，等 CI 与 verify.yml 重跑
+→ CHANGELOG 追加（§6.3 裁决）：PR 正文携带待追加条目，且 `[Unreleased]` 尚无以本 PR 引用标识的条目时，coordinator 把条目（自带 PR 引用，§6.3 与 scribe.md §5 的契约）写入 CHANGELOG.md 的 `[Unreleased]` 推到租约分支；head 因此改变按下一行处理
 → head 因此改变时：§7.5 未获裁决，或无法证明只多了同步提交，就回到核验一步重做
 → 合并前再读一次目标分支，仍是 main 才 squash 合并：带 --match-head-commit 绑定已核验的 head；head 已变则 GitHub 拒绝合并，回到 verify merge --pre 重做核验
 → 远端复核已合并且目标分支仍是 main；不是就停下这张卡，转人工
@@ -265,6 +274,8 @@ worker 不合并。合并队列由 coordinator 串行处理，每个 PR 走完�
 ```
 
 归属校验与合并之间有时间差。核验通过之后、合并之前，PR 若又收到提交，照旧合并就是把没核验过的提交合进去。`gh pr merge --match-head-commit` 让 GitHub 在 head 不等于给定提交时拒绝合并。被拒之后一律重做核验与终验，再用新的 head 绑定，不拿旧结论去套新提交。
+
+CHANGELOG 追加只在合并队列发生（§6.3 裁决）：worker 不写 CHANGELOG，条目由 PR 正文携带，coordinator 在 update-branch 之后、绑定核验 head 之前写入并推送到租约分支，追加提交与其他提交一样过 CI 与核验。幂等与核验判据都按条目自带的 PR 引用识别，不按文本比较：`[Unreleased]` 已有标记本 PR 的条目即跳过追加，重试与重放都不产生重复条目；文本相同的不同 PR 各写各的引用行，互不吞并；核验时按同一引用核对「本 PR 的条目」已写入，漏写即本卡不得合并。追加位置在 update-branch 之后，保证追加提交落在新鲜 base 上，不和 main 上新并入的 `[Unreleased]` 条目产生文本冲突。条目格式（PR 引用的写法）由 scribe.md §5 的同步修订规定，实现工作包须与本文一致。
 
 head 绑定管不到目标分支。`gh pr merge` 没有绑定 base 的参数，核验之后有人把 PR 的基础分支改到别处，head 不变也会照合，合进去的分支不触发 main 上的 CI，等待就没有尽头。所以归属校验、合并前、合并后各读一次目标分支；这只能缩小窗口，关不掉它。
 
@@ -285,12 +296,15 @@ head 绑定管不到目标分支。`gh pr merge` 没有绑定 base 的参数，�
 | 风险 | 长寿命 PR 堵队 | 补偿路径未经故障注入验证 |
 | 立场 | #190 建议集中合并 | #190 的 Q6 提出放宽留待实测后决定；Triager 未评 |
 
-### 7.4 验收背压：Q7 与 Q8 待裁决
+### 7.4 验收背压：Q7 与 Q8 = 验收串行
 
 开发并行之后，验收若仍是单队列，加 worker 只会堆 PR。Triager 建议开发并行、合并与独立验收仍单队列，由 `plan` 报队列深度。两个选项：
 
 - 验收串行：Verifier 核验与终验也由 coordinator 按队首逐张发起。实际容量上限等于 Verifier 吞吐。
 - 验收并行、合并串行：核验与终验只读，可对多张 `merge_ready` 的 PR 并行发起，只有合并走队列。需另设 Verifier 并发上限，`有条件通过` 仍交 Maintainer。
+
+**裁决：验收串行**（2026-11-25）。核验与终验虽只读，但「有条件通过」仍要回流 Maintainer，
+并行收益被人工环节吃掉；待 Verifier 吞吐成为实测瓶颈再评估放宽。
 
 Evidence 登记本身按 issue 与 PR 各写各的：登记脚本只改本 issue 的评论与正文块，跨 PR 的覆盖或错绑在结构上不会发生。跨 PR 的真实耦合是 §7.2 的后两条。
 
@@ -320,19 +334,20 @@ Evidence 登记本身按 issue 与 PR 各写各的：登记脚本只改本 issue
 | Actions 多 runner | 隔离好，但远程 worktree、恢复、成本与权限管理复杂；留作后续执行后端 |
 | 维持串行 | 最稳妥，当前单卡容量未饱和时收益不明显。若裁决维持，只需补一句「人工多 worktree 不受自动调度支持」 |
 
-## 10. 待裁决项
+## 10. 裁决项
 
-「立场」列记录 #190 原文与 Triager 研判的既有表态，不是结论。裁决请回 #190 的 thread，状态标签由 Triager 按证据维护。
+§10.1 五项已于 2026-11-25 落定（勾选见 [#190 评论](https://github.com/ShiningRay/sebas/issues/190#issuecomment-7164319568)，
+裁决记录见[裁决评论](https://github.com/ShiningRay/sebas/issues/190#issuecomment-7166284273)）。§10.2 与 §10.3 仍待确认或待定。
 
-### 10.1 须先裁决的四项
+### 10.1 须先裁决的四项（已裁决 2026-11-25）
 
-| 编号 | 问题 | 选项 | 裁决 |
+| 编号 | 问题 | 选项 | 裁决（[来源](https://github.com/ShiningRay/sebas/issues/190#issuecomment-7164319568)） |
 |---|---|---|---|
-| Q1 | 租约的 GitHub 侧凭据放哪 | A 正文块 / B 协调评论 / C 仅本地记录与标签 | 待定 |
-| Q4 | `scope` 是否强制 | 强制，缺则不可并行 / 不强制，人工确认 | 待定 |
-| Q4 子项 | CHANGELOG 写入时机 | worker 自写并接受同步冲突 / 合并队列统一追加 | 待定 |
-| Q7、Q8 | 验收是否并行 | 验收串行 / 验收并行、合并串行 | 待定 |
-| Q10 | 迁移方式 | 排空在途卡后切换 / 搬迁旧记录并双读一个版本 | 待定 |
+| Q1 | 租约的 GitHub 侧凭据放哪 | A 正文块 / B 协调评论 / C 仅本地记录与标签 | **B** |
+| Q4 | `scope` 是否强制 | 强制，缺则不可并行 / 不强制，人工确认 | **强制** |
+| Q4 子项 | CHANGELOG 写入时机 | worker 自写并接受同步冲突 / 合并队列统一追加 | **合并队列统一追加** |
+| Q7、Q8 | 验收是否并行 | 验收串行 / 验收并行、合并串行 | **验收串行** |
+| Q10 | 迁移方式 | 排空在途卡后切换 / 搬迁旧记录并双读一个版本 | **搬迁并双读一版** |
 
 ### 10.2 可按默认值走、仍需确认的六项
 
