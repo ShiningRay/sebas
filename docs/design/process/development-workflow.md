@@ -57,7 +57,7 @@ M0–M7 的期划分已落成 GitHub milestone：
 2. **里程碑内部按 DAG 推进**，不按 issue 编号顺序。
    依赖关系见 [plan/schedule/](../plan/schedule/) 的 B.1 DAG。
 3. **卡片开工前过三道闸**：
-   - 在 active milestone 内（或属于被批准的并行轨）
+   - 在 active milestone 内（或属于被批准的并行轨；主线无就绪卡时才调度并行轨）
    - DAG 上前置卡已全部关闭
    - 外部依赖已就绪（E.1 系列账号配置等）
 

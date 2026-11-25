@@ -78,10 +78,28 @@ module SebasAgents
         when :idle
           return action("idle", observed, "所有主线 milestone 均已收口")
         when :handoff_release
+          # 主线 open 卡已清 = 该进发版门禁。这里不能跑去并行轨，否则发版收口被永久跳过。
           return action("handoff_release", observed, "主线工作卡已清、仍有 open milestone，进入门禁/发版收口")
         end
 
-        select_new_card(milestone, snapshot, observed)
+        main_action = evaluate_milestone(milestone, snapshot, observed, "active 主线")
+        # 只有「暂时没有就绪卡」才允许并行轨补位。
+        # invalid_plan 是配置错误，必须暴露给 Maintainer，不能靠换轨掩盖。
+        return main_action unless main_action.action == "blocked"
+
+        select_parallel(snapshot, milestones, observed) || main_action
+      end
+
+      # 在并行轨上按序号找第一条能选出卡的轨；都无就绪卡则返回 nil，交给调用方决定。
+      # blocked 可以继续试下一轨（只是这条轨暂无可做卡），
+      # 但 invalid_plan 是配置错误，必须立即上报——跳过它会掩盖非法依赖图。
+      def select_parallel(snapshot, milestones, observed)
+        Milestones.parallel_tracks(milestones, open_issue_counts: open_counts(snapshot, milestones)).each do |track|
+          result = evaluate_milestone(track, snapshot, observed, "并行轨")
+          return result unless result.action == "blocked"
+        end
+
+        nil
       end
 
       # 以实际 open 卡计数，避免 milestone.open_issues 缓存滞后导致误判收口。
@@ -179,7 +197,7 @@ module SebasAgents
         action("resume_issue", observed, reason, issue: issue.number, milestone: issue.milestone)
       end
 
-      def select_new_card(milestone, snapshot, observed)
+      def evaluate_milestone(milestone, snapshot, observed, label)
         excluded = []
         candidates = []
         # 已被任意 open PR 关联的卡不得再认领（§3.3 第 2 步）。
@@ -237,13 +255,13 @@ module SebasAgents
 
         ready = evaluated.select { |_issue, result| result.ready? }.map(&:first)
         if ready.empty?
-          reason = candidates.empty? ? "active 主线内无可执行工作包（元数据未补齐）" : "候选均被前置阻塞"
+          reason = candidates.empty? ? "#{label}内无可执行工作包（元数据未补齐）" : "#{label}内候选均被前置阻塞"
           return action("blocked", observed, reason, milestone: milestone.number,
             excluded: excluded, metadata_gaps: metadata_gaps(milestone, snapshot))
         end
 
         chosen = ready.min_by { |issue| issue.automation["order"] }
-        action("claim_issue", observed, "active 主线内无前置阻塞的可执行工作包中计划顺序最小",
+        action("claim_issue", observed, "#{label}内无前置阻塞的可执行工作包中计划顺序最小",
           milestone: milestone.number, issue: chosen.number, excluded: excluded)
       end
 
@@ -318,7 +336,7 @@ module SebasAgents
         return Model::INVALID_LABEL if issue.label?(Model::INVALID_LABEL)
         # 与 in_progress_issues 同口径：Proposal 不是 Implementer 的工作对象，
         # 即使带合法 work_package Automation 块也不得进入候选。
-        return "proposal 不进入 Implementer 选卡" if issue.label?("proposal")
+        return "proposal 不进入 Implementer 选卡" if issue.proposal?
         return "status=#{issue.status} 已认领" if issue.working?
 
         nil

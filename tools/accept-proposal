@@ -229,7 +229,7 @@ module AcceptProposal
     end
     puts "裁决评论："
     puts verdict_comment(reason, milestone: milestone).lines.map { |l| "    #{l}" }.join
-    puts "随后登记证据 marker、清理旧状态标签、加 #{STATUS_LABEL}、set_type Feature，"
+    puts "随后登记证据 marker、清理旧状态标签、加 #{STATUS_LABEL}、set_type Proposal（已是则跳过），"
     puts "并发一条 status 评论。实现工作包由 Scribe 按指令另行拆解。"
   end
 

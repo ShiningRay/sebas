@@ -588,7 +588,106 @@ track: main
     assert_equal "handoff_release", select(data).action
   end
 
-  def test_excluded_lists_every_blocked_candidate
+# 并行轨回退：主线有 open 卡但无一张就绪时，才允许并行轨补位。
+  def test_falls_back_to_parallel_track_when_main_blocked
+    data = snapshot(
+      issues: [
+        # 主线只有 tracking 卡（不可认领）→ main 评估为 blocked
+        issue(1, body: automation(kind: "tracking", order: [4, 1])),
+        # 并行轨有可执行卡
+        issue(9, milestone: 1, body: automation(order: [4, 1]))
+      ],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 1),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+      ]
+    )
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 9, action.issue
+    assert_equal 1, action.milestone
+    assert_includes action.reason, "并行轨"
+  end
+
+  # 主线仍有就绪卡时，并行轨不得抢位。
+  def test_main_ready_card_beats_parallel_track
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(order: [4, 1])),
+        issue(9, milestone: 1, body: automation(order: [4, 1]))
+      ],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 1),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+      ]
+    )
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 1, action.issue
+    assert_equal 2, action.milestone
+  end
+
+  # 主线清空要进发版门禁，不能被并行轨截走。
+  def test_handoff_release_is_not_hijacked_by_parallel_track
+    data = snapshot(
+      issues: [issue(9, milestone: 1, body: automation(order: [4, 1]))],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 0),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+      ]
+    )
+    assert_equal "handoff_release", select(data).action
+  end
+
+  # 并行轨也无卡可做时，仍报主线的 blocked，不吞掉原始原因。
+  def test_blocked_reported_when_parallel_track_also_empty
+    data = snapshot(
+      issues: [issue(1, body: automation(kind: "manual", order: [4, 1]))],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 1),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+      ]
+    )
+    action = select(data)
+    assert_equal "blocked", action.action
+    assert_equal 2, action.milestone
+    assert_includes action.reason, "active 主线"
+  end
+
+  # 配置错误必须暴露，不能靠切到并行轨掩盖。
+  def test_invalid_main_is_not_masked_by_parallel_track
+    data = snapshot(
+      issues: [
+        issue(1, body: automation(order: [4, 1]), blocked_by: [99]),
+        issue(9, milestone: 1, body: automation(order: [4, 1]))
+      ],
+      milestones: [
+        milestone(number: 2, order: "4", track: "main", open_issues: 1),
+        milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+      ]
+    )
+    action = select(data)
+    assert_equal "invalid_plan", action.action
+  end
+
+# 并行轨自己的 invalid_plan 也不能被跳过：它同样是配置错误。
+def test_invalid_parallel_track_is_reported_not_skipped
+  data = snapshot(
+    issues: [
+      issue(1, body: automation(kind: "manual", order: [4, 1])),
+      # 并行轨依赖快照外的前置 → validate_graph 判非法
+      issue(9, milestone: 1, body: automation(order: [4, 1]), blocked_by: [99])
+    ],
+    milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 1),
+      milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+    ]
+  )
+  action = select(data)
+  assert_equal "invalid_plan", action.action
+end
+
+def test_excluded_lists_every_blocked_candidate
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1], depends_on: [9]), blocked_by: [9]),
       issue(9, body: automation(order: [4, 9]), blocked_by: [])
@@ -1327,10 +1426,65 @@ class CliTest < Minitest::Test
       assert_equal 0, status
       actions = JSON.parse(out)["actions"]
       assert(actions.any? { |action| action["action"] == "add_label" && action["name"] == "proposal:needs-design" })
-      assert(actions.any? { |action| action["action"] == "set_type" && action["type"] == "Feature" })
+      assert(actions.any? { |action| action["action"] == "set_type" && action["type"] == "Proposal" })
       refute(actions.any? { |action| %w[add_assignee suggest_milestone close].include?(action["action"]) })
     end
   end
+
+# 存量卡迁移期：type=Proposal 但标签已清，仍须走 Proposal 流程。
+def test_proposal_detected_by_type_without_label
+  data = snapshot(issues: [issue(8, labels: ["needs-triage"], type: "Proposal")])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({"decision" => "needs-design", "body" => "待确认"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 0, status
+    assert_includes out, "proposal:needs-design"
+  end
+end
+
+# Proposal 不能走 accepted：那条路径会加 enhancement 并指派，语义不对。
+def test_accepted_rejects_proposal_type
+  data = snapshot(issues: [issue(8, labels: ["proposal"], type: "Proposal")])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({"decision" => "accepted"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 1, status
+    assert_includes out, "accepted-design"
+  end
+end
+
+# 已是 Proposal 的卡不再重复写 type（避免无谓 API 调用）。
+def test_proposal_plan_skips_redundant_set_type
+  data = snapshot(issues: [issue(8, labels: ["proposal"], type: "Proposal")])
+  Dir.mktmpdir do |dir|
+    snap = File.join(dir, "s.json")
+    verdict = File.join(dir, "v.json")
+    File.write(snap, JSON.generate(data), encoding: "UTF-8")
+    File.write(verdict, JSON.generate({"decision" => "needs-design", "body" => "待确认"}), encoding: "UTF-8")
+    status, out, = run_cli(["triage", "8", "--snapshot", snap, "--verdict", verdict])
+    assert_equal 0, status
+    actions = JSON.parse(out)["actions"]
+    refute(actions.any? { |action| action["action"] == "set_type" })
+  end
+end
+
+# 选卡排除不能只认标签：type=Proposal 的卡即使带 work_package 块也不得进候选。
+def test_selection_excludes_type_proposal_without_label
+  data = snapshot(issues: [
+    issue(1, labels: [], type: "Proposal", body: automation(order: [4, 1])),
+    issue(2, labels: [], body: automation(order: [4, 2]))
+  ])
+  action = select(data)
+  assert_equal "claim_issue", action.action
+  assert_equal 2, action.issue
+  assert(action.excluded.any? { |item| item["issue"] == 1 && item["reason"].include?("proposal") })
+end
 
   def proposal_verdict(data, dir, decision: "accepted-design", url: nil)
     url ||= "https://github.com/o/r/issues/8#issuecomment-123"
