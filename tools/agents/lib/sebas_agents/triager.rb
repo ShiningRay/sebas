@@ -249,8 +249,9 @@ module SebasAgents
     end
 
     # 把「需要人拍板的问题」渲染成可直接勾选的清单。
-    # GitHub 渲染的 issue 评论支持 `- [ ]` 任务列表，但**只读**：勾选不会回写，
-    # Maintainer 仍需用评论或裁决指令表达选择。这里只是让选项一眼可见、无需另找。
+    # GitHub 允许勾选评论里的 `- [ ]` 任务列表（会改写该评论），但工具不读取、
+    # 也不依赖勾选结果；Maintainer 的选择仍须用评论或裁决指令表达。
+    # 这里只是让选项一眼可见、无需另找。
     #
     # 输入形状（verdict["questions"]）：
     #   [{"q" => "问题", "why" => "为何需要人定", "options" => ["A …", "B …"], "recommend" => 0}]
@@ -270,7 +271,7 @@ module SebasAgents
       end
       return "" if blocks.all?(&:nil?)
 
-      ([QUESTIONS_HEADING, "", "> 勾选不会回写。定了哪项，回一条评论或在裁决里写明编号即可。", ""] + blocks.compact).join("\n")
+      ([QUESTIONS_HEADING, "", "> 勾选只改这条评论，工具读不到。定了哪项，回一条评论或在裁决里写明编号即可。", ""] + blocks.compact).join("\n")
     end
 
     def render_question(item, number:)

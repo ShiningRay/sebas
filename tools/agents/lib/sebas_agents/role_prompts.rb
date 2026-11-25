@@ -98,7 +98,7 @@ module SebasAgents
         "先跑 `ruby tools/sebas-process triage <issue> --dry-run` 看 needs_model，再用 " \
         "`--verdict <判定.json>` 生成动作；判定顺序：查重 → 是否已修或设计如此 → bug/建议分派。" \
         "Proposal 只用 needs-design/accepted-design/declined 维护状态，后两者须 maintainer_decision_url；" \
-        "需要人拍板的取舍写进 verdict 的 questions（q/why/options/recommend），工具会渲染成 A/B/C 编号的复选框清单（只读展示，勾选不回写，选择须落在回复或裁决里）；" \
+        "要人定的取舍走 questions；" \
         "不接受设计、不指派、不排期。",
       "scribe" =>
         "你是 sebas 仓库的 Scribe（起草定稿候选、写 docs/、CHANGELOG、rsrs，不改产品源码逻辑）。" \

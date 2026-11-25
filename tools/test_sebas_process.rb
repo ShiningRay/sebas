@@ -1580,8 +1580,8 @@ def test_triage_renders_checkbox_options_for_maintainer_questions
   assert_includes comment, "- [ ] **A** 正文块"
   assert_includes comment, "- [ ] **B** 协调评论"
   assert_includes comment, "- [ ] **C** 仅本地记录与标签（推荐）"
-  # 勾选不会回写，这一点必须写明，否则 Maintainer 会以为勾了就生效。
-  assert_includes comment, "勾选不会回写"
+  # 勾选只改评论、工具读不到，这一点必须写明，否则会以为勾了就生效。
+  assert_includes comment, "勾选只改这条评论，工具读不到"
 end
 
 # 没有 questions 时不应凭空多出一个小节。
