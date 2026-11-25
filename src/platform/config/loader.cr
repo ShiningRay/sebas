@@ -1,5 +1,6 @@
 require "yaml"
 require "../../log"
+require "../../providers/providers" # validate_providers 查规格表（缺省 base_url 回退合法性）
 require "./schema"
 require "../../sessions/scheduling/policy"
 
@@ -77,15 +78,20 @@ module Sebas
           errors
         end
 
-        # provider 层校验（#214）：protocol 枚举、agent.provider 悬空引用、
-        # provider 与 provider_ref 双写冲突（fail-closed 先验后换）
+        # provider 层校验（#214）：protocol 枚举、base_url 可解析（缺省时须规格表
+        # 兜底——否则装配期 ProviderResolveError 逃逸 reload 救援、留下半新半旧
+        # 状态，先验后换必须在 CURRENT.set 与密钥迁移前拒掉，CodeRabbit）、
+        # agent.provider 悬空引用、provider 与 provider_ref 双写冲突
         private def validate_providers(config : Config, errors : Array(String)) : Nil
           config.providers.each do |name, pcfg|
             unless {"openai-compatible", "anthropic"}.includes?(pcfg.protocol)
               errors << "providers.#{name}.protocol must be openai-compatible or anthropic (got '#{pcfg.protocol}')"
             end
-            if base = pcfg.base_url
-              errors << "providers.#{name}.base_url must not be empty" if base.strip.empty?
+            base = pcfg.base_url
+            if base.nil? || base.strip.empty?
+              unless Providers.spec_for(name)
+                errors << "providers.#{name}: base_url missing and '#{name}' is not a known vendor (set providers.#{name}.base_url)"
+              end
             end
           end
           config.agents.each do |name, agent|

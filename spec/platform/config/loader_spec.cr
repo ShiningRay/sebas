@@ -199,6 +199,31 @@ module Sebas
             Loader.migration_hints(config).should be_empty
           end
 
+          it "base_url 缺省时须规格表可解析：已知厂商回退合法，未知厂商 fail-closed（CodeRabbit：防 reload 半应用态）" do
+            # 已知厂商缺省 base_url：规格表兜底，合法
+            config = Loader.from_content(<<-YAML
+              providers:
+                deepseek:
+                  api_key: k
+              agents:
+                main: { provider: deepseek, model: deepseek-chat }
+              YAML
+            )
+            Loader.validate(config).should be_empty
+
+            # 未知厂商缺省 base_url：装配期必然抛 ProviderResolveError，校验期拒绝
+            bad = <<-YAML
+              providers:
+                custom-relay:
+                  api_key: k
+              agents:
+                main: { provider: custom-relay, model: m1 }
+              YAML
+            expect_raises(ValidationError, /base_url missing and 'custom-relay' is not a known vendor/) do
+              Loader.from_content(bad)
+            end
+          end
+
           it "protocol 默认 openai-compatible，非法值 fail-closed" do
             config = Loader.from_content(<<-YAML
               providers:

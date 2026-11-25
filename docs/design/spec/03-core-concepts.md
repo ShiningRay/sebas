@@ -121,4 +121,9 @@ gateway:
   collaboration: { max_hops: 4 }     # agent 间传递上限（防环），见 §8.1
 ```
 
-要点：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。配置加载沿用 autobot 的 `${VAR}` 展开 + chmod 0o600（autobot A 级件：`config/loader.cr` 机制），但**敏感值改为 keyring 引用**（`*_ref: keyring:<namespace>/<key>`，§10.2）。provider 层（#214）：厂商级密钥 / base_url / protocol 独立于 agent，`agents.<name>.provider` 引用 `providers.<name>`，model 为裸模型名；旧形状（`agents.<name>.api_key` + `<provider>/<model>` 前缀推断、`provider_ref` 兼容字段）仍可加载并在启动时输出迁移指引，不静默失败。
+要点：
+
+- **渠道配置**：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。
+- **敏感值**：配置加载沿用 autobot 的 `${VAR}` 展开 + chmod 0o600（autobot A 级件：`config/loader.cr` 机制），但敏感值改为 keyring 引用（`*_ref: keyring:<namespace>/<key>`，§10.2）。
+- **provider 配置**（#214）：厂商级密钥 / base_url / protocol 独立于 agent，`agents.<name>.provider` 引用 `providers.<name>`，model 为裸模型名。
+- **旧配置迁移**：旧形状（`agents.<name>.api_key` + `<provider>/<model>` 前缀推断、`provider_ref` 兼容字段）仍可加载并在启动时输出迁移指引，不静默失败。

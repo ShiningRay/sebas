@@ -140,17 +140,31 @@ module Sebas
         end
       end
 
+      # 传输守卫（CodeRabbit CWE-319）：携带凭据的请求拒绝明文 HTTP——
+      # 远程端点必须 https；环回（localhost/127.0.0.1/::1）允许 http
+      # （本地网关/测试环回）。两个 wire 路径共用此守卫。
+      private def transport_guard(uri : URI) : String?
+        return if uri.scheme == "https"
+        host = uri.host
+        return "provider base_url missing host" if host.nil? # fail-closed
+        return if {"localhost", "127.0.0.1", "::1"}.includes?(host)
+        "provider endpoint '#{uri}' uses plain HTTP; refusing to send api_key (use https://; loopback http:// is allowed)"
+      end
+
       private def complete_openai(messages : Array(Message)) : Completion
         base = @client_base || @spec.base_url
         uri = URI.parse(base)
+        if error = transport_guard(uri)
+          return Completion.error(error)
+        end
+        host = uri.host
+        return Completion.error("provider base_url missing host") if host.nil? # fail-closed（守卫已拦远程，此处兜底类型收窄）
         path = uri.path.rstrip('/') + "/chat/completions"
         body = {model: @model, messages: messages.map { |message| {role: message.role, content: message.content} }}.to_json
         headers = HTTP::Headers{
           "Authorization" => "Bearer #{@api_key}",
           "Content-Type"  => "application/json",
         }
-        host = uri.host
-        return Completion.error("provider base_url missing host") if host.nil? # fail-closed
         client = HTTP::Client.new(host, uri.port || 443, uri.scheme == "https" || uri.port == 443)
         client.connect_timeout = @timeout
         client.read_timeout = @timeout
@@ -169,8 +183,11 @@ module Sebas
       # 首条必须 user、角色严格交替）。
       private def complete_anthropic(messages : Array(Message)) : Completion
         uri = URI.parse(@spec.base_url)
+        if error = transport_guard(uri)
+          return Completion.error(error)
+        end
         host = uri.host
-        return Completion.error("provider base_url missing host") if host.nil? # fail-closed
+        return Completion.error("provider base_url missing host") if host.nil? # fail-closed（守卫已拦远程，此处兜底类型收窄）
         system_text, turns = normalize_anthropic_messages(messages)
         turns.unshift({role: "user", content: "(continue)"}) if turns.empty? || turns.first[:role] == "assistant"
         body = {model: @model, max_tokens: 4096, messages: turns}

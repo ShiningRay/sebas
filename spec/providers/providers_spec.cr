@@ -148,6 +148,18 @@ module Sebas
         completion.error.should_not be_nil
         completion.error.to_s.should contain("not implemented")
 
+        # 传输守卫（CWE-319）：远程明文 HTTP 拒发密钥；环回 http 放行（上方用例即环回）
+        remote = Providers::HttpProvider.new(
+          Providers::Spec.new("p", "http://relay.example.com:8080/v1", "openai"), "m", "sk-secret")
+        insecure = remote.complete([Providers::Message.new("user", "hi")])
+        insecure.ok?.should be_false
+        insecure.error.to_s.should contain("plain HTTP")
+        anthropic_insecure = Providers::HttpProvider.new(
+          Providers::Spec.new("p", "http://relay.example.com/v1", "anthropic"), "m", "sk-secret").complete(
+          [Providers::Message.new("user", "hi")]
+        )
+        anthropic_insecure.error.to_s.should contain("plain HTTP")
+
         _address, _req_channel, _body_channel, server = start_wire_server
         server_error = HTTP::Server.new do |context|
           context.response.status_code = 401
