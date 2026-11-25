@@ -78,10 +78,6 @@ module Sebas
       ))
       gateway2.run
       ok = wait_for(15.seconds) { gateway2.store.intent_status("evt-176") == "done" }
-      p! gateway2.store.intent_status("evt-176")
-      p! gateway2.store.session_input_session_key("evt-176")
-      p! gateway2.store.transcripts("agent:main:test-acc:email:alice@example.com").map(&.role)
-      p! gateway2.store.task("turn:evt-176").status
       gateway2.shutdown
       ok.should be_true
 
