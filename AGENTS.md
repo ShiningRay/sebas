@@ -101,7 +101,7 @@ scripts/
 
 ## Issue 处理
 
-- 带 `plan` 标签的是工作包卡，不做研判，仅自动补指派。
+- 带 `Automation` 块的是工作包卡，不做研判，仅补 type/指派；status 由 milestone 与执行进度驱动。
 - 非计划类走完整研判：六判定（bug-confirmed / needs-info / accepted / rejected / duplicate / escalate）。
 - type 按性质定（Bug/Feature/Task），assignee 仅 bug-confirmed/accepted 才设。
 - bug 的 milestone 归属：本期范围内 → 当前 milestone；严重回归 → hotfix milestone；普通 → 下一 feature milestone。

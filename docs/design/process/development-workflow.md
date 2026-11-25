@@ -48,7 +48,7 @@ M0–M7 的期划分已落成 GitHub milestone：
 | v0.4.0 | M6 | minor | 外部日历只读镜像与重估（10 卡） |
 | v0.5.0 | M7 | minor | 受控投影与撤销审计（5 卡） |
 
-每张工作包卡有独立 issue + `plan` 标签，父卡用 sub-issue 关系聚合子卡。
+每张工作包卡有独立 issue + `Automation` 块，父卡用 sub-issue 关系聚合子卡。
 
 ### 排期三规则
 
@@ -75,12 +75,37 @@ Agent 判定 active milestone 的算法见 [triager.md](triager.md) §3。
 
 ### 分类
 
-| 类型 | 标签 | 处理方式 |
+三个维度彼此正交，全部由 GitHub 原生字段表达，不再用自定义标签模拟：
+
+| 维度 | 载体 | 取值与含义 |
 |---|---|---|
-| 计划类工作包 | `plan` | 不做 agent 研判，仅跟踪；无 assignee 时自动补指派 |
-| Proposal | `proposal` | Issue 讨论 → 设计裁决 → 按需归档 → 单独排期 |
-| 外部 bug | 无 `plan` | 走完整研判 → `bug-confirmed` → 按严重度分轨 |
-| 外部 feature | 无 `plan` | 走完整研判 → `accepted` → 排期裁决 |
+| 性质 | Issue Type | Bug / Feature / Task，决定判据集与归宿条款 |
+| 排期 | Milestone | 有 = 已排期；无 = 未排期 |
+| 执行状态 | Issue Status | Backlog / Todo / In progress / In review / Done / Not planned |
+
+| 类型 | 处理方式 |
+|---|---|
+| 工作包卡（带 `Automation` 块） | 不做 agent 研判；补 type/assignee，已排期则 status 推进到 Todo |
+| Proposal | Issue 讨论 → 设计裁决 → 按需归档 → 单独排期 |
+| 外部 bug | 走完整研判 → `bug-confirmed` → 按严重度分轨 |
+| 外部 feature | 走完整研判 → `accepted` → 排期裁决 |
+
+`plan` 标签与 `agent:in-progress` 标签已废弃：前者由 milestone 取代，后者由 issue status 取代。
+存量清理见 `tools/retire_flow_labels.rb`。
+
+### 状态流转
+
+```
+新建 issue            → Backlog
+Triager 补 type/指派  → 仍 Backlog（未排期）
+Maintainer 挂 milestone → Todo
+Implementer 认领      → In progress（tools/sebas-process claim）
+提 PR                → In review（tools/sebas-process review）
+合并关闭              → Done（GitHub 自动置）
+关闭为 not planned    → Not planned
+```
+
+`needs:human` / `metadata:invalid` 仍保留为标签：它们表达的是暂停原因，不是进度状态。
 
 ### Proposal 生命周期
 
@@ -92,7 +117,7 @@ issue。小型、明确的改进走 Feature request，不增加正式提案成�
 |---|---|
 | Proposal issue | 提案入口、公开讨论、开放问题与裁决理由的事实源 |
 | `docs/design/proposals/` | 需要时整理并入库的设计快照，回链原 issue；不是提提案的前置条件 |
-| `plan` issue | 排期批准后形成的工作包，链接原 Proposal issue 与设计文档 |
+| 工作包 issue | 排期批准后形成的工作包（带 `Automation` 块 + milestone），链接原 Proposal issue 与设计文档 |
 
 ```
 Proposal issue（proposal + needs-triage）
@@ -104,24 +129,23 @@ Proposal issue（proposal + needs-triage）
              ├─ 小型明确改动：无需正式设计文档
              └─ 重大改动：Scribe 整理设计快照并提交 PR
   → Maintainer 另行决定排期
-  → Scribe 按指令创建 plan 工作包；未排期的提案不进入实现选卡
+  → Scribe 按指令创建带 Automation 块的工作包；未排期的提案不进入实现选卡
 ```
 
 状态标签只有 `proposal:needs-design` / `proposal:accepted-design` / `proposal:declined`；
 初始研判沿用 `needs-triage`，补充信息沿用 `question`，重复提案沿用 `duplicate`。
-`backlog` 只表达暂不排期，不代表设计已接受；不新增另一套状态标签。
+`backlog` 标签表达暂不排期，与 status=Backlog 并存：标签是人工标记的延期意图，status 是执行进度；不新增另一套状态标签。
 
 责任边界：
 
 - **Triager** 不裁决产品方向、不接受设计、不排期、不改仓库；结论不足时标记 `question`。
 - **Maintainer** 将方向接受、设计定稿和排期分开决定；每次裁决在原 issue 留公开理由。
 - **Scribe** 起草定稿候选但不定稿；文档 PR 合入不等于设计定稿。收到明确排期指令后，
-  才可执行 WBS、milestone 与 `plan` 工作包的机械落地；不自行决定版本、优先级或容量置换。
-- 外部贡献者可自愿 fork 提交设计 PR，但这不是参与讨论或获得裁决的条件。
+  才可执行 WBS、milestone 与工作包的机械落地；不自行决定版本、优先级或容量置换。
 - 原 issue 持续保存讨论记录。设计文档与实现任务必须回链它，不维护两份平行讨论。
 
 **接受设计不等于批准排期，也不承诺版本交付。**只有 Maintainer 决定排期，Scribe 才能按指令
-创建 `plan` 工作包；Implementer 再按现有开工三闸执行。
+创建工作包并挂 milestone；Implementer 再按现有开工三闸执行。
 
 ### 外部 issue 的研判与归宿
 
@@ -131,9 +155,12 @@ Proposal issue（proposal + needs-triage）
 `accepted` 之后的排期裁决由人（Maintainer角色）做，四种归宿：
 
 1. **塞进已有 milestone**：与某期目标契合 → 挂对应 milestone，容量内等量置换
-2. **进 backlog 不排期**：有价值但不在路线图 → 只打标签不给 milestone
-3. **独立小修**：一两个文件、不依赖任何 WP → 直接做，不等里程碑
-4. **不做**：偏离产品定位 → 礼貌关闭，写明理由
+2. **进 backlog 不排期**：有价值但不在路线图 → 保持 status=Backlog 并打 `backlog` 标签，不给 milestone
+3. **独立小修**：一两个文件、不依赖任何 WP → 也必须有 milestone（可临时开 hotfix 轨或挂当前期）
+4. **不做**：偏离产品定位 → 礼貌关闭为 not planned，写明理由
+
+第 3 条不再允许"无 milestone 直接做"：排期由 milestone 表达，无 milestone 即未排期，
+选卡器不会认领。想让小修立刻可做，就给它一个 milestone。
 
 ### Bug 的里程碑归属
 
@@ -152,12 +179,13 @@ milestone 回答的问题是"这个修复随哪个版本出去"。
 ### 工作包卡的关闭流程
 
 ```
-issue 开工（assignee = 开发者，进入 In Progress）
-  → 实现，在对应 feat/… 分支
+issue 开工（status: Todo → In progress，tools/sebas-process claim）
+  → 实现，在对应 feat/… / fix/… / docs/… 分支
   → 提 PR，body 写 "Fixes #<issue号>"
+  → status 推进到 In review（tools/sebas-process mark-review）
   → PR 过 CI + CodeRabbit review，thread 全 resolve
   → squash 合并进 main
-  → GitHub 识别 Fixes #n 自动关闭 issue
+  → GitHub 识别 Fixes #n 自动关闭 issue（status 自动变 Done）
   → 回 issue 的「证据」节填写实际验证结果
 ```
 

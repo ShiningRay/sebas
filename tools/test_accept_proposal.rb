@@ -83,12 +83,16 @@ class AcceptProposalTest < Minitest::Test
     AcceptProposal.preflight!(issue, 8, repo: "o/r", login: "ShiningRay", maintainers: ["ShiningRay"])
   end
 
-  def test_preflight_rejects_plan_card_with_proposal_label
-    issue = {"labels" => [{"name" => "proposal"}, {"name" => "plan"}], "state" => "open"}
+  def test_preflight_rejects_work_package_card_with_proposal_label
+    issue = {
+      "labels" => [{"name" => "proposal"}],
+      "state" => "open",
+      "body" => "```json automation\n{\"schema\":1,\"kind\":\"work_package\"}\n```\n"
+    }
     err = assert_raises(AcceptProposal::Failure) do
       AcceptProposal.preflight!(issue, 8, repo: "o/r", login: "ShiningRay", maintainers: ["ShiningRay"])
     end
-    assert_includes err.message, "plan"
+    assert_includes err.message, "Automation"
   end
 
   def test_registered_decision_urls_extracts_marker

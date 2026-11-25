@@ -135,10 +135,10 @@ module SebasAgents
           return Model::Evaluation.new(status: "blocked", reasons: ["前置 ##{number} #{detail}"])
         end
 
-        # 已 completed 的 issue 若仍带认领标签，说明状态迁移未收口。
-        if target.label?(Model::IN_PROGRESS_LABEL)
+        # 已 completed 的 issue 若仍是执行中 status，说明状态迁移未收口。
+        if target.working?
           return Model::Evaluation.new(status: "invalid",
-            reasons: ["前置 ##{number} 已关闭但仍带 #{Model::IN_PROGRESS_LABEL}"])
+            reasons: ["前置 ##{number} 已关闭但仍为 status=#{target.status}"])
         end
 
         block = Evidence.from_issue(target)

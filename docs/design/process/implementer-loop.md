@@ -36,7 +36,15 @@ track: main
 
 ### 2.2 Issue
 
-现有 `plan` 标签继续表示“计划类，不做 Triager 研判”，不能用来判断它是不是可执行工作包。每张卡增加一个可见的 `Automation` 小节，使用 ` ```json automation ` 代码块：
+三个维度彼此正交，全部用 GitHub 原生字段，不再用 `plan` 标签模拟任何一维：
+
+| 维度 | 载体 | 判定 |
+|---|---|---|
+| 已排期 | milestone | 有 = 已排期；无 = 未排期（不进候选集，也不进缺口清单） |
+| 可执行 | `Automation.kind` | 仅 `work_package` 可认领 |
+| 执行状态 | issue status | Todo 待开工 / In progress 实现中 / In review PR 已提 / Done 关闭 |
+
+每张卡增加一个可见的 `Automation` 小节，使用 ` ```json automation ` 代码块：
 
 ```json automation
 {
@@ -63,20 +71,24 @@ track: main
 
 硬依赖以 WP 的「依赖」字段为权威。由该字段生成或逐条核对 Automation，再与 GitHub 原生 `blocked_by` 核对 issue 编号部分；三者不一致即 `invalid_plan`。B.1 DAG 图只用于排期展示，不作为另一套独立真值。首版只做一致性检查，不自动改依赖关系。
 
-建议增加少量流程标签（`ruby tools/setup_process_labels.rb --apply` 一次创建）：
+建议增加少量流程标签（`ruby tools/setup_process_labels.rb --apply` 一次创建）。
+认领锁已改由 issue status 承担，标签只保留暂停与元数据两类：
 
 | 标签 | 含义 |
 |---|---|
-| `agent:in-progress` | 当前唯一活动工作卡；全仓最多一张 |
 | `needs:human` | 等待人工决策；已有 PR 时仍保留归属，未建 PR 时转为暂停记录 |
 | `agent:resume` | Maintainer 已解决暂停事项并允许恢复，核验后可移除 |
 | `metadata:invalid` | 元数据缺失或矛盾，禁止自动开工 |
 
+`agent:in-progress` 已废弃：活动工作卡由 `status=In progress` 标识，全仓最多一张的约束不变。
+
 普通 assignee 只表示责任人，不能充当 Agent 认领锁。
 
 认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地运行记录
-（`phase=claiming`），再写 `agent:in-progress`，回读确认后才转为 `claimed`；
-回读失败则记录 `claim_aborted`，不启动 Harness。
+（`phase=claiming`），再把 issue status 写成 `In progress`，回读确认后才转为 `claimed`；
+回读失败则记录 `claim_aborted`（含 `status_written` 标记），不启动 Harness。
+提 PR 后用 `ruby tools/sebas-process mark-review <issue> --apply` 推进到 `In review`；
+释放认领（`unclaim`）写回 `Todo`。
 
 ### 2.3 前置完成的标准
 
@@ -182,7 +194,7 @@ track: main
 
 ### 3.0 元数据缺口必须可见
 
-选择器只看 active milestone 内的 issue。一张**有工作包特征但没有 milestone** 的卡（`plan` 标签、有依赖声明、或有 Automation 块）不会进入候选集，只会表现为笼统的「元数据未补齐」——Maintainer 无从知道要补哪几张。
+选择器只看 active milestone 内的 issue。一张**有工作包特征但没有 milestone** 的卡（有 Automation 块、或正文依赖节含 `#N`）不会进入候选集，只会表现为笼统的「元数据未补齐」——Maintainer 无从知道要补哪几张。
 
 因此 `blocked` 输出带 `metadata_gaps` 字段：
 
@@ -190,7 +202,7 @@ track: main
 {"issue": 19, "missing": ["milestone", "automation"]}
 ```
 
-判定「工作包特征」的三条任一成立即可：`plan` 标签、存在 Automation 块、正文依赖节含 `#N`。普通 issue（如功能建议）不计入，避免清单被噪音污染。
+判定「工作包特征」的两条任一成立即可：存在 Automation 块、正文依赖节含 `#N`。普通 issue（如功能建议）不计入，避免清单被噪音污染。
 
 ### 3.1 刷新并对账
 
@@ -201,7 +213,7 @@ track: main
 3. 获取 Agent 管理的 open PR、其 `Fixes #N` 关联、head SHA、checks、merge 状态和未解决 review threads。
 4. 读取本地运行记录，核对 issue、分支、worktree、PR 和 base SHA 是否仍匹配。
 
-任何 API 错误都保留为错误，不得转换成空列表。发现多个 `agent:in-progress`、一个 PR 关联多张工作卡、或本地记录与 GitHub 冲突时停止。
+任何 API 错误都保留为错误，不得转换成空列表。发现多张 `In progress`/`In review`、一个 PR 关联多张工作卡、或本地记录与 GitHub 冲突时停止。
 
 ### 3.2 在途工作优先
 
@@ -228,7 +240,7 @@ track: main
 5. 对剩余卡按 `order` 字典序升序排列；完全相同的顺序视为计划错误，不用 issue 编号掩盖。
 6. 选择第一张，重新读取该 issue 和全部前置，确认状态未变化后认领。
 
-先原子写入 `phase=claiming` 的本地运行记录，再写 `agent:in-progress` 并回读确认；两者均成功后将阶段改为 `claimed`，才启动 Harness。
+先原子写入 `phase=claiming` 的本地运行记录，再写 `status=In progress` 并回读确认；两者均成功后将阶段改为 `claimed`，才启动 Harness。
 
 中断恢复必须区分两个写入点：有本地记录但无远端标签时，重读卡片满足认领条件后补写标签，否则将记录标为 `claim_aborted`；标签已写但回读结果未知时，按同一 issue/branch 对账，补全记录而不重复认领。两边内容不一致、发现其他活动卡或无法判断时返回 `invalid_plan`，不得启动编码。
 

@@ -48,6 +48,7 @@ module SebasAgents
       when "release" then run_release(argv.drop(1))
       when "verify" then run_verify(argv.drop(1))
       when "triage" then run_triage(argv.drop(1))
+      when "mark-review" then run_mark_review(argv.drop(1))
       when "docs-check" then run_docs_check(argv.drop(1))
       when "release" then run_release(argv.drop(1))
       when "roles", "role" then run_roles(argv.drop(1))
@@ -154,14 +155,14 @@ module SebasAgents
           "attempts" => 0
         })
 
-        # 标签不是分布式事务：写后必须回读，只有回读确认才算 claimed。
+        # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
         # 任何一步出错都要落 aborted，不能让记录停在 claiming。
         gateway = GithubGateway.new(runner(options), repo: repo)
         written = false
         begin
-          gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+          gateway.set_status(issue.number, Model::STATUS_IN_PROGRESS, allow_write: true)
           written = true
-          confirmed = gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+          confirmed = gateway.status?(issue.number, Model::STATUS_IN_PROGRESS)
         rescue CommandError => e
           payload["reasons"] = ["认领写入失败：#{e.message}"]
           confirmed = false
@@ -171,17 +172,17 @@ module SebasAgents
           payload["run_record"] = record.save(payload["run_record"].merge("phase" => "claimed"))
           payload["claim"] = "claimed"
         else
-          # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有标签。
+          # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有被推进。
           payload["run_record"] = record.save(
-            payload["run_record"].merge("phase" => "aborted", "label_written" => written)
+            payload["run_record"].merge("phase" => "aborted", "status_written" => written)
           )
           payload["ok"] = false
           payload["claim"] = "claim_aborted"
           payload["reasons"] ||= []
           payload["reasons"] << if written
-            "写入 #{Model::IN_PROGRESS_LABEL} 后回读未确认；远端状态未知，恢复前需人工核对"
+            "写入 status=#{Model::STATUS_IN_PROGRESS} 后回读未确认；远端状态未知，恢复前需人工核对"
           else
-            "写入 #{Model::IN_PROGRESS_LABEL} 失败，未产生远端变更"
+            "写入 status=#{Model::STATUS_IN_PROGRESS} 失败，未产生远端变更"
           end
         end
       end
@@ -279,8 +280,8 @@ module SebasAgents
       unless merged_pr
         payload["reasons"] << "issue ##{issue.number} 没有已合并的关联 PR"
       end
-      unless issue.label?(Model::IN_PROGRESS_LABEL)
-        payload["reasons"] << "issue ##{issue.number} 远端已无 #{Model::IN_PROGRESS_LABEL}，无需释放"
+      unless issue.working?
+        payload["reasons"] << "issue ##{issue.number} 远端已不是执行中 status（当前 #{issue.status || "未设置"}），无需释放"
       end
 
       if payload["reasons"].any?
@@ -293,9 +294,10 @@ module SebasAgents
       if options[:apply]
         repo = claim_write_repo(snap, options)
         gateway = GithubGateway.new(runner(options), repo: repo)
-        gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
-        unless gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) == false
-          payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍存在，需人工核对"
+        # 释放认领回到 Todo：卡仍已排期、待重新开工，不是 Backlog。
+        gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
+        unless gateway.status?(issue.number, Model::STATUS_TODO)
+          payload["reasons"] << "写回 status=#{Model::STATUS_TODO} 后回读不符，需人工核对"
           payload["status"] = "aborted"
           Output.emit(payload, out: @out)
           return EXIT_REFUSED
@@ -327,8 +329,8 @@ module SebasAgents
       issue = snap.issue(target)
       raise InvalidPlan, "issue ##{number} 不在快照内" unless issue
 
-      unless issue.label?(Model::IN_PROGRESS_LABEL)
-        raise InvalidPlan, "##{issue.number} 远端已无 #{Model::IN_PROGRESS_LABEL}，不能按在途续跑"
+      unless issue.working?
+        raise InvalidPlan, "##{issue.number} 远端 status 不是执行中（当前 #{issue.status || "未设置"}），不能按在途续跑"
       end
       other = snap.in_progress_issues.find { |item| item.number != issue.number }
       raise InvalidPlan, "存在另一张活动认领 ##{other.number}" if other
@@ -359,6 +361,36 @@ module SebasAgents
       else
         raise UsageError, "verify 子命令：docs <path...> | anchors <json> | merge <pr> <issue>"
       end
+    end
+
+    # 提 PR 后把 issue 从 In progress 推进到 In review；合并不经过这里（关闭自动置 Done）。
+    def run_mark_review(argv)
+      return help if argv.include?("--help") || argv.include?("-h")
+
+      options, (number,) = Argv.parse(argv, required: ["issue"])
+      snap = snapshot(options)
+      issue = snap.issue(parse_number(number, "issue")) or raise UsageError, "issue ##{number} 不在快照内"
+      pr = snap.pull_requests.select(&:open?).find { |item| item.closing_issues.include?(issue.number) }
+      reasons = []
+      reasons << "##{issue.number} 不是 open 卡" unless issue.open?
+      # 只允许从 In progress 进入 In review：跳过认领会把未开工的卡说成在评审。
+      unless issue.status?(Model::STATUS_IN_PROGRESS)
+        reasons << "##{issue.number} 当前 status=#{issue.status || "未设置"}，只有 In progress 才能推进到 In review"
+      end
+      reasons << "##{issue.number} 没有关联的 open PR" unless pr
+
+      payload = {"ok" => reasons.empty?, "dry_run" => !options[:apply],
+                 "issue" => issue.number, "status" => Model::STATUS_IN_REVIEW, "reasons" => reasons}
+      payload["pr"] = pr.number if pr
+      if options[:apply] && reasons.empty?
+        gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
+        gateway.set_status(issue.number, Model::STATUS_IN_REVIEW, allow_write: true)
+        confirmed = gateway.status?(issue.number, Model::STATUS_IN_REVIEW)
+        payload["ok"] = payload["status_written"] = confirmed
+        payload["reasons"] << "写入 status=#{Model::STATUS_IN_REVIEW} 后回读未确认，需人工核对" unless confirmed
+      end
+      Output.emit(payload, out: @out)
+      payload["ok"] ? EXIT_OK : EXIT_REFUSED
     end
 
     def verify_docs(argv)
@@ -609,6 +641,7 @@ module SebasAgents
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed
+          mark-review <issue>  提 PR 后推进 status 到 In review；--apply 才写远端
 
         Verifier（只读；核验与终验两阶段）
           verify docs <path...>

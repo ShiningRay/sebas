@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module SebasAgents
-  # Triager 的确定性部分：先判是否 plan 卡，再给元数据动作建议。
+  # Triager 的确定性部分：先判是否已排期卡，再给元数据动作建议。
   # 需要模型判断的"是否重复/是否已修复"由调用方注入结果；缺失即 needs-info。
   module Triager
     MAINTAINER = "ShiningRay"
@@ -33,9 +33,15 @@ module SebasAgents
         verdict = verdict.transform_keys(&:to_s)
       end
 
-      if issue.label?("plan")
+      if work_package_card?(issue)
         actions = []
+        actions << {"action" => "set_type", "type" => inferred_type(issue)} if issue.type.nil?
         actions << {"action" => "add_assignee", "login" => MAINTAINER} if issue.assignees.empty?
+        # 挂了 milestone 即已排期；新建 issue 默认 Backlog，需要推进到 Todo。
+        # 未排期的工作包卡保持 Backlog，等 Maintainer 决定归宿。
+        if issue.scheduled? && (issue.status.nil? || issue.backlog?)
+          actions << {"action" => "set_status", "status" => Model::STATUS_TODO}
+        end
         return {
           "ok" => true,
           "issue" => issue.number,
@@ -71,7 +77,7 @@ module SebasAgents
         raise UsageError, "未知 triage 判定 #{decision.inspect}；允许：#{DECISIONS.join("、")}"
       end
 
-      actions = actions_for(decision, verdict)
+      actions = actions_for(decision, verdict, issue: issue)
       {
         "ok" => decision != "escalate",
         "issue" => issue.number,
@@ -86,7 +92,7 @@ module SebasAgents
     def proposal_plan(issue, snapshot, decision, verdict)
       validate_proposal_decision(issue, snapshot, decision, verdict) if %w[accepted-design declined].include?(decision)
 
-      actions = [{"action" => "set_type", "type" => "Feature"}]
+      actions = [{"action" => "set_type", "type" => Model::TYPE_FEATURE}]
       actions.concat(PROPOSAL_STATUS_LABELS.map { |label| {"action" => "remove_label", "name" => label} })
       actions << {"action" => "remove_label", "name" => "needs-triage"}
       actions << {"action" => "remove_label", "name" => "question"} unless decision == "needs-design"
@@ -143,11 +149,11 @@ module SebasAgents
         body.match?(%r{https://github\.com/#{Regexp.escape(repo)}/issues/#{number}(?:[/?#]|\z)})
     end
 
-    def actions_for(decision, verdict)
+    def actions_for(decision, verdict, issue: nil)
       case decision
       when "bug-confirmed"
         [
-          {"action" => "set_type", "type" => "Bug"},
+          {"action" => "set_type", "type" => Model::TYPE_BUG},
           {"action" => "add_label", "name" => "bug"},
           {"action" => "add_assignee", "login" => MAINTAINER},
           {"action" => "suggest_milestone", "milestone" => verdict["milestone"] || "active"}
@@ -155,8 +161,13 @@ module SebasAgents
       when "needs-info"
         [{"action" => "add_label", "name" => "question"}]
       when "accepted"
+        # type 按 issue 性质定，不按判定定：Task 类（文档/CI/工具）接受后仍是 Task。
+        # 模型可在 verdict 里显式给 type 覆盖；否则沿用已有 type，最后才回落 Feature。
+        type = verdict["type"] || issue&.type || Model::TYPE_FEATURE
+        raise UsageError, "未知 issue type #{type.inspect}；允许：#{Model::TYPES.join("、")}" unless Model::TYPES.include?(type)
+
         [
-          {"action" => "set_type", "type" => "Feature"},
+          {"action" => "set_type", "type" => type},
           {"action" => "add_label", "name" => "enhancement"},
           {"action" => "add_assignee", "login" => MAINTAINER}
         ]
@@ -175,6 +186,22 @@ module SebasAgents
       else
         [{"action" => "notify_maintainer", "reason" => verdict["reason"]}]
       end
+    end
+
+    # 已登记的工作包卡：有 Automation 块（kind 已明确），且不是 Proposal。
+    # plan 标签已废弃——是否已排期由 milestone 表达，是否可执行由 kind 表达，
+    # 是否需要研判由「有没有 Automation 块」表达。
+    def work_package_card?(issue)
+      !issue.automation.nil? && !issue.label?("proposal")
+    end
+
+    # 存量 plan 卡没有 type 时按 kind 回填：父卡与人工卡是 Task，可执行卡是 Feature。
+    def inferred_type(issue)
+      kind = issue.kind
+      return Model::TYPE_TASK if %w[tracking manual design].include?(kind)
+      return Model::TYPE_FEATURE if kind == "work_package"
+
+      Model::TYPE_TASK
     end
 
     def comment_for(decision, verdict)

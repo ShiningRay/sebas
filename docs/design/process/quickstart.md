@@ -155,7 +155,7 @@ marker → 复用 `Triager.plan` 校验裁决作者、正文与评论父对象 �
 `proposal:accepted-design` → 发 status 评论。默认 dry-run，`--apply` 才写。
 `--milestone` 接受数字或标题，须对应已开放的 milestone；指定后在裁决评论留公开排期理由，
 并把 issue 挂到该 milestone。这里挂的是排期意图记录，不是实现排期本身——Implementer 只按
-Scribe 拆出的 `plan` 卡选卡，Proposal 本身不进实现选卡。
+Scribe 拆出的工作包卡选卡，Proposal 本身不进实现选卡。
 接受设计不等于自动拆卡——实现工作包仍由 Scribe 按指令拆解。
 不指定 milestone 时排期仍需另行裁决。测试见 `tools/test_accept_proposal.rb`。
 

@@ -40,13 +40,13 @@ Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。实现�
 
 1. 起草或修订 `docs/design/plan/` 的 WBS、依赖、估时和验收条件，按文档门禁提交 PR。
 2. 创建或更新已批准的 milestone；不得擅自改变 active 主线或并行轨。
-3. 创建父子 `plan` issue，写目标、契约来源、范围、交付物、依赖、验收、证据和 Automation。
+3. 创建父子工作包 issue（挂 milestone、status=Todo、带 Automation 块），写目标、契约来源、范围、交付物、依赖、验收、证据和 Automation。
 4. 设置 milestone、sub-issue、`blocked_by`，核对文档依赖与 Automation 一致。
 5. 建立 Proposal ↔ 设计文档 ↔ 工作包回链；父卡只做分组，不能代替依赖声明。
 6. 回报任务卡链接、未决外部依赖和开工三闸；**不直接指令 Implementer 开工**。
 
 只允许 `kind=work_package` 的卡在条件齐备后由 Implementer 经既有选卡流程认领；
-`kind=tracking` 父卡与 `kind=design` 设计卡都不进入实现选卡。仅 `plan` 标签不代表可执行，
+`kind=tracking` 父卡与 `kind=design` 设计卡都不进入实现选卡。挂了 milestone 也不代表可执行，
 也不豁免开工三闸。`kind=design` 的卡由 Scribe 执行，交付物是设计定稿候选，
 不创建实现子卡、不指令 Implementer 开工。
 需要改变版本、范围、依赖、容量或提前开工时，Scribe 停止并交回 Maintainer 裁决。

@@ -11,7 +11,7 @@ require "open3"
 REPO = ENV["SEBAS_REPO"] || "ShiningRay/sebas"
 
 LABELS = [
-  ["agent:in-progress", "0E8A16", "当前唯一活动工作卡；全仓最多一张"],
+  # 认领锁已改为 issue status=In progress；标签只保留暂停与元数据两类。
   ["needs:human", "D93F0B", "等待人工决策；Maintainer 处理后加 agent:resume"],
   ["agent:resume", "1D76DB", "Maintainer 已解决暂停事项并允许恢复"],
   ["metadata:invalid", "B60205", "元数据缺失或矛盾，禁止自动开工"]
