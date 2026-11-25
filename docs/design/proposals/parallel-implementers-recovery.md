@@ -101,7 +101,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 1. 容量为 1 且快照里没有暂停卡时，`plan` 的首选候选与 `next` 的 `claim_issue` 恒等，对现有全部选卡用例成立。有暂停卡的快照单列，两者的差异只允许出现在 Q9 的暂停语义上。
 2. 容量为 N：候选按 `order` 稳定排序；`order` 重复与依赖成环仍 `invalid_plan`。
 3. 依赖冻结：候选依赖在途卡时进 `excluded`，原因是前置仍 open。
-4. scope：重叠的候选被过滤，原因写明对方卡；非法 scope 值 `invalid_plan`；缺 `scope` 的卡只在没有其他在途租约时认领，任一在途租约缺 `scope` 时候选全部进 `excluded`（§6.2 强制的两个方向）。
+4. scope：重叠的候选被过滤，原因写明对方卡；非法 scope 值 `invalid_plan`；缺 `scope` 的卡独占容量——在途租约缺 `scope` 时候选全部进 `excluded`，同批候选含缺 `scope` 的卡时只输出该卡（§6.2 的三个方向）。
 5. 逐租约动作：`wait` 的租约不占算力；一张租约 `needs_human` 不影响另一张；任一租约 `invalid_plan` 则整体拒绝；归属不符的租约即使检查全绿也不得给出 `merge_ready`。
 6. 租约唯一性：两张卡共用 `branch`、`worktree` 或 PR 号即 `invalid_plan`；PR 关联多张卡即 `invalid_plan`。
 7. 队列：`merge_ready` 按先后入队；`verify_queue.depth` 正确。
@@ -120,7 +120,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 - 在认领后、PR 创建后、合并后分别杀进程再重启。这是 implementer-loop.md §6 已有的要求。
 - 两张 PR 相继合并，复现 F13。结果决定主篇 §7.3 的裁决：补偿路径可用就放宽，否则维持串行到 Evidence 升级。
 - `update-branch` 之后 head 变化：只有同步提交时结论保留，含冲突解决提交时失效。
-- CHANGELOG 追加重试：分支已含等价追加提交时不重复追加，重试不产生重复条目（主篇 §7.2）。
+- CHANGELOG 追加重试：`[Unreleased]` 已有以本 PR 引用标识的条目时不重复追加；文本相同的不同 PR 各自追加自己的引用行，互不吞并（主篇 §7.2）。
 - Windows 与 macOS 各跑一遍锁、原子重命名与路径分隔。
 - 动手前抽查存量 PR 的 head 分支名，确认与 `feat/<issue>` 的约定一致；不一致就放宽为「以记录回填的分支为准」。
 
