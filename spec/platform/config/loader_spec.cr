@@ -168,6 +168,142 @@ module Sebas
             Loader.load(path)
           end
         end
+
+        describe "provider 层（#214）" do
+          it "解析 providers 映射与 agents.<name>.provider 引用" do
+            yaml = <<-YAML
+              providers:
+                deepseek:
+                  api_key: sk-shared
+                  base_url: https://api.deepseek.com
+                  protocol: openai-compatible
+                anthropic-p:
+                  base_url: https://api.anthropic.com/v1
+                  protocol: anthropic
+              agents:
+                main:
+                  provider: deepseek
+                  model: deepseek-chat
+                work:
+                  provider: anthropic-p
+                  model: claude-sonnet-4
+              YAML
+            config = Loader.from_content(yaml)
+            config.providers["deepseek"].api_key.should eq("sk-shared")
+            config.providers["deepseek"].base_url.should eq("https://api.deepseek.com")
+            config.providers["deepseek"].protocol.should eq("openai-compatible")
+            config.providers["anthropic-p"].protocol.should eq("anthropic")
+            config.agents["main"].provider.should eq("deepseek")
+            config.agents["main"].model.should eq("deepseek-chat")
+            Loader.validate(config).should be_empty
+            Loader.migration_hints(config).should be_empty
+          end
+
+          it "base_url 缺省时须规格表可解析：已知厂商回退合法，未知厂商 fail-closed（CodeRabbit：防 reload 半应用态）" do
+            # 已知厂商缺省 base_url：规格表兜底，合法
+            config = Loader.from_content(<<-YAML
+              providers:
+                deepseek:
+                  api_key: k
+              agents:
+                main: { provider: deepseek, model: deepseek-chat }
+              YAML
+            )
+            Loader.validate(config).should be_empty
+
+            # 未知厂商缺省 base_url：装配期必然抛 ProviderResolveError，校验期拒绝
+            bad = <<-YAML
+              providers:
+                custom-relay:
+                  api_key: k
+              agents:
+                main: { provider: custom-relay, model: m1 }
+              YAML
+            expect_raises(ValidationError, /base_url missing and 'custom-relay' is not a known vendor/) do
+              Loader.from_content(bad)
+            end
+          end
+
+          it "protocol 默认 openai-compatible，非法值 fail-closed" do
+            config = Loader.from_content(<<-YAML
+              providers:
+                p1:
+                  api_key: k
+                  base_url: https://api.example.com
+              agents:
+                main: { provider: p1, model: m1 }
+              YAML
+            )
+            config.providers["p1"].protocol.should eq("openai-compatible")
+
+            bad = <<-YAML
+              providers:
+                p1:
+                  api_key: k
+                  base_url: https://api.example.com
+                  protocol: pigeon
+              agents:
+                main: { provider: p1, model: m1 }
+              YAML
+            expect_raises(ValidationError, /protocol must be openai-compatible or anthropic/) do
+              Loader.from_content(bad)
+            end
+          end
+
+          it "agent.provider 悬空引用与 provider/provider_ref 冲突 fail-closed" do
+            dangling = <<-YAML
+              providers: {}
+              agents:
+                main: { provider: ghost, model: m }
+              YAML
+            errors = begin
+              Loader.from_content(dangling)
+              [] of String
+            rescue ex : ValidationError
+              ex.errors
+            end
+            errors.join("\n").should contain("agents.main.provider 'ghost' references an undefined providers entry")
+
+            conflict = <<-YAML
+              providers:
+                p1:
+                  base_url: https://a.example.com
+                p2:
+                  base_url: https://b.example.com
+              agents:
+                main: { provider: p1, provider_ref: p2, model: m }
+              YAML
+            expect_raises(ValidationError, /provider \('p1'\) and provider_ref \('p2'\) disagree/) do
+              Loader.from_content(conflict)
+            end
+          end
+
+          it "旧配置给出可读迁移指引且不拒绝加载（过渡支持）" do
+            legacy = Loader.from_content(VALID_YAML) # model: deepseek/chat + api_key
+            legacy.agents["main"].model.should eq("deepseek/chat")
+
+            hints = Loader.migration_hints(legacy)
+            joined = hints.join("\n")
+            joined.should contain("agents.main.model 'deepseek/chat' encodes the vendor as a prefix (legacy)")
+            joined.should contain("providers.deepseek")
+            joined.should contain("agents.main.api_key is deprecated: move it to providers.<name>.api_key")
+
+            # provider_ref 旧写法单独指引
+            ref_hints = Loader.migration_hints(Loader.from_content("agents:\n  main: { model: deepseek/chat, provider_ref: deepseek }\n"))
+            ref_hints.join("\n").should contain("agents.main.provider_ref is deprecated")
+
+            # 新形状：无指引
+            Loader.migration_hints(Loader.from_content(<<-YAML
+              providers:
+                deepseek:
+                  api_key: k
+                  base_url: https://api.deepseek.com
+              agents:
+                main: { provider: deepseek, model: deepseek-chat }
+              YAML
+            )).should be_empty
+          end
+        end
       end
     end
   end
