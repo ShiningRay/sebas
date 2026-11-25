@@ -153,6 +153,9 @@ module Sebas
             errors << "gateway.http.auth must be token, password or tailscale (got '#{http.auth}')" unless {"token", "password", "tailscale"}.includes?(http.auth)
           end
           errors << "gateway.ipc.mode must be auto, unix, tcp or off (got '#{config.gateway.ipc.mode}')" unless {"auto", "unix", "tcp", "off"}.includes?(config.gateway.ipc.mode)
+          # agent 间协作防环上限（#185 WP1 §8.1）：0/负数会让所有投递被拒，先验后换即拦
+          max_hops = config.gateway.collaboration.max_hops
+          errors << "gateway.collaboration.max_hops must be >= 1 (got #{max_hops})" unless max_hops >= 1
         end
       end
     end

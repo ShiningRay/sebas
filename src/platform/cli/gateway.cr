@@ -39,6 +39,7 @@ require "../../orchestration/fork/join_writer"
 require "../../orchestration/fork/snapshot_builder"
 require "../../orchestration/engine"
 require "../../orchestration/triggers/triggers"
+require "../../orchestration/collaboration/collaboration"
 require "../../admin/ipc/server"
 require "../../log"
 
@@ -81,6 +82,8 @@ module Sebas
         getter triggers : Orchestration::TriggerManager
         @steer_dispatch_ready = Atomic(Bool).new(false) # 恢复重放完成后才允许派发（QWvO）
         getter steer_center : Sessions::Scheduling::SteerCenter
+        # 协作 messenger（#185 WP1）：装配失败保持 nil——message_agent 不入工具面
+        @collaboration_messenger : ::Sebas::Orchestration::Collaboration::Messenger? = nil
 
         # 池内批次执行体（run_batch_job）：装配完成后回填——断开 initialize 静态图里
         # pool handler ↔ scheduling registry 的循环引用
@@ -151,6 +154,9 @@ module Sebas
           Sessions::Scheduling::Recovery.recover_stale(@store)
           @steer_center.recover_unconfirmed
           @agent_registry = Agents::AgentRegistry.new(@data_dir / "agents")
+          # agent 间消息装配（#185 WP1）：registry/store 就绪后接线，工具面由
+          # GatewayDispatch#attenuated_registry 按 agent.tools.allow 裁剪
+          @collaboration_messenger = build_collaboration_messenger
           fork_factory = -> do # workflow 触发子系统（M4.5-WP5/WP6，装载在 hooks）
  cfg = Config::CURRENT.get.agents["main"]?
           raise Store::StoreError.new("engine fork factory: no main agent") unless cfg
@@ -230,6 +236,8 @@ module Sebas
           new_config.agents.each do |name, agent|
             @providers.replace(name, @provider_factory.call(agent, nil))
           end
+          # 协作防环上限（数据类热换，#185）：在途链路不变，下条投递按新值判
+          @collaboration_messenger.try(&.max_hops = new_config.gateway.collaboration.max_hops)
 
           # 账号增删 = 监督体启停（email 渠道；wecom/lark M1-WP4/5 合流）
           old_accounts = @config.channels.email.try(&.accounts.map(&.id)) || [] of String

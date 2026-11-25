@@ -87,6 +87,19 @@ module Sebas
           joined.should contain("gateway.http.auth must be token, password or tailscale")
         end
 
+        it "validates gateway.collaboration.max_hops and defaults to 4 (#185 WP1)" do
+          Loader.from_content(VALID_YAML).gateway.collaboration.max_hops.should eq(4)
+
+          yaml = VALID_YAML.sub("gateway:\n", "gateway:\n  collaboration: { max_hops: 0 }\n")
+          errors = begin
+            Loader.from_content(yaml)
+            [] of String
+          rescue ex : ValidationError
+            ex.errors
+          end
+          errors.join("\n").should contain("gateway.collaboration.max_hops must be >= 1")
+        end
+
         it "detects duplicate account ids within a channel" do
           yaml = <<-YAML
             channels:

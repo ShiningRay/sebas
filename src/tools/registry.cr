@@ -165,6 +165,15 @@ module Sebas
         @mutex.synchronize { @tools.delete(name) }
       end
 
+      # 白名单裁剪（M4.3-WP1 / #185 WP1）：allowed 含 "*" = 全量（现状口径），
+      # 否则白名单外工具整体移除——工具面即生效面；装配侧与 spec 共用同一口径。
+      def restrict_to(allowed : Array(String)) : Nil
+        return if allowed.includes?("*")
+        names.each do |name|
+          unregister(name) unless allowed.includes?(name)
+        end
+      end
+
       def find(name : String) : Tool?
         @mutex.synchronize { @tools[name]? }
       end

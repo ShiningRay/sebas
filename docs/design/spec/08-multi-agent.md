@@ -7,8 +7,10 @@
 ### 8.1 Agent 间消息（防环三件套，参数化照抄 Hermes §4.3）
 
 - 工具 `message_agent(agent_id, content)`：**fire-and-forget**——发送方收 `ack=queued + delivery_id`，对方完成后带回复通知。
+- **工具面**（M4x-Comm-WP1 #185）：`message_agent` 进 `agent_turn` 的衰减工具面，受 `agent.tools.allow` 白名单约束；装配未接线（messenger 缺失）时工具不注册——工具面即生效面，不出现「白名单有、执行无」。
 - **署名**：消息自动带前缀 `Message from 🤖 <agent_id>:`，收方知道来源。
-- **防环上限**（配置项 `bot_loop_guard.max_hops`，默认 4）：一轮交换内 agent-to-agent 传递上限，超过拒发——防 agent 互发死循环。
+- **防环上限**（配置项 `gateway.collaboration.max_hops`，默认 4）：一轮交换内 agent-to-agent 传递上限，超过拒发——防 agent 互发死循环。hops 不靠模型自报：投递时按收方会话键落库链路跳数，下一跳从工具 ctx 会话键继承；回执形如 `queued <delivery_id> hops=<n>`。
+- **收件分片**：inbox 按 `to_agent` 分片，收方只取本 agent 的消息（不串收他人投递）。
 - **回复默认不可再被回复**（`expect_reply=false`）：单向通知不产生回声链。
 
 ### 8.2 subagent（并行执行单元）
