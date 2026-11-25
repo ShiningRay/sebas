@@ -50,12 +50,21 @@ runs:
         echo "::add-matcher::${{ github.action_path }}/matchers/crystal.json"
         echo "::add-matcher::${{ github.action_path }}/matchers/crystal-spec.json"
 
-    # 无论安装成没成功都要放锁：失败时残留的目录会被下一个 job 判为不可复用
-    # 后清掉；锁不放则要等 TTL 过期。
+    # 无论安装成没成功都要放锁：失败时残留的目录没有完成标记，下一个 job 会
+    # 判为半成品重装；锁不放则要等 TTL 过期。owner 让 release 只放本 job 那把
+    # 锁——本 job 被强杀、锁被 TTL 接管后，这里不能把别的 job 的新锁删掉。
     - name: Release Crystal toolchain cache lock
       if: always() && steps.crystal_cache.outputs.lock != ''
       shell: bash
-      run: bash "${{ github.action_path }}/crystal-cache.sh" release "${{ steps.crystal_cache.outputs.lock }}"
+      env:
+        CRYSTAL_CACHE_LOCK: ${{ steps.crystal_cache.outputs.lock }}
+        CRYSTAL_CACHE_OWNER: ${{ steps.crystal_cache.outputs.owner }}
+        CRYSTAL_CACHE_ROOT: ${{ steps.crystal_cache.outputs.destination }}
+        CRYSTAL_CACHE_VERSION: ${{ steps.crystal_cache.outputs.version }}
+      run: |
+        bash "${{ github.action_path }}/crystal-cache.sh" release \
+          "$CRYSTAL_CACHE_LOCK" "$CRYSTAL_CACHE_OWNER" \
+          "$CRYSTAL_CACHE_ROOT" "$CRYSTAL_CACHE_VERSION"
 
     - name: Install SQLite3 (Linux)
       if: runner.os == 'Linux'
