@@ -136,10 +136,15 @@ module SebasAgents
         !milestone.nil?
       end
 
-      # 独立小修：Task、无 milestone、声明为可执行工作包。
+      # 独立小修：Task、无 milestone、声明为可执行工作包、且显式声明「无前置」。
       # 它是唯一合法的「无 milestone 却可开工」形态，只走人工 claim，不进自动选卡。
+      #
+      # 必须要求 depends_on 显式为 []：带依赖却无 milestone 的卡既没有容量与 DAG 约束，
+      # 又自称有前置，是矛盾状态，不能借「小修」名义绕过缺口检查。
       def small_fix?
-        !scheduled? && type == TYPE_TASK && kind == "work_package"
+        return false if scheduled? || type != TYPE_TASK || kind != "work_package"
+
+        automation["depends_on"].is_a?(Array) && automation["depends_on"].empty?
       end
 
       # 执行中：In progress / In review。认领锁改由 status 承担。

@@ -730,6 +730,20 @@ def test_excluded_lists_every_blocked_candidate
     assert(action.metadata_gaps.none? { |item| item["issue"] == 903 })
   end
 
+# 称小修但带前置：不算小修，缺口检查照常——它需要回到 milestone 体系。
+# 主线只放 manual 卡，确保走到 blocked 分支（gaps 只在 blocked 时产出）。
+  def test_small_fix_with_dependencies_is_still_a_gap
+    data = snapshot(issues: [
+      issue(906, body: automation(order: [4, 1], depends_on: [7]), milestone: nil, type: "Task"),
+      issue(2, body: automation(kind: "manual", order: [4, 2])),
+      issue(7, body: automation(kind: "manual", order: [4, 3]))
+    ])
+    action = select(data)
+    gap = action.metadata_gaps.find { |item| item["issue"] == 906 }
+    refute_nil gap
+    assert_equal ["milestone"], gap["missing"]
+  end
+
   # 同样无 milestone，但 type 不是 Task 的就不算小修，仍要报缺口。
   def test_milestone_less_feature_is_still_a_gap
     data = snapshot(issues: [
@@ -1789,7 +1803,7 @@ end
     end
   end
 
-# 独立小修的唯一开工方式：人工点名 claim。claim 不校验 milestone。
+# 独立小修的唯一开工方式：人工点名 claim。claim 不校验 milestone，但要求它是小修。
 def test_claim_accepts_small_fix_without_milestone
   data = snapshot(issues: [issue(903, body: automation(order: [4, 1]), milestone: nil, type: "Task")])
   Dir.mktmpdir do |dir|
@@ -1798,6 +1812,33 @@ def test_claim_accepts_small_fix_without_milestone
     status, out, = run_cli(["claim", "903", "--snapshot", path, "--record", File.join(dir, "run.json")])
     assert_equal 0, status
     assert_equal "ready", JSON.parse(out)["status"]
+  end
+end
+
+# 无 milestone 的 Feature 不能认领：那会绕开 milestone 容量与 DAG 检查。
+def test_claim_rejects_milestone_less_feature
+  data = snapshot(issues: [issue(904, body: automation(order: [4, 1]), milestone: nil, type: "Feature")])
+  Dir.mktmpdir do |dir|
+    path = File.join(dir, "snapshot.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+    status, out, = run_cli(["claim", "904", "--snapshot", path, "--record", File.join(dir, "run.json")])
+    assert_equal 1, status
+    assert_includes JSON.parse(out)["reasons"].join, "不是独立小修"
+  end
+end
+
+# 自称小修却带前置：无 milestone 约束 + 声明依赖属矛盾状态，不得豁免。
+def test_claim_rejects_small_fix_with_dependencies
+  data = snapshot(issues: [
+    issue(905, body: automation(order: [4, 1], depends_on: [7]), milestone: nil, type: "Task"),
+    issue(7, body: automation(order: [4, 2]), blocked_by: [])
+  ])
+  Dir.mktmpdir do |dir|
+    path = File.join(dir, "snapshot.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+    status, out, = run_cli(["claim", "905", "--snapshot", path, "--record", File.join(dir, "run.json")])
+    assert_equal 1, status
+    assert_includes JSON.parse(out)["reasons"].join, "不是独立小修"
   end
 end
 

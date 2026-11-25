@@ -170,11 +170,13 @@ Proposal issue（proposal + needs-triage）
 
 **第 3 条的机制**：小修是唯一「无 milestone 也能合法开工」的形态。选卡器只从 milestone
 内取卡，所以它不会自动认领小修——这正是我们要的：值不值得现在做由人判断。开工方式是
-Maintainer 显式给出 issue 号，执行者用 `tools/sebas-process claim <issue>` 直接认领
-（claim 不校验 milestone，只要求 `kind=work_package` 且依赖就绪）。
+Maintainer 显式给出 issue 号，执行者用 `tools/sebas-process claim <issue> --apply` 认领；
+不带 `--apply` 只做预检（输出 `ready` 不等于已认领，不写运行记录）。
 
 小修卡仍需带 `Automation` 块：`kind=work_package`、`order` 给一个组内唯一值、
 `depends_on` 显式为 `[]`。这是认领的前置，也是「它确实是一个可独立完成的工作单元」的声明。
+`claim` 会拒绝「无 milestone 却不是小修」的卡（如无 milestone 的 Feature，或 `depends_on` 非空），
+以免绕开 milestone 容量与 DAG 检查。
 它不出现在 `next` 的候选里，也不进 `metadata_gaps` 的缺口提示——无 milestone 是它的正常形态，不是缺元数据。
 
 判据是「一两个文件」这个量级，不是「懒得排期」。超出这个量级就该挂 milestone，

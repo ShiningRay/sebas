@@ -247,6 +247,14 @@ module SebasAgents
           reasons: ["##{issue.number} 的 kind=#{automation["kind"]}，不可认领"])
       end
 
+      # 无 milestone 的卡只有独立小修可以认领。否则等于绕开 milestone 容量与 DAG 检查。
+      # 必须用已解析的 automation 构造，快照里 issue.kind 可能尚未回填。
+      claimable = issue.with(automation: automation)
+      unless claimable.scheduled? || claimable.small_fix?
+        return Model::Evaluation.new(status: "invalid",
+          reasons: ["##{issue.number} 无 milestone 且不是独立小修（需 type=Task、kind=work_package、depends_on=[]），不可认领"])
+      end
+
       nil
     end
 
