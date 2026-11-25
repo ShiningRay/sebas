@@ -402,23 +402,31 @@ class EvidenceRegisterTest < Minitest::Test
   # 未合并的 PR 现在走合并前登记路径（#126）：不再静默跳过，
   # 而是先核对 open / main / issue open，条件不满足才跳过。
   def test_no_writes_when_pr_not_merged_and_not_open
-    fake = FakeGh.new("GET repos/o/r/pulls/99" => {"merged_at" => nil, "state" => "closed", "body" => "Fixes #42"})
+    # 未合并路径会先查 issue 判断是否 Proposal，故补 issue 响应（非 proposal）。
+    fake = FakeGh.new(
+      "GET repos/o/r/pulls/99" => {"merged_at" => nil, "state" => "closed", "body" => "Fixes #42"},
+      "GET repos/o/r/issues/42" => {"labels" => []}
+    )
     code, calls, out = run_with(fake, BASE_ENV)
 
     assert_equal 0, code
-    assert_equal [["GET", "repos/o/r/pulls/99"]], calls, "非 open 时不得写入，calls=#{calls.inspect}"
+    assert_equal [["GET", "repos/o/r/pulls/99"], ["GET", "repos/o/r/issues/42"]], calls,
+      "非 open 时不得写入，calls=#{calls.inspect}"
     assert_includes out, "不是 open"
   end
 
   def test_no_writes_when_pre_register_target_not_main
-    fake = FakeGh.new("GET repos/o/r/pulls/99" => {
-      "merged_at" => nil, "state" => "open", "body" => "Fixes #42",
-      "base" => {"ref" => "release/0.2"}
-    })
+    fake = FakeGh.new(
+      "GET repos/o/r/pulls/99" => {
+        "merged_at" => nil, "state" => "open", "body" => "Fixes #42",
+        "base" => {"ref" => "release/0.2"}
+      },
+      "GET repos/o/r/issues/42" => {"labels" => []}
+    )
     code, calls, out = run_with(fake, BASE_ENV)
 
     assert_equal 0, code
-    assert_equal [["GET", "repos/o/r/pulls/99"]], calls
+    assert_equal [["GET", "repos/o/r/pulls/99"], ["GET", "repos/o/r/issues/42"]], calls
     assert_includes out, "目标分支不是 main"
   end
 

@@ -97,7 +97,7 @@ module SebasAgents
       if %w[accepted-design declined].include?(decision)
         validate_proposal_decision(issue, snapshot, decision, verdict)
       elsif decision == "superseded"
-        validate_superseded_by(issue, verdict)
+        validate_superseded_by(issue, snapshot, verdict)
       end
 
       actions = [{"action" => "set_type", "type" => Model::TYPE_FEATURE}]
@@ -117,11 +117,17 @@ module SebasAgents
       }
     end
 
-    # 被取代必须有继任 Proposal 编号，且不能指向自己——否则档案断链成死胡同。
-    def validate_superseded_by(issue, verdict)
+    # 继任者必须真实存在且本身是 Proposal：指向普通 Bug 会让档案链跳到错误对象。
+    def validate_superseded_by(issue, snapshot, verdict)
       successor = verdict["superseded_by"].to_s
       raise InvalidPlan, "superseded 需要 superseded_by（继任 Proposal 编号）" unless successor.match?(/\A\d+\z/)
-      raise InvalidPlan, "superseded_by 不能指向自身 ###{issue.number}" if successor.to_i == issue.number
+      raise InvalidPlan, "superseded_by 不能指向自身 ##{issue.number}" if successor.to_i == issue.number
+
+      target = snapshot.issue(successor.to_i)
+      raise InvalidPlan, "superseded_by 指向的 ##{successor} 不在快照内" if target.nil?
+      raise InvalidPlan, "superseded_by 指向的 ##{successor} 不是 Proposal" unless target.label?("proposal")
+
+      true
     end
 
     def validate_proposal_decision(issue, snapshot, decision, verdict)
