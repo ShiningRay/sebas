@@ -24,10 +24,15 @@ module Sebas
           @dispatch_handler = fn
         end
 
-        # 状态迁移事件桥（M4.5-WP6 SSE）：转发到每个 scheduler（含新建）
+        # 状态迁移事件桥（M4.5-WP6 SSE）：转发到每个 scheduler（含已有与新建）
         @on_transition : Proc(String, ::JSON::Any, Nil)?
 
-        setter on_transition : Proc(String, ::JSON::Any, Nil)?
+        def on_transition=(fn : Proc(String, ::JSON::Any, Nil)?) : Nil
+          @mutex.synchronize do
+            @on_transition = fn
+            @schedulers.each_value(&.on_transition=(fn))
+          end
+        end
 
         def admit(env : InputEnvelope) : AdmissionReceipt
           scheduler_for(env.session_key).admit(env)

@@ -99,7 +99,15 @@ module Sebas
           status, reason = classify(session_key, policy, payload, lease,
             target_turn_id, target_generation)
 
-          @store.record_session_steer(steer_id, session_key, turn_id, generation, payload)
+          # INSERT OR IGNORE：重复 steer_id 不再触发迁移/事件（qI_H——防状态
+          # 倒退误报）；恢复路径的未完成 CAS 由 recover 专用入口承担
+          inserted = @store.record_session_steer(steer_id, session_key, turn_id, generation, payload)
+          unless inserted
+            return SteerReceipt.new(steer_id, turn_id, generation,
+              @store.session_steers(session_key)
+                .find(&.steer_id.==(steer_id)).try(&.status) == "injected" ? SteerStatus::Injected : SteerStatus::Rejected,
+              "duplicate steer_id")
+          end
           unless status == SteerStatus::Accepted
             @store.transition_session_steer(steer_id, SteerStatus::Accepted, status, reason)
           end

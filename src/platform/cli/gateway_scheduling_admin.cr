@@ -103,7 +103,7 @@ module Sebas
           begin
             patch = Sessions::Scheduling::Policy.parse_overlay(yaml)
             cfg = Config::CURRENT.get
-            if scope.starts_with?("agent:") && cfg.agents[scope.lchop("agent:")].nil?
+            if scope.starts_with?("agent:") && cfg.agents[scope.lchop("agent:")]?.nil?
               return {400, %({"valid": false, "errors": ["unknown agent #{scope.lchop("agent:")}"]})}
             end
             validate_candidate(scope, patch, cfg)
@@ -139,6 +139,7 @@ module Sebas
           end
         end
 
+        # ameba:disable Metrics/CyclomaticComplexity — 冲突/校验/原子落表/一次性 flush 直译
         private def scheduling_update(params : ::JSON::Any) : Tuple(Int32, String)
           scope = params["scope"]?.try(&.as_s?) || "gateway"
           yaml = params["yaml"]?.try(&.as_s?) || ""
@@ -152,7 +153,7 @@ module Sebas
           begin
             patch = Sessions::Scheduling::Policy.parse_overlay(yaml)
             cfg = Config::CURRENT.get
-            if scope.starts_with?("agent:") && cfg.agents[scope.lchop("agent:")].nil?
+            if scope.starts_with?("agent:") && cfg.agents[scope.lchop("agent:")]?.nil?
               return {400, %({"error": "unknown agent #{scope.lchop("agent:")}"})}
             end
             unless {"gateway"}.includes?(scope) || scope.starts_with?("agent:")
@@ -164,7 +165,12 @@ module Sebas
             emit_scheduling_event("config.scheduling.rejected", scope)
             return {400, {error: "invalid patch", errors: ex.message.to_s.lines}.to_json}
           end
-          revision = @store.upsert_scheduling_overlay(scope, yaml, operator)
+          revision = @store.upsert_scheduling_overlay(scope, yaml, operator,
+            expected_revision: expected)
+          unless revision # 原子冲突（并发覆盖）——409
+            return {409, {error: "revision conflict", expected: expected,
+                          current: @store.scheduling_revision}.to_json}
+          end
           emit_scheduling_event("config.scheduling.applied", scope)
           # 一次性 flush_on_policy_change（gzjW）：管理操作非持久配置——
           # debounce→queue 切换后立即收敛全部 collecting 桶
@@ -191,9 +197,13 @@ module Sebas
             return {400, {error:  "reset would produce invalid policy",
                           errors: ex.message.to_s.lines}.to_json}
           end
-          deleted = @store.delete_scheduling_overlay(scope)
+          new_revision = @store.delete_scheduling_overlay(scope, expected_revision: expected)
+          if expected && new_revision.nil?
+            return {409, {error: "revision conflict", expected: expected,
+                          current: @store.scheduling_revision}.to_json}
+          end
           emit_scheduling_event("config.scheduling.applied", scope)
-          {200, {scope: scope, deleted: deleted}.to_json}
+          {200, {scope: scope, revision: new_revision.to_s}.to_json}
         end
 
         private def emit_scheduling_event(event : String, scope : String) : Nil
