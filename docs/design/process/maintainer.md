@@ -23,7 +23,9 @@
 定稿阶段可写：`#N 设计定稿，按 <文档/章节> 执行；暂不排期。`
 排期阶段可写：`#N 纳入 <已有/新 milestone>，范围为 <包含/排除项>；请 Scribe 拆 plan 工作包，先不要实现。`
 新 milestone 指令补充版本目标、`order` 与 `track`；已有 milestone 的容量置换由 Maintainer 决定。
-独立小修属于明确实现排期指令；`backlog` 只记录延期，不授权创建实现工作包，后续须另行批准实现排期。
+独立小修属于明确实现排期指令：type=Task、不挂 milestone，开工方式是显式给出 issue 号由执行者 `claim`，
+不进自动选卡（详见 [development-workflow.md](development-workflow.md) 的四种归宿）。
+`backlog` 只记录延期，不授权创建实现工作包，后续须另行批准实现排期。
 缺少归宿或范围时，Scribe 应提问而非推断。
 
 ### 可执行工具：accept-proposal

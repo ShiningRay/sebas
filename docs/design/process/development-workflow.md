@@ -165,11 +165,20 @@ Proposal issue（proposal + needs-triage）
 
 1. **塞进已有 milestone**：与某期目标契合 → 挂对应 milestone，容量内等量置换
 2. **进 backlog 不排期**：有价值但不在路线图 → 保持 status=Backlog 并打 `backlog` 标签，不给 milestone
-3. **独立小修**：一两个文件、不依赖任何 WP → 也必须有 milestone（可临时开 hotfix 轨或挂当前期）
+3. **独立小修**：一两个文件、不依赖任何 WP → **type=Task、不挂 milestone、走人工认领**
 4. **不做**：偏离产品定位 → 礼貌关闭为 not planned，写明理由
 
-第 3 条不再允许"无 milestone 直接做"：排期由 milestone 表达，无 milestone 即未排期，
-选卡器不会认领。想让小修立刻可做，就给它一个 milestone。
+**第 3 条的机制**：小修是唯一「无 milestone 也能合法开工」的形态。选卡器只从 milestone
+内取卡，所以它不会自动认领小修——这正是我们要的：值不值得现在做由人判断。开工方式是
+Maintainer 显式给出 issue 号，执行者用 `tools/sebas-process claim <issue>` 直接认领
+（claim 不校验 milestone，只要求 `kind=work_package` 且依赖就绪）。
+
+小修卡仍需带 `Automation` 块：`kind=work_package`、`order` 给一个组内唯一值、
+`depends_on` 显式为 `[]`。这是认领的前置，也是「它确实是一个可独立完成的工作单元」的声明。
+它不出现在 `next` 的候选里，也不进 `metadata_gaps` 的缺口提示——无 milestone 是它的正常形态，不是缺元数据。
+
+判据是「一两个文件」这个量级，不是「懒得排期」。超出这个量级就该挂 milestone，
+否则会绕开容量置换与 DAG 检查。
 
 ### Bug 的里程碑归属
 

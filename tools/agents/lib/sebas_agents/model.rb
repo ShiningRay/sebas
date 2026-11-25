@@ -136,6 +136,12 @@ module SebasAgents
         !milestone.nil?
       end
 
+      # 独立小修：Task、无 milestone、声明为可执行工作包。
+      # 它是唯一合法的「无 milestone 却可开工」形态，只走人工 claim，不进自动选卡。
+      def small_fix?
+        !scheduled? && type == TYPE_TASK && kind == "work_package"
+      end
+
       # 执行中：In progress / In review。认领锁改由 status 承担。
       def working?
         WORKING_STATUSES.any? { |name| status?(name) }
