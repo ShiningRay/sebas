@@ -18,15 +18,15 @@ module Sebas
             true
           when {"POST", "/api/v1/config.scheduling.validate"}
             code, params = body_params_with_code(ctx)
-            scheduling_admin_call(ctx, "config.scheduling.validate", params, gate: code == 200)
+            scheduling_admin_call(ctx, "config.scheduling.validate", params, gate: code == 200, reject_code: code)
             true # 已响应（含 413/400 拒绝），不再落 route_api
           when {"POST", "/api/v1/config.scheduling.update"}
             code, params = body_params_with_code(ctx)
-            scheduling_admin_call(ctx, "config.scheduling.update", params, gate: code == 200)
+            scheduling_admin_call(ctx, "config.scheduling.update", params, gate: code == 200, reject_code: code)
             true # 已响应（含 413/400 拒绝），不再落 route_api
           when {"POST", "/api/v1/config.scheduling.reset"}
             code, params = body_params_with_code(ctx)
-            scheduling_admin_call(ctx, "config.scheduling.reset", params, gate: code == 200)
+            scheduling_admin_call(ctx, "config.scheduling.reset", params, gate: code == 200, reject_code: code)
             true # 已响应（含 413/400 拒绝），不再落 route_api
           when {"GET", "/api/v1/sessions.queue.get"}
             scheduling_admin_call(ctx, "sessions.queue.get", query_params_json(ctx))
@@ -53,7 +53,8 @@ module Sebas
         end
 
         private def scheduling_admin_call(ctx : ::HTTP::Server::Context, command : String,
-                                          params : ::JSON::Any, gate : Bool = true) : Nil
+                                          params : ::JSON::Any, gate : Bool = true,
+                                          reject_code : Int32 = 400) : Nil
           handler = @scheduling_admin_handler
           unless handler
             ctx.response.status_code = 503
@@ -61,7 +62,8 @@ module Sebas
             ctx.response.print(%({"error": "scheduling admin not wired"}))
             return
           end
-          unless gate # 413/400 前置拒绝（itOg：超限/非法体不进 handler）
+          unless gate # 413/400 前置拒绝（itOg：超限/非法体不进 handler，状态码写回）
+            ctx.response.status_code = reject_code
             ctx.response.content_type = "application/json"
             ctx.response.print(params.to_json)
             return

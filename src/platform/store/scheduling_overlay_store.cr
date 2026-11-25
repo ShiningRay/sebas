@@ -38,10 +38,16 @@ module Sebas
         end
       end
 
-      # upsert：revision 事务内全局自增（单例 meta 持久，reset 不回退——gzjj）
-      def upsert_scheduling_overlay(scope : String, patch_yaml : String, operator : String) : Int64
-        revision = 0_i64
+      # upsert：expected_revision 原子校验+写入同事务（qI-1：读比分离有
+      # 并发覆盖窗口）；expected 为 nil = 无条件写入。冲突返回 nil
+      def upsert_scheduling_overlay(scope : String, patch_yaml : String, operator : String,
+                                    expected_revision : Int64? = nil) : Int64?
+        revision = nil
         @db.transaction do |tx|
+          current = tx.connection.query_one?(
+            "SELECT revision FROM scheduling_meta WHERE id = 1", as: Int64
+          ) || 0_i64                                                # meta 权威单调（每次 bump 推进，reset 不回退）
+          next if expected_revision && expected_revision != current # 冲突：回滚，返回 nil（qija）
           revision = bump_scheduling_revision(tx)
           tx.connection.exec(
             "INSERT INTO scheduling_overlays (scope, patch_yaml, revision, operator, updated_at) " \
@@ -54,17 +60,21 @@ module Sebas
         revision
       end
 
-      # reset：删除 scope overlay（恢复上一层继承）+ 事务内推进版本（不回退）；
-      # 返回是否删除
-      def delete_scheduling_overlay(scope : String) : Bool
-        deleted = false
+      # reset：删除 scope overlay + 事务内推进版本；expected 冲突返回 nil
+      # （gzjj 不回退）；返回新 revision（scope 无 overlay 时也推进——reset 是
+      # 变更操作）
+      def delete_scheduling_overlay(scope : String, expected_revision : Int64? = nil) : Int64?
+        revision = nil
         @db.transaction do |tx|
-          bump_scheduling_revision(tx)
-          deleted = tx.connection.exec(
-            "DELETE FROM scheduling_overlays WHERE scope = ?", scope
-          ).rows_affected > 0
+          current = tx.connection.query_one?(
+            "SELECT revision FROM scheduling_meta WHERE id = 1", as: Int64
+          ) || 0_i64
+          # 冲突：next 回滚——DELETE 与版本递增共用同一成功条件（qije）
+          next if expected_revision && expected_revision != current
+          revision = bump_scheduling_revision(tx)
+          tx.connection.exec("DELETE FROM scheduling_overlays WHERE scope = ?", scope)
         end
-        deleted
+        revision
       end
 
       private def bump_scheduling_revision(tx : ::DB::Transaction) : Int64
