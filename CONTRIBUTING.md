@@ -89,6 +89,16 @@ guarantee where it stops running. The boundary is enforced in repository setting
 
 *中文要点：从 main 开分支；提交信息用 Conventional Commits 风格；main 受保护需 PR + CI 绿灯；默认 squash 合并。macOS job 在本仓分支上跑自托管机器、fork PR 上跑托管 runner。自托管边界由仓库设置保证：**所有**外部贡献者的运行都需维护者批准，批准前必须先读 `.github/` 的 diff——fork 改写 runner 选择器后仍要人工确认；`release-build` 不在 PR 上运行。*
 
+**Crystal toolchain on the self-hosted runner.** The runner wipes `RUNNER_TEMP` at the start
+of every job, so upstream `install-crystal` would re-download the ~57 MB tarball each time.
+`.github/actions/setup` keeps the toolchain in the runner's own `_work/_tool` cache instead,
+keyed by version, and reinstalls only when the pinned version changes.
+`.github/actions/setup/crystal-cache.sh` holds the detection, locking and fallback rules.
+
+*中文要点：自托管 runner 每个 job 都清空 `RUNNER_TEMP`，上游 action 会把 Crystal 包解压到那里，
+于是每 job 重下约 57MB。`setup` action 改为把工具链按版本存进 runner 自己的 `_work/_tool`，
+版本没变直接复用，只有钉住的版本变化时才重装。*
+
 ## Design-first changes
 
 Start with a **Proposal issue** for a significant behavior, architecture, configuration,

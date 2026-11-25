@@ -320,6 +320,7 @@ jobs:
         run: |
           ruby tools/test_verify_workflow.rb
           ruby tools/test_verify_reports.rb
+          ruby tools/test_setup_action.rb
 
       # 全量 docs 跑 verify docs：不限改动文件，防止旧文档劣化。
       # acceptable 级（存档行号锚）不算失败；blocker/must_fix 让退出码非 0。
