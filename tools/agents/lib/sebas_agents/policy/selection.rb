@@ -90,11 +90,13 @@ module SebasAgents
         select_parallel(snapshot, milestones, observed) || main_action
       end
 
-      # 在并行轨上按序号找第一条能选出卡的轨；都无卡则返回 nil，交给调用方决定。
+      # 在并行轨上按序号找第一条能选出卡的轨；都无就绪卡则返回 nil，交给调用方决定。
+      # blocked 可以继续试下一轨（只是这条轨暂无可做卡），
+      # 但 invalid_plan 是配置错误，必须立即上报——跳过它会掩盖非法依赖图。
       def select_parallel(snapshot, milestones, observed)
         Milestones.parallel_tracks(milestones, open_issue_counts: open_counts(snapshot, milestones)).each do |track|
           result = evaluate_milestone(track, snapshot, observed, "并行轨")
-          return result if result.action == "claim_issue"
+          return result unless result.action == "blocked"
         end
 
         nil
