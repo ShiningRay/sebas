@@ -36,13 +36,8 @@ track: main
 
 ### 2.2 Issue
 
-三个维度彼此正交，全部用 GitHub 原生字段，不再用 `plan` 标签模拟任何一维：
-
-| 维度 | 载体 | 判定 |
-|---|---|---|
-| 已排期 | milestone | 有 = 已排期；无 = 未排期（不进候选集，也不进缺口清单） |
-| 可执行 | `Automation.kind` | 仅 `work_package` 可认领 |
-| 执行状态 | issue status | Todo 待开工 / In progress 实现中 / In review PR 已提 / Done 关闭 |
+三个维度全部用 GitHub 原生字段：milestone 表示已排期、`Automation.kind` 表示可认领、
+issue status 表示进度（Todo / In progress / In review / Done）。
 
 每张卡增加一个可见的 `Automation` 小节，使用 ` ```json automation ` 代码块：
 
@@ -71,24 +66,15 @@ track: main
 
 硬依赖以 WP 的「依赖」字段为权威。由该字段生成或逐条核对 Automation，再与 GitHub 原生 `blocked_by` 核对 issue 编号部分；三者不一致即 `invalid_plan`。B.1 DAG 图只用于排期展示，不作为另一套独立真值。首版只做一致性检查，不自动改依赖关系。
 
-建议增加少量流程标签（`ruby tools/setup_process_labels.rb --apply` 一次创建）。
-认领锁已改由 issue status 承担，标签只保留暂停与元数据两类：
-
-| 标签 | 含义 |
-|---|---|
-| `needs:human` | 等待人工决策；已有 PR 时仍保留归属，未建 PR 时转为暂停记录 |
-| `agent:resume` | Maintainer 已解决暂停事项并允许恢复，核验后可移除 |
-| `metadata:invalid` | 元数据缺失或矛盾，禁止自动开工 |
-
+流程标签只剩暂停与元数据两类（`ruby tools/setup_process_labels.rb --apply` 创建）：
+`needs:human`（等待人工决策）、`agent:resume`（允许恢复）、`metadata:invalid`（禁止自动开工）。
 `agent:in-progress` 已废弃：活动工作卡由 `status=In progress` 标识，全仓最多一张的约束不变。
-
 普通 assignee 只表示责任人，不能充当 Agent 认领锁。
 
-认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地运行记录
-（`phase=claiming`），再把 issue status 写成 `In progress`，回读确认后才转为 `claimed`；
-回读失败则记录 `claim_aborted`（含 `status_written` 标记），不启动 Harness。
-提 PR 后用 `ruby tools/sebas-process mark-review <issue> --apply` 推进到 `In review`；
-释放认领（`unclaim`）写回 `Todo`。
+认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地记录（`phase=claiming`），
+再把 status 写成 `In progress`，回读确认后才转为 `claimed`；回读失败则记 `claim_aborted`
+（含 `status_written`），不启动 Harness。提 PR 后 `mark-review` 推进到 `In review`，
+`unclaim` 写回 `Todo`。
 
 ### 2.3 前置完成的标准
 
