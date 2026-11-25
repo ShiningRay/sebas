@@ -1594,19 +1594,67 @@ def test_triage_omits_questions_section_when_absent
   assert_includes comment, "缺复现步骤"
 end
 
-# recommend 越界或非整数时不得渲染错的推荐标记。
-def test_triage_ignores_invalid_recommend_index
-  verdict = {
-    "decision" => "needs-design",
-    "body" => "x",
-    "questions" => [{"q" => "选哪个", "options" => ["甲", "乙"], "recommend" => 5}]
-  }
+def triage_comment(verdict)
   issue = SebasAgents::Model::Issue.from_hash(
     {"number" => 2, "title" => "x", "state" => "OPEN", "body" => "", "labels" => ["proposal"]}
   )
-  comment = SebasAgents::Triager.comment_for("needs-design", verdict)
+  SebasAgents::Triager.comment_for(verdict["decision"], verdict)
+end
+
+# recommend 越界、负数、非整数（含字符串数字与浮点）都不得渲染推荐标记。
+def test_triage_ignores_invalid_recommend_index
+  [5, -1, "1", 1.0, true].each do |bad|
+    verdict = {
+      "decision" => "needs-design", "body" => "x",
+      "questions" => [{"q" => "选哪个", "options" => ["甲", "乙"], "recommend" => bad}]
+    }
+    comment = triage_comment(verdict)
+    refute_includes comment, "（推荐）", "recommend=#{bad.inspect} 不应产生推荐标记"
+  end
+end
+
+# 过滤空项后编号按显示顺序重排，recommend 仍绑定原始选项。
+def test_triage_keeps_recommend_bound_to_original_option
+  verdict = {
+    "decision" => "needs-design", "body" => "x",
+    "questions" => [{"q" => "选哪个", "options" => ["", "甲", "乙"], "recommend" => 1}]
+  }
+  comment = triage_comment(verdict)
+  assert_includes comment, "- [ ] **A** 甲（推荐）"
+  assert_includes comment, "- [ ] **B** 乙"
+end
+
+# recommend 指向被过滤掉的空项：不得把推荐转嫁给别的选项。
+def test_triage_does_not_migrate_recommend_from_empty_option
+  verdict = {
+    "decision" => "needs-design", "body" => "x",
+    "questions" => [{"q" => "选哪个", "options" => ["", "甲", "乙"], "recommend" => 0}]
+  }
+  comment = triage_comment(verdict)
   refute_includes comment, "（推荐）"
-  refute_includes comment, "**F**"
+  assert_includes comment, "- [ ] **A** 甲"
+end
+
+# 空问题列表不产出小节；选项为空时给出「待补充选项」而不是静默省略。
+def test_triage_question_edge_cases
+  refute_includes triage_comment({"decision" => "needs-design", "body" => "x", "questions" => []}), "待决问题"
+  refute_includes triage_comment({"decision" => "needs-design", "body" => "x"}), "待决问题"
+  empty_options = triage_comment({"decision" => "needs-design", "body" => "x",
+    "questions" => [{"q" => "待定项", "options" => []}]})
+  assert_includes empty_options, "待补充选项"
+end
+
+# 结构非法必须拒绝执行，不能静默丢弃待决问题——丢了调用方看不出。
+def test_triage_rejects_malformed_questions
+  [
+    {"decision" => "needs-design", "body" => "x", "questions" => {"q" => "x"}},
+    {"decision" => "needs-design", "body" => "x", "questions" => [false]},
+    {"decision" => "needs-design", "body" => "x", "questions" => [{"q" => ""}]},
+    {"decision" => "needs-design", "body" => "x", "questions" => [{"q" => "x", "options" => "甲乙"}]}
+  ].each do |verdict|
+    error = assert_raises(SebasAgents::InvalidPlan) { triage_comment(verdict) }
+    assert_includes error.message, "questions"
+  end
 end
 
   def test_triage_proposal_acceptance_requires_maintainer_evidence

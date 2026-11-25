@@ -254,45 +254,60 @@ module SebasAgents
     #
     # 输入形状（verdict["questions"]）：
     #   [{"q" => "问题", "why" => "为何需要人定", "options" => ["A …", "B …"], "recommend" => 0}]
-    # options 至少两项；recommend 是 Recommended 的下标，可省。
+    # recommend 是 options 的**原始下标**，可省。
+    #
+    # 结构非法一律 InvalidPlan，不静默丢弃：待决问题丢了而 plan 仍返回 ok，
+    # 调用方看不出少了什么。只有「字段缺省」与「空数组」才当没有。
     def render_questions(questions)
-      return "" unless questions.is_a?(Array) && !questions.empty?
+      return "" if questions.nil?
+      raise InvalidPlan, "questions 必须是数组，收到 #{questions.class}" unless questions.is_a?(Array)
+      return "" if questions.empty?
 
       blocks = questions.each_with_index.map do |item, index|
-        next unless item.is_a?(Hash)
+        raise InvalidPlan, "questions[#{index}] 必须是对象" unless item.is_a?(Hash)
 
         render_question(item, number: index + 1)
-      end.compact
-      return "" if blocks.empty?
+      end
+      return "" if blocks.all?(&:nil?)
 
-      ([QUESTIONS_HEADING, "", "> 勾选不会回写。定了哪项，回一条评论或在裁决里写明编号即可。", ""] + blocks).join("\n")
+      ([QUESTIONS_HEADING, "", "> 勾选不会回写。定了哪项，回一条评论或在裁决里写明编号即可。", ""] + blocks.compact).join("\n")
     end
 
     def render_question(item, number:)
       title = item["q"].to_s.strip
-      return nil if title.empty?
+      # 标题为空是作者失误，不是「没有这个问题」——静默丢弃会让编号与实际不符。
+      raise InvalidPlan, "questions[#{number - 1}].q 不能为空" if title.empty?
 
-      options = Array(item["options"]).map(&:to_s).reject(&:empty?)
+      raw_options = item["options"]
+      raise InvalidPlan, "questions[#{number - 1}].options 必须是数组" unless raw_options.nil? || raw_options.is_a?(Array)
+
+      # 保留原始下标，否则过滤空项会让 recommend 指向错的选项。
+      pairs = Array(raw_options).each_with_index.map { |text, i| [text.to_s.strip, i] }
+      pairs.reject! { |text, _| text.empty? }
+
       recommend = item["recommend"].is_a?(Integer) ? item["recommend"] : nil
-      recommend = nil if recommend && (recommend.negative? || recommend >= options.length)
+      recommend = nil if recommend&.negative?
 
       lines = ["**Q#{number}. #{title}**"]
-      lines << "" unless item["why"].to_s.strip.empty?
-      lines << item["why"].to_s.strip unless item["why"].to_s.strip.empty?
+      why = item["why"].to_s.strip
+      unless why.empty?
+        lines << ""
+        lines << why
+      end
       lines << ""
-      if options.empty?
+      if pairs.empty?
         lines << "- [ ] 待补充选项"
       else
-        options.each_with_index do |option, i|
-          mark = i == recommend ? "（推荐）" : ""
-          lines << "- [ ] **#{option_key(i)}** #{option}#{mark}"
+        pairs.each_with_index do |(text, original_index), display_index|
+          mark = original_index == recommend ? "（推荐）" : ""
+          lines << "- [ ] **#{option_key(display_index)}** #{text}#{mark}"
         end
       end
       lines << ""
       lines.join("\n")
     end
 
-    # A/B/C… 便于回帖时只写字母。
+    # A/B/C… 便于回帖时只写字母；按显示顺序编号，不是原始下标。
     def option_key(index)
       ("A".ord + index).chr
     end
