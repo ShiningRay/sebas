@@ -50,29 +50,25 @@ macOS 上 OpenSSL 开发文件不在系统路径，需要把 Homebrew keg 直接
 与 CI 的 `.github/actions/setup` 口径一致——那里只探测、不安装）：
 
 ```sh
-mise install crystal@1.22.3    # 与 CI 跟踪的 latest stable 对齐；勿 brew upgrade
+mise install crystal@1.22.3    # 仓库根目录的 mise.toml 已钉版；勿 brew upgrade
 OSSL=/opt/homebrew/opt/openssl@3
 CRYSTAL_LIBRARY_PATH=$OSSL/lib LDFLAGS=-L$OSSL/lib CPPFLAGS=-I$OSSL/include \
-  PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- crystal spec
+  PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- make check
 ```
 
 不想用 mise 时，直接用解释器绝对路径（`mise where crystal@1.22.3` 可查）：
 
 ```sh
 CRYSTAL_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib \
-  "$(mise where crystal@1.22.3)/bin/crystal" spec
+  make CRYSTAL="$(mise where crystal@1.22.3)/bin/crystal" check
 ```
 
-`make release` 调用 PATH 上的 `crystal`，**不继承**上面 `mise exec` 的版本选择。若 PATH 上不是 1.22 或更新版本，
-`vault.cr` 的 `gcm_tag` 会在 release 构建时失败。用同一版本与环境变量跑：
+`make` 的所有目标都先过 `crystal-version-check`：版本低于 1.22 时立刻报错退出，
+不会再让你等到编译 `vault.cr` 才看到 `undefined method 'gcm_tag'`。
+`make` 默认取 PATH 上的 `crystal`，可用 `CRYSTAL=` 覆盖——这一路径**不继承** `mise exec` 的版本选择，
+所以要注意 PATH 上是哪一个。
 
-```sh
-OSSL=/opt/homebrew/opt/openssl@3
-CRYSTAL_LIBRARY_PATH=$OSSL/lib LDFLAGS=-L$OSSL/lib CPPFLAGS=-I$OSSL/include \
-  PKG_CONFIG_PATH=$OSSL/lib/pkgconfig mise exec crystal@1.22.3 -- make release
-```
-
-`OSSL` 必须在这一步重新赋值：上一节的 `mise install` 与绝对路径写法都不保证它留在当前 shell 里。
+`OSSL` 必须每条命令重新赋值：`mise install` 与绝对路径写法都不保证它留在当前 shell 里。
 
 `make release` 前先确认 spec 全绿；强杀演练 spec 需要 `bin/sebas` 存在才实跑（否则 pending），
 所以 `make release` 之后才能解锁。

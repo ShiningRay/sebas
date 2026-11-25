@@ -20,7 +20,7 @@ By participating you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Requirements:
 
-- Crystal **>= 1.19** (see `shard.yml`); CI tracks the latest stable release.
+- Crystal **>= 1.22** (see `shard.yml`); CI tracks the latest stable release.
 - Shards (bundled with Crystal).
 - A C toolchain with `libsqlite3`, OpenSSL, and PCRE2 development headers.
 - **Windows**: MSVC build of Crystal + SQLite3 (e.g. `vcpkg install sqlite3`), or MSYS2 UCRT64.
@@ -32,7 +32,7 @@ shards install
 crystal spec
 ```
 
-*中文要点：需要 Crystal ≥1.19、Shards、带 libsqlite3/OpenSSL/PCRE2 头的 C 工具链；Windows 用 MSVC 版 Crystal + SQLite3，或 MSYS2 UCRT64。*
+*中文要点：需要 Crystal ≥1.22（`src/platform/keys/vault.cr` 用了 1.22 才有的 `OpenSSL::Cipher#gcm_tag`）、Shards、带 libsqlite3/OpenSSL/PCRE2 头的 C 工具链；Windows 用 MSVC 版 Crystal + SQLite3，或 MSYS2 UCRT64。*
 
 ## Quality gates
 

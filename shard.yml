@@ -4,7 +4,7 @@ version: 0.1.0
 authors:
   - ShiningRay
 
-crystal: ">= 1.19.0"
+crystal: ">= 1.22.0"
 
 license: MIT
 

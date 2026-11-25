@@ -46,7 +46,7 @@ verification, triage, and release management.
 
 ## Key facts
 
-- Language: Crystal >= 1.19
+- Language: Crystal >= 1.22
 - Package manager: Shards (bundled with Crystal)
 - Native dependencies: libsqlite3 (with FTS5), OpenSSL, PCRE2
 - Platforms: Linux (x86_64), macOS (x86_64 / arm64), Windows (x86_64)
