@@ -37,8 +37,8 @@ module Sebas
         end
         config = Config::Loader.load(config_path)
         data_dir = Path[Path[config_path].parent, config.gateway.data_dir]
-        gateway = Gateway.new(config, data_dir, config_path) do |agent, _api_key|
-          Gateway.default_provider(agent, nil)
+        gateway = Gateway.new(config, data_dir, config_path) do |agent, api_key|
+          GatewaySecrets.default_provider(agent, api_key)
         end
         gateway.run
         sleep # 常驻

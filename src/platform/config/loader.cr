@@ -1,4 +1,5 @@
 require "yaml"
+require "../../log"
 require "./schema"
 require "../../sessions/scheduling/policy"
 
@@ -22,6 +23,7 @@ module Sebas
 
       module Loader
         extend self
+        Log = ::Sebas::Log.for("sebas.config.loader")
 
         def load(path : String | Path) : Config
           path = Path[path]
@@ -38,6 +40,8 @@ module Sebas
           config = Config.from_yaml(expand_env_vars(raw))
           errors = validate(config)
           raise ValidationError.new(errors) unless errors.empty?
+          # 旧配置迁移指引（#214：不静默失败——加载可用，但逐条告知新形状）
+          migration_hints(config).each { |hint| Log.warn { "migration hint: #{hint}" } }
           config
         rescue ex : YAML::ParseException
           raise ConfigError.new("invalid YAML: #{ex.message}")
@@ -64,12 +68,56 @@ module Sebas
 
         def validate(config : Config) : Array(String)
           errors = [] of String
+          validate_providers(config, errors)
           validate_agents(config, errors)
           validate_channels(config, errors)
           validate_bindings(config, errors)
           validate_gateway(config, errors)
           validate_session_policies(config, errors)
           errors
+        end
+
+        # provider 层校验（#214）：protocol 枚举、agent.provider 悬空引用、
+        # provider 与 provider_ref 双写冲突（fail-closed 先验后换）
+        private def validate_providers(config : Config, errors : Array(String)) : Nil
+          config.providers.each do |name, pcfg|
+            unless {"openai-compatible", "anthropic"}.includes?(pcfg.protocol)
+              errors << "providers.#{name}.protocol must be openai-compatible or anthropic (got '#{pcfg.protocol}')"
+            end
+            if base = pcfg.base_url
+              errors << "providers.#{name}.base_url must not be empty" if base.strip.empty?
+            end
+          end
+          config.agents.each do |name, agent|
+            next unless pref = agent.provider
+            unless config.providers.has_key?(pref)
+              errors << "agents.#{name}.provider '#{pref}' references an undefined providers entry"
+            end
+            if legacy = agent.provider_ref
+              unless legacy == pref
+                errors << "agents.#{name}: provider ('#{pref}') and provider_ref ('#{legacy}') disagree; remove provider_ref"
+              end
+            end
+          end
+        end
+
+        # 旧配置迁移指引（#214 纯函数）：旧形状合法可用（过渡支持），但逐条
+        # 给出可读迁移路径；新形状配置返回空数组。loader 加载时经 Log.warn 输出。
+        def migration_hints(config : Config) : Array(String)
+          hints = [] of String
+          config.agents.each do |name, agent|
+            unless agent.provider
+              if legacy = agent.provider_ref
+                hints << "agents.#{name}.provider_ref is deprecated: define providers.#{legacy} { api_key, base_url, protocol } and set agents.#{name}.provider: #{legacy}"
+              elsif agent.model.includes?("/") && (inferred = agent.model.split("/").first?) && !inferred.strip.empty?
+                hints << "agents.#{name}.model '#{agent.model}' encodes the vendor as a prefix (legacy): define providers.#{inferred} { api_key, base_url, protocol } and set agents.#{name}.provider: #{inferred} with a bare model name"
+              end
+            end
+            if agent.api_key
+              hints << "agents.#{name}.api_key is deprecated: move it to providers.<name>.api_key (one key shared by all referencing agents; migrated to vault at gateway start)"
+            end
+          end
+          hints
         end
 
         private def validate_agents(config : Config, errors : Array(String)) : Nil

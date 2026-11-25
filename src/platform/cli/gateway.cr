@@ -191,14 +191,6 @@ module Sebas
           reload_result_payload(result)
         end
 
-        def self.default_provider(agent : Config::AgentConfig, api_key : String?) : Providers::Provider
-          api_key = agent.api_key || api_key
-          provider_ref = agent.provider_ref || agent.model.split("/").first?
-          spec = Providers.spec_for(provider_ref || "")
-          raise ::Exception.new("unknown provider '#{provider_ref}' for model '#{agent.model}'") unless spec
-          Providers::HttpProvider.new(spec, agent.model.split("/", limit: 2)[1]? || agent.model, api_key || "")
-        end
-
         def run : Nil
           @ipc.listen
           @http.listen

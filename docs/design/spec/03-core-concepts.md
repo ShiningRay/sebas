@@ -38,7 +38,7 @@ session_key = "agent:<agent_id>:<account_id>:<channel_type>:<peer>"
 ### 3.4 配置树示例（YAML）
 
 ```yaml
-# config.yaml —— 顶层：channels / agents / bindings / workflows / gateway
+# config.yaml —— 顶层：channels / providers / agents / bindings / workflows / gateway
 channels:
   email:
     accounts:
@@ -85,15 +85,26 @@ channels:
           app_id: ${LARK_APP_ID}
           app_secret_ref: keyring:lark/lark-intl/secret
 
+providers:                           # Provider 层（#214）：厂商级配置，agent 按名引用
+  deepseek:
+    api_key: ${DEEPSEEK_API_KEY}     # 启动时迁入 vault（§10.2）；多 agent 共享一份
+    base_url: https://api.deepseek.com
+    protocol: openai-compatible      # openai-compatible | anthropic（协议与厂商解耦）
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    base_url: https://api.anthropic.com/v1
+    protocol: anthropic
+
 agents:                              # Agent：大脑，可多实例
   main:
-    model: deepseek/chat
-    provider_ref: deepseek
+    provider: deepseek               # 引用 providers.<name>
+    model: deepseek-chat             # 裸模型名（不再用 <provider>/ 前缀编码厂商）
     persona_file: agents/main/SOUL.md
     memory: { window: 50 }
     tools: { allow: ["*"] }
   work:
-    model: anthropic/claude
+    provider: anthropic
+    model: claude-sonnet-4
     persona_file: agents/work/SOUL.md
 
 bindings:                            # Binding：路由表（数组，most-specific 优先）
@@ -110,4 +121,4 @@ gateway:
   collaboration: { max_hops: 4 }     # agent 间传递上限（防环），见 §8.1
 ```
 
-要点：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。配置加载沿用 autobot 的 `${VAR}` 展开 + chmod 0o600（autobot A 级件：`config/loader.cr` 机制），但**敏感值改为 keyring 引用**（`*_ref: keyring:<namespace>/<key>`，§10.2）。
+要点：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。配置加载沿用 autobot 的 `${VAR}` 展开 + chmod 0o600（autobot A 级件：`config/loader.cr` 机制），但**敏感值改为 keyring 引用**（`*_ref: keyring:<namespace>/<key>`，§10.2）。provider 层（#214）：厂商级密钥 / base_url / protocol 独立于 agent，`agents.<name>.provider` 引用 `providers.<name>`，model 为裸模型名；旧形状（`agents.<name>.api_key` + `<provider>/<model>` 前缀推断、`provider_ref` 兼容字段）仍可加载并在启动时输出迁移指引，不静默失败。

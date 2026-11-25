@@ -80,5 +80,106 @@ module Sebas
       gateway.vault.get("agent", "main", "api_key").should eq("sk-hot-reload-7")
       gateway.shutdown
     end
+
+    describe "provider 层密钥（#214）" do
+      it "providers.<name>.api_key 迁 vault 走 provider 命名空间且配置树抹除" do
+        dir = gateway_tmp_dir("provider-vault")
+        yaml = <<-YAML
+          providers:
+            deepseek: { api_key: sk-provider-1, base_url: https://api.deepseek.com }
+          agents:
+            main: { provider: deepseek, model: deepseek-chat }
+          YAML
+        config = ::Sebas::Platform::Config::Loader.from_content(yaml)
+        config.providers["deepseek"].api_key.should eq("sk-provider-1")
+        gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |_agent, _key|
+          ::Sebas::Providers::FakeProvider.new("fake", ["ok"])
+        end
+        config.providers["deepseek"].api_key.should be_nil
+        gateway.vault.get("provider", "deepseek", "api_key").should eq("sk-provider-1")
+        gateway.shutdown
+      end
+
+      it "两个 agent 引用同一 provider，工厂各收到同一份密钥（一份配置共享）" do
+        dir = gateway_tmp_dir("provider-shared")
+        yaml = <<-YAML
+          providers:
+            deepseek: { api_key: sk-one-for-two, base_url: https://api.deepseek.com }
+          agents:
+            main: { provider: deepseek, model: deepseek-chat }
+            work: { provider: deepseek, model: deepseek-reasoner }
+          YAML
+        config_path = dir / "config.yaml"
+        File.write(config_path, yaml)
+        config = ::Sebas::Platform::Config::Loader.from_content(yaml)
+        received = {} of String => String?
+        gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir, config_path.to_s) do |agent, key|
+          received[agent.model] = key
+          ::Sebas::Providers::FakeProvider.new("fake", ["ok"])
+        end
+        gateway.trigger_reload
+        gateway.shutdown
+        received["deepseek-chat"].should eq("sk-one-for-two")
+        received["deepseek-reasoner"].should eq("sk-one-for-two")
+      end
+
+      it "轮换 provider 密钥经热更新传播到全部引用 agent（下一 turn 生效）" do
+        dir = gateway_tmp_dir("provider-rotate")
+        yaml = <<-YAML
+          providers:
+            deepseek: { api_key: sk-rotate-old, base_url: https://api.deepseek.com }
+          agents:
+            main: { provider: deepseek, model: deepseek-chat }
+            work: { provider: deepseek, model: deepseek-reasoner }
+          YAML
+        config_path = dir / "config.yaml"
+        File.write(config_path, yaml)
+        config = ::Sebas::Platform::Config::Loader.from_content(yaml)
+        received = [] of String?
+        gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir, config_path.to_s) do |_agent, key|
+          received << key
+          ::Sebas::Providers::FakeProvider.new("fake", ["ok"])
+        end
+        gateway.trigger_reload
+        old_calls = received.compact.size
+        old_calls.should eq(2) # 两个 agent 各一次，均为旧密钥
+
+        hot_yaml = <<-YAML
+          providers:
+            deepseek: { api_key: sk-rotate-new, base_url: https://api.deepseek.com }
+          agents:
+            main: { provider: deepseek, model: deepseek-chat }
+            work: { provider: deepseek, model: deepseek-reasoner }
+          YAML
+        File.write(config_path, hot_yaml)
+        gateway.trigger_reload
+        gateway.shutdown
+        news = received.compact
+        news.count("sk-rotate-old").should eq(2)
+        news.count("sk-rotate-new").should eq(2)
+        gateway.vault.get("provider", "deepseek", "api_key").should eq("sk-rotate-new")
+      end
+
+      it "遗留 agent 级 api_key 过渡可用：provider 无密钥时回退 agent 密钥" do
+        dir = gateway_tmp_dir("provider-legacy-fallback")
+        yaml = <<-YAML
+          providers:
+            deepseek: { base_url: https://api.deepseek.com }
+          agents:
+            main: { provider: deepseek, model: deepseek-chat, api_key: sk-legacy-agent }
+          YAML
+        config_path = dir / "config.yaml"
+        File.write(config_path, yaml)
+        config = ::Sebas::Platform::Config::Loader.from_content(yaml)
+        received = [] of String?
+        gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir, config_path.to_s) do |_agent, key|
+          received << key
+          ::Sebas::Providers::FakeProvider.new("fake", ["ok"])
+        end
+        gateway.trigger_reload
+        gateway.shutdown
+        received.compact.should contain("sk-legacy-agent")
+      end
+    end
   end
 end
