@@ -86,7 +86,9 @@ module Sebas
         dir = gateway_tmp_dir("provider-vault")
         yaml = <<-YAML
           providers:
-            deepseek: { api_key: sk-provider-1, base_url: https://api.deepseek.com }
+            deepseek:
+              api_key: sk-provider-1
+              base_url: https://api.deepseek.com
           agents:
             main: { provider: deepseek, model: deepseek-chat }
           YAML
@@ -104,7 +106,9 @@ module Sebas
         dir = gateway_tmp_dir("provider-shared")
         yaml = <<-YAML
           providers:
-            deepseek: { api_key: sk-one-for-two, base_url: https://api.deepseek.com }
+            deepseek:
+              api_key: sk-one-for-two
+              base_url: https://api.deepseek.com
           agents:
             main: { provider: deepseek, model: deepseek-chat }
             work: { provider: deepseek, model: deepseek-reasoner }
@@ -127,7 +131,9 @@ module Sebas
         dir = gateway_tmp_dir("provider-rotate")
         yaml = <<-YAML
           providers:
-            deepseek: { api_key: sk-rotate-old, base_url: https://api.deepseek.com }
+            deepseek:
+              api_key: sk-rotate-old
+              base_url: https://api.deepseek.com
           agents:
             main: { provider: deepseek, model: deepseek-chat }
             work: { provider: deepseek, model: deepseek-reasoner }
@@ -146,7 +152,9 @@ module Sebas
 
         hot_yaml = <<-YAML
           providers:
-            deepseek: { api_key: sk-rotate-new, base_url: https://api.deepseek.com }
+            deepseek:
+              api_key: sk-rotate-new
+              base_url: https://api.deepseek.com
           agents:
             main: { provider: deepseek, model: deepseek-chat }
             work: { provider: deepseek, model: deepseek-reasoner }
@@ -164,7 +172,8 @@ module Sebas
         dir = gateway_tmp_dir("provider-legacy-fallback")
         yaml = <<-YAML
           providers:
-            deepseek: { base_url: https://api.deepseek.com }
+            deepseek:
+              base_url: https://api.deepseek.com
           agents:
             main: { provider: deepseek, model: deepseek-chat, api_key: sk-legacy-agent }
           YAML

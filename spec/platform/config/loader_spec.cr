@@ -270,7 +270,9 @@ module Sebas
             # 新形状：无指引
             Loader.migration_hints(Loader.from_content(<<-YAML
               providers:
-                deepseek: { api_key: k, base_url: https://api.deepseek.com }
+                deepseek:
+                  api_key: k
+                  base_url: https://api.deepseek.com
               agents:
                 main: { provider: deepseek, model: deepseek-chat }
               YAML
