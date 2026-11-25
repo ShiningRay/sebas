@@ -598,6 +598,15 @@ module Sebas
 
         # 去重前置探测（admission 序：先探重再建批，避免 duplicate 路径留孤儿批次；
         # 竞态仍由 admit_session_input 的 event_id 主键原子守卫兜底）
+        # admission 解析结果回查（M4.5-WP6/#176）：replay 时按 event_id 取
+        # envelope 的 session_key 作为 admitted_session——binding 热换不影响
+        # 在途/未完成事件归属（无 envelope 行返回 nil，调用方回落 binding 解析）
+        def session_input_session_key(event_id : String) : String?
+          @db.query_one?(
+            "SELECT session_key FROM session_inputs WHERE event_id = ?", event_id, as: String
+          )
+        end
+
         def session_input?(event_id : String) : Bool
           count = @db.query_one("SELECT COUNT(*) FROM session_inputs WHERE event_id = ?", event_id, as: Int64)
           count.positive?

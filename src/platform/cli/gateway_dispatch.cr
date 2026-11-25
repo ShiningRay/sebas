@@ -310,7 +310,11 @@ module Sebas
                 data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
               )
               Log.info { "replaying unfinished intent #{intent.id} (#{intent.status})" }
-              process_message(message, replay: true)
+              # admission 会话归属回查（#176）：有 envelope 行即按 admission 时
+              # session_key 重放（binding 热换不影响归属）；无行（M0 直连 intent）
+              # 回落 binding 解析
+              admitted = @store.session_input_session_key(intent.id)
+              process_message(message, replay: true, admitted_session: admitted)
             rescue ex : ::Exception
               Log.error(exception: ex) { "intent replay failed (#{intent.id})" }
             end
