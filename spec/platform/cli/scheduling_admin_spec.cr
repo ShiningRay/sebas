@@ -122,7 +122,7 @@ module Sebas
       code, body = gateway.handle_scheduling_admin("config.scheduling.reset", reset_params)
       gateway.shutdown
       code.should eq(200)
-      JSON.parse(body)["revision"].as_s.should_not be_empty                                           # reset 也是变更（推进版本）
+      JSON.parse(body)["revision"].as_i.should eq(1)                                                  # reset 也是变更（推进版本，qijV 数值回执）
       gateway.effective_snapshot("agent:main:x:email:y@example.com").batch_mode.should eq("debounce") # 继承恢复
     end
 
