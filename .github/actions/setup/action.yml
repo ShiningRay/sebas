@@ -12,12 +12,66 @@ inputs:
 runs:
   using: composite
   steps:
+    # 自托管 runner 上 Crystal 工具链本来不跨 job 保留：install-crystal 把官方
+    # 包解压到 $RUNNER_TEMP，而 runner 每个 job 开始都清空 RUNNER_TEMP
+    # （TempDirectoryManager），于是同一台机器每个 job 重下 ~57MB 再解压，
+    # 实测 Setup toolchain 固定多花 10-15s。
+    #
+    # 这里在自托管类 Unix runner 上把工具链装进 runner 自己的工具缓存
+    # （_work/_tool，跨 job 持久）并按版本分目录，命中就只导出 PATH。判断上游
+    # 最新版只发一个 HEAD 读 302 的 Location。并发、降级与兜底规则见同目录
+    # crystal-cache.sh。Windows 不参与：那边的包结构与 PATH 语义不同，未在本机验证。
+    - name: Prepare Crystal toolchain cache
+      id: crystal_cache
+      if: runner.environment == 'self-hosted' && runner.os != 'Windows'
+      shell: bash
+      env:
+        CRYSTAL_REQUESTED: ${{ inputs.crystal }}
+      run: bash "${{ github.action_path }}/crystal-cache.sh" prepare
+
     # 自托管 runner 用 runner token 发请求，避免匿名调用被 GitHub 限流。
+    # destination 为空（托管 runner，或缓存不可用）时 install-crystal 回落到
+    # 自己默认的 $RUNNER_TEMP/crystal-<version>-<shards>-<arch>，行为不变。
     - name: Install Crystal
+      id: install_crystal
+      if: steps.crystal_cache.outputs.hit != 'true'
       uses: crystal-lang/install-crystal@47f17b5ecff0cc09e96fa95f5220311329bf4bc8 # v1
       with:
         crystal: ${{ inputs.crystal }}
+        destination: ${{ steps.crystal_cache.outputs.destination }}
         token: ${{ github.token }}
+
+    # 缓存命中时 install-crystal 不会跑，它注册的 error annotation matcher 也就
+    # 不会生效——补齐一份（内容取自 crystal-lang/install-crystal v1 的 .github/，
+    # 随本仓版本钉住），让编译/测试错误在 PR 里照常有标注。
+    - name: Register Crystal problem matchers
+      if: steps.crystal_cache.outputs.hit == 'true'
+      shell: bash
+      run: |
+        echo "::add-matcher::${{ github.action_path }}/matchers/crystal.json"
+        echo "::add-matcher::${{ github.action_path }}/matchers/crystal-spec.json"
+
+    # 无论安装成没成功都要放锁：失败时残留的目录不能盖完成标记，下一个 job 会
+    # 判为半成品重装；锁不放则要等 TTL 过期。owner 让 release 只放本 job 那把
+    # 锁——本 job 被强杀、锁被 TTL 接管后，这里不能把别的 job 的新锁删掉。
+    #
+    # CRYSTAL_CACHE_INSTALLED 取 Install Crystal 的 outcome 而不是 conclusion：
+    # 该步骤被跳过（缓存命中）时 outcome 是 'skipped'、conclusion 是 'success'，
+    # 拿 conclusion 会让「跳过安装」被当成「装好了」。
+    - name: Release Crystal toolchain cache lock
+      if: always() && steps.crystal_cache.outputs.lock != ''
+      shell: bash
+      env:
+        CRYSTAL_CACHE_LOCK: ${{ steps.crystal_cache.outputs.lock }}
+        CRYSTAL_CACHE_OWNER: ${{ steps.crystal_cache.outputs.owner }}
+        CRYSTAL_CACHE_ROOT: ${{ steps.crystal_cache.outputs.destination }}
+        CRYSTAL_CACHE_VERSION: ${{ steps.crystal_cache.outputs.version }}
+        CRYSTAL_CACHE_INSTALLED: ${{ steps.install_crystal.outcome == 'success' }}
+      run: |
+        bash "${{ github.action_path }}/crystal-cache.sh" release \
+          "$CRYSTAL_CACHE_LOCK" "$CRYSTAL_CACHE_OWNER" \
+          "$CRYSTAL_CACHE_ROOT" "$CRYSTAL_CACHE_VERSION" \
+          "$CRYSTAL_CACHE_INSTALLED"
 
     - name: Install SQLite3 (Linux)
       if: runner.os == 'Linux'
