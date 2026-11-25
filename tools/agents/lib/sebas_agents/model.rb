@@ -120,7 +120,7 @@ module SebasAgents
 
       # 执行中：In progress / In review。认领锁改由 status 承担。
       def working?
-        WORKING_STATUSES.include?(status)
+        WORKING_STATUSES.any? { |name| status?(name) }
       end
 
       def type?(name)

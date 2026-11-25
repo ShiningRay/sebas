@@ -1626,6 +1626,33 @@ class CliTest < Minitest::Test
     assert result.success?
     assert_equal [%w[git push origin main]], runner.calls
   end
+
+  # 有 Automation 块但结构残缺时不能短路成工作包：会按坏元数据写 type/assignee。
+  # 也不能静默降级为普通研判——必须显式拒绝。
+  def test_triage_rejects_malformed_automation_block
+    data = snapshot(issues: [issue(7, body: "```json automation\n{\"kind\":\"work_package\"}\n```\n")])
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "7", "--snapshot", snap])
+      assert_equal 1, status
+      assert_includes out, "invalid_plan"
+    end
+  end
+
+  # Proposal 即使带 Automation 块也走专用判定，不得被工作包短路抢走。
+  def test_triage_proposal_with_automation_block_still_uses_proposal_rules
+    block = "```json automation\n" \
+      "{\"schema\":1,\"kind\":\"work_package\",\"order\":[1],\"depends_on\":[],\"external\":[]}\n```\n"
+    data = snapshot(issues: [issue(8, body: block, labels: ["proposal"])])
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap])
+      assert_equal 1, status
+      assert_equal "needs-model-verdict", JSON.parse(out)["decision"]
+    end
+  end
 end
 
 class JsonBlockTest < Minitest::Test

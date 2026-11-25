@@ -53,7 +53,7 @@ Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快�
 | 可执行 | `Automation.kind` | 仅 `work_package` 可被 Implementer 认领 |
 | 执行状态 | issue status | Backlog → Todo → In progress → In review → Done |
 
-带 `Automation` 块的工作包卡不做研判，只做三件事：
+带 `Automation` 块**且不带 `proposal` 标签**的工作包卡不做研判，只做三件事（Proposal 即使含 Automation 块也走 §2 的专用判定，不得被短路）：
 - 缺 type → 按 kind 回填（`work_package` → Feature，`tracking`/`manual`/`design` → Task）
 - 无 assignee → 自动补指派 ShiningRay
 - 已挂 milestone 且 status 为 Backlog/空 → 推进到 Todo

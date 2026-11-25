@@ -210,8 +210,9 @@ module AcceptProposal
   def preflight!(issue, number, repo:, login:, maintainers:)
     labels = Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s }
     raise Failure, "##{number} 没有 proposal 标签，不能用本命令接受" unless labels.include?("proposal")
-    # 工作包卡带 Automation 块；Proposal 不该有。用块而不是已废弃的 plan 标签判断。
-    if issue["body"].to_s.include?("```json automation")
+    # 工作包卡带 Automation 块；Proposal 不该有。用共享解析器识别，
+    # 避免围栏空格/tab 变体绕过（手写 include? 只认单空格）。
+    if SebasAgents::JsonBlock.present?(issue["body"].to_s, "automation")
       raise Failure, "##{number} 带 Automation 块，是工作包卡，不能按 Proposal 接受"
     end
     raise Failure, "##{number} 已关闭（#{issue["state"]}）" unless issue["state"] == "open"

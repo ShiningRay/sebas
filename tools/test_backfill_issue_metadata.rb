@@ -9,12 +9,14 @@ class IssueMetadataBackfillTest < Minitest::Test
   SCRIPT = File.expand_path("backfill_issue_metadata.rb", __dir__)
 
   # 只加载纯函数与正则常量，不执行文件末尾的网络流程。
+  # 用「首个顶层语句前截断」的方式取定义区：正则逐函数抽取会漏掉
+  # 函数体里的复杂结构（多行 rescue、带括号的 scan 等）。
   def self.load_helpers
     source = File.read(SCRIPT, encoding: "UTF-8")
+    # 只取被测试的纯函数：网络相关的 gh_json/gh!/fetch_issues 及主流程都不加载。
+    names = %w[automation_kind infer_type infer_status fetch_issues].first(3)
     constant = "MILESTONE_TITLE = #{source[/^MILESTONE_TITLE = (.+)$/, 1]}"
-    methods = %w[automation_kind infer_type infer_status].map do |name|
-      source[/^def #{name}\b.*?^end$/m] or raise "找不到 #{name}"
-    end
+    methods = names.map { |name| source[/^def #{name}\(.*?^end$/m] or raise "找不到 #{name}" }
     [constant] + methods
   end
 
@@ -32,8 +34,27 @@ class IssueMetadataBackfillTest < Minitest::Test
     assert_nil automation_kind("## 目标\n没有 Automation\n")
   end
 
-  def test_automation_kind_returns_nil_on_broken_json
-    assert_nil automation_kind("```json automation\n{not json}\n```\n")
+  # 非法块必须抛错而不是返回 nil：后者会退化成「无 Automation」，
+  # 按标题兜底写入错误的 type，把坏元数据固化。
+  def test_automation_kind_raises_on_broken_json
+    err = assert_raises(RuntimeError) { automation_kind("```json automation\n{not json}\n```\n") }
+    assert_includes err.message, "不是合法 JSON"
+  end
+
+  def test_automation_kind_raises_on_duplicate_blocks
+    body = "```json automation\n{\"kind\":\"work_package\",\"order\":[1],\"depends_on\":[],\"external\":[]}\n```\n" * 2
+    err = assert_raises(RuntimeError) { automation_kind(body) }
+    assert_includes err.message, "元数据冲突"
+  end
+
+  def test_automation_kind_raises_on_missing_fields
+    err = assert_raises(RuntimeError) { automation_kind("```json automation\n{\"kind\":\"work_package\"}\n```\n") }
+    assert_includes err.message, "缺字段"
+  end
+
+  def test_automation_kind_accepts_multi_space_fence
+    body = "```json  automation\n{\"kind\":\"work_package\",\"order\":[1],\"depends_on\":[],\"external\":[]}\n```\n"
+    assert_equal "work_package", automation_kind(body)
   end
 
   # type 按 issue 性质定：可执行卡是 Feature，父卡/人工卡/设计卡是 Task。

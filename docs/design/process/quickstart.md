@@ -164,10 +164,11 @@ Scribe 拆出的工作包卡选卡，Proposal 本身不进实现选卡。
 ```sh
 ruby tools/sebas-process next                 # 输出单一动作
 ruby tools/sebas-process claim 39 --dry-run   # 校验是否可认领
-ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + 远端标签并回读
+ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + status=In progress 并回读
 ruby tools/sebas-process resume 39            # 续跑本机已认领卡
 ruby tools/sebas-process verify merge 95 39 --pre  # 合并前自检（CI + 关联 issue + Evidence）
-ruby tools/sebas-process unclaim 39 --apply   # 收口后释放认领（要求已合并 + completed）
+ruby tools/sebas-process mark-review 39 --apply  # 提 PR 后：status → In review
+ruby tools/sebas-process unclaim 39 --apply   # 收口后释放认领（要求已合并 + completed；已完成卡保持 Done）
 ```
 
 合并前还需让 issue 带有可机读 Evidence。两阶段登记（#126）由

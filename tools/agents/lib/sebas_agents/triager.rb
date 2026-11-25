@@ -192,7 +192,14 @@ module SebasAgents
     # plan 标签已废弃——是否已排期由 milestone 表达，是否可执行由 kind 表达，
     # 是否需要研判由「有没有 Automation 块」表达。
     def work_package_card?(issue)
-      !issue.automation.nil? && !issue.label?("proposal")
+      return false if issue.label?("proposal")
+
+      automation = Policy::Dependencies.automation_for(issue)
+      return false if automation.nil?
+
+      # 有块不等于合法：缺 kind/order/depends_on/external 的块会由
+      # automation_for 抛 InvalidPlan，显式拒绝而不是静默放行。
+      true
     end
 
     # 存量 plan 卡没有 type 时按 kind 回填：父卡与人工卡是 Task，可执行卡是 Feature。

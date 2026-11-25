@@ -477,6 +477,37 @@ class CliRobustnessTest < Minitest::Test
       assert_equal true, payload["dry_run"]
     end
   end
+
+  # 正常收口路径：合并后 GitHub 自动把 status 置为 Done。
+  # 若仍要求「执行中」，这条主路径会被自己拒绝；写回 Todo 还会抹掉终态。
+  def test_unclaim_accepts_done_status
+    data = snapshot(
+      issues: [issue(4, body: automation, status: "Done",
+        state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [4], "checks" => []}]
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert_equal "released", payload["status"]
+      refute(payload["reasons"].any? { |r| r.include?("无需释放") }, payload["reasons"].inspect)
+    end
+  end
+
+  # 既没开工（Backlog）也没完成：没被认领过，释放无意义。
+  def test_unclaim_refuses_when_never_claimed
+    data = snapshot(
+      issues: [issue(4, body: automation, status: "Backlog",
+        state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [4], "checks" => []}]
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 1, status
+      assert_includes out, "无需释放"
+    end
+  end
 end
 
 class PolicyRegressionTest < Minitest::Test

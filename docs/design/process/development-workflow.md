@@ -98,9 +98,9 @@ Agent 判定 active milestone 的算法见 [triager.md](triager.md) §3。
 ```
 新建 issue            → Backlog
 Triager 补 type/指派  → 仍 Backlog（未排期）
-Maintainer 挂 milestone → Todo
+Maintainer 挂 milestone → Triager 补 status=Todo
 Implementer 认领      → In progress（tools/sebas-process claim）
-提 PR                → In review（tools/sebas-process review）
+提 PR                → In review（tools/sebas-process mark-review）
 合并关闭              → Done（GitHub 自动置）
 关闭为 not planned    → Not planned
 ```

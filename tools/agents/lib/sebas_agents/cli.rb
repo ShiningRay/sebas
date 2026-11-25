@@ -280,8 +280,10 @@ module SebasAgents
       unless merged_pr
         payload["reasons"] << "issue ##{issue.number} 没有已合并的关联 PR"
       end
-      unless issue.working?
-        payload["reasons"] << "issue ##{issue.number} 远端已不是执行中 status（当前 #{issue.status || "未设置"}），无需释放"
+      # 正常收口后 status 已由 GitHub 自动置为 Done；此时不该再要求「执行中」。
+      # 既非执行中也非 Done，说明卡没被真正认领过，释放无意义。
+      unless issue.working? || issue.status?(Model::STATUS_DONE)
+        payload["reasons"] << "issue ##{issue.number} 既不是执行中也不是 Done（当前 #{issue.status || "未设置"}），无需释放"
       end
 
       if payload["reasons"].any?
@@ -293,14 +295,16 @@ module SebasAgents
       payload["pr"] = merged_pr.number
       if options[:apply]
         repo = claim_write_repo(snap, options)
-        gateway = GithubGateway.new(runner(options), repo: repo)
-        # 释放认领回到 Todo：卡仍已排期、待重新开工，不是 Backlog。
-        gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
-        unless gateway.status?(issue.number, Model::STATUS_TODO)
-          payload["reasons"] << "写回 status=#{Model::STATUS_TODO} 后回读不符，需人工核对"
-          payload["status"] = "aborted"
-          Output.emit(payload, out: @out)
-          return EXIT_REFUSED
+        # 已完成的卡保持 Done：写回 Todo 会抹掉终态，让看板重新出现待办。
+        unless issue.status?(Model::STATUS_DONE)
+          gateway = GithubGateway.new(runner(options), repo: repo)
+          gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
+          unless gateway.status?(issue.number, Model::STATUS_TODO)
+            payload["reasons"] << "写回 status=#{Model::STATUS_TODO} 后回读不符，需人工核对"
+            payload["status"] = "aborted"
+            Output.emit(payload, out: @out)
+            return EXIT_REFUSED
+          end
         end
         record = RunRecord.new(path: options[:record])
         current = record.load

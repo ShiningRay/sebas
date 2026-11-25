@@ -144,7 +144,7 @@ module SebasAgents
       # target 可能为 nil（记录里的 issue 不在快照内），此时也要拒绝继续。
       def reconcile_aborted(target, record, observed)
         number = target&.number || record["issue"]
-        written = record["label_written"]
+        written = record["status_written"]
         if written == true
           return action("invalid_plan", observed,
             "## #{number} 的认领处于 aborted 且可能已写 status（status_written=true）：" \

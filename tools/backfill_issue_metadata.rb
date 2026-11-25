@@ -44,13 +44,22 @@ def gh!(*args)
   out
 end
 
+# 返回 nil（无块）或 kind 字符串；块非法/重复时抛错。
+# 非法块不能当成「没有 Automation」——那会按标题兜底写入错误的 type。
 def automation_kind(body)
-  match = body.to_s.match(/```json automation\s*\n(.*?)```/m)
-  return nil unless match
+  fences = body.to_s.scan(/```json[ \t]*automation[ \t]*\n(.*?)```/m)
+  return nil if fences.empty?
+  raise "出现 #{fences.length} 个 Automation 块，元数据冲突" if fences.length > 1
 
-  JSON.parse(match[1])["kind"]
-rescue JSON::ParserError
-  nil
+  data = JSON.parse(fences.first.first)
+  raise "Automation 块不是对象" unless data.is_a?(Hash)
+
+  %w[kind order depends_on external].each do |field|
+    raise "Automation 缺字段 #{field}" unless data.key?(field)
+  end
+  data["kind"]
+rescue JSON::ParserError => e
+  raise "Automation 块不是合法 JSON：#{e.message}"
 end
 
 # type 推断：kind 决定性质；无 Automation 的父卡（M 期编号标题如 M5.4-WP1 / M8 父卡）算 Task。
@@ -94,8 +103,14 @@ puts "仓库 #{REPO}：#{issues.length} 张 issue（不含 PR）"
 
 type_plan = []
 status_plan = []
+invalid = []
 issues.each do |issue|
-  kind = automation_kind(issue["body"])
+  begin
+    kind = automation_kind(issue["body"])
+  rescue StandardError => e
+    invalid << "##{issue["number"]}：#{e.message}"
+    next
+  end
 
   unless ONLY_STATUS
     current = issue.dig("type", "name")
@@ -134,10 +149,18 @@ unless ONLY_TYPE
     end
 end
 
+unless invalid.empty?
+  puts "\n== 元数据非法（已跳过，需人工修复）=="
+  invalid.each { |line| puts "  - #{line}" }
+  puts "\n检测到非法 Automation 块，拒绝迁移（fail-closed）"
+  exit 1
+end
+
 unless APPLY
   puts "\n dry-run：加 --apply 才写入"
   exit 0
 end
+
 
 failures = []
 unless ONLY_STATUS
