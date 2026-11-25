@@ -12,7 +12,7 @@ hot-reloading configuration without restarting the gateway.
 
 [![CI](https://github.com/ShiningRay/sebas/actions/workflows/ci.yml/badge.svg)](https://github.com/ShiningRay/sebas/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Crystal](https://img.shields.io/badge/crystal-%3E%3D1.19-black)](https://crystal-lang.org)
+[![Crystal](https://img.shields.io/badge/crystal-%3E%3D1.22-black)](https://crystal-lang.org)
 
 ---
 
@@ -61,7 +61,7 @@ Sebas takes the opposite stance:
 
 ## Requirements
 
-- [Crystal](https://crystal-lang.org/install/) **>= 1.19** and [Shards](https://github.com/crystal-lang/shards)
+- [Crystal](https://crystal-lang.org/install/) **>= 1.22** and [Shards](https://github.com/crystal-lang/shards)
 - A C toolchain plus development headers for **SQLite3**, **OpenSSL**, and **PCRE2**
 - Windows, macOS, or Linux
 

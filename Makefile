@@ -1,3 +1,7 @@
+CRYSTAL ?= crystal
+CRYSTAL_MIN = 1.22
+CRYSTAL_MIN_MAJOR = $(firstword $(subst ., ,$(CRYSTAL_MIN)))
+CRYSTAL_MIN_MINOR = $(lastword $(subst ., ,$(CRYSTAL_MIN)))
 CRYSTAL_FLAGS =
 BIN = bin/sebas
 
@@ -6,14 +10,33 @@ BIN = bin/sebas
 export TMP := $(shell cygpath -w /tmp 2>/dev/null || echo /tmp)
 export TEMP := $(TMP)
 
-.PHONY: build spec lint lint-build release format format-check drill clean check docs-check agents-check
+.PHONY: build spec lint lint-build release format format-check drill clean check docs-check agents-check crystal-version-check
 
-build:
+# src/platform/keys/vault.cr 依赖 OpenSSL::Cipher#gcm_tag，该 API 自 Crystal
+# 1.22.0 才进入 stdlib。旧版会把错误推迟到编译期才报 undefined method，
+# 且失败面取决于编译文件集（不 require keys 的 spec 子集能过），这里提前拦截。
+# 版本号按 major.minor 两段整数比较，不依赖 sort -V（BSD sort 没有）。
+crystal-version-check:
+	@v=$$($(CRYSTAL) --version 2>&1 | sed -n 's/^Crystal \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p' | head -1); \
+	set -- $$v; \
+	if [ -z "$$1" ]; then \
+		echo "错误：无法执行 \`$(CRYSTAL) --version\`。需要 Crystal >= $(CRYSTAL_MIN)，见 docs/design/process/quickstart.md §1.1" >&2; \
+		exit 1; \
+	fi; \
+	if [ "$$1" -lt "$(CRYSTAL_MIN_MAJOR)" ] || \
+	   { [ "$$1" -eq "$(CRYSTAL_MIN_MAJOR)" ] && [ "$$2" -lt "$(CRYSTAL_MIN_MINOR)" ]; }; then \
+		echo "错误：当前 Crystal $$1.$$2 低于 $(CRYSTAL_MIN)，编译会在 src/platform/keys/vault.cr 报 undefined method 'gcm_tag'。" >&2; \
+		echo "升级：brew upgrade crystal，或用 mise（见 docs/design/process/quickstart.md §1.1）。" >&2; \
+		echo "也可临时指定：make CRYSTAL=/path/to/crystal。" >&2; \
+		exit 1; \
+	fi
+
+build: crystal-version-check
 	@mkdir -p $(dir $(BIN))
-	crystal build $(CRYSTAL_FLAGS) -o $(BIN) src/main.cr
+	$(CRYSTAL) build $(CRYSTAL_FLAGS) -o $(BIN) src/main.cr
 
-spec:
-	crystal spec
+spec: crystal-version-check
+	$(CRYSTAL) spec
 
 # 文档自检：死链、失效行号锚、单文件体量。只用 Ruby 标准库。
 docs-check:
@@ -37,23 +60,23 @@ agents-check:
 lint: lint-build
 	./bin/ameba
 
-lint-build:
+lint-build: crystal-version-check
 	@mkdir -p bin
-	crystal build -o bin/ameba lib/ameba/bin/ameba.cr
+	$(CRYSTAL) build -o bin/ameba lib/ameba/bin/ameba.cr
 
-release:
+release: crystal-version-check
 	@mkdir -p $(dir $(BIN))
-	crystal build --release --progress -o $(BIN) src/main.cr
+	$(CRYSTAL) build --release --progress -o $(BIN) src/main.cr
 
 # M0-WP8 强杀演练：构建 release 后跑门禁演练 spec（taskkill /F ≈ SIGKILL 口径）
 drill: release
-	crystal spec spec/platform/cli/gateway_spec.cr
+	$(CRYSTAL) spec spec/platform/cli/gateway_spec.cr
 
 format:
-	crystal tool format
+	$(CRYSTAL) tool format
 
-format-check:
-	crystal tool format --check
+format-check: crystal-version-check
+	$(CRYSTAL) tool format --check
 
 # 与 CI 对齐的三道门禁
 check: format-check spec lint

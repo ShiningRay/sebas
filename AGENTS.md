@@ -9,7 +9,7 @@ Sebas：Crystal 写的多账号可编排个人 agent 平台。
 绑定 email / 企业微信 / 飞书 N 个账号，用 trigger→condition→action DSL 编排持久工作流，
 配置免重启热更新，内嵌 mruby 插件沙箱。
 
-- 语言：Crystal >= 1.19（CI 跟踪最新 stable）
+- 语言：Crystal >= 1.22（CI 跟踪最新 stable；`vault.cr` 用 `gcm_tag`，1.21 及更早编不过）
 - 包管理：Shards（随 Crystal 附带）
 - 依赖：C 工具链 + libsqlite3 / OpenSSL / PCRE2 开发头
 - Windows：MSVC 版 Crystal + `vcpkg install "sqlite3[fts5]:x64-windows"`，或 MSYS2 UCRT64

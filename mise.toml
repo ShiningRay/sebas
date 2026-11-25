@@ -1,0 +1,5 @@
+# 本机/CI 工具链钉版。Crystal 下限的来由见 shard.yml 与
+# docs/design/process/quickstart.md §1.1：src/platform/keys/vault.cr 用了
+# OpenSSL::Cipher#gcm_tag，该 API 在 1.22.0 才进入 stdlib。
+[tools]
+crystal = "1.22.3"

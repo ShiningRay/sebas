@@ -37,6 +37,9 @@
 
 ### Fixed
 
+- Crystal 最低版本由 `>= 1.19.0` 修正为 `>= 1.22.0`：`src/platform/keys/vault.cr` 用了 1.22 才进入 stdlib 的
+  `OpenSSL::Cipher#gcm_tag`，旧下限会让本地构建报误导性的 `undefined method 'gcm_tag'`。`Makefile` 新增
+  `crystal-version-check` 前置目标，低于下限立即失败并给出修法；所有编译/检查目标支持 `CRYSTAL=` 覆盖。
 - `cli/gateway.cr` 补齐 fork 组件 require，修复三平台 release build 与 drill 编译（[#167](https://github.com/ShiningRay/sebas/pull/167)）。
 - fork 常量引用补 `::Sebas` 全限定，修复 main release build（[#156](https://github.com/ShiningRay/sebas/pull/156)）。
 - 调度准入按生效配置快照解析（[`96ae049`](https://github.com/ShiningRay/sebas/commit/96ae049)）、`admit_new_batch` 守卫路径显式 `DB::Rollback`（[`94f8798`](https://github.com/ShiningRay/sebas/commit/94f8798)）、
