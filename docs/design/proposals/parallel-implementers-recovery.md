@@ -1,9 +1,9 @@
 # 多任务并行开发：恢复、迁移与验证（Proposal）
 
-> 状态：**Proposal · 定稿候选，未定稿**。本文是 [parallel-implementers.md](parallel-implementers.md) 的续篇，两篇合读，未裁决项见主篇 §10。
+> 状态：**accepted**（2026-11-25 定稿，[裁决](https://github.com/ShiningRay/sebas/issues/190#issuecomment-7166284273)）。本文是 [parallel-implementers.md](parallel-implementers.md) 的续篇，两篇合读。
 > 关联：讨论与裁决理由的事实源是 [#190](https://github.com/ShiningRay/sebas/issues/190)。
 > 本文职责：租约的写入点与故障恢复矩阵、单 coordinator 的防双实例、容量、暂停、迁移与必测场景。
-> 本文合入只是设计快照入库，不代表设计定稿或排期批准。
+> 设计已于 2026-11-25 定稿；排期与工作包拆分仍由 Maintainer 的排期指令另行决定。
 
 ## 1. 租约的写入点
 
@@ -80,7 +80,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 - 哪些情况必须升级为全仓 pause（共享契约变更、凭证风险、main 回归）由 Maintainer 定义。可自动触发的候选只有一条有代码判据：合并后 main 上的 CI 失败。
 - pause 的载体待裁决（主篇 S4）：本地标志文件，或 GitHub 上可见的标签。心跳宽限期的取值在试点期测定。
 
-## 7. 兼容迁移：Q10
+## 7. 兼容迁移：Q10 = B（搬迁并双读一个版本）
 
 | | 排空后切换 | 搬迁旧记录并双读一个版本 |
 |---|---|---|
@@ -88,7 +88,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 | 迁移期能否并行 | 否，容量固定为 1 | 否，容量固定为 1 |
 | 旧记录由谁确认 | 不需要确认 | 活动中的 v1 记录缺 `base_sha`、`scope`、`lease_id`，须人工确认后才能搬 |
 | 代价 | 升级要等在途卡收口，长寿命 PR 会拖住升级 | 多一段一次性的搬迁代码与一个版本的双读分支 |
-| 立场 | #190 未提 | Triager 建议 |
+| 立场 | 未采纳 | **裁决采纳**（2026-11-25）：多一段一次性搬迁代码，换不阻塞升级 |
 
 两种做法都不允许迁移期并行。无论选哪种，`runs/` 里出现 schema 不是 2 的记录即 `invalid_plan`。
 
