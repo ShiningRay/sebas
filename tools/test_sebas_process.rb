@@ -1562,6 +1562,53 @@ end
     [snap, verdict, url]
   end
 
+# 反馈给 Maintainer 的问题要在评论里渲染成可勾选清单（GitHub 渲染 issue 评论支持任务列表）。
+def test_triage_renders_checkbox_options_for_maintainer_questions
+  verdict = {
+    "decision" => "needs-design",
+    "body" => "有两处取舍要定。",
+    "questions" => [
+      {"q" => "租约凭据放哪", "why" => "影响跨机器与安全边界。",
+       "options" => ["正文块", "协调评论", "仅本地记录与标签"], "recommend" => 2}
+    ]
+  }
+  issue = SebasAgents::Model::Issue.from_hash(
+    {"number" => 190, "title" => "x", "state" => "OPEN", "body" => "", "labels" => ["proposal"]}
+  )
+  comment = SebasAgents::Triager.comment_for("needs-design", verdict)
+  assert_includes comment, "### 待决问题（请勾选）"
+  assert_includes comment, "- [ ] **A** 正文块"
+  assert_includes comment, "- [ ] **B** 协调评论"
+  assert_includes comment, "- [ ] **C** 仅本地记录与标签（推荐）"
+  # 勾选不会回写，这一点必须写明，否则 Maintainer 会以为勾了就生效。
+  assert_includes comment, "勾选不会回写"
+end
+
+# 没有 questions 时不应凭空多出一个小节。
+def test_triage_omits_questions_section_when_absent
+  issue = SebasAgents::Model::Issue.from_hash(
+    {"number" => 1, "title" => "x", "state" => "OPEN", "body" => "", "labels" => []}
+  )
+  comment = SebasAgents::Triager.comment_for("needs-info", {"body" => "缺复现步骤"})
+  refute_includes comment, "待决问题"
+  assert_includes comment, "缺复现步骤"
+end
+
+# recommend 越界或非整数时不得渲染错的推荐标记。
+def test_triage_ignores_invalid_recommend_index
+  verdict = {
+    "decision" => "needs-design",
+    "body" => "x",
+    "questions" => [{"q" => "选哪个", "options" => ["甲", "乙"], "recommend" => 5}]
+  }
+  issue = SebasAgents::Model::Issue.from_hash(
+    {"number" => 2, "title" => "x", "state" => "OPEN", "body" => "", "labels" => ["proposal"]}
+  )
+  comment = SebasAgents::Triager.comment_for("needs-design", verdict)
+  refute_includes comment, "（推荐）"
+  refute_includes comment, "**F**"
+end
+
   def test_triage_proposal_acceptance_requires_maintainer_evidence
     data = snapshot(issues: [issue(8, labels: ["proposal"])])
     Dir.mktmpdir do |dir|

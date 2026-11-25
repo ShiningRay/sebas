@@ -17,6 +17,8 @@ module SebasAgents
     PROPOSAL_GENERAL_DECISIONS = %w[needs-info duplicate escalate].freeze
     # 被取代须写明继任者：没有这个编号就无法回链，旧文档会变成断头档案。
     PROPOSAL_SUPERSEDED_BY = /\Asuperseded_by\z/
+    # Maintainer 直接读评论勾选，所以要写进评论而不是只留在工具输出里。
+    QUESTIONS_HEADING = "### 待决问题（请勾选）"
     PROPOSAL_VERDICT_MARKER = "<!-- proposal-verdict: "
     DECISION_URL = %r{\Ahttps://github\.com/(?<repo>[^/]+/[^/]+)/(?<kind>issues|pull)/(?<number>\d+)#(?:(?<anchor>issuecomment|pullrequestreview)-(?<id>\d+)|discussion_r(?<discussion_id>\d+))\z}
 
@@ -237,11 +239,62 @@ module SebasAgents
       elsif decision == "superseded"
         body = "#{body}\n\n继任 Proposal：##{verdict["superseded_by"]}"
       end
+      questions = render_questions(verdict["questions"])
+      body = "#{body}\n\n#{questions}" unless questions.empty?
       <<~MD
         <!-- status: #{decision} -->
         #{MARKER}
         #{body}
       MD
+    end
+
+    # 把「需要人拍板的问题」渲染成可直接勾选的清单。
+    # GitHub 渲染的 issue 评论支持 `- [ ]` 任务列表，但**只读**：勾选不会回写，
+    # Maintainer 仍需用评论或裁决指令表达选择。这里只是让选项一眼可见、无需另找。
+    #
+    # 输入形状（verdict["questions"]）：
+    #   [{"q" => "问题", "why" => "为何需要人定", "options" => ["A …", "B …"], "recommend" => 0}]
+    # options 至少两项；recommend 是 Recommended 的下标，可省。
+    def render_questions(questions)
+      return "" unless questions.is_a?(Array) && !questions.empty?
+
+      blocks = questions.each_with_index.map do |item, index|
+        next unless item.is_a?(Hash)
+
+        render_question(item, number: index + 1)
+      end.compact
+      return "" if blocks.empty?
+
+      ([QUESTIONS_HEADING, "", "> 勾选不会回写。定了哪项，回一条评论或在裁决里写明编号即可。", ""] + blocks).join("\n")
+    end
+
+    def render_question(item, number:)
+      title = item["q"].to_s.strip
+      return nil if title.empty?
+
+      options = Array(item["options"]).map(&:to_s).reject(&:empty?)
+      recommend = item["recommend"].is_a?(Integer) ? item["recommend"] : nil
+      recommend = nil if recommend && (recommend.negative? || recommend >= options.length)
+
+      lines = ["**Q#{number}. #{title}**"]
+      lines << "" unless item["why"].to_s.strip.empty?
+      lines << item["why"].to_s.strip unless item["why"].to_s.strip.empty?
+      lines << ""
+      if options.empty?
+        lines << "- [ ] 待补充选项"
+      else
+        options.each_with_index do |option, i|
+          mark = i == recommend ? "（推荐）" : ""
+          lines << "- [ ] **#{option_key(i)}** #{option}#{mark}"
+        end
+      end
+      lines << ""
+      lines.join("\n")
+    end
+
+    # A/B/C… 便于回帖时只写字母。
+    def option_key(index)
+      ("A".ord + index).chr
     end
   end
 end
