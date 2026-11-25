@@ -4,23 +4,28 @@
 #
 # ## 为什么需要
 #
-# 自托管 runner 上 Crystal 工具链的复用逻辑（crystal-cache.sh + action.yml 的三步
-# 编排）有三条容易在后续编辑中静默失效的性质：
+# 自托管 runner 上 Crystal 工具链的复用逻辑（crystal-cache.sh + action.yml 的
+# 四步编排）有几条容易在后续编辑中静默失效的性质：
 #
-#   1. 只对自托管类 Unix runner 启用——托管 runner 的 _tool 目录不保证可写，
-#      Windows 的目录布局与 PATH 语义也不同；
+#   1. 只对自托管类 Unix runner 启用——托管 runner 上的收益为零，Windows 的
+#      目录布局与 PATH 语义也不同；
 #   2. 命中时必须跳过 install-crystal 并自行补注册 problem matcher——否则
 #      错误标注在缓存命中后消失，而 CI 仍然是绿的；
 #   3. 任何判据不成立都要退回 install-crystal 的默认路径——缓存优化不能把
 #      流水线拖红。
 #
-# 这些都只体现为 YAML 的 if 条件与 shell 分支，改坏了没有任何其他测试会红。
+# 这些都只体现为 YAML 的 if 条件与 shell 分支，改坏了没有别的测试会红。
 # 这里同时做结构断言（读 YAML）与行为断言（真跑脚本，用假工具链，全程离线）。
+#
+# 假工具链按 install-crystal 默认 `shards: true` 的**真实布局**搭：它保留包里
+# 自带的 Shards（macOS 在 embedded/bin，Linux 在 bin），不建 "-shards" 目录。
+# 早期版本误以为会建独立 shards 目录，那会让命中永远失败。
 
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
 require "fileutils"
+require "json"
 require "yaml"
 
 class SetupActionTest < Minitest::Test
@@ -30,7 +35,7 @@ class SetupActionTest < Minitest::Test
   VERSION = "9.9.9"
 
   def action
-    @action ||= YAML.safe_load_file(ACTION)
+    @action ||= YAML.safe_load(File.read(ACTION, encoding: "UTF-8"))
   end
 
   def steps
@@ -74,6 +79,15 @@ class SetupActionTest < Minitest::Test
     assert_includes release["if"].to_s, "steps.crystal_cache.outputs.lock != ''"
   end
 
+  def test_matchers_match_upstream_pinned_shape
+    %w[crystal.json crystal-spec.json].each do |file|
+      parsed = JSON.parse(File.read(File.join(ROOT, ".github", "actions", "setup", "matchers", file)))
+      assert_kind_of Array, parsed["problemMatcher"]
+      refute_empty parsed["problemMatcher"]
+      parsed["problemMatcher"].each { |m| refute_empty m["pattern"] }
+    end
+  end
+
   def test_script_is_executable_and_syntax_clean
     assert File.executable?(SCRIPT), "crystal-cache.sh 应可执行"
     out, status = Open3.capture2e("bash", "-n", SCRIPT)
@@ -94,7 +108,7 @@ class SetupActionTest < Minitest::Test
   end
 
   def run_script(args, env)
-    # 用 env -i 隔离宿主的 RUNNER_*，保证断言来自脚本自身的推导逻辑。
+    # 用 env -i 隔离宿主的 RUNNER_*，保证断言来自脚本自己的推导逻辑。
     pairs = env.compact.map { |k, v| "#{k}=#{v}" }
     Open3.capture2e({}, "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", *pairs,
       "bash", SCRIPT, *args)
@@ -112,18 +126,27 @@ class SetupActionTest < Minitest::Test
     File.exist?(path) ? File.readlines(path, chomp: true) : []
   end
 
-  def fake_toolchain(root, version)
-    FileUtils.mkdir_p(File.join(root, "bin"))
-    FileUtils.mkdir_p(File.join(root, "embedded", "bin"))
-    %w[bin/crystal embedded/bin/crystal].each do |rel|
-      file = File.join(root, rel)
-      File.write(file, "#!/bin/sh\necho 'Crystal #{version} [abc] (2026-11-13)'\n")
-      File.chmod(0o755, file)
+  # 按 install-crystal 默认 shards=true 的真实布局造一份工具链：
+  # 两个平台都在 bin 放 crystal 入口（macOS 是 wrapper，真正的二进制在
+  # embedded/bin）；Shards 用包里自带的，macOS 落在 embedded/bin，Linux 在 bin。
+  def fake_toolchain(root, version, os: "macOS")
+    bin = File.join(root, "bin")
+    FileUtils.mkdir_p(bin)
+    write_exe(File.join(bin, "crystal"), "Crystal #{version} [abc] (2026-11-13)")
+    if os == "macOS"
+      embedded = File.join(root, "embedded", "bin")
+      FileUtils.mkdir_p(embedded)
+      write_exe(File.join(embedded, "crystal"), "Crystal #{version} [abc] (2026-11-13)")
+      write_exe(File.join(embedded, "shards"), "Shards 0.20.0")
+    else
+      write_exe(File.join(bin, "shards"), "Shards 0.20.0")
     end
-    FileUtils.mkdir_p(File.join("#{root}-shards", "bin"))
-    shards = File.join("#{root}-shards", "bin", "shards")
-    File.write(shards, "#!/bin/sh\necho 'Shards 0.20.0'\n")
-    File.chmod(0o755, shards)
+    root
+  end
+
+  def write_exe(path, line)
+    File.write(path, "#!/bin/sh\necho '#{line}'\n")
+    File.chmod(0o755, path)
   end
 
   def test_miss_then_hit_round_trip
@@ -139,7 +162,6 @@ class SetupActionTest < Minitest::Test
       refute_empty first["lock"], "未命中时应持锁，供收尾释放"
       assert File.directory?(first["lock"]), "锁应是 mkdir 出来的目录"
 
-      # 模拟 install-crystal 装到 destination 与 "-shards"。
       fake_toolchain(first["destination"], VERSION)
 
       _out, status = run_script(["release", first["lock"]], env_for(dir))
@@ -149,37 +171,68 @@ class SetupActionTest < Minitest::Test
       assert status.success?
 
       second = outputs(dir)
-      assert_equal "true", second["hit"], "装好后应命中"
+      assert_equal "true", second["hit"], "装好后应命中（真实布局不建 -shards 目录）"
       assert_equal first["destination"], second["destination"]
-      assert_empty path_lines(dir).select { |l| l.end_with?(".lock") }
+      assert_equal "", second["lock"]
 
-      # PATH 里 shards 目录最靠前（GITHUB_PATH prepend 语义）。
+      # GITHUB_PATH prepend：后写的行更靠前，所以 bin 必须是最后一行。
       lines = path_lines(dir)
-      assert_equal File.join("#{first["destination"]}-shards", "bin"), lines.last
+      assert_equal File.join(first["destination"], "bin"), lines.last
       assert_includes lines, File.join(first["destination"], "embedded", "bin")
-      assert_includes lines, File.join(first["destination"], "bin")
     end
   end
 
-  def test_incomplete_cache_is_not_reused
+  def test_linux_layout_uses_only_bin
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(env_for(dir)["RUNNER_TEMP"])
+      env = env_for(dir, "RUNNER_OS" => "Linux")
+
+      _out, = run_script(["prepare"], env)
+      first = outputs(dir)
+      fake_toolchain(first["destination"], VERSION, os: "Linux")
+      run_script(["release", first["lock"]], env)
+
+      _out, status = run_script(["prepare"], env)
+      assert status.success?
+      assert_equal "true", outputs(dir)["hit"]
+      assert_equal [File.join(first["destination"], "bin")], path_lines(dir)
+    end
+  end
+
+  def test_missing_shards_is_not_reused
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(env_for(dir)["RUNNER_TEMP"])
       _out, = run_script(["prepare"], env_for(dir))
       first = outputs(dir)
-      _out, = run_script(["release", first["lock"]], env_for(dir))
+      run_script(["release", first["lock"]], env_for(dir))
 
-      # 只有 crystal 没有 shards：判定不可复用。
-      FileUtils.mkdir_p(File.join(first["destination"], "bin"))
-      crystal = File.join(first["destination"], "bin", "crystal")
-      File.write(crystal, "#!/bin/sh\necho 'Crystal #{VERSION} [abc]'\n")
-      File.chmod(0o755, crystal)
+      # 只有 crystal、没有 shards：半截安装，判定不可复用。
+      bin = File.join(first["destination"], "bin")
+      FileUtils.mkdir_p(bin)
+      write_exe(File.join(bin, "crystal"), "Crystal #{VERSION} [abc]")
+      FileUtils.mkdir_p(File.join(first["destination"], "embedded", "bin"))
+      write_exe(File.join(first["destination"], "embedded", "bin", "crystal"),
+        "Crystal #{VERSION} [abc]")
 
       _out, status = run_script(["prepare"], env_for(dir))
       assert status.success?
-      assert_equal "false", outputs(dir)["hit"], "半截缓存必须重装"
+      assert_equal "false", outputs(dir)["hit"], "缺 shards 必须重装"
       assert_equal File.join(File.dirname(first["destination"]), "#{VERSION}.lock"),
         outputs(dir)["lock"], "重装时应重新持锁"
-      run_script(["release", outputs(dir)["lock"]], env_for(dir))
+    end
+  end
+
+  def test_version_mismatch_in_cached_binary_is_not_reused
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(env_for(dir)["RUNNER_TEMP"])
+      _out, = run_script(["prepare"], env_for(dir))
+      first = outputs(dir)
+      run_script(["release", first["lock"]], env_for(dir))
+
+      # 目录名对、二进制自报版本不对（比如目录被别的版本覆盖过）。
+      fake_toolchain(first["destination"], "9.9.0")
+      _out, = run_script(["prepare"], env_for(dir))
+      assert_equal "false", outputs(dir)["hit"]
     end
   end
 
@@ -232,13 +285,30 @@ class SetupActionTest < Minitest::Test
       assert status.success?
       second = outputs(dir)
       assert_equal "false", second["hit"]
-      assert_empty second["lock"].to_s, "抢不到锁就不该声称持锁"
+      assert_equal "", second["lock"], "抢不到锁就不该声称持锁"
       assert_includes second["destination"].to_s, "crystal-staging-",
         "抢不到锁时应装到私有暂存目录，避免交叉写入"
       assert_includes second["destination"].to_s, env_for(dir)["RUNNER_TEMP"]
 
-      # 收尾释放，避免影响后续断言。
       run_script(["release", first["lock"]], env_for(dir))
+    end
+  end
+
+  def test_lock_holder_rechecks_cache_before_clearing
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(env_for(dir)["RUNNER_TEMP"])
+      # 未命中时拿到锁，但还没装；此后另一台 job 抢先装好并放了锁。
+      _out, = run_script(["prepare"], env_for(dir))
+      first = outputs(dir)
+      run_script(["release", first["lock"]], env_for(dir))
+      fake_toolchain(first["destination"], VERSION)
+
+      _out, status = run_script(["prepare"], env_for(dir))
+      assert status.success?
+      result = outputs(dir)
+      assert_equal "true", result["hit"], "拿着锁也要先重判缓存，别人刚装好就直接复用"
+      assert_equal "", result["lock"], "复用路径不能留着锁"
+      refute_empty path_lines(dir)
     end
   end
 
@@ -253,6 +323,19 @@ class SetupActionTest < Minitest::Test
       _out, status = run_script(["prepare"], env_for(dir))
       assert status.success?
       assert_equal lock, outputs(dir)["lock"], "超过 TTL 的锁应被接管"
+    end
+  end
+
+  def test_fresh_lock_is_respected
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(env_for(dir)["RUNNER_TEMP"])
+      lock = File.join(env_for(dir)["RUNNER_TOOL_CACHE"], "crystal-toolchain", "#{VERSION}.lock")
+      FileUtils.mkdir_p(lock)
+
+      _out, status = run_script(["prepare"], env_for(dir))
+      assert status.success?
+      assert_equal "", outputs(dir)["lock"], "新鲜锁不能被抢"
+      assert_includes outputs(dir)["destination"].to_s, "crystal-staging-"
     end
   end
 end

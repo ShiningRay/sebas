@@ -12,9 +12,9 @@
 # 既比下载便宜两个数量级，也不吃 token 限流。
 #
 # 【并发】两台 job 可以同时未命中同一版本，若都往缓存目录解压会交叉写文件。
-# 用 <base>/<version>.lock 目录当锁：抢到的 job 直接装进缓存（收尾步骤放锁），
+# 用 <base>/<version>.lock 目录当锁：抢到的 job 装进缓存（收尾步骤放锁），
 # 抢不到的装进自己的 RUNNER_TEMP 暂存目录、不碰缓存——这一轮白装，下个 job
-# 就命中了。
+# 就命中了。抢到锁后要重新判一次缓存：等锁期间别人可能刚装完。
 #
 # 【兜底】任何判据不成立（无网络、目录不可写、版本钉不住）都降级为「未命中且
 # 不接管目录」，让 install-crystal 用自己默认的路径——这个优化本身不允许让
@@ -42,8 +42,8 @@ warn() {
 
 # 锁是否已经陈旧（持有者被强杀之类）。用 find -mmin 判年龄而不是解析 stat
 # 输出：GNU 与 BSD 的 stat 语法互不兼容，且在对方系统上不一定报错——GNU 的
-# `stat -f %m` 会打印挂载点。find 报错时按「还活着」处理：宁可跳过这一轮，
-# 也不抢别人正在写的缓存目录。
+# `stat -f %m` 会把 `%m` 当路径、打印文件系统信息。find 报错时按「还活着」
+# 处理：宁可跳过这一轮，也不抢别人正在写的缓存目录。
 lock_is_stale() {
   local lock="$1"
   [ -e "$lock" ] || return 1
@@ -58,6 +58,12 @@ miss() {
   emit "lock" ""
   if [ -n "${1:-}" ]; then warn "$1"; fi
   return 0
+}
+
+hit() {
+  emit "hit" "true"
+  emit "destination" "$1"
+  emit "lock" ""
 }
 
 # 找跨 job 持久的工具缓存根目录。托管 runner 有 RUNNER_TOOL_CACHE /
@@ -84,7 +90,9 @@ resolve_version() {
   local requested="${1:-latest}" resolved candidate
   case "$requested" in
     "" | latest)
-      resolved="$(curl -fsSI -o /dev/null -w '%{redirect_url}' \
+      # 只发 HEAD 读重定向，带总超时：探测失败只是回落，不该拖住 setup。
+      resolved="$(curl -fsSI --connect-timeout 5 --max-time 15 \
+        -o /dev/null -w '%{redirect_url}' \
         https://github.com/crystal-lang/crystal/releases/latest 2>/dev/null || true)"
       # 拿不到重定向时这是空串或原 URL，统一交给下面的格式校验拦掉。
       candidate="${resolved##*/}"
@@ -99,21 +107,50 @@ resolve_version() {
   printf '%s\n' "$candidate"
 }
 
+# 缓存里那份工具链要加的 PATH 前缀，按优先级从高到低。复刻 install-crystal
+# 的 addPath：macOS 先加 embedded/bin 再加 bin（bin 里的 crystal 是 wrapper，
+# 应当优先）；Linux 包把 crystal 与 shards 都放在 bin。
+toolchain_bin_dirs() {
+  if [ "${RUNNER_OS:-}" = "macOS" ]; then
+    printf '%s\n' "$1/bin" "$1/embedded/bin"
+  else
+    printf '%s\n' "$1/bin"
+  fi
+}
+
 # $1 目录里是否是一份可直接使用的、自报版本为 $2 的工具链。
+#
+# 不假设 Shards 的落点：默认 shards=true 时 install-crystal 保留包里自带的
+# Shards（macOS 在 embedded/bin，Linux 在 bin），不会建 "-shards" 目录。
+# 因此按上面那份 PATH 真跑一次 crystal/shards 来确认。
 reusable() {
-  local root="$1" wanted="$2" actual
-  # macOS 包的 bin/crystal 是 bash wrapper，真正的二进制在 embedded/bin。
+  local root="$1" wanted="$2" dir path="" actual
+  [ -x "${root}/bin/crystal" ] || return 1
   if [ "${RUNNER_OS:-}" = "macOS" ]; then
     [ -x "${root}/embedded/bin/crystal" ] || return 1
   fi
-  [ -x "${root}/bin/crystal" ] || return 1
-  # install-crystal 默认 shards=true：删掉包里自带的 shards，另建 "-shards"
-  # 目录放现场编译的 Shards。两个目录都在才算完整。
-  [ -x "${root}-shards/bin/shards" ] || return 1
-  # 缓存可能停在上次中断的半截安装，用二进制自报版本兜底确认。
-  actual="$("${root}/bin/crystal" --version 2>/dev/null |
+  while IFS= read -r dir; do
+    path="${path:+$path:}$dir"
+  done <<EOF
+$(toolchain_bin_dirs "$root")
+EOF
+  actual="$(PATH="$path" crystal --version 2>/dev/null |
     sed -n '1s/^Crystal \([0-9][0-9.]*\).*/\1/p')"
-  [ "$actual" = "$wanted" ]
+  [ "$actual" = "$wanted" ] || return 1
+  PATH="$path" shards --version >/dev/null 2>&1
+}
+
+# 命中后导出 PATH。GITHUB_PATH 是 prepend：runner 反转行序后拼进 PATH，
+# 后写的行更靠前，所以先写低优先级的目录。
+export_path() {
+  local root="$1" dirs reversed=""
+  dirs="$(toolchain_bin_dirs "$root")"
+  while IFS= read -r dir; do
+    reversed="$dir${reversed:+$'\n'$reversed}"
+  done <<EOF
+$dirs
+EOF
+  printf '%s\n' "$reversed" >> "$GITHUB_PATH"
 }
 
 prepare() {
@@ -136,21 +173,12 @@ prepare() {
   staging="${RUNNER_TEMP:-/tmp}/crystal-staging-${wanted}-$$"
 
   if reusable "$root" "$wanted"; then
-    emit "hit" "true"
-    emit "destination" "$root"
-    emit "lock" ""
+    hit "$root"
     printf 'Reusing Crystal %s from %s\n' "$wanted" "$root"
-    # GITHUB_PATH 是 prepend：runner 反转行序后拼进 PATH，后写的行更靠前。
-    # 这里复刻 install-crystal 的 addPath 顺序（shards 目录最后加、因而最前）。
-    if [ "${RUNNER_OS:-}" = "macOS" ]; then
-      printf '%s\n' "${root}/embedded/bin" "${root}/bin" "${root}-shards/bin" >> "$GITHUB_PATH"
-    else
-      printf '%s\n' "${root}/bin" "${root}-shards/bin" >> "$GITHUB_PATH"
-    fi
+    export_path "$root"
     return 0
   fi
 
-  emit "hit" "false"
   printf 'Crystal %s is not cached at %s\n' "$wanted" "$root"
 
   if ! mkdir -p "$base" 2>/dev/null; then
@@ -165,26 +193,35 @@ prepare() {
     rm -rf "$lock" 2>/dev/null || true
   fi
   if ! mkdir "$lock" 2>/dev/null; then
+    emit "hit" "false"
     emit "destination" "$staging"
     emit "lock" ""
     printf 'Another job holds %s; installing into %s without touching the cache\n' "$lock" "$staging"
     return 0
   fi
 
+  # 等锁期间别的 job 可能刚装完并放锁，此时缓存已经可用，直接复用。
+  if reusable "$root" "$wanted"; then
+    rmdir "$lock" 2>/dev/null || true
+    hit "$root"
+    printf 'Another job finished installing Crystal %s; reusing %s\n' "$wanted" "$root"
+    export_path "$root"
+    return 0
+  fi
+
   # 持锁期间没人会写 $root：清掉上次中断留下的、reusable() 判不过的半截目录。
   # install-crystal 的 extractTar 只做 mkdirP、不删旧内容，残留文件会混进新版本。
-  if [ -e "$root" ] || [ -e "${root}-shards" ]; then
-    if rm -rf "$root" "${root}-shards" 2>/dev/null; then
+  if [ -e "$root" ]; then
+    if rm -rf "$root" 2>/dev/null; then
       printf 'Cleared the incomplete toolchain at %s\n' "$root"
     else
       rmdir "$lock" 2>/dev/null || true
-      emit "destination" "$staging"
-      emit "lock" ""
-      warn "could not clear ${root}; installing Crystal for this job only"
+      miss "could not clear ${root}; installing Crystal for this job only"
       return 0
     fi
   fi
 
+  emit "hit" "false"
   emit "destination" "$root"
   emit "lock" "$lock"
   printf 'Installing Crystal %s into the shared cache (lock %s)\n' "$wanted" "$lock"
