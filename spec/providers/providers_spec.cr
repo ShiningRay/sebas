@@ -176,6 +176,22 @@ module Sebas
         server.close
         server_error.close
       end
+      it "transport guard：IPv6 环回剥方括号放行；http 未写端口按 80 而非 443（CodeRabbit）" do
+        # URI#host 对 IPv6 返回 "[::1]"（Crystal 1.22 实测）——归一化后环回表命中，
+        # guard 放行（无服务时错误是连接失败，绝不是 plain HTTP 拒发）
+        v6 = Providers::HttpProvider.new(
+          Providers::Spec.new("p", "http://[::1]:1/v1", "openai"), "m", "sk")
+        v6_result = v6.complete([Providers::Message.new("user", "hi")])
+        v6_result.ok?.should be_false
+        v6_result.error.to_s.should_not contain("plain HTTP")
+
+        # http 未写端口：endpoint_port 按 scheme 取 80（此前固定 443 会静默连错端口）
+        no_port = Providers::HttpProvider.new(
+          Providers::Spec.new("p", "http://127.0.0.1/v1", "openai"), "m", "sk")
+        no_port_result = no_port.complete([Providers::Message.new("user", "hi")])
+        no_port_result.ok?.should be_false
+        no_port_result.error.to_s.should_not contain("plain HTTP")
+      end
     end
   end
 end

@@ -143,12 +143,21 @@ module Sebas
       # 传输守卫（CodeRabbit CWE-319）：携带凭据的请求拒绝明文 HTTP——
       # 远程端点必须 https；环回（localhost/127.0.0.1/::1）允许 http
       # （本地网关/测试环回）。两个 wire 路径共用此守卫。
+      # host 归一化：URI#host 对 IPv6 返回带方括号的 "[::1]"（Crystal 1.22 实测），
+      # 先剥括号再比对环回表，否则环回 IPv6 被误拒（CodeRabbit）。
       private def transport_guard(uri : URI) : String?
         return if uri.scheme == "https"
         host = uri.host
         return "provider base_url missing host" if host.nil? # fail-closed
+        host = host[1...-1] if host.starts_with?("[") && host.ends_with?("]")
         return if {"localhost", "127.0.0.1", "::1"}.includes?(host)
         "provider endpoint '#{uri}' uses plain HTTP; refusing to send api_key (use https://; loopback http:// is allowed)"
+      end
+
+      # 未写端口的 base_url 按 scheme 取默认（http→80 / https→443）：
+      # 固定 443 会让环回 http://localhost 静默连 443 失败（CodeRabbit）。
+      private def endpoint_port(uri : URI) : Int32
+        uri.port || (uri.scheme == "https" ? 443 : 80)
       end
 
       private def complete_openai(messages : Array(Message)) : Completion
@@ -165,7 +174,7 @@ module Sebas
           "Authorization" => "Bearer #{@api_key}",
           "Content-Type"  => "application/json",
         }
-        client = HTTP::Client.new(host, uri.port || 443, uri.scheme == "https" || uri.port == 443)
+        client = HTTP::Client.new(host, endpoint_port(uri), uri.scheme == "https" || uri.port == 443)
         client.connect_timeout = @timeout
         client.read_timeout = @timeout
         response = client.post(path, headers: headers, body: body)
@@ -198,7 +207,7 @@ module Sebas
           "Content-Type"      => "application/json",
         }
         path = uri.path.rstrip('/') + "/messages"
-        client = HTTP::Client.new(host, uri.port || 443, uri.scheme == "https" || uri.port == 443)
+        client = HTTP::Client.new(host, endpoint_port(uri), uri.scheme == "https" || uri.port == 443)
         client.connect_timeout = @timeout
         client.read_timeout = @timeout
         response = client.post(path, headers: headers, body: body.to_json)
