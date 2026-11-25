@@ -155,7 +155,7 @@ marker → 复用 `Triager.plan` 校验裁决作者、正文与评论父对象 �
 `proposal:accepted-design` → 发 status 评论。默认 dry-run，`--apply` 才写。
 `--milestone` 接受数字或标题，须对应已开放的 milestone；指定后在裁决评论留公开排期理由，
 并把 issue 挂到该 milestone。这里挂的是排期意图记录，不是实现排期本身——Implementer 只按
-Scribe 拆出的 `plan` 卡选卡，Proposal 本身不进实现选卡。
+Scribe 拆出的工作包卡选卡，Proposal 本身不进实现选卡。
 接受设计不等于自动拆卡——实现工作包仍由 Scribe 按指令拆解。
 不指定 milestone 时排期仍需另行裁决。测试见 `tools/test_accept_proposal.rb`。
 
@@ -164,10 +164,11 @@ Scribe 拆出的 `plan` 卡选卡，Proposal 本身不进实现选卡。
 ```sh
 ruby tools/sebas-process next                 # 输出单一动作
 ruby tools/sebas-process claim 39 --dry-run   # 校验是否可认领
-ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + 远端标签并回读
+ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + status=In progress 并回读
 ruby tools/sebas-process resume 39            # 续跑本机已认领卡
 ruby tools/sebas-process verify merge 95 39 --pre  # 合并前自检（CI + 关联 issue + Evidence）
-ruby tools/sebas-process unclaim 39 --apply   # 收口后释放认领（要求已合并 + completed）
+ruby tools/sebas-process mark-review 39 --apply  # 提 PR 后：status → In review
+ruby tools/sebas-process unclaim 39 --apply   # 收口后释放认领（要求已合并 + completed；已完成卡保持 Done）
 ```
 
 合并前还需让 issue 带有可机读 Evidence。两阶段登记（#126）由

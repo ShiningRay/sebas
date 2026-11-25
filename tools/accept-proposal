@@ -195,8 +195,11 @@ module AcceptProposal
         gh("issue", "edit", number.to_s, "--repo", repo, flag, action.fetch("name").to_s)
       when "set_type"
         gh("api", "-X", "PATCH", "repos/#{repo}/issues/#{number}", "-f", "type=#{action.fetch("type")}")
+      when "set_status"
+        # Proposal 状态维护不推进执行状态（Backlog/Todo 由排期裁决负责）。
+        next
       when "comment", "suggest_milestone", "add_assignee", "close"
-        # Proposal 裁决不应产出这些动作；出现即拒绝，避免误指派或误关闭。
+        # accept-proposal 只处理 accepted-design，不应产出这些动作；出现即拒绝。
         raise Failure, "Proposal 接受流程出现非预期动作 #{action["action"]}，已中止"
       else
         raise Failure, "accept-proposal 不支持的动作：#{action["action"]}"
@@ -207,7 +210,11 @@ module AcceptProposal
   def preflight!(issue, number, repo:, login:, maintainers:)
     labels = Array(issue["labels"]).map { |l| l.is_a?(Hash) ? l["name"] : l.to_s }
     raise Failure, "##{number} 没有 proposal 标签，不能用本命令接受" unless labels.include?("proposal")
-    raise Failure, "##{number} 同时带 plan 标签，是工作包卡，不能按 Proposal 接受" if labels.include?("plan")
+    # 工作包卡带 Automation 块；Proposal 不该有。用共享解析器识别，
+    # 避免围栏空格/tab 变体绕过（手写 include? 只认单空格）。
+    if SebasAgents::JsonBlock.present?(issue["body"].to_s, "automation")
+      raise Failure, "##{number} 带 Automation 块，是工作包卡，不能按 Proposal 接受"
+    end
     raise Failure, "##{number} 已关闭（#{issue["state"]}）" unless issue["state"] == "open"
     raise Failure, "当前登录 #{login} 不在 maintainers 白名单中，无法作裁决" unless maintainers.include?(login)
   end

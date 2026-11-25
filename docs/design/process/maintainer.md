@@ -11,11 +11,11 @@
 - `accepted-design` 只表示设计原则可接受，不等于批准排期、实现或版本交付
 - 需要设计文档时，指令 Scribe 整理 Issue 共识并提交归档 PR；文档入库不等于定稿
 - 对 Scribe 提交的定稿候选作最终裁决；只有明确 `accepted-design` 才算设计定稿
-- 排期批准后指令 Scribe 创建 `plan` 工作包；禁止把 Proposal 直接交给 Implementer 开工
+- 排期批准后指令 Scribe 创建带 Automation 块的工作包并挂 milestone；禁止把 Proposal 直接交给 Implementer 开工
 - 决定外部 feature issue 的四种归宿（塞入 milestone / backlog / 独立小修 / 不做）
 - 决定哪个 milestone 是 active（主线），哪个是并行轨
 - 决定 milestone 内容量置换——塞进一张新卡就要换出一张等量的卡
-- 排期批准后才创建 `plan` 工作包；禁止把 Proposal 直接交给 Implementer 开工
+- 排期批准后创建工作包并挂 milestone（status=Todo）；禁止把 Proposal 直接交给 Implementer 开工
 
 ### 指令格式
 
@@ -40,7 +40,7 @@ ruby tools/accept-proposal 159 --reason "排期进 v0.2.0" --milestone v0.2.0 --
 脚本发带 `<!-- proposal-verdict: accepted-design -->` 的公开评论、登记裁决证据 marker，
 复用 `Triager.plan` 完成校验与状态标签落地；指定 milestone 时在评论留公开排期理由并挂载。
 它只做设计定稿与排期登记，**不拆 plan 工作包**——拆卡仍由 Maintainer 另发指令、Scribe 执行。
-Proposal 上的 milestone 只是排期意图记录，Implementer 只按 Scribe 拆出的 `plan` 卡选卡；
+Proposal 上的 milestone 只是排期意图记录，Implementer 只按 Scribe 拆出的工作包卡（有 Automation 块）选卡；
 Proposal 本身不进实现选卡。
 使用前提与完整参数见 [quickstart.md](quickstart.md) 的 Maintainer 段；测试见
 `tools/test_accept_proposal.rb`。

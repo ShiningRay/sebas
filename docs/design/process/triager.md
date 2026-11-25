@@ -43,15 +43,27 @@ Triager 先在 Proposal issue 添加 `<!-- proposal-decision: <URL> -->`，快�
 的裁决证据；普通 issue 的同名文本或非法 URL 不触发读取、不阻断全仓快照。
 状态标签互斥，新判定生成清理旧状态的 remove_label 动作。普通 bug / feature 继续使用既有六档判定。
 
-### 3. 计划类 issue 的特殊处理
+### 3. 工作包卡（plan 标签已废弃）
 
-带 `plan` 标签的 issue（工作包卡）不做研判，只做一件事：
+**`plan` 标签不再使用。** 三个维度改由 GitHub 原生字段表达：
+
+| 维度 | 载体 | 判定 |
+|---|---|---|
+| 已排期 | milestone | 有 = 已排期（status 应为 Todo）；无 = 未排期（Backlog） |
+| 可执行 | `Automation.kind` | 仅 `work_package` 可被 Implementer 认领 |
+| 执行状态 | issue status | Backlog → Todo → In progress → In review → Done |
+
+带 `Automation` 块**且不带 `proposal` 标签**的工作包卡不做研判，只做三件事（Proposal 即使含 Automation 块也走 §2 的专用判定，不得被短路）：
+- 缺 type → 按 kind 回填（`work_package` → Feature，`tracking`/`manual`/`design` → Task）
 - 无 assignee → 自动补指派 ShiningRay
-- 已有 assignee → 直接跳过，零成本
+- 已挂 milestone 且 status 为 Backlog/空 → 推进到 Todo
+
+没挂 milestone 的工作包卡保持 Backlog，等 Maintainer 裁决归宿；它不会进选卡。
 
 ### 4. Issue Type 与 Assignee 规则
 
 - **type 按 issue 性质定**，不按判定定：报 bug 的 Bug、提需求或 Proposal 的 Feature、文档/CI/工具的 Task
+- `accepted` **不再硬编码 Feature**：verdict 可显式给 `type`，否则沿用 issue 现有 type，最后才回落 Feature
 - **assignee 唯一规则**：仅普通 issue 的 `bug-confirmed` 或 `accepted` 才指派；Proposal 三判定不指派
 - `escalate` 不指派——它需要人拍板但不是开发任务，靠飞书转告不占 assignee
 
@@ -138,4 +150,14 @@ Triager通过两条路径触发：
 2. **cron**：每日 05:00 全量扫描（当前外部脚本为 `github-issue-reconcile.py`；按仓库运维约定迁移为 `github-issue-reconcile.rb`，迁移前旧脚本仍为事实源）。
 
 两条路径共享同一份 `scope.json` 配置和同一份研判规则。
-`skip_labels: ["plan"]` 控制计划类跳过，`plan_assign_to: "ShiningRay"` 控制自动补指派。
+计划类跳过原先靠 `skip_labels: ["plan"]`；plan 标签废弃后改按「有无 `Automation` 块」判断，
+`plan_assign_to: "ShiningRay"` 仍控制工作包卡的自动补指派。
+
+## 存量迁移
+
+`ruby tools/backfill_issue_metadata.rb` 把 type/status 一次性落到存量 issue：
+
+- type 为空 → 按 `Automation.kind` 推断（`work_package` → Feature，`tracking`/`manual`/`design` → Task）
+- status 为空 → 按 state/milestone 推断（closed+completed → Done；closed+not_planned → Not planned；
+  open+有 milestone → Todo；open+无 milestone → Backlog）
+- 已有值一律不改，幂等可重跑；默认 dry-run，`--apply` 才写，写完逐条回读确认

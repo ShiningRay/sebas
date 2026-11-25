@@ -17,7 +17,7 @@ module SebasAgents
 
         in_progress = snapshot.in_progress_issues
         if in_progress.length > 1
-          return invalid(observed, "存在 #{in_progress.length} 张 #{Model::IN_PROGRESS_LABEL}：#{in_progress.map(&:number).join("、")}")
+          return invalid(observed, "存在 #{in_progress.length} 张执行中 issue（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}")
         end
 
         claimed = in_progress.first
@@ -144,16 +144,16 @@ module SebasAgents
       # target 可能为 nil（记录里的 issue 不在快照内），此时也要拒绝继续。
       def reconcile_aborted(target, record, observed)
         number = target&.number || record["issue"]
-        written = record["label_written"]
+        written = record["status_written"]
         if written == true
           return action("invalid_plan", observed,
-            "## #{number} 的认领处于 aborted 且可能已写标签（label_written=true）：" \
-            "需 Maintainer 核对远端是否有 #{Model::IN_PROGRESS_LABEL}，确认后清除记录再重新认领",
+            "## #{number} 的认领处于 aborted 且可能已写 status（status_written=true）：" \
+            "需 Maintainer 核对远端 status 是否为 In progress，确认后清除记录再重新认领",
             issue: number, milestone: target&.milestone)
         end
 
         action("invalid_plan", observed,
-          "## #{number} 的认领处于 aborted（label_written=#{written.inspect}）：" \
+          "## #{number} 的认领处于 aborted（status_written=#{written.inspect}）：" \
           "先删除本地运行记录，再用 claim 重新认领，不得直接续跑",
           issue: number, milestone: target&.milestone)
       end
@@ -271,16 +271,15 @@ module SebasAgents
       end
 
       # 「看起来是工作包」的判据（任一成立）：
-      #   1. 有 plan 标签；
-      #   2. 有 Automation 块（但可能有其它字段问题）；
-      #   3. 正文依赖节里出现任何 #N 引用——包括「另见 #35」这类引用说明。
-      # 第 3 条刻意不复用 prose_dependencies：那个解析器会剥掉引用说明以得到
+      #   1. 有 Automation 块（但可能有其它字段问题）；
+      #   2. 正文依赖节里出现任何 #N 引用——包括「另见 #35」这类引用说明。
+      # plan 标签已废弃：排期只看 milestone，未排期的工作包本来就不该出现在缺口清单里。
+      # 第 2 条刻意不复用 prose_dependencies：那个解析器会剥掉引用说明以得到
       # 「真正的前置」，而这里只关心「作者是否按工作包格式写了依赖节」。
       def work_package_like?(issue)
         # design / tracking / manual 明确不归 Implementer，不能进缺口提示。
         kind = issue.automation && issue.automation["kind"]
         return false if NON_WORK_KINDS.include?(kind)
-        return true if issue.label?("plan")
         return true if issue.automation
 
         section = dependency_section(issue.body)
@@ -317,7 +316,10 @@ module SebasAgents
       def exclusion_reason(issue)
         return "#{Model::HUMAN_LABEL} 等待人工" if issue.label?(Model::HUMAN_LABEL)
         return Model::INVALID_LABEL if issue.label?(Model::INVALID_LABEL)
-        return "#{Model::IN_PROGRESS_LABEL} 已认领" if issue.label?(Model::IN_PROGRESS_LABEL)
+        # 与 in_progress_issues 同口径：Proposal 不是 Implementer 的工作对象，
+        # 即使带合法 work_package Automation 块也不得进入候选。
+        return "proposal 不进入 Implementer 选卡" if issue.label?("proposal")
+        return "status=#{issue.status} 已认领" if issue.working?
 
         nil
       end

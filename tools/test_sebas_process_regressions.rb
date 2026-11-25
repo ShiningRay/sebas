@@ -257,7 +257,7 @@ class CliRobustnessTest < Minitest::Test
 
   def test_claim_refuses_when_another_card_is_in_progress
     data = snapshot(issues: [
-      issue(1, body: automation, labels: ["agent:in-progress"]),
+      issue(1, body: automation, status: "In progress"),
       issue(2, body: automation(order: [4, 2]))
     ])
     with_snapshot(data) do |path, dir|
@@ -275,7 +275,7 @@ class CliRobustnessTest < Minitest::Test
       File.write(record, JSON.generate({"schema" => 1, "issue" => 1, "phase" => "claimed"}), encoding: "UTF-8")
       status, out, = run_cli(["resume", "1", "--snapshot", path, "--record", record, "--apply"])
       assert_equal 1, status
-      assert_includes out, "agent:in-progress"
+      assert_includes out, "status"
       saved = JSON.parse(File.read(record, encoding: "UTF-8"))
       assert_equal "claimed", saved["phase"], "被拒绝时不得改 phase"
     end
@@ -324,7 +324,7 @@ class CliRobustnessTest < Minitest::Test
 
   # aborted 记录不得直接续跑，必须先对账；且必须在暂停/PR 分支之前拦截。
   def test_aborted_record_does_not_resume
-    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     %w[true false].each do |written|
       record = {"issue" => 1, "phase" => "aborted", "label_written" => written == "true"}
       action = select(data, record: record)
@@ -336,7 +336,7 @@ class CliRobustnessTest < Minitest::Test
   # 带暂停标签的 aborted 记录也不能被 resume_paused 放行。
   def test_aborted_record_with_pause_labels_is_rejected
     data = snapshot(issues: [
-      issue(1, body: automation, labels: %w[agent:in-progress needs:human agent:resume])
+      issue(1, body: automation, labels: %w[needs:human agent:resume], status: "In progress")
     ])
     record = {"issue" => 1, "phase" => "aborted", "label_written" => false}
     action = select(data, record: record)
@@ -351,7 +351,7 @@ class CliRobustnessTest < Minitest::Test
       "checks" => [], "closing_issues" => [1], "review_threads" => []
     }
     data = snapshot(
-      issues: [issue(1, body: automation, labels: ["agent:in-progress"])],
+      issues: [issue(1, body: automation, status: "In progress")],
       pull_requests: [pr]
     )
     record = {"issue" => 1, "phase" => "aborted", "pr" => 9, "label_written" => true}
@@ -360,7 +360,7 @@ class CliRobustnessTest < Minitest::Test
 
   def test_claimed_record_with_pause_labels_resumes
     data = snapshot(issues: [
-      issue(1, body: automation, labels: %w[agent:in-progress needs:human agent:resume])
+      issue(1, body: automation, labels: %w[needs:human agent:resume], status: "In progress")
     ])
     action = select(data, record: {"issue" => 1, "phase" => "claimed"})
     assert_equal "resume_issue", action.action
@@ -395,7 +395,7 @@ class CliRobustnessTest < Minitest::Test
   end
 
   def test_claimed_record_still_resumes
-    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     assert_equal "resume_issue", select(data, record: {"issue" => 1, "phase" => "claimed"}).action
   end
 
@@ -465,7 +465,7 @@ class CliRobustnessTest < Minitest::Test
 
   def test_unclaim_passes_when_completed_and_merged_dry_run
     data = snapshot(
-      issues: [issue(4, body: automation, labels: ["agent:in-progress"],
+      issues: [issue(4, body: automation, status: "In progress",
         state: "CLOSED", state_reason: "COMPLETED")],
       pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [4], "checks" => []}]
     )
@@ -475,6 +475,37 @@ class CliRobustnessTest < Minitest::Test
       payload = JSON.parse(out)
       assert_equal "released", payload["status"]
       assert_equal true, payload["dry_run"]
+    end
+  end
+
+  # 正常收口路径：合并后 GitHub 自动把 status 置为 Done。
+  # 若仍要求「执行中」，这条主路径会被自己拒绝；写回 Todo 还会抹掉终态。
+  def test_unclaim_accepts_done_status
+    data = snapshot(
+      issues: [issue(4, body: automation, status: "Done",
+        state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [4], "checks" => []}]
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert_equal "released", payload["status"]
+      refute(payload["reasons"].any? { |r| r.include?("无需释放") }, payload["reasons"].inspect)
+    end
+  end
+
+  # 既没开工（Backlog）也没完成：没被认领过，释放无意义。
+  def test_unclaim_refuses_when_never_claimed
+    data = snapshot(
+      issues: [issue(4, body: automation, status: "Backlog",
+        state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [4], "checks" => []}]
+    )
+    with_snapshot(data) do |path|
+      status, out, = run_cli(["unclaim", "4", "--snapshot", path])
+      assert_equal 1, status
+      assert_includes out, "无需释放"
     end
   end
 end
@@ -501,7 +532,7 @@ class PolicyRegressionTest < Minitest::Test
       "closing_issues" => [1], "review_threads" => []
     }
     data = snapshot(
-      issues: [issue(1, body: automation, labels: %w[needs:human agent:in-progress])],
+      issues: [issue(1, body: automation, labels: ["needs:human"], status: "In progress")],
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 9})

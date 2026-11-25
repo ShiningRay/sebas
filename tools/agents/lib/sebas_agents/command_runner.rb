@@ -107,7 +107,11 @@ module SebasAgents
     # 只放行与授权意图完全匹配的单一命令形态，其余写命令仍被拦截。
     ALLOWED_WRITES = {
       add_label: /\Agh\s+issue\s+edit\s+\d+\s+--repo\s+\S+\s+--add-label\s+\S+\z/,
-      remove_label: /\Agh\s+issue\s+edit\s+\d+\s+--repo\s+\S+\s+--remove-label\s+\S+\z/
+      remove_label: /\Agh\s+issue\s+edit\s+\d+\s+--repo\s+\S+\s+--remove-label\s+\S+\z/,
+      # status/type 走 REST PATCH：-f 值里可能含空格（"In progress"），
+      # 匹配到字段名即放行，具体取值由调用方常量约束。
+      set_status: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/\d+\s+-f\s+status=.+\z},
+      set_type: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/\d+\s+-f\s+type=.+\z}
     }.freeze
 
     def allowed_write?(argv)

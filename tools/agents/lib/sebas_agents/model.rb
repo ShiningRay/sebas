@@ -5,10 +5,26 @@ require "time"
 module SebasAgents
   # 纯值对象：全部由 JSON 快照构造，不含网络或文件副作用。
   module Model
-    IN_PROGRESS_LABEL = "agent:in-progress"
     RESUME_LABEL = "agent:resume"
     HUMAN_LABEL = "needs:human"
     INVALID_LABEL = "metadata:invalid"
+
+    # 账号级 Issue Status。执行状态只认 status，不再用 agent:in-progress 标签。
+    # 名称必须与 GitHub 上的显示名一致（大小写不敏感，但这里统一用官方写法）。
+    STATUS_BACKLOG = "Backlog"
+    STATUS_TODO = "Todo"
+    STATUS_IN_PROGRESS = "In progress"
+    STATUS_IN_REVIEW = "In review"
+    STATUS_DONE = "Done"
+    STATUS_NOT_PLANNED = "Not planned"
+    STATUS_DUPLICATE = "Duplicate"
+    WORKING_STATUSES = [STATUS_IN_PROGRESS, STATUS_IN_REVIEW].freeze
+
+    # Issue Type：按性质分派流程。Task 指文档/CI/工具/流程类工作。
+    TYPE_BUG = "Bug"
+    TYPE_FEATURE = "Feature"
+    TYPE_TASK = "Task"
+    TYPES = [TYPE_BUG, TYPE_FEATURE, TYPE_TASK].freeze
 
     Milestone = Data.define(:number, :title, :state, :order, :track, :open_issues, :description) do
       def main?
@@ -37,7 +53,7 @@ module SebasAgents
     end
 
     Issue = Data.define(:number, :title, :state, :state_reason, :body, :labels, :milestone,
-      :assignees, :blocked_by, :automation, :url) do
+      :assignees, :blocked_by, :automation, :url, :type, :status) do
       def self.from_hash(hash)
         milestone = hash["milestone"].is_a?(Hash) ? hash["milestone"]["number"] : hash["milestone"]
         new(
@@ -53,8 +69,19 @@ module SebasAgents
           # 离线快照只有 body；若不解析，所有工作包都会被判成「缺 Automation 块」。
           # 与 GithubGateway#build_issue 保持同一解析口径。
           automation: hash.key?("automation") ? hash["automation"] : parse_automation(hash["body"].to_s, hash.fetch("number").to_i),
-          url: hash["url"]
+          url: hash["url"],
+          # type/status 缺失是合法状态（存量卡未回填），不报错；由业务层决定如何处理。
+          type: name_of(hash["type"]),
+          status: name_of(hash["status"])
         )
+      end
+
+      # GitHub 的 type / status 都是对象；也接受直接给字符串（离线快照方便）。
+      def self.name_of(value)
+        case value
+        when Hash then value["name"]&.to_s
+        when String then value.empty? ? nil : value
+        end
       end
 
       def self.parse_automation(body, number)
@@ -84,6 +111,28 @@ module SebasAgents
 
       def kind
         automation && automation["kind"]
+      end
+
+      # 已排期：挂了 milestone。plan 标签退出历史舞台，排期只看 milestone。
+      def scheduled?
+        !milestone.nil?
+      end
+
+      # 执行中：In progress / In review。认领锁改由 status 承担。
+      def working?
+        WORKING_STATUSES.any? { |name| status?(name) }
+      end
+
+      def type?(name)
+        type.to_s.casecmp?(name)
+      end
+
+      def status?(name)
+        status.to_s.casecmp?(name)
+      end
+
+      def backlog?
+        status?(STATUS_BACKLOG)
       end
     end
 
@@ -184,8 +233,10 @@ module SebasAgents
         pull_requests.find { |item| item.number == number }
       end
 
+      # 认领锁只覆盖实现类工作卡：Proposal 可以处于 In progress（讨论设计中），
+      # 但它不是 Implementer 的认领对象，不能占用「同时只有一张」的名额。
       def in_progress_issues
-        issues.select { |item| item.open? && item.label?(IN_PROGRESS_LABEL) }
+        issues.select { |item| item.open? && item.working? && !item.label?("proposal") }
       end
 
       def with(**changes)

@@ -48,7 +48,8 @@ module SnapshotHelpers
     "```json evidence\n#{JSON.pretty_generate(block)}\n```\n"
   end
 
-  def issue(number, body: "", labels: [], milestone: 2, state: "OPEN", state_reason: nil, blocked_by: [])
+  def issue(number, body: "", labels: [], milestone: 2, state: "OPEN", state_reason: nil, blocked_by: [],
+    status: nil, type: nil)
     {
       "number" => number,
       "title" => "issue #{number}",
@@ -58,7 +59,9 @@ module SnapshotHelpers
       "labels" => labels,
       "milestone" => milestone,
       "assignees" => [],
-      "blocked_by" => blocked_by
+      "blocked_by" => blocked_by,
+      "status" => status,
+      "type" => type
     }
   end
 
@@ -523,8 +526,8 @@ class SelectionTest < Minitest::Test
 
   def test_multiple_in_progress_is_invalid
     data = snapshot(issues: [
-      issue(1, body: automation, labels: ["agent:in-progress"]),
-      issue(2, body: automation, labels: ["agent:in-progress"])
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress")
     ])
     assert_equal "invalid_plan", select(data).action
   end
@@ -536,7 +539,7 @@ class SelectionTest < Minitest::Test
       "closing_issues" => [1], "review_threads" => []
     }
     data = snapshot(
-      issues: [issue(1, body: automation, labels: ["agent:in-progress"]), issue(2, body: automation(order: [4, 2]))],
+      issues: [issue(1, body: automation, status: "In progress"), issue(2, body: automation(order: [4, 2]))],
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 50, "phase" => "claimed"})
@@ -551,28 +554,28 @@ class SelectionTest < Minitest::Test
       "closing_issues" => [1], "review_threads" => []
     }
     data = snapshot(
-      issues: [issue(1, body: automation, labels: ["agent:in-progress"])],
+      issues: [issue(1, body: automation, status: "In progress")],
       pull_requests: [pr]
     )
     assert_equal "wait", select(data, record: {"issue" => 1, "pr" => 50}).action
   end
 
   def test_claiming_interruption_resumes
-    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     action = select(data, record: {"issue" => 1, "phase" => "claiming"})
     assert_equal "resume_issue", action.action
     assert_includes action.reason, "claiming"
   end
 
   def test_paused_with_resume_returns_resume
-    data = snapshot(issues: [issue(1, body: automation, labels: %w[needs:human agent:resume agent:in-progress])])
+    data = snapshot(issues: [issue(1, body: automation, labels: %w[needs:human agent:resume], status: "In progress")])
     action = select(data, record: {"issue" => 1, "phase" => "paused"})
     assert_equal "resume_issue", action.action
     assert_includes action.reason, "agent:resume"
   end
 
   def test_local_remote_conflict_is_invalid
-    data = snapshot(issues: [issue(1, body: automation, labels: ["agent:in-progress"])])
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     assert_equal "invalid_plan", select(data, record: {"issue" => 99}).action
   end
 
@@ -1595,10 +1598,10 @@ class CliTest < Minitest::Test
       record = File.join(dir, "run.json")
       File.write(path, JSON.generate(data), encoding: "UTF-8")
 
-      # 用假 runner：写标签抛错，其余按成功返回。
+      # 用假 runner：写 status 抛错，其余按成功返回。
       fake = Class.new(SebasAgents::CommandRunner) do
         def run!(*argv, chdir: Dir.pwd)
-          raise SebasAgents::CommandError.new("boom", command: argv) if argv.include?("--add-label")
+          raise SebasAgents::CommandError.new("boom", command: argv) if argv.any? { |arg| arg.start_with?("status=") }
 
           ""
         end
@@ -1612,7 +1615,7 @@ class CliTest < Minitest::Test
       assert_equal 1, status
       saved = JSON.parse(File.read(record, encoding: "UTF-8"))
       assert_equal "aborted", saved["phase"], "写入失败必须落 aborted"
-      assert_equal false, saved["label_written"]
+      assert_equal false, saved["status_written"]
       refute JSON.parse(out.string)["ok"]
     end
   end
@@ -1622,6 +1625,44 @@ class CliTest < Minitest::Test
     result = runner.capture("git", "push", "origin", "main")
     assert result.success?
     assert_equal [%w[git push origin main]], runner.calls
+  end
+
+# Proposal 带合法 work_package Automation 块也不得进入 Implementer 选卡：
+# 与 in_progress_issues 同口径，否则提案会被当作工作认领。
+def test_selection_excludes_proposal_even_with_valid_automation
+  block = "```json automation\n" \
+    "{\"schema\":1,\"kind\":\"work_package\",\"order\":[4,1],\"depends_on\":[],\"external\":[]}\n```\n"
+  data = snapshot(issues: [issue(8, body: block, labels: ["proposal"])])
+  action = select(data)
+  refute_equal "claim_issue", action.action
+  assert(action.excluded.any? { |row| row["reason"].to_s.include?("proposal") }, action.excluded.inspect)
+end
+
+  # 有 Automation 块但结构残缺时不能短路成工作包：会按坏元数据写 type/assignee。
+  # 也不能静默降级为普通研判——必须显式拒绝。
+  def test_triage_rejects_malformed_automation_block
+    data = snapshot(issues: [issue(7, body: "```json automation\n{\"kind\":\"work_package\"}\n```\n")])
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "7", "--snapshot", snap])
+      assert_equal 1, status
+      assert_includes out, "invalid_plan"
+    end
+  end
+
+  # Proposal 即使带 Automation 块也走专用判定，不得被工作包短路抢走。
+  def test_triage_proposal_with_automation_block_still_uses_proposal_rules
+    block = "```json automation\n" \
+      "{\"schema\":1,\"kind\":\"work_package\",\"order\":[1],\"depends_on\":[],\"external\":[]}\n```\n"
+    data = snapshot(issues: [issue(8, body: block, labels: ["proposal"])])
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["triage", "8", "--snapshot", snap])
+      assert_equal 1, status
+      assert_equal "needs-model-verdict", JSON.parse(out)["decision"]
+    end
   end
 end
 
@@ -1800,7 +1841,7 @@ class ClosedIssueLabelTest < Minitest::Test
 
   def test_closed_issue_with_stale_label_is_not_active_claim
     data = snapshot(issues: [
-      issue(1, body: automation, labels: ["agent:in-progress"], state: "CLOSED", state_reason: "COMPLETED"),
+      issue(1, body: automation, status: "In progress", state: "CLOSED", state_reason: "COMPLETED"),
       issue(2, body: automation(order: [4, 2]))
     ])
     assert_equal "claim_issue", select(data).action

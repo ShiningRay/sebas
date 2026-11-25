@@ -39,6 +39,62 @@ module SebasAgents
       Array(raw["labels"]).any? { |item| item["name"] == label }
     end
 
+    # 状态与类型同样要回读：它们决定选卡与流程分派，不能只信写入返回。
+    def set_status(number, status, allow_write: false)
+      call = ["gh", "api", "-X", "PATCH", "repos/#{@repo}/issues/#{number}", "-f", "status=#{status}"]
+      allow_write ? @runner.with_write(:set_status) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def status_of(number)
+      raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
+      raw.dig("status", "name")
+    end
+
+    def status?(number, name)
+      status_of(number).to_s.casecmp?(name)
+    end
+
+    def set_type(number, type, allow_write: false)
+      call = ["gh", "api", "-X", "PATCH", "repos/#{@repo}/issues/#{number}", "-f", "type=#{type}"]
+      allow_write ? @runner.with_write(:set_type) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def type_of(number)
+      raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
+      raw.dig("type", "name")
+    end
+
+    # 回读确认：标签写入不是分布式事务，必须核对远端实际状态。
+    def label_present?(number, label)
+      raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
+      Array(raw["labels"]).any? { |item| item["name"] == label }
+    end
+
+    # 状态与类型同样要回读：它们决定选卡与流程分派，不能只信写入返回。
+    def set_status(number, status, allow_write: false)
+      call = ["gh", "api", "-X", "PATCH", "repos/#{@repo}/issues/#{number}", "-f", "status=#{status}"]
+      allow_write ? @runner.with_write(:set_status) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def status_of(number)
+      raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
+      raw.dig("status", "name")
+    end
+
+    def status?(number, name)
+      status_of(number).to_s.casecmp?(name)
+    end
+
+    def set_type(number, type, allow_write: false)
+      call = ["gh", "api", "-X", "PATCH", "repos/#{@repo}/issues/#{number}", "-f", "type=#{type}"]
+      allow_write ? @runner.with_write(:set_type) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def type_of(number)
+      raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
+      raw.dig("type", "name")
+    end
+
     def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil)
       milestones = fetch_milestones
       issues = fetch_all_issues
@@ -288,7 +344,10 @@ module SebasAgents
         # Automation 必须在此解析：选卡策略读 issue.automation，
         # 若只留着原始 body，所有工作包都会被判成"缺元数据"。
         "automation" => parse_automation(body, raw.fetch("number")),
-        "url" => raw["html_url"]
+        "url" => raw["html_url"],
+        # type/status 由 REST issues 接口直接返回对象；missing 时保持 nil。
+        "type" => raw["type"],
+        "status" => raw["status"]
       )
     end
 
