@@ -17,6 +17,8 @@ module SebasAgents
     PROPOSAL_GENERAL_DECISIONS = %w[needs-info duplicate escalate].freeze
     # 被取代须写明继任者：没有这个编号就无法回链，旧文档会变成断头档案。
     PROPOSAL_SUPERSEDED_BY = /\Asuperseded_by\z/
+    # Maintainer 直接读评论勾选，所以要写进评论而不是只留在工具输出里。
+    QUESTIONS_HEADING = "### 待决问题（请勾选）"
     PROPOSAL_VERDICT_MARKER = "<!-- proposal-verdict: "
     DECISION_URL = %r{\Ahttps://github\.com/(?<repo>[^/]+/[^/]+)/(?<kind>issues|pull)/(?<number>\d+)#(?:(?<anchor>issuecomment|pullrequestreview)-(?<id>\d+)|discussion_r(?<discussion_id>\d+))\z}
 
@@ -237,11 +239,78 @@ module SebasAgents
       elsif decision == "superseded"
         body = "#{body}\n\n继任 Proposal：##{verdict["superseded_by"]}"
       end
+      questions = render_questions(verdict["questions"])
+      body = "#{body}\n\n#{questions}" unless questions.empty?
       <<~MD
         <!-- status: #{decision} -->
         #{MARKER}
         #{body}
       MD
+    end
+
+    # 把「需要人拍板的问题」渲染成可直接勾选的清单。
+    # GitHub 允许勾选评论里的 `- [ ]` 任务列表（会改写该评论），但工具不读取、
+    # 也不依赖勾选结果；Maintainer 的选择仍须用评论或裁决指令表达。
+    # 这里只是让选项一眼可见、无需另找。
+    #
+    # 输入形状（verdict["questions"]）：
+    #   [{"q" => "问题", "why" => "为何需要人定", "options" => ["A …", "B …"], "recommend" => 0}]
+    # recommend 是 options 的**原始下标**，可省。
+    #
+    # 结构非法一律 InvalidPlan，不静默丢弃：待决问题丢了而 plan 仍返回 ok，
+    # 调用方看不出少了什么。只有「字段缺省」与「空数组」才当没有。
+    def render_questions(questions)
+      return "" if questions.nil?
+      raise InvalidPlan, "questions 必须是数组，收到 #{questions.class}" unless questions.is_a?(Array)
+      return "" if questions.empty?
+
+      blocks = questions.each_with_index.map do |item, index|
+        raise InvalidPlan, "questions[#{index}] 必须是对象" unless item.is_a?(Hash)
+
+        render_question(item, number: index + 1)
+      end
+      return "" if blocks.all?(&:nil?)
+
+      ([QUESTIONS_HEADING, "", "> 勾选只改这条评论，工具读不到。定了哪项，回一条评论或在裁决里写明编号即可。", ""] + blocks.compact).join("\n")
+    end
+
+    def render_question(item, number:)
+      title = item["q"].to_s.strip
+      # 标题为空是作者失误，不是「没有这个问题」——静默丢弃会让编号与实际不符。
+      raise InvalidPlan, "questions[#{number - 1}].q 不能为空" if title.empty?
+
+      raw_options = item["options"]
+      raise InvalidPlan, "questions[#{number - 1}].options 必须是数组" unless raw_options.nil? || raw_options.is_a?(Array)
+
+      # 保留原始下标，否则过滤空项会让 recommend 指向错的选项。
+      pairs = Array(raw_options).each_with_index.map { |text, i| [text.to_s.strip, i] }
+      pairs.reject! { |text, _| text.empty? }
+
+      recommend = item["recommend"].is_a?(Integer) ? item["recommend"] : nil
+      recommend = nil if recommend&.negative?
+
+      lines = ["**Q#{number}. #{title}**"]
+      why = item["why"].to_s.strip
+      unless why.empty?
+        lines << ""
+        lines << why
+      end
+      lines << ""
+      if pairs.empty?
+        lines << "- [ ] 待补充选项"
+      else
+        pairs.each_with_index do |(text, original_index), display_index|
+          mark = original_index == recommend ? "（推荐）" : ""
+          lines << "- [ ] **#{option_key(display_index)}** #{text}#{mark}"
+        end
+      end
+      lines << ""
+      lines.join("\n")
+    end
+
+    # A/B/C… 便于回帖时只写字母；按显示顺序编号，不是原始下标。
+    def option_key(index)
+      ("A".ord + index).chr
     end
   end
 end
