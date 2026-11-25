@@ -13,7 +13,7 @@
 | **路由/编排层** | binding 查表、触发器求值、编排 Task 调度 | 路由是纯函数（配置快照原子替换）；编排引擎见 §7 |
 | **Agent 执行池** | 执行 agent turn（LLM 调用 + 工具循环） | per-session worker fiber：同一会话保序、跨会话并行；全局并发上限 |
 | **工具层** | 工具注册、执行、审批、Skills | 注册表声明 `replay` 语义与 `risk` 级别（类型级字段）；SKILL.md 免重编译扩展 |
-| **Provider 层** | LLM 网关 | 实例池（每 agent 绑不同 provider/model）；规格表编译期常量 |
+| **Provider 层** | LLM 网关 | provider 配置层（#214：`providers.<name>` 承载密钥/base_url/protocol，多 agent 共享；显式 protocol 解耦厂商与 wire 格式）；实例池（每 agent 绑不同 provider/model，热更新按配置重建，密钥轮换下个 turn 生效）；规格表编译期常量兜底缺省 base_url |
 | **持久层** | 会话/任务/事件账本/审批/配置快照 | SQLite WAL 单写者；JSONL 转录归档；keyring |
 | **管理面** | TUI + HTTP API 双入口 | §9 |
 

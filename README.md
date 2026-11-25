@@ -132,10 +132,18 @@ channels:
           user: ${MAIL_USER}
           password: ${MAIL_PASSWORD}
 
+# Provider layer: vendor-level config (key / base_url / protocol);
+# multiple agents share one key by referencing the provider by name
+providers:
+  deepseek:
+    api_key: ${LLM_API_KEY}
+    base_url: https://api.deepseek.com
+    protocol: openai-compatible   # openai-compatible | anthropic
+
 agents:
   main:
-    model: deepseek/chat
-    api_key: ${LLM_API_KEY}
+    provider: deepseek
+    model: deepseek-chat          # bare model name, no `<provider>/` prefix
 
 bindings:
   - { channel: email, account: personal-mailbox, peer: "*", agent: main }
@@ -147,7 +155,10 @@ gateway:
 ```
 
 Secrets are never stored in the config file: `${VAR}` is expanded from the environment,
-and from M1 onward credentials are served from the encrypted vault.
+and provider credentials are served from the encrypted vault (one key per provider,
+rotated via hot reload for every referencing agent). The legacy per-agent
+`agents.<name>.api_key` + `<provider>/<model>` form still loads with a readable
+migration hint logged at startup.
 
 ## Architecture
 

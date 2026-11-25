@@ -18,6 +18,9 @@ module Sebas
       class Config
         include YAML::Serializable
         getter channels : Channels = Channels.new
+        # provider 层（#214）：厂商级配置（密钥/base_url/protocol），agent 按名引用、
+        # 多 agent 共享一份密钥；热更新整根替换，密钥轮换下个 turn 生效
+        getter providers : Hash(String, ProviderConfig) = {} of String => ProviderConfig
         getter agents : Hash(String, AgentConfig) = {} of String => AgentConfig
         getter bindings : Array(BindingConfig) = [] of BindingConfig
         getter gateway : GatewayConfig = GatewayConfig.new
@@ -84,12 +87,27 @@ module Sebas
         getter credentials : Hash(String, String) = {} of String => String
       end
 
+      # provider 层配置（#214）：密钥/base_url/protocol 归厂商命名空间；
+      # api_key 明文仅过渡，Gateway#migrate_secrets 迁 vault 后经 setter 抹除
+      # （同 AgentConfig 纪律，配置树不留明文凭据）
+      class ProviderConfig
+        include YAML::Serializable
+        getter api_key : String?
+        setter api_key : String?
+        getter base_url : String?                      # 缺省回退规格表（Providers::SPEC_TABLE）
+        getter protocol : String = "openai-compatible" # openai-compatible | anthropic
+      end
+
       class AgentConfig
         include YAML::Serializable
         getter model : String
-        getter provider_ref : String?
+        # 引用 providers.<name>（#214）：显式厂商层，设值后 model 即裸模型名
+        # 直传（不再从 `<provider>/` 前缀推断厂商；openrouter 等自带斜杠的
+        # 模型 ID 因此不受影响）
+        getter provider : String?
+        getter provider_ref : String? # 兼容字段（#214 前旧写法），provider 缺省时才生效
         getter persona_file : String?
-        getter api_key : String? # 运行期即时抹除（迁 vault），见 Gateway#migrate_secrets
+        getter api_key : String? # 遗留过渡（#214：新配置用 providers.<p>.api_key）；运行期即时抹除（迁 vault），见 Gateway#migrate_secrets
         # 迁移抹除入口（M4.2-WP4）：Gateway#migrate_secrets 把明文写入 vault
         # 后经此置 nil——配置树不留明文凭据（Q6 裁断：不留 M4.4）。
         setter api_key : String?

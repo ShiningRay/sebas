@@ -1,6 +1,6 @@
 # Sebas 配置示例（design.md §3.4 配置树）
 # M0 单账号 MVP：一个 email 账号 + 一个 agent。
-# 敏感值经 ${ENV} 展开；M1-WP7 起改 keyring 引用（*_ref: keyring:...）。
+# 敏感值经 ${ENV} 展开；provider 密钥在 gateway 启动时迁入加密 vault。
 channels:
   email:
     accounts:
@@ -14,15 +14,32 @@ channels:
           user: ${MAIL_USER}
           password: ${MAIL_PASSWORD}
 
+# provider 层（#214）：厂商级配置——密钥 / base_url / 协议格式。
+# 多个 agent 引用同一 provider 共享一份密钥，热更新轮换一次全体生效。
+providers:
+  deepseek:
+    api_key: ${LLM_API_KEY}
+    base_url: https://api.deepseek.com
+    protocol: openai-compatible       # openai-compatible | anthropic
+  # anthropic 示例（显式协议路径，非流式纯文本）：
+  # anthropic:
+  #   api_key: ${ANTHROPIC_API_KEY}
+  #   base_url: https://api.anthropic.com/v1
+  #   protocol: anthropic
+
 agents:
   main:
-    model: deepseek/chat              # <provider>/<model>
+    provider: deepseek                # 引用 providers.<name>
+    model: deepseek-chat              # 裸模型名（不再用 <provider>/ 前缀编码厂商）
     persona_file: agents/main/SOUL.md
-    api_key: ${LLM_API_KEY}           # M0 明文过渡（keyring M1-WP7）
     memory:
       window: 50
     tools:
       allow: ["*"]
+  # 旧写法仍可加载（启动时输出迁移指引，不静默失败）：
+  # main:
+  #   model: deepseek/chat             # 遗留：<provider>/<model> 前缀推断
+  #   api_key: ${LLM_API_KEY}          # 遗留：agent 级密钥（建议迁 providers.<p>.api_key）
 
 bindings:
   - channel: email

@@ -23,8 +23,8 @@
 - **从明文 YAML 迁到 OS keyring / 静态加密**（autobot B10 教训：明文 YAML+.env 仅 chmod 0o600）：
   - 首选 OS 凭据库：Windows Credential Manager / macOS Keychain / Linux secret service，主密钥托管于此；
   - 存量静态加密：AES-256-GCM 加密 secret 文件，主密钥入 keyring（OWASP Secrets Management 参考路线，渠道笔记 d1 工程建议）。
-- **命名空间隔离**：key 按 `(渠道类型, 账号ID)` 命名空间（渠道笔记 d1）；日志全程脱敏 token/secret（autobot 已有 `LogSanitizer.redact_credentials` 可搬，A9）。
-- **支持轮换**：企微/飞书 secret 均可在管理后台重置，OAuth refresh token 可撤销；管理面提供 `accounts.rotate-credential`。
+- **命名空间隔离**：key 按 `(渠道类型, 账号ID)` 命名空间（渠道笔记 d1）；LLM provider 密钥按 `("provider", 名称)` 命名空间（#214，agent 级遗留密钥仍走 `("agent", 名称)`）；日志全程脱敏 token/secret（autobot 已有 `LogSanitizer.redact_credentials` 可搬，A9）。
+- **支持轮换**：企微/飞书 secret 均可在管理后台重置，OAuth refresh token 可撤销；管理面提供 `accounts.rotate-credential`；provider 密钥轮换（#214）改 `providers.<name>.api_key` 热更新即生效——一次轮换覆盖全部引用该 provider 的 agent，下一 turn 使用新密钥。
 - **最小权限**：企微应用可见范围最小化、secret 按能力拆分；飞书应用按需申请 scope；Gmail「不需要完整邮箱 scope 时改用 Gmail API 细粒度受限 scope」（渠道笔记 d2）。
 - 官方底线遵守：secret/token 只存服务端（本平台进程），不入前端/安装包/日志（渠道笔记 d1 三家一致原文）。
 
