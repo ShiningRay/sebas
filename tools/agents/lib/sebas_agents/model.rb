@@ -31,12 +31,22 @@ module SebasAgents
         track == "main"
       end
 
+      def parallel?
+        track == "parallel"
+      end
+
       def open?
         state == "open"
       end
 
+      # 只用于 track=main。并行轨的 order 带 x 后缀，走 parallel_sort_key。
       def sort_key
         Integer(order, 10)
+      end
+
+      # 并行轨排序看数值前缀：4x 与 4 同序号，但两者分属不同轨，互不竞争。
+      def parallel_sort_key
+        Integer(order.to_s.delete_suffix("x"), 10)
       end
 
       def self.from_hash(hash)

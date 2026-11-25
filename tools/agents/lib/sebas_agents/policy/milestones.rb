@@ -86,16 +86,29 @@ module SebasAgents
         candidate = main.find do |item|
           next false unless item.open?
 
-          if open_issue_counts
-            open_issue_counts.fetch(item.number, 0).positive?
-          else
-            item.open_issues.positive?
-          end
+          has_work?(item, open_issue_counts)
         end
         return [:select, candidate] if candidate
         return [:handoff_release, nil] if main.any?(&:open?)
 
         [:idle, nil]
+      end
+
+      # 并行轨按不参与 active 主线竞争，只在主线无卡可做时提供回退候选。
+      # 与 active 不同：这里返回全部 open 且有工作的并行轨，按数值序号升序。
+      def parallel_tracks(milestones, open_issue_counts: nil)
+        milestones.select(&:parallel?)
+          .select(&:open?)
+          .select { |item| has_work?(item, open_issue_counts) }
+          .sort_by(&:parallel_sort_key)
+      end
+
+      def has_work?(milestone, open_issue_counts)
+        if open_issue_counts
+          open_issue_counts.fetch(milestone.number, 0).positive?
+        else
+          milestone.open_issues.positive?
+        end
       end
     end
   end

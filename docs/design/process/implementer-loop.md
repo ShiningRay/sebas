@@ -31,8 +31,9 @@ track: main
 
 - milestone 的 `state` 必须为 `open` 或 `closed`；`track` 只允许 `main` 或 `parallel`。主线的 `order` 严格匹配 `\A\d+\z`，并行轨严格匹配 `\A\d+x\z`，解析出的序号均为正整数；不剥掉后缀后混用排序。
 - active 主线按 `order` 升序选取 `open_issues>0` 的最前一项。
-- 缺字段或非法值均为配置错误，不用 title 或 issue 编号静默兜底。`order` 只在 `track=main` 的 milestone 内要求唯一；`parallel` 不参与 active 计算，其 `order: 4x` 与主线 `order: 4` 合法共存。
+- 缺字段或非法值均为配置错误，不用 title 或 issue 编号静默兜底。`order` 只在 `track=main` 的 milestone 内要求唯一；`parallel` 不参与 active 主线竞争，其 `order: 4x` 与主线 `order: 4` 合法共存。
 - 选择时读取 open 与 closed milestones，寻找 `order` 最小、存在未完成工作的主线 milestone。它仍有 open issue 时按本文选卡；工作卡已清但仍 open 时返回 `handoff_release`；已关闭时继续检查下一主线。所有 open/closed 主线均无剩余工作时才返回 `idle`。
+- **并行轨回退**：active 主线评估为 `blocked`（无就绪卡）时，按 `order` 数值升序在所有 open 并行轨上再评估一轮，取第一条能选出卡的轨。边界：主线有就绪卡就只用主线；主线清空时的 `handoff_release` 不被并行轨截走；`invalid_plan` 直接上报，不用换轨掩盖配置错误；并行轨也无就绪卡时仍报主线的 `blocked`。
 
 ### 2.2 Issue
 
@@ -375,13 +376,14 @@ Harness 输入至少包含：issue URL 与完整契约、验收清单、允许�
 纯函数测试至少覆盖：
 
 1. active milestone 的排序、并行轨排除、缺字段、主线内重复顺序，以及 M4/M4x 同号共存。
-2. 父卡、人工卡、无依赖首卡、多前置、跨 milestone 前置和依赖环。
-3. 前置 open、completed、not planned、缺证据和外部依赖未就绪。
-4. 多张就绪卡按 `order` 稳定选择；同顺序和 issue/PR 关系歧义被拒绝。
-5. 自己的 PR 优先续跑；无关 PR 不被接管；pending CI 返回 `wait`。
-6. 重复运行不重复认领、不重复建分支或 PR；合并后依据新快照解锁后继。
-7. milestone 清零但未发版时返回 `handoff_release`，不进入下一版本。
-8. API 错误、分页遗漏、认领写入失败和 GitHub/本地状态冲突均 fail-closed。
+2. 并行轨回退：主线 blocked 时补位、主线有就绪卡时不抢位、`handoff_release` 不被截走、`invalid_plan` 不被掩盖、并行轨也空时报主线 blocked。
+3. 父卡、人工卡、无依赖首卡、多前置、跨 milestone 前置和依赖环。
+4. 前置 open、completed、not planned、缺证据和外部依赖未就绪。
+5. 多张就绪卡按 `order` 稳定选择；同顺序和 issue/PR 关系歧义被拒绝。
+6. 自己的 PR 优先续跑；无关 PR 不被接管；pending CI 返回 `wait`。
+7. 重复运行不重复认领、不重复建分支或 PR；合并后依据新快照解锁后继。
+8. milestone 清零但未发版时返回 `handoff_release`，不进入下一版本。
+9. API 错误、分页遗漏、认领写入失败和 GitHub/本地状态冲突均 fail-closed。
 
 执行器另做故障注入：在认领后、PR 创建后、合并后分别中断并重启，验证都能续跑而不是重复产生副作用。
 

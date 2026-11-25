@@ -588,6 +588,88 @@ track: main
     assert_equal "handoff_release", select(data).action
   end
 
+# 并行轨回退：主线有 open 卡但无一张就绪时，才允许并行轨补位。
+def test_falls_back_to_parallel_track_when_main_blocked
+  data = snapshot(
+    issues: [
+      # 主线只有 tracking 卡（不可认领）→ main 评估为 blocked
+      issue(1, body: automation(kind: "tracking", order: [4, 1])),
+      # 并行轨有可执行卡
+      issue(9, milestone: 1, body: automation(order: [4, 1]))
+    ],
+    milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 1),
+      milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+    ]
+  )
+  action = select(data)
+  assert_equal "claim_issue", action.action
+  assert_equal 9, action.issue
+  assert_equal 1, action.milestone
+  assert_includes action.reason, "并行轨"
+end
+
+# 主线仍有就绪卡时，并行轨不得抢位。
+def test_main_ready_card_beats_parallel_track
+  data = snapshot(
+    issues: [
+      issue(1, body: automation(order: [4, 1])),
+      issue(9, milestone: 1, body: automation(order: [4, 1]))
+    ],
+    milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 1),
+      milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+    ]
+  )
+  action = select(data)
+  assert_equal "claim_issue", action.action
+  assert_equal 1, action.issue
+  assert_equal 2, action.milestone
+end
+
+# 主线清空要进发版门禁，不能被并行轨截走。
+def test_handoff_release_is_not_hijacked_by_parallel_track
+  data = snapshot(
+    issues: [issue(9, milestone: 1, body: automation(order: [4, 1]))],
+    milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 0),
+      milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+    ]
+  )
+  assert_equal "handoff_release", select(data).action
+end
+
+# 并行轨也无卡可做时，仍报主线的 blocked，不吞掉原始原因。
+def test_blocked_reported_when_parallel_track_also_empty
+  data = snapshot(
+    issues: [issue(1, body: automation(kind: "manual", order: [4, 1]))],
+    milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 1),
+      milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+    ]
+  )
+  action = select(data)
+  assert_equal "blocked", action.action
+  assert_equal 2, action.milestone
+  assert_includes action.reason, "active 主线"
+end
+
+# 配置错误必须暴露，不能靠切到并行轨掩盖。
+def test_invalid_main_is_not_masked_by_parallel_track
+  data = snapshot(
+    issues: [
+      issue(1, body: automation(order: [4, 1]), blocked_by: [99]),
+      issue(9, milestone: 1, body: automation(order: [4, 1]))
+    ],
+    milestones: [
+      milestone(number: 2, order: "4", track: "main", open_issues: 1),
+      milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)
+    ]
+  )
+  action = select(data)
+  assert_equal "invalid_plan", action.action
+end
+
   def test_excluded_lists_every_blocked_candidate
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1], depends_on: [9]), blocked_by: [9]),
