@@ -111,7 +111,11 @@ module SebasAgents
       # status/type 走 REST PATCH：-f 值里可能含空格（"In progress"），
       # 匹配到字段名即放行，具体取值由调用方常量约束。
       set_status: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/\d+\s+-f\s+status=.+\z},
-      set_type: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/\d+\s+-f\s+type=.+\z}
+      set_type: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/\d+\s+-f\s+type=.+\z},
+      # Proposal 索引：写新评论、改旧评论、置顶。三者都只碰评论，不碰 issue 字段。
+      create_comment: %r{\Agh\s+api\s+repos/\S+/issues/\d+/comments\s+-f\s+body=.+\z},
+      update_comment: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/comments/\d+\s+-f\s+body=.+\z},
+      pin_comment: %r{\Agh\s+api\s+graphql\s+-f\s+query=mutation\s+\{\s+pinIssueComment\(input:\{issueCommentId:"[^"]+"\}\)\s+\{\s+clientMutationId\s+\}\s+\}\z}
     }.freeze
 
     def allowed_write?(argv)

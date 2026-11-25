@@ -30,6 +30,13 @@
 | `needs-design` | 方向值得讨论，但取舍或影响尚不清楚 | 加 `proposal:needs-design` + `question`，说明待解决问题 |
 | `accepted-design` | Maintainer 已明确接受设计 | 加 `proposal:accepted-design`；评论须含 `maintainer_decision_url`，不自动拆卡 |
 | `declined` | Maintainer 已明确拒绝 | 加 `proposal:declined`；评论须含 `maintainer_decision_url` 和理由，关闭为 not planned |
+| `superseded` | 已被新 Proposal 取代 | 加 `proposal:superseded`；评论指向新 issue，关闭为 not planned |
+
+`superseded` 用于「设计方向被替换」：旧文档改 `superseded by #N`，新 Proposal 正文回链旧号，
+旧 issue 关闭但**不删除、不隐藏**。与 `declined` 的区别是：被拒绝是方向不成立，被取代是方向换了。
+两者的处置相同（关闭 + 保留痕迹），标签不同以便检索。拆卡完成、工作包全关后改用叠加标记
+`proposal:done`，Proposal 仍保持 open 作档案。完整规则见
+[proposal-lifecycle.md](proposal-lifecycle.md)。
 
 `needs-design` 不要求提案者自行提交文档 PR。达到可整理程度后由 Scribe 接续；接受设计后，
 排期仍由 Maintainer 单独决定。Proposal 仅可使用这三个专用判定，普通判定中只允许

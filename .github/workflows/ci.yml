@@ -245,6 +245,7 @@ jobs:
           ruby tools/test_backfill_script.rb
           ruby tools/test_ruby_version_guard.rb
           ruby tools/test_evidence_register.rb
+          ruby tools/test_digest.rb
 
       - name: Smoke test agent CLI
         run: |

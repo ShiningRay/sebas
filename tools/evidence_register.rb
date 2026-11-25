@@ -62,6 +62,11 @@ module EvidenceRegister
     end
 
     issue = gh_json("repos/#{repo}/issues/#{issue_number}")
+    # Proposal 不是执行单元：没有 Evidence 语义，登记评论只会污染讨论区。
+    if Array(issue["labels"]).any? { |label| label["name"] == "proposal" }
+      out.puts "skip: issue ##{issue_number} 是 Proposal，不登记 Evidence"
+      return 0
+    end
     unless issue["state"] == "closed" && issue["state_reason"] == "completed"
       out.puts "skip: issue ##{issue_number} 不是 completed（#{issue["state"]}/#{issue["state_reason"]}）"
       return 0

@@ -109,14 +109,17 @@ Implementer 认领      → In progress（tools/sebas-process claim）
 
 ### Proposal 生命周期
 
+**权威归属与修订规则见 [proposal-lifecycle.md](proposal-lifecycle.md)**：文档是当前生效的契约，
+issue 是讨论与裁决档案；小改走文档 PR，大改开新 Proposal 取代旧的。
+
 重大行为、架构、配置或 DSL 变更从 **Proposal issue** 开始，不要求提案者先写设计文档、
 fork 仓库或提交 PR。开放式探索可先在 Discussions 进行；形成具体待裁决建议后开 Proposal
 issue。小型、明确的改进走 Feature request，不增加正式提案成本。
 
 | 载体 | 职责 |
 |---|---|
-| Proposal issue | 提案入口、公开讨论、开放问题与裁决理由的事实源 |
-| `docs/design/proposals/` | 需要时整理并入库的设计快照，回链原 issue；不是提提案的前置条件 |
+| Proposal issue | 提案入口、开放讨论、每次裁决的公开理由；**不是**当前设计的事实源 |
+| `docs/design/proposals/` | 设计定稿后成为权威契约；变更走 PR，不散落在 issue 评论 |
 | 工作包 issue | 排期批准后形成的工作包（带 `Automation` 块 + milestone），链接原 Proposal issue 与设计文档 |
 
 ```
@@ -130,9 +133,11 @@ Proposal issue（proposal + needs-triage）
              └─ 重大改动：Scribe 整理设计快照并提交 PR
   → Maintainer 另行决定排期
   → Scribe 按指令创建带 Automation 块的工作包；未排期的提案不进入实现选卡
+  → 工作包全部关闭后打 proposal:done，Proposal 保持 open 作永久档案
 ```
 
-状态标签只有 `proposal:needs-design` / `proposal:accepted-design` / `proposal:declined`；
+状态标签只有 `proposal:needs-design` / `proposal:accepted-design` / `proposal:declined` /
+`proposal:superseded`，外加叠加标记 `proposal:done`；
 初始研判沿用 `needs-triage`，补充信息沿用 `question`，重复提案沿用 `duplicate`。
 `backlog` 标签表达暂不排期，与 status=Backlog 并存：标签是人工标记的延期意图，status 是执行进度；不新增另一套状态标签。
 
@@ -142,7 +147,8 @@ Proposal issue（proposal + needs-triage）
 - **Maintainer** 将方向接受、设计定稿和排期分开决定；每次裁决在原 issue 留公开理由。
 - **Scribe** 起草定稿候选但不定稿；文档 PR 合入不等于设计定稿。收到明确排期指令后，
   才可执行 WBS、milestone 与工作包的机械落地；不自行决定版本、优先级或容量置换。
-- 原 issue 持续保存讨论记录。设计文档与实现任务必须回链它，不维护两份平行讨论。
+- 原 issue 持续保存讨论记录。设计文档与实现任务必须回链它，不维护两份平行讨论；
+  但**当前生效的设计以文档为准**，issue 里的旧评论不作为契约依据。
 
 **接受设计不等于批准排期，也不承诺版本交付。**只有 Maintainer 决定排期，Scribe 才能按指令
 创建工作包并挂 milestone；Implementer 再按现有开工三闸执行。
