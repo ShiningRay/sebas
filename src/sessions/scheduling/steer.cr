@@ -103,10 +103,11 @@ module Sebas
           # 倒退误报）；恢复路径的未完成 CAS 由 recover 专用入口承担
           inserted = @store.record_session_steer(steer_id, session_key, turn_id, generation, payload)
           unless inserted
-            return SteerReceipt.new(steer_id, turn_id, generation,
-              @store.session_steers(session_key)
-                .find(&.steer_id.==(steer_id)).try(&.status) == "injected" ? SteerStatus::Injected : SteerStatus::Rejected,
-              "duplicate steer_id")
+            # 重复 steer_id：回执用持久记录的完整目标（qijh——不与当前 lease 组合）
+            existing = @store.session_steers(session_key).find(&.steer_id.==(steer_id))
+            status = existing.try(&.status) == "injected" ? SteerStatus::Injected : SteerStatus::Rejected
+            return SteerReceipt.new(steer_id, existing.try(&.target_turn_id) || turn_id,
+              existing.try(&.target_generation) || generation, status, "duplicate steer_id")
           end
           unless status == SteerStatus::Accepted
             @store.transition_session_steer(steer_id, SteerStatus::Accepted, status, reason)

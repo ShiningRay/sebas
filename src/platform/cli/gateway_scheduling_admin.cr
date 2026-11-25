@@ -203,7 +203,7 @@ module Sebas
                           current: @store.scheduling_revision}.to_json}
           end
           emit_scheduling_event("config.scheduling.applied", scope)
-          {200, {scope: scope, revision: new_revision.to_s}.to_json}
+          {200, {scope: scope, revision: new_revision}.to_json} # 数值（客户端复用 expected_revision，qijV）
         end
 
         private def emit_scheduling_event(event : String, scope : String) : Nil
