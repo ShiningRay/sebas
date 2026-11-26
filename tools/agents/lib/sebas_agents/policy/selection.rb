@@ -21,7 +21,12 @@ module SebasAgents
         end
 
         claimed = in_progress.first
-        if claimed && record && record["issue"] && record["issue"].to_i != claimed.number
+        # phase=released 表示该卡已收口（unclaim 成功：PR 已合并且 issue 已关闭），
+        # 它不再持有认领，因此不得与远端认领比对——否则远端一有别的卡被认领，
+        # next 就报永久假冲突「本地记录 #旧卡 与远端认领 #新卡 冲突」，整条链堵死。
+        # 只有仍可能握有认领的 phase（claiming / claimed / paused / aborted）才参与判定。
+        if claimed && record && record["issue"] && record["phase"].to_s != "released" &&
+           record["issue"].to_i != claimed.number
           return invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突")
         end
 

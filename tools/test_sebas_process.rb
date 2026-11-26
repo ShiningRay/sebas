@@ -1115,6 +1115,30 @@ class SelectionTest < Minitest::Test
     assert_equal "invalid_plan", select(data, record: {"issue" => 99}).action
   end
 
+  # released 记录不占认领位：unclaim 成功后本地仍留着旧 issue 号，
+  # 远端随后认领别的卡时不得报假冲突（否则 next 永久堵死）。
+  def test_released_record_does_not_conflict_with_new_claim
+    data = snapshot(
+      issues: [issue(1, body: automation, status: "In progress")],
+      pull_requests: [{
+        "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
+        "merge_state_status" => "CLEAN", "checks" => [],
+        "closing_issues" => [1], "review_threads" => []
+      }]
+    )
+    action = select(data, record: {"issue" => 99, "phase" => "released"})
+    refute_equal "invalid_plan", action.action, "released 记录不应与远端认领冲突：#{action.reason}"
+  end
+
+  # 反向守卫：仍在持有的 phase 遇到不同认领必须继续判冲突，不能因上一条放宽而漏判。
+  def test_holding_phases_still_conflict_with_other_claim
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    %w[claiming claimed paused aborted].each do |phase|
+      action = select(data, record: {"issue" => 99, "phase" => phase})
+      assert_equal "invalid_plan", action.action, "phase=#{phase} 必须判冲突"
+    end
+  end
+
   def test_handoff_release_when_no_open_issues
     data = snapshot(issues: [], milestones: [
       {"number" => 2, "title" => "M4", "state" => "open", "order" => "4", "track" => "main", "open_issues" => 0, "description" => "order: 4
