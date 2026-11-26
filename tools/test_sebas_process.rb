@@ -3239,6 +3239,66 @@ class PullRequestsPaginationTest < Minitest::Test
     error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
     assert_includes error.message, "分页超过"
   end
+
+  # round 3：fork 先剔除再查内层——fork 的异常数据不得阻断整个快照
+  def test_fork_with_truncated_inner_data_excluded_without_raising
+    fork = pr_node(number: 1, cross: true, closing_truncated: true)
+    own = pr_node(number: 2)
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([fork, own], false, nil))]), repo: "o/r")
+    prs = gateway.send(:fetch_pull_requests)
+    assert_equal [2], prs.map(&:number)
+  end
+
+  # round 3：存在的内层连接必须有合法 pageInfo（缺失/字符串布尔都拒绝）
+  def test_inner_page_info_missing_rejects
+    node = pr_node(number: 1)
+    node["statusCheckRollup"]["contexts"].delete("pageInfo")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_inner_page_info_non_boolean_rejects
+    node = pr_node(number: 1)
+    node["statusCheckRollup"]["contexts"]["pageInfo"]["hasNextPage"] = "true"
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_inner_missing_nodes_rejects
+    node = pr_node(number: 1)
+    node["closingIssuesReferences"].delete("nodes")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "缺 nodes"
+  end
+
+  # statusCheckRollup=null 合法（检查未产出，非结构非法）
+  def test_null_rollup_is_legal_empty_checks
+    node = pr_node(number: 1)
+    node["statusCheckRollup"] = nil
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    prs = gateway.send(:fetch_pull_requests)
+    assert_equal [1], prs.map(&:number)
+    assert_empty prs.first.checks
+  end
+
+  # round 3：errors 与有效 data 并存 = 拒绝部分成功，不得直接消费 data
+  def test_errors_with_valid_data_rejects
+    payload = page([pr_node(number: 1)], false, nil)
+    payload["errors"] = [{ "message" => "something partial" }]
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "pullRequests 查询失败"
+  end
+
+  def test_missing_pull_requests_connection_rejects
+    payload = { "data" => { "repository" => {} } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "查询缺 data.repository.pullRequests"
+  end
 end
 
 # #125 第二轮复审（3 条）回归。
