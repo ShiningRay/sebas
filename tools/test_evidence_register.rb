@@ -696,8 +696,8 @@ class EvidenceRegisterTest < Minitest::Test
     assert_includes calls, ["POST", "repos/o/r/issues/42/comments"]
   end
 
-  # 只豁免「进行中」：advisory 已完成却是失败结论时，仍要拒绝登记。
-  # 服务故障导致的 CANCELLED 属于要人工裁决的情况，不能静默放过。
+  # advisory 已完成但结论不是成功（服务故障 CANCELLED）时必须拒绝登记：
+  # 这类情况要人工裁决，不能静默放过。
   def test_pre_register_still_blocks_on_failed_advisory_check
     fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
       "check_runs" => [
@@ -707,7 +707,21 @@ class EvidenceRegisterTest < Minitest::Test
     })
     code, _calls, out = run_pre(fake)
     assert_equal 1, code, "advisory 失败结论仍须阻塞，out=#{out}"
-    assert_includes out, "失败的检查"
+    assert_includes out, "第三方审阅检查失败"
+  end
+
+  # 只剩一条「已完成的 CodeRabbit success」也必须拒绝：
+  # 它是 advisory，成功不代表门禁 CI 跑过。
+  def test_pre_register_blocks_when_only_completed_advisory_present
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "CodeRabbit", "status" => "completed", "conclusion" => "success"}
+      ]
+    })
+    code, calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "除第三方审阅外没有任何 CI 检查记录"
+    assert(calls.none? { |m, _| m == "POST" }, "不得登记，calls=#{calls.inspect}")
   end
 
   # 排除自身与 advisory 后若没有门禁类检查，仍须拒绝——不能把「第三方审阅进行中」
