@@ -15,7 +15,7 @@ module Sebas
           print_help
           0
         when "version", "--version", "-v"
-          puts "sebas #{VERSION}"
+          puts "sebas #{::Sebas.version_string}"
           0
         when "gateway"
           run_gateway(args[1..])
@@ -69,7 +69,7 @@ module Sebas
       end
 
       private def print_help : Nil
-        puts "sebas #{VERSION} - Crystal multi-account orchestratable personal agent platform"
+        puts "sebas #{::Sebas.version_string} - Crystal multi-account orchestratable personal agent platform"
         puts
         puts "Usage:"
         puts "  sebas help                          Show this help"
