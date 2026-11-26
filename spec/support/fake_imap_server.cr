@@ -14,6 +14,29 @@ require "socket"
 class FakeImapServer
   getter port : Int32
 
+  # uidvalidity 可变：改值模拟服务端换 UID 命名空间（RFC 3501 §2.3.1.1）
+  property uidvalidity : String = "1"
+
+  # 切到新 UID 命名空间：旧空间的邮件不复存在，UIDNEXT 也从新空间重新计。
+  # 只改 uidvalidity 而留着旧邮件，max_uid 会按旧空间算，测不出真实行为。
+  def reset_namespace(uidvalidity : String) : Nil
+    @mutex.synchronize { @mails.clear }
+    self.uidvalidity = uidvalidity
+  end
+
+  # 掐断在途会话（模拟网络闪断）：已接受的连接全部关掉，客户端会在下一轮重连
+  def drop_connections : Nil
+    @mutex.synchronize do
+      @sessions.each { |io| io.close rescue nil }
+      @sessions.clear
+    end
+  end
+
+  # 当前在途会话数（断言重连发生了）
+  def session_count : Int32
+    @mutex.synchronize { @sessions.size }
+  end
+
   def initialize(port : Int32? = nil)
     @server = TCPServer.new("127.0.0.1", port || 0)
     @port = @server.local_address.port
@@ -22,6 +45,7 @@ class FakeImapServer
     @mutex = Mutex.new
     @mails = {} of String => String
     @reported_size = 0
+    @sessions = [] of TCPSocket
   end
 
   def add_mail(uid : String, from : String, subject : String, body : String) : Nil
@@ -65,6 +89,7 @@ class FakeImapServer
   end
 
   private def handle(io : TCPSocket) : Nil
+    @mutex.synchronize { @sessions << io }
     io.sync = true
     io.puts "* OK fake imap ready"
     loop do
@@ -78,6 +103,8 @@ class FakeImapServer
     io.close
   rescue ::Exception
     io.close rescue nil
+  ensure
+    @mutex.synchronize { @sessions.delete(io) }
   end
 
   # 处理一行命令；返回 true 表示会话结束
@@ -107,7 +134,7 @@ class FakeImapServer
     @reported_size = size
     io.puts "* #{size} EXISTS"
     io.puts "* OK [UIDNEXT #{max_uid + 1}] predicted next uid"
-    io.puts "* OK [UIDVALIDITY 1] uids valid"
+    io.puts "* OK [UIDVALIDITY #{@uidvalidity}] uids valid"
     io.puts "#{tag} OK [READ-WRITE] selected"
   end
 

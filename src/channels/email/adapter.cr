@@ -16,20 +16,28 @@ module Sebas
 
         getter health : String
 
-        # 收信基线（进程内）：首次连上时取 SELECT 的 UIDNEXT 作为起点，跳过既有
-        # 历史——否则 332 封旧邮件会被当新邮件重放进总线并逐封回信。重连沿用
-        # 已推进的值，断线窗口内到达的邮件不会被漏掉。进程重启后基线会重新建立，
-        # 停机期间收到的邮件不会补投（持久化游标待 M1，与 UIDVALIDITY 全量重扫同批）。
+        # 收信游标（进程内）：与记录它时的 UIDVALIDITY 绑定。UID 只在同一
+        # UIDVALIDITY 下跨会话可比（RFC 3501 §2.3.1.1），服务端一旦换命名空间，
+        # 旧游标会屏蔽新编号的邮件，必须作废重建。
+        # - 首次连接：以 SELECT 的 UIDNEXT - 1 为基线，跳过既有历史——否则整个
+        #   INBOX 会被逐封当新邮件重放进总线并逐封回信。
+        # - 同 UIDVALIDITY 重连：沿用已推进的游标补收，断线窗口内的邮件不丢。
+        # - UIDVALIDITY 变化：游标作废，重新以新命名空间的 UIDNEXT 为基线。
+        # 进程重启后基线重新建立，停机期间收到的邮件不补投（持久化游标待 M1）。
         @last_uid : Int64? = nil
+        @cursor_uidvalidity : String? = nil
+        @backoff : Time::Span
 
         def initialize(account : Platform::Config::EmailAccount, @bus : Platform::Bus::Bus,
                        provider : Common::TokenProvider? = nil, idle_poll : Time::Span = 29.minutes,
                        imap_host : String? = nil, imap_port : Int32 = 993, imap_tls : Bool = true,
-                       smtp_host : String? = nil, smtp_port : Int32? = nil, smtp_tls : String? = nil)
+                       smtp_host : String? = nil, smtp_port : Int32? = nil, smtp_tls : String? = nil,
+                       backoff : Time::Span = 5.seconds)
           super("email", account.id)
           @account = account
           @provider = provider || Common::StaticTokenProvider.new(account.credentials["password"]? || "")
           @idle_poll = idle_poll
+          @backoff = backoff
           @imap_host = imap_host || account.platform || ""
           @imap_port = imap_port
           @imap_tls = imap_tls
@@ -80,9 +88,9 @@ module Sebas
             begin
               idle_session(client)
             rescue ex : ImapError | ::Socket::Error | IO::Error
-              Log.warn { "imap session error (account=#{@account.id}): #{ex.message}; backoff 5s" }
+              Log.warn { "imap session error (account=#{@account.id}): #{ex.message}; backoff #{@backoff}" }
               @health = "backoff"
-              sleep 5.seconds
+              sleep @backoff
             end
           end
         end
@@ -99,15 +107,18 @@ module Sebas
           @health = "online"
           client
         rescue ex : ImapError | ::Socket::Error
-          Log.error { "imap connect failed (account=#{@account.id}): #{ex.message}; backoff 5s" }
+          Log.error { "imap connect failed (account=#{@account.id}): #{ex.message}; backoff #{@backoff}" }
           @health = "backoff"
-          sleep 5.seconds
+          sleep @backoff
           nil
         end
 
         private def idle_session(client : ImapClient) : Nil
-          # 首次连接：把 UIDNEXT 当作「已读到这里」，既有邮件全部视为历史。
-          @last_uid ||= client.last_uidnext.try(&.-(1_i64)) || 0_i64
+          establish_baseline(client)
+          # 先把断线窗口里到的邮件补收掉，再进 IDLE——IDLE 只在邮件数变化时
+          # 推 EXISTS（RFC 2177），不保证重发 SELECT 已通报的状态，光等
+          # EXISTS 会让「断线期间到信、重连后不再到信」永久漏收。
+          drain_inbox(client)
           while @running.get
             event = client.idle
             if event.nil?
@@ -120,6 +131,22 @@ module Sebas
         ensure
           client.logout
           client.close
+        end
+
+        # 定基线：首连或 UIDVALIDITY 变化时以 UIDNEXT - 1 起算（历史视为已读），
+        # 否则沿用游标补收。UIDVALIDITY 不同则旧游标不可比，必须作废。
+        private def establish_baseline(client : ImapClient) : Nil
+          uidvalidity = client.last_uidvalidity
+          if @cursor_uidvalidity != uidvalidity
+            if uidvalidity && @cursor_uidvalidity
+              Log.warn { "uidvalidity changed (#{@cursor_uidvalidity} -> #{uidvalidity}); resetting cursor (account=#{@account.id})" }
+            end
+            @cursor_uidvalidity = uidvalidity
+            @last_uid = client.last_uidnext.try(&.-(1_i64))
+            return
+          end
+          # 同命名空间：保留已推进的游标；首次连接（游标仍空）才取基线
+          @last_uid ||= client.last_uidnext.try(&.-(1_i64))
         end
 
         # 循环取批直到没有新邮件：单批 FETCH_BATCH 上限之上还要继续，否则
@@ -142,6 +169,12 @@ module Sebas
         end
 
         private def publish_inbound(mail : MailSummary) : Nil
+          if self_sent?(mail.from)
+            # 自己发出的信被 IMAP 收回（含副本同步、自投递测试）：并入站会与自身
+            # 无限对聊。游标照常推进，只是不投总线。
+            Log.info { "skip self-sent mail (account=#{@account.id}, uid=#{mail.uid}, subject=#{mail.subject})" }
+            return
+          end
           @bus.publish(Platform::Bus::InboundMessage.new(
             event_id: "email:#{@account.id}:#{mail.uid}",
             channel_type: "email",
@@ -150,6 +183,21 @@ module Sebas
             content: mail.body
           ))
           @health = "online"
+        end
+
+        # 发件人是否就是本账号（大小写不敏感；角括号与显示名由 from_address 归一）
+        private def self_sent?(from : String) : Bool
+          mine = smtp_from.strip.downcase
+          return false if mine.empty?
+          from_address(from).downcase == mine
+        end
+
+        private def from_address(from : String) : String
+          if start = from.index('<')
+            finish = from.index('>', start)
+            return from[(start + 1)...finish] if finish
+          end
+          from.strip
         end
 
         private def smtp_client : SmtpClient

@@ -10,6 +10,10 @@ class FakeSmtpServer
   # 原始命令行（含行尾符）：回归断言客户端按 RFC 5321 发 CRLF
   getter raw_lines : Array(String) = [] of String
 
+  # 原始 DATA 行（含行尾符与终止行 "."）：正文分帧也须 CRLF，
+  # 只记命令行测不出正文用裸 LF 的回归
+  getter raw_data_lines : Array(String) = [] of String
+
   def initialize
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.local_address.port
@@ -77,9 +81,10 @@ class FakeSmtpServer
     io.puts "354 go"
     payload = IO::Memory.new
     loop do
-      data_line = io.gets
-      break if data_line.nil?
-      data_line = data_line.chomp
+      raw = io.gets(chomp: false)
+      break if raw.nil?
+      @mutex.synchronize { @raw_data_lines << raw }
+      data_line = raw.chomp
       break if data_line == "."
       data_line = data_line[1..] if data_line.starts_with?(".") # 逆点填充
       payload << data_line << CRLF

@@ -70,6 +70,12 @@ module Sebas
         raw = server.raw_lines
         raw.should_not be_empty
         raw.each(&.should(end_with("\r\n")))
+        # DATA 正文单独断言：只查命令行检不出正文用裸 LF 的回归
+        # （fake 服务端读 DATA 时会统一补 CRLF，payload 本身看不出行尾）
+        data = server.raw_data_lines
+        data.should_not be_empty
+        data.each(&.should(end_with("\r\n")))
+        data.last.should eq(".\r\n")
         server.mails.first[:payload].should contain("line1\r\nline2")
       ensure
         server.close
@@ -173,6 +179,112 @@ module Sebas
         msg = event.should be_a(Platform::Bus::InboundMessage)
         msg.event_id.should eq("email:test-mailbox:31")
         bus.receive?(200.milliseconds).should be_nil
+      ensure
+        bus.close
+        server.close
+      end
+    end
+
+    it "ignores mail sent by its own account (不与自己循环对话)" do
+      # 回归：出站回信会以副本形式回到 INBOX，若并入站会被当新消息处理，
+      # 进而再回信、再入站 —— 真机实测出现 337→338→339 的自对聊累积。
+      server = FakeImapServer.new
+      server.serve
+
+      account = Platform::Config::EmailAccount.from_yaml(
+        "id: test-mailbox\nplatform: 127.0.0.1\nreceive: imap-idle\n" \
+        "credentials: { user: me@example.com, password: p }"
+      )
+      bus = Platform::Bus::Bus.new(8)
+      adapter = Channels::Email::EmailChannelAdapter.new(
+        account, bus, idle_poll: 2.seconds,
+        imap_host: "127.0.0.1", imap_port: server.port, imap_tls: false,
+        smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none"
+      )
+      adapter.start
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+
+      # 自己的回信进 INBOX（显示名 + 角括号形式），随后才是真正的外部来信
+      server.add_mail("1", "Me <ME@example.com>", "Sebas", "my own reply")
+      server.add_mail("2", "friend@example.com", "hi", "real inbound")
+      event = bus.receive?(5.seconds)
+      adapter.stop
+      begin
+        msg = event.should be_a(Platform::Bus::InboundMessage)
+        msg.event_id.should eq("email:test-mailbox:2")
+      ensure
+        bus.close
+        server.close
+      end
+    end
+
+    it "backfills mail that arrived while disconnected (断线窗口补收)" do
+      # 回归：只在收到 EXISTS 时才取信，会让「断线期间到信、重连后无新信」
+      # 永久漏收——IDLE 不保证重发 SELECT 已通报的状态（RFC 2177）
+      server = FakeImapServer.new
+      server.add_mail("1", "old@example.com", "old", "history")
+      server.serve
+
+      account = Platform::Config::EmailAccount.from_yaml(
+        "id: test-mailbox\nplatform: 127.0.0.1\nreceive: imap-idle\ncredentials: { user: u, password: p }"
+      )
+      bus = Platform::Bus::Bus.new(16)
+      adapter = Channels::Email::EmailChannelAdapter.new(
+        account, bus, idle_poll: 2.seconds,
+        imap_host: "127.0.0.1", imap_port: server.port, imap_tls: false,
+        smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none",
+        backoff: 50.milliseconds
+      )
+      adapter.start
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+
+      # 掐断在途连接制造重连；新邮件在断开之后才写入，重连后收不到任何 EXISTS
+      server.drop_connections
+      server.add_mail("2", "late@example.com", "late", "arrived while offline")
+      first = bus.receive?(8.seconds)
+      adapter.stop
+      begin
+        msg = first.should be_a(Platform::Bus::InboundMessage)
+        msg.event_id.should eq("email:test-mailbox:2")
+      ensure
+        bus.close
+        server.close
+      end
+    end
+
+    it "rebuilds the cursor when uidvalidity changes (换命名空间不沿用旧游标)" do
+      # 回归：UID 只在同一 UIDVALIDITY 下可比（RFC 3501 §2.3.1.1）。服务端换
+      # 命名空间后 UID 从头编号，沿用旧游标会把新邮件全部过滤掉。
+      server = FakeImapServer.new
+      server.add_mail("100", "old@example.com", "old", "history in namespace 1")
+      server.serve
+
+      account = Platform::Config::EmailAccount.from_yaml(
+        "id: test-mailbox\nplatform: 127.0.0.1\nreceive: imap-idle\ncredentials: { user: u, password: p }"
+      )
+      bus = Platform::Bus::Bus.new(16)
+      adapter = Channels::Email::EmailChannelAdapter.new(
+        account, bus, idle_poll: 2.seconds,
+        imap_host: "127.0.0.1", imap_port: server.port, imap_tls: false,
+        smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none",
+        backoff: 50.milliseconds
+      )
+      adapter.start
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+
+      # 换命名空间（UIDVALIDITY 2）：新空间 UID 从头编号，旧空间的 100 已不存在。
+      # 若沿用旧游标 100，之后的 UID 6 永远小于游标而被过滤；修好后基线重置为
+      # UIDNEXT - 1 = 2，于是 UID 3 能投出来。
+      server.reset_namespace("2")
+      server.add_mail("2", "ns2-old@example.com", "ns2", "ns2 history")
+      server.drop_connections
+      wait_for(3.seconds) { server.seen_commands.count(&.includes?("SELECT")) >= 2 }.should be_true
+      server.add_mail("3", "ns2-new@example.com", "ns2 new", "arrived after reconnect")
+      event = bus.receive?(8.seconds)
+      adapter.stop
+      begin
+        msg = event.should be_a(Platform::Bus::InboundMessage)
+        msg.event_id.should eq("email:test-mailbox:3")
       ensure
         bus.close
         server.close
