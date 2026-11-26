@@ -95,16 +95,6 @@ module SebasAgents
       # 行内引用短语，例如「另见 #35 开工条件」「参见 #7」。
       REFERENCE_INLINE = /(?:另?见|参见|详见)\s*#\d+[^；;。\n]*/
 
-      # 解析标题行，返回 [level, title]，非标题返回 nil。
-      # 只做纯解析，不判代码围栏——围栏过滤由调用方按需处理，
-      # 这样「围栏内是内容」这条规则只有一处实现口径。
-      def heading_at(lines, index)
-        match = lines[index].to_s.match(ATX_HEADING)
-        return nil unless match
-
-        [match[1].length, match[2].sub(CLOSING_HASHES, "").strip]
-      end
-
       def prose_dependencies(body)
         text = normalize_body(body)
         lines = text.lines
@@ -141,25 +131,55 @@ module SebasAgents
       end
 
       # 代码围栏内的行下标（含围栏标记行本身）。
+      #
+      # 按 CommonMark 判定，三处不能简化：
+      #   1. 闭合围栏必须同字符（` 与 ~ 不互通）、长度 ≥ 开启长度；
+      #   2. 闭合行只能有空白或闭合标记，带 info string 的不是闭合；
+      #   3. ```x``` 这类单行是行内代码跨度，不是围栏，不能吞掉后续内容。
       def fenced_line_indexes(lines)
         indexes = []
         in_fence = false
-        fence_marker = nil
+        fence_char = nil
+        fence_length = 0
 
         lines.each_with_index do |line, index|
-          if (marker = fence_marker_for(line))
+          if in_fence
             indexes << index
-            if in_fence
-              in_fence = false if marker == fence_marker
-            else
-              in_fence = true
-              fence_marker = marker
+            if fence_closes?(line, fence_char, fence_length)
+              in_fence = false
+              fence_char = nil
+              fence_length = 0
             end
             next
           end
-          indexes << index if in_fence
+
+          opening = fence_opening(line)
+          next unless opening
+
+          indexes << index
+          in_fence = true
+          fence_char = opening[0]
+          fence_length = opening[1]
         end
         indexes
+      end
+
+      # 返回 [字符, 长度]；不是围栏开启行返回 nil。
+      # 反引号围栏的 info string 里不能再出现反引号（否则是行内代码跨度）。
+      def fence_opening(line)
+        stripped = line.sub(/\A {0,3}/, "")
+        run = stripped[/\A(`{3,}|~{3,})/, 1]
+        return nil unless run
+
+        info = stripped[run.length..].to_s
+        return nil if run.start_with?("`") && info.include?("`")
+
+        [run[0], run.length]
+      end
+
+      # 闭合围栏只能有空白或若干个同字符标记，且长度不少于开启长度。
+      def fence_closes?(line, char, length)
+        !line.match(/\A {0,3}(#{Regexp.escape(char)}{#{length},})[ \t]*\n?\z/).nil?
       end
 
       # 依赖节标题写法不合规的变体，例如「依赖关系」「外部依赖」「依赖顺序」。
@@ -174,9 +194,18 @@ module SebasAgents
       VARIANT_HEADING = /\A(?:前置)?依赖[^：:]{0,10}\z|\A[^：:]{0,10}(?:前置)?依赖\z/
       EXACT_HEADING = /\A(?:前置)?依赖\z/
       # ATX 标题：≤3 个前导空格 + 1–6 个 # + 空白 + 文字，可带闭合标记。
-      ATX_HEADING = %r{\A {0,3}(\#{1,6})\s+(\S.*?)\s*\z}
+      # 空标题（如裸 `##`）也是合法 ATX，按 CommonMark 同样终止上一节。
+      ATX_HEADING = %r{\A {0,3}(\#{1,6})(?:\s+(.*?))?\s*\z}
       # 闭合标记：末尾的空格 + 若干 #（CommonMark 允许）。
       CLOSING_HASHES = /\s+#+\s*\z/
+
+      # 解析标题行，返回 [level, title]，非标题返回 nil。空标题的 title 为 ""。
+      def heading_at(lines, index)
+        match = lines[index].to_s.match(ATX_HEADING)
+        return nil unless match
+
+        [match[1].length, match[2].to_s.sub(CLOSING_HASHES, "").strip]
+      end
 
       def mismatched_dependency_headings(body)
         lines = normalize_body(body).lines
@@ -191,17 +220,19 @@ module SebasAgents
 
           next if title.match?(EXACT_HEADING)
           next unless title.match?(VARIANT_HEADING)
-          next unless section_mentions_issue?(lines, index, level)
+          next unless heading_or_section_mentions_issue?(lines, index, level, title)
 
           variants << title
         end
         variants.uniq
       end
 
-      # 返回围栏标记（``` 或 ~~~ 及其长度），非围栏行返回 nil。
-      def fence_marker_for(line)
-        match = line.match(/\A {0,3}(`{3,}|~{3,})/)
-        match && match[1]
+      # 依赖声明出现在标题行本身（如「## 依赖关系 #3」）也算——否则这唯一的
+      # 引用会被整段忽略，工作包静默通过。
+      def heading_or_section_mentions_issue?(lines, index, level, title)
+        return true if title.match?(ISSUE_REFERENCE)
+
+        section_mentions_issue?(lines, index, level)
       end
 
       # 从第 index 行的标题开始，取同级与更低级的行，判断是否出现 #N 引用。
