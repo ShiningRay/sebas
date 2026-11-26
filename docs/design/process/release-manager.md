@@ -10,9 +10,14 @@
 版本号在两处，必须同步：
 
 - `shard.yml` 的 `version` 字段（包元数据）
-- `src/version.cr` 的 `VERSION` 常量（运行时真值，`sebas version` 输出）
+- `src/version.cr` 的 `VERSION` 常量（运行时真值，`sebas version` 输出的版本段）
 
 bump 后必须 grep 复核两处一致。
+
+`sebas version` 输出 `sebas X.Y.Z (<git rev>)`：rev 是构建提交的 12 位短哈希，编译期由
+`src/version.cr` 的宏直接解析仓库 `.git` 的 HEAD（不调用 git，覆盖 packed-refs / detached /
+worktree / submodule / bare）；没有 `.git` 的构建（源码包、受控构建）可用环境变量
+`SEBAS_BUILD_REV` 注入，读不到时退化为 `unknown`，不影响构建。
 
 ### 2. Patch 自动发版
 
@@ -63,7 +68,8 @@ docker run --rm -v $PWD:/assets ubuntu:24.04 \
   bash -c "cd /assets && tar xzf sebas-linux-x86_64.tar.gz && ./sebas-linux-x86_64/sebas version"
 ```
 
-输出 `sebas X.Y.Z` 才算发版完成。产物校验过了才关 milestone。
+输出 `sebas X.Y.Z (<git rev>)` 才算发版完成（v0.1.0 起的形态；不带 rev 的 `sebas X.Y.Z` 仍被
+`release verify` 接受，兼容旧产物）。产物校验过了才关 milestone。
 
 ## 工作逻辑
 
@@ -126,7 +132,8 @@ require_relative "tools/agents/lib/sebas_agents"
 problems = SebasAgents::Release.verify_assets(dir, "0.1.1", expected: smoke_output)
 ```
 
-校验 `*.sha256` 与裸容器冒烟输出 `sebas X.Y.Z`；任一项失败即非零退出。
+校验 `*.sha256` 与裸容器冒烟输出 `sebas X.Y.Z (<git rev>)`（也接受不带 rev 的旧形态）；
+任一项失败即非零退出。
 
 ## 与其他角色的交互
 

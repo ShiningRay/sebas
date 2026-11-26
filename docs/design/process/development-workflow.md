@@ -287,7 +287,7 @@ Agent 自动修复 workflow 已内置此逻辑。
 4. 在合并后的 main 上打附注 tag：`git tag -a vX.Y.Z -m "..."`
 5. 推送 tag：`git push origin vX.Y.Z`
 6. release.yml 自动跑三平台构建 + 发 GitHub Release
-7. 产物校验：sha256 全过 + Linux 包在裸容器跑 `sebas version`
+7. 产物校验：sha256 全过 + Linux 包在裸容器跑 `sebas version`（输出应含该次构建的 git rev）
 8. 关 milestone
 
 ### patch 自动发版的护栏
@@ -307,7 +307,7 @@ docker run --rm -v $PWD:/assets ubuntu:24.04 \
   bash -c "cd /assets && tar xzf sebas-linux-x86_64.tar.gz && ./sebas-linux-x86_64/sebas version"
 ```
 
-输出 `sebas X.Y.Z` 才算发版完成。产物校验过了才关 milestone。
+输出 `sebas X.Y.Z (<git rev>)` 才算发版完成。产物校验过了才关 milestone。
 
 ## 7. Agent 角色总览
 
