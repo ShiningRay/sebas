@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
 ### Added
 
 - **M3-WP7 Telegram 渠道扩展点定稿**：`CHANNEL_TYPES` 登记 `telegram`，配置 schema 新增
@@ -127,5 +129,6 @@
 - 设计与开发计划：`docs/design/design.md`、`docs/design/development-plan.md`。
 - 里程碑门禁证据：`docs/design/review/m0-gate.md` ~ `m3-gate.md`。
 
-[Unreleased]: https://github.com/ShiningRay/sebas/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ShiningRay/sebas/compare/v0.2.0...HEAD
 [0.1.0]: https://github.com/ShiningRay/sebas/releases/tag/v0.1.0
+[0.2.0]: https://github.com/ShiningRay/sebas/releases/tag/v0.2.0
