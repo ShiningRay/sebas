@@ -3610,7 +3610,7 @@ class BlockedByBatchTest < Minitest::Test
       "没有 Automation 块的卡不该进批量查询"
   end
 
-  # 批量结果写入单卡缓存：依赖闭包再取同一张卡不再走网络。
+  # 批量结果写入单卡缓存：之后再取同一张卡不再走网络。
   def test_attach_seeds_single_card_cache
     payload = batch_payload([{number: 4, blocked_by: connection([3])}])
     gateway, runner = gateway_with(JSON.generate(payload))

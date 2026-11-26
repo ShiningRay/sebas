@@ -178,7 +178,7 @@ end
       )
     end
 
-    # 只查一个 issue 的完整信息（含 blocked_by）。用于依赖闭包。
+    # 只查一个 issue 的完整信息（含 blocked_by）。依赖闭包按需补取走这里。
     def fetch_issue(number)
       @issue_cache[number] ||= begin
         raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
@@ -194,12 +194,14 @@ end
     end
 
     # 批量拉取 blocked_by：一次 GraphQL 查询带 BLOCKED_BY_BATCH 个别名。
-    # 只用于 attach_blocked_by 的快照组装；单卡补取（依赖闭包）仍走 REST。
+    # 供 attach_blocked_by 组装快照；单卡读取见 fetch_blocked_by。
     #
-    # 三条 fail-closed 校验，缺一都可能把「读不到」当成「没有前置」：
+    # 四条 fail-closed 校验，缺一都可能把「读不到」当成「没有前置」：
     #   1. 任何别名缺节点（issue 不存在/无权访问）→ 拒绝，不返回部分结果；
     #   2. blockedBy 连接必须是对象且 nodes 是数组 → 拒绝，不当空集；
-    #   3. totalCount > nodes.length 说明被 first 截断 → 拒绝，不产出不完整依赖。
+    #   3. totalCount 必须是非负整数且不超 nodes.length（缺失/nil 经 to_i 会变 0，
+    #      把截断读成「无前置」；被 first 截断同样拒绝）；
+    #   4. 回读编号与请求不符（别名错位）→ 拒绝，避免依赖张冠李戴。
     def fetch_blocked_by_batch(numbers)
       numbers.each_slice(BLOCKED_BY_BATCH).each_with_object({}) do |group, result|
         fields = group.each_with_index.map do |number, index|
@@ -446,8 +448,7 @@ end
     def attach_blocked_by(issues)
       target = issues.select { |issue| JsonBlock.present?(issue.body, "automation") }
       bulk = fetch_blocked_by_batch(target.map(&:number))
-      # 批量结果同时写进单卡缓存：依赖闭包后续 fetch_blocked_by 直接命中，
-      # 不再为同一张卡重复往返。
+      # 批量结果同时写进单卡缓存：之后 fetch_blocked_by 读同一张卡直接命中。
       bulk.each { |number, blocked| @blocked_cache[number] = blocked }
 
       issues.map do |issue|
