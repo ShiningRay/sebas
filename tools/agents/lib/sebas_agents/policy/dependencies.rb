@@ -200,11 +200,17 @@ module SebasAgents
       CLOSING_HASHES = /\s+#+\s*\z/
 
       # 解析标题行，返回 [level, title]，非标题返回 nil。空标题的 title 为 ""。
+      # title 保留尾部 #N 原样——引用检查需要看到它。
       def heading_at(lines, index)
         match = lines[index].to_s.match(ATX_HEADING)
         return nil unless match
 
         [match[1].length, match[2].to_s.sub(CLOSING_HASHES, "").strip]
+      end
+
+      # 标题去掉尾部 issue 引用后的文字，用于分类（「外部依赖 #3」按「外部依赖」归类）。
+      def heading_label(title)
+        title.sub(/\s*#{ISSUE_REFERENCE.source}\s*\z/, "").strip
       end
 
       def mismatched_dependency_headings(body)
@@ -218,8 +224,9 @@ module SebasAgents
           level, title = heading_at(lines, index)
           next unless level
 
-          next if title.match?(EXACT_HEADING)
-          next unless title.match?(VARIANT_HEADING)
+          label = heading_label(title)
+          next if label.match?(EXACT_HEADING)
+          next unless label.match?(VARIANT_HEADING)
           next unless heading_or_section_mentions_issue?(lines, index, level, title)
 
           variants << title
@@ -255,8 +262,10 @@ module SebasAgents
 
       def normalize_body(body)
         # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码。
+        # 行尾统一为 LF：CRLF 会让围栏闭合正则与节末判定失配（CommonMark 两者都接受）。
         text = body.to_s.dup.force_encoding(Encoding::UTF_8)
-        text.valid_encoding? ? text : text.scrub
+        text = text.scrub unless text.valid_encoding?
+        text.gsub("\r\n", "\n").gsub("\r", "\n")
       end
 
       def evaluate_one(dependency, issue, snapshot)

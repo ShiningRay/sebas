@@ -647,6 +647,27 @@ class SelectionTest < Minitest::Test
     refute_includes result.reasons.join("；"), "依赖节标题"
   end
 
+  # CRLF 行尾在 CommonMark 中与 LF 等价：围栏与节末判定都必须照常工作。
+  def test_crlf_line_endings_are_handled
+    crlf = "## 依赖\r\n\r\n```text\r\n示例\r\n```\r\n\r\n- 前置：#3 完成\r\n"
+    # 围栏正常闭合，#3 被读到。
+    assert_equal [3], SebasAgents::Policy::Dependencies.prose_dependencies(crlf)
+
+    # 对照：CRLF 下的变体标题仍要报。
+    variant = "## 外部依赖\r\n\r\n- #3\r\n"
+    assert_equal ["外部依赖"], SebasAgents::Policy::Dependencies.mismatched_dependency_headings(variant)
+  end
+
+  # 变体标题尾部带 issue 引用（「外部依赖 #3」）时，分类要先剥离尾部引用。
+  def test_variant_heading_with_trailing_reference_is_classified
+    body = "## 外部依赖 #3\n\n无。\n"
+    assert_equal ["外部依赖 #3"], SebasAgents::Policy::Dependencies.mismatched_dependency_headings(body)
+
+    # 对照：尾部引用换成 E.1 外部编号时不算 issue 依赖，不报。
+    plain = "## 外部依赖\n\n- E.1#1：Slack\n"
+    assert_equal [], SebasAgents::Policy::Dependencies.mismatched_dependency_headings(plain)
+  end
+
   # 空 ATX 标题（裸 ##）按 CommonMark 同样终止上一节。
   def test_empty_atx_heading_terminates_section
     body = <<~MD
