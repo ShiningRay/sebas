@@ -3472,3 +3472,196 @@ class EnsureHeadGuardTest < Minitest::Test
     assert_equal 1, details["files"].length
   end
 end
+
+# blocked_by 批量拉取（GraphQL 别名）的守卫用例。
+# 逐卡 REST 请求是快照最慢的环节之一；批量后必须保证「读不到」不会被
+# 当成「没有前置」——否则选卡会把被阻塞的卡判成就绪。
+class BlockedByBatchTest < Minitest::Test
+  include SnapshotHelpers
+
+  # 按请求出现顺序吐响应，并记录 argv：批量需要证明真正走了单次 GraphQL。
+  class SeqRunner
+    attr_reader :argvs
+
+    def initialize(responses)
+      @responses = responses
+      @argvs = []
+    end
+
+    def json!(*argv)
+      @argvs << argv
+      JSON.parse(@responses.shift)
+    end
+  end
+
+  def gateway_with(*responses)
+    runner = SeqRunner.new(responses)
+    [SebasAgents::GithubGateway.new(runner, repo: "o/r"), runner]
+  end
+
+  # 一份批量响应：键名 b<index>，值里的 number 是回读编号。
+  def batch_payload(entries)
+    data = entries.each_with_index.to_h do |entry, index|
+      ["b#{index}", {"number" => entry[:number], "blockedBy" => entry[:blocked_by]}]
+    end
+    {"data" => {"repository" => data}}
+  end
+
+  def connection(numbers, total: nil)
+    {"totalCount" => total || numbers.length, "nodes" => numbers.map { |n| {"number" => n} }}
+  end
+
+  # 单次请求覆盖全部卡，且结果按编号正确归位。
+  def test_single_batch_returns_dependencies_per_issue
+    payload = batch_payload([
+      {number: 1, blocked_by: connection([9])},
+      {number: 2, blocked_by: connection([])},
+      {number: 3, blocked_by: connection([1, 2])}
+    ])
+    gateway, runner = gateway_with(JSON.generate(payload))
+    result = gateway.send(:fetch_blocked_by_batch, [1, 2, 3])
+
+    assert_equal({1 => [9], 2 => [], 3 => [1, 2]}, result)
+    assert_equal 1, runner.argvs.length, "三张卡必须合并成一次请求"
+    joined = runner.argvs.first.join(" ")
+    assert_includes joined, "b0: issue(number: 1)"
+    assert_includes joined, "b2: issue(number: 3)"
+  end
+
+  # 超过批量上限时按批切分，不丢卡也不重复。
+  def test_splits_into_batches_beyond_limit
+    numbers = (1..(SebasAgents::GithubGateway::BLOCKED_BY_BATCH + 3)).to_a
+    groups = numbers.each_slice(SebasAgents::GithubGateway::BLOCKED_BY_BATCH).to_a
+    payloads = groups.map do |group|
+      JSON.generate(batch_payload(group.map { |n| {number: n, blocked_by: connection([])} }))
+    end
+    gateway, runner = gateway_with(*payloads)
+    result = gateway.send(:fetch_blocked_by_batch, numbers)
+
+    assert_equal numbers.sort, result.keys.sort
+    assert_equal 2, runner.argvs.length
+    assert result.values.all? { |value| value.empty? }
+  end
+
+  # 别名指向的 issue 不存在/无权访问时节点为 null：必须拒绝，不能跳过。
+  def test_missing_alias_node_rejects
+    payload = {"data" => {"repository" => {
+      "b0" => {"number" => 1, "blockedBy" => connection([])}
+    }}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1, 2])
+    end
+    assert_includes error.message, "缺 issue #2 节点"
+  end
+
+  # blockedBy 连接缺失/为 null：结构非法，不得当空集。
+  def test_missing_connection_rejects
+    payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => nil}}}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "blockedBy 连接结构非法"
+  end
+
+  # totalCount 超出 nodes 数量 = 被 first 截断：拒绝产出不完整依赖图。
+  def test_truncated_dependencies_reject
+    payload = batch_payload([{number: 1, blocked_by: connection([7], total: 150)}])
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "被截断"
+  end
+
+  # totalCount 缺失/为 null/类型非法：to_i 会把它们静默变 0，
+  # 于是空 nodes 看着像「没有前置」——必须显式拒绝。
+  def test_missing_or_invalid_total_count_rejects
+    [nil, "0", 0.0, -1].each do |total|
+      connection = {"totalCount" => total, "nodes" => []}
+      payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => connection}}}}
+      gateway, = gateway_with(JSON.generate(payload))
+      error = assert_raises(SebasAgents::CommandError, "totalCount=#{total.inspect} 必须拒绝") do
+        gateway.send(:fetch_blocked_by_batch, [1])
+      end
+      assert_includes error.message, "totalCount"
+    end
+
+    # 字段整体缺失同样拒绝。
+    payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => {"nodes" => []}}}}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "totalCount"
+  end
+
+  # totalCount=0 + nodes=[] 是合法空结果，不能被上一条守卫误伤。
+  def test_zero_total_with_empty_nodes_is_legal
+    payload = batch_payload([{number: 1, blocked_by: connection([])}])
+    gateway, = gateway_with(JSON.generate(payload))
+    assert_equal({1 => []}, gateway.send(:fetch_blocked_by_batch, [1]))
+  end
+
+  # data.repository 缺失或为 null：结构非法，不得当成「全仓无前置」。
+  def test_missing_repository_rejects
+    [{"data" => {}}, {"data" => {"repository" => nil}}, {}].each do |payload|
+      gateway, = gateway_with(JSON.generate(payload))
+      error = assert_raises(SebasAgents::CommandError, payload.inspect) do
+        gateway.send(:fetch_blocked_by_batch, [1])
+      end
+      assert_includes error.message, "缺 data.repository"
+    end
+  end
+
+  # 返回编号与请求不符：别名错位会让依赖张冠李戴，必须拒绝。
+  def test_alias_mismatch_rejects
+    payload = {"data" => {"repository" => {
+      "b0" => {"number" => 99, "blockedBy" => connection([])}
+    }}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "错位"
+  end
+
+  # GraphQL 部分成功（errors + data 并存）同样拒绝：不得消费不完整数据。
+  def test_errors_with_data_rejects
+    payload = batch_payload([{number: 1, blocked_by: connection([])}])
+      .merge("errors" => [{"message" => "partial"}])
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "批量查询失败"
+  end
+
+  # attach_blocked_by：只对带 Automation 块的卡发请求，其余保持空依赖。
+  def test_attach_only_queries_automation_issues
+    payload = batch_payload([{number: 4, blocked_by: connection([3])}])
+    gateway, runner = gateway_with(JSON.generate(payload))
+    issues = [
+      SebasAgents::Model::Issue.from_hash(issue(4, body: automation)),
+      SebasAgents::Model::Issue.from_hash(issue(5, body: "无自动化块"))
+    ]
+    result = gateway.send(:attach_blocked_by, issues)
+
+    assert_equal [3], result.find { |item| item.number == 4 }.blocked_by
+    assert_empty result.find { |item| item.number == 5 }.blocked_by
+    refute_includes runner.argvs.first.join(" "), "issue(number: 5)",
+      "没有 Automation 块的卡不该进批量查询"
+  end
+
+  # 批量结果写入单卡缓存：之后再取同一张卡不再走网络。
+  def test_attach_seeds_single_card_cache
+    payload = batch_payload([{number: 4, blocked_by: connection([3])}])
+    gateway, runner = gateway_with(JSON.generate(payload))
+    target = SebasAgents::Model::Issue.from_hash(issue(4, body: automation))
+    gateway.send(:attach_blocked_by, [target])
+
+    assert_equal [3], gateway.fetch_blocked_by(4)
+    assert_equal 1, runner.argvs.length, "缓存命中后不应再发单卡请求"
+  end
+end
