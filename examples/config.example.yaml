@@ -5,8 +5,9 @@ channels:
   email:
     accounts:
       - id: personal-mailbox
-        platform: imap.example.com    # IMAP/SMTP 主机（gmail-api 路线时为 gmail.com）
-        receive: imap-idle            # imap-idle | gmail-api
+        platform: imap.example.com    # 同时作 IMAP 与 SMTP 主机（Gmail 用 imap.gmail.com + 465/implicit，
+                                      # 该组合依赖非规范的 SMTPS 支持，正确解是加 smtp.host，见 design.md §5.4）
+        receive: imap-idle            # imap-idle | gmail-api（后者未实现，见 design.md §5.4）
         smtp:
           port: 465
           tls: implicit               # implicit | starttls | none
