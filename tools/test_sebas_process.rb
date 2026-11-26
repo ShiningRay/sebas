@@ -3774,6 +3774,25 @@ class SourceRefBulkTest < Minitest::Test
     assert_includes error.message, "缺 user.login"
   end
 
+  # 命中记录缺 body / body 非字符串：拒绝，不能 to_s 成空白当正文。
+  def test_indexed_comment_without_body_rejects
+    [{"id" => 11, "user" => {"login" => "ShiningRay"}},
+     {"id" => 11, "user" => {"login" => "ShiningRay"}, "body" => nil},
+     {"id" => 11, "user" => {"login" => "ShiningRay"}, "body" => 123}].each do |record|
+      gateway, = gateway_with(page_of(record))
+      error = assert_raises(SebasAgents::CommandError, record.inspect) do
+        gateway.send(:ref_body, ref_for(11))
+      end
+      assert_includes error.message, "body"
+    end
+  end
+
+  # 合法的空字符串正文照常放行（评论内容本身可以为空）。
+  def test_indexed_empty_body_is_legal
+    gateway, = gateway_with(page_of(comment(11, body: "")))
+    assert_equal "", gateway.send(:ref_body, ref_for(11))
+  end
+
   # 无限满页：到上限即拒绝，不无休止翻页。
   def test_runaway_pagination_rejects
     full = JSON.generate(Array.new(SebasAgents::GithubGateway::PAGE_SIZE) { |i| comment(i + 1) })

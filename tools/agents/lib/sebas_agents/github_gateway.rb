@@ -451,7 +451,7 @@ end
           comment = indexed_comment(match[2])
           # 未命中必须回退单条：评论可能超出分页范围或已被删除，
           # 空正文会让 Evidence 校验退化成「只验作者」。
-          comment.nil? ? fetch_body("repos/#{@repo}/issues/comments/#{match[2]}") : comment["body"].to_s
+          comment.nil? ? fetch_body("repos/#{@repo}/issues/comments/#{match[2]}") : indexed_body(comment, match[2])
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_body("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -494,6 +494,19 @@ end
         command: ["gh", "api", "repos/#{@repo}/issues/comments"]) if login.to_s.empty?
 
       login
+    end
+
+    # 命中记录的正文必须是字符串：缺失时 to_s 会静默变 ""，
+    # 而空正文会让 Evidence 校验只验作者——那正是本索引要防的 fail-open。
+    # 合法的空字符串正文照常放行（评论内容本身可以为空）。
+    def indexed_body(comment, id)
+      body = comment["body"]
+      unless body.is_a?(String)
+        raise CommandError.new("issue 评论 #{id} 的 body 缺失或非字符串：#{body.inspect}",
+          command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+      end
+
+      body
     end
 
     def fetch_login(path)
