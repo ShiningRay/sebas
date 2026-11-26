@@ -8,9 +8,33 @@ module SebasAgents
   # 网络调用做了缓存与批量补齐，避免逐 issue 往返。
   class GithubGateway
     PAGE_SIZE = 100
-    PAGE_LIMIT_WARNING = 100
     MAX_PAGES = 100
     MAX_DEPENDENCY_FETCH = 300
+
+    ALL_PULL_REQUESTS_QUERY = <<-'GRAPHQL'
+      query($owner: String!, $name: String!, $cursor: String) {
+        repository(owner: $owner, name: $name) {
+          pullRequests(states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}, first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              number
+              state
+              headRefName
+              baseRefName
+              headRefOid
+              mergeStateStatus
+              url
+              isCrossRepository
+              closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number } }
+              statusCheckRollup { contexts(first: 100) {
+                pageInfo { hasNextPage }
+                nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
+              } }
+            }
+          }
+        }
+      }
+    GRAPHQL
 
     def initialize(runner, repo:)
       @runner = runner
@@ -386,18 +410,62 @@ end
       nil
     end
 
+    # PR 全量清单走 GraphQL 分页（M4x-Comm-WP3 #244 后实证）：gh pr list --limit 100
+    # 在仓库 PR 总量破百后永远打满单页，原「达到上限即 fail-closed」守卫把
+    # verify merge / unclaim / next 全部堵死。游标分页保证全量，无截断面。
+    # statusCheckRollup 的 contexts 取 first:100——本仓单 PR 检查数远小于该值。
     def fetch_pull_requests(proposal_evidence: false)
-      raw = @runner.json!("gh", "pr", "list", "--repo", @repo, "--state", "all", "--limit", "100",
-        "--json", "number,headRefName,baseRefName,headRefOid,state,mergeStateStatus,statusCheckRollup,closingIssuesReferences,url,isCrossRepository")
-      unless raw.is_a?(Array)
-        raise CommandError.new("pr list 返回非数组：#{raw.inspect[0, 200]}", command: ["gh", "pr", "list"])
-      end
-      # gh pr list 单页上限：达到上限时数据可能被截断，不能静默当成全量。
-      if raw.length >= PAGE_LIMIT_WARNING
-        raise CommandError.new(
-          "PR 列表达到单页上限 #{PAGE_LIMIT_WARNING}，可能截断在途 PR；请改用 gh api 分页",
-          command: ["gh", "pr", "list"]
-        )
+      owner, name = @repo.split("/", 2)
+      raw = []
+      cursor = nil
+      pages = 0
+      loop do
+        pages += 1
+        if pages > MAX_PAGES
+          raise CommandError.new("pullRequests 分页超过 #{MAX_PAGES} 页仍未到底，拒绝继续", command: ["gh", "api", "graphql"])
+        end
+        args = ["gh", "api", "graphql", "-f", "query=#{ALL_PULL_REQUESTS_QUERY}",
+          "-f", "owner=#{owner}", "-f", "name=#{name}"]
+        args += ["-f", "cursor=#{cursor}"] if cursor
+        payload = @runner.json!(*args)
+        errors = payload["errors"]
+        unless errors.nil? || (errors.respond_to?(:empty?) && errors.empty?)
+          raise CommandError.new("pullRequests 查询失败：#{errors.inspect}", command: args)
+        end
+        conn = payload.dig("data", "repository", "pullRequests")
+        raise CommandError.new("pullRequests 查询缺 data.repository.pullRequests", command: args) if conn.nil?
+        # 分页元数据强校验（#246 review）：pageInfo 缺失不能静默当末页——
+        # 多页清单会被误当成完整快照。只有明确 false 才是合法末页。
+        page_info = conn["pageInfo"]
+        unless page_info.is_a?(Hash) && (page_info["hasNextPage"] == true || page_info["hasNextPage"] == false)
+          raise CommandError.new(
+            "pullRequests 分页元数据缺失或非法（pageInfo.hasNextPage 必须为布尔）：#{page_info.inspect[0, 120]}",
+            command: args
+          )
+        end
+        nodes = conn["nodes"]
+        raise CommandError.new("pullRequests 分页缺 nodes：#{conn.inspect[0, 120]}", command: args) unless nodes.is_a?(Array)
+        nodes.each do |node|
+          cross = node["isCrossRepository"]
+          unless cross == true || cross == false
+            raise CommandError.new(
+              "pullRequests 节点缺 isCrossRepository 或非布尔（number=#{node["number"]}）：#{cross.inspect}",
+              command: args
+            )
+          end
+          # fork PR 先剔除再查内层完整性（#246 review round 3）：fork 的异常数据
+          # （如 >10 关联 issue）不得阻断整个快照——排除判断先于内层校验。
+          next if cross
+          raw << graphql_pr_to_list_item(node)
+        end
+        break unless page_info["hasNextPage"]
+        # 游标推进校验（#246 review）：hasNextPage=true 但 endCursor 空/重复时，
+        # 下一次请求会重读同页无限追加 raw——拒绝继续而不是烧配额。
+        next_cursor = page_info["endCursor"].to_s
+        if next_cursor.empty? || next_cursor == cursor
+          raise CommandError.new("pullRequests 分页游标未推进（endCursor 空/重复），拒绝循环重读", command: args)
+        end
+        cursor = next_cursor
       end
       raw.reject { |item| item["isCrossRepository"] }.map do |item|
         # 只有 open PR 需要未解决 thread；已合并/关闭的 PR 不发起 GraphQL 往返。
@@ -427,6 +495,63 @@ end
           "url" => item["url"]
         ).merge_pr_details(details)
       end
+    end
+
+    # GraphQL 节点映射回 gh pr list 的 item 形状，下游转换零改动：
+    # - closingIssuesReferences 取 nodes 数组（gh pr list 输出即数组）；
+    # - statusCheckRollup 取 contexts.nodes（normalize_checks 已兼容 StatusContext 的
+    #   只有 state 无 status 的形状，不能凭空补 COMPLETED）；
+    # - 内层连接强校验（#246 review round 2/3/4）：连接字段缺失即拒绝（closing
+    #   关联丢失会让 selection 重复分配）；仅 statusCheckRollup 显式 null 合法
+    #   （检查未产出）；存在的连接必须有对象 pageInfo、严格布尔 hasNextPage、
+    #   数组 nodes，超 first 上限截断即拒绝。
+    # - isCrossRepository 的布尔校验与 fork 剔除在调用方完成（先排除后查内层）。
+    def graphql_pr_to_list_item(node)
+      inner_nodes = lambda { |path, limit|
+        conn = node.dig(*path)
+        raise CommandError.new(
+          "PR ##{node["number"]} 缺 #{path.first} 连接字段（结构非法，不得当空集放行）",
+          command: ["gh", "api", "graphql"]
+        ) if conn.nil?
+        page_info = conn["pageInfo"]
+        unless page_info.is_a?(Hash) && (page_info["hasNextPage"] == true || page_info["hasNextPage"] == false)
+          raise CommandError.new(
+            "PR ##{node["number"]} 的 #{path.join(".")} 分页元数据缺失或非法：#{page_info.inspect[0, 120]}",
+            command: ["gh", "api", "graphql"]
+          )
+        end
+        ns = conn["nodes"]
+        raise CommandError.new(
+          "PR ##{node["number"]} 的 #{path.join(".")} 缺 nodes",
+          command: ["gh", "api", "graphql"]
+        ) unless ns.is_a?(Array)
+        if page_info["hasNextPage"]
+          raise CommandError.new(
+            "PR ##{node["number"]} 的 #{path.join(".")} 超过 #{limit} 条被截断，拒绝产出不完整快照",
+            command: ["gh", "api", "graphql"]
+          )
+        end
+        ns
+      }
+      # statusCheckRollup 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法
+      rollup_nodes = if node.key?("statusCheckRollup") && node["statusCheckRollup"].nil?
+        []
+      else
+        inner_nodes.call(["statusCheckRollup", "contexts"], 100)
+      end
+      closing_nodes = inner_nodes.call(["closingIssuesReferences"], 10)
+      {
+        "number" => node["number"],
+        "headRefName" => node["headRefName"],
+        "baseRefName" => node["baseRefName"],
+        "headRefOid" => node["headRefOid"],
+        "state" => node["state"],
+        "mergeStateStatus" => node["mergeStateStatus"],
+        "statusCheckRollup" => rollup_nodes,
+        "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"] } },
+        "url" => node["url"],
+        "isCrossRepository" => false
+      }
     end
 
     # PR 详情：正文 + 变更文件（filename/patch）。失败必须抛错——
