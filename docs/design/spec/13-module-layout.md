@@ -26,13 +26,18 @@ src/agents/
   session/                 # 会话管理（键含账号维度；SQLite+JSONL 双写）【A4 升级】
   memory/                  # MEMORY/HISTORY/USER/SOUL + LLM 巩固【A5】+ FTS5 检索
   skills/                  # SKILL.md 机制【A7，升格为主要扩展通道】
+  subagent.cr              # SubagentManager：ownership 找回 + 命名信号量（M3-WP3；
+                           # DSL 面已移除【§8.2 #187】，内部构件待求助原语设计复用）
 src/orchestration/
   dsl/                     # 触发→条件→动作 YAML 解析与校验
   engine.cr                # 持久 Task 状态机（效应三明治、phase checkpoint）
   triggers/                # cron【A10】/ event / webhook / 账号生命周期事件
   approvals/               # 审批节点（超时 deny、无人值守 deny、hardline）
   ledger.cr                # append-only 事件账本 + 预算记账
-  collaboration/           # message_agent + loop guard【§8】
+  collaboration/           # message_agent + loop guard【§8】；生产装配在
+                           # gateway.cr `build_collaboration_messenger`（registry/store
+                           # 就绪后接线），工具面由 GatewayDispatch#attenuated_registry
+                           # 按 agent.tools.allow 裁剪（#185/#186，装配未接线即不可见）
 src/tools/
   registry.cr              # 注册表【A9 升级：replay/risk 类型级字段、allowlist、脱敏】
   executor.cr              # ReAct ToolExecutor + Observer【A6】
