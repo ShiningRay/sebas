@@ -123,6 +123,8 @@ gateway:
 
 要点：
 
+- **端口**：`http.port` / `ipc.port` 可填 `0`，表示由内核分配空闲端口（listen 后回写实际端口）；spec 与同机多实例用它避开默认 18790/18791。
+
 - **渠道配置**：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。
 - **敏感值**：配置加载沿用 autobot 的 `${VAR}` 展开 + chmod 0o600（autobot A 级件：`config/loader.cr` 机制），但敏感值改为 keyring 引用（`*_ref: keyring:<namespace>/<key>`，§10.2）。
 - **provider 配置**（#214）：厂商级密钥 / base_url / protocol 独立于 agent，`agents.<name>.provider` 引用 `providers.<name>`，model 为裸模型名。

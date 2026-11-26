@@ -44,6 +44,15 @@ module Sebas
           config.gateway.http.try(&.port).should eq(18790)
         end
 
+        it "accepts port 0 as OS-assigned for gateway http and ipc (spec/并行实例)" do
+          yaml = VALID_YAML
+            .sub("port: 18790", "port: 0")
+            .sub("port: 18791", "port: 0")
+          config = Loader.from_content(yaml)
+          config.gateway.http.try(&.port).should eq(0)
+          config.gateway.ipc.port.should eq(0)
+        end
+
         it "reports line numbers for broken YAML" do
           broken = "channels:\n  email:\n   accounts: [oops\n"
           expect_raises(ConfigError, /line \d+/) do
@@ -83,7 +92,7 @@ module Sebas
           joined.should contain("channel 'pigeon' is not a known channel")
           joined.should contain("agent 'ghost' references an undefined agent")
           joined.should contain("account 'ghost-mailbox' does not exist")
-          joined.should contain("gateway.http.port must be 1..65535")
+          joined.should contain("gateway.http.port must be 0..65535")
           joined.should contain("gateway.http.auth must be token, password or tailscale")
         end
 

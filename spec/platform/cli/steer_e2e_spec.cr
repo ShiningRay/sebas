@@ -35,6 +35,9 @@ module Sebas
     it "steer 启用：/steer 提交落库 queued（无活跃 turn），不创建 turn task、不发模型请求" do
       dir = gateway_tmp_dir("steer-e2e")
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -83,6 +86,9 @@ module Sebas
     it "活跃 turn 进行中 /steer：注入下一次模型请求（短路直达，不被批次卡死）" do
       dir = gateway_tmp_dir("steer-inject")
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -145,6 +151,9 @@ module Sebas
     it "queued steer 消费：turn 结束 flush 后合成事件重走 admission 组后续批次" do
       dir = gateway_tmp_dir("steer-consume")
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:

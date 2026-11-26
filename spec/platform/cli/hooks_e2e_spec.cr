@@ -38,8 +38,9 @@ module Sebas
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
         gateway:
           http:
-            port: 28901
+            port: 0
             auth: token
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -62,7 +63,7 @@ module Sebas
         "noop-1", "email", "test-acc", "n@example.com", "warm up"
       ))
       gateway.run
-      base = "http://127.0.0.1:28901"
+      base = "http://127.0.0.1:#{gateway.http.port}"
       no_auth = HTTP::Client.post("#{base}/hooks/deploy", body: "{}")
       no_auth.status_code.should eq(401)
 
@@ -136,8 +137,9 @@ module Sebas
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
         gateway:
           http:
-            port: 28902
+            port: 0
             auth: token
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -158,7 +160,7 @@ module Sebas
       end
       begin
         gateway.run
-        base = "http://127.0.0.1:28902"
+        base = "http://127.0.0.1:#{gateway.http.port}"
 
         r1 = HTTP::Client.post("#{base}/hooks/events", headers: HTTP::Headers{
           "Authorization"   => "Bearer #{HOOK_TOKEN}",

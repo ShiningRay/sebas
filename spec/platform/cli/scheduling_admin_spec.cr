@@ -131,8 +131,9 @@ module Sebas
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
         gateway:
           http:
-            port: 28903
+            port: 0
             auth: token
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
