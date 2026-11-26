@@ -230,6 +230,9 @@ module Sebas
       gateway.store.record_intent(delivery.delivery_id, "message", delivery.payload)
       gateway.store.finish_intent(delivery.delivery_id, "dispatched")
 
+      # 注入已发生（崩溃于「注入后、turn 完成前」）：transcript 已有标记行
+      gateway.store.append_transcript(work_session, "user", signed)
+
       gateway.replay_unfinished
 
       wait_for do
@@ -237,8 +240,29 @@ module Sebas
         rows.any? { |row| row.role == "user" && row.content.includes?("crash mid-turn") } &&
           rows.any? { |row| row.role == "agent" && row.content == "replayed ack" }
       end.should be_true
+      # 注入判重：重放不得重复追加同 delivery 行（turn 仍续跑至完成）
+      gateway.store.transcripts(work_session).count { |row| row.role == "user" }.should eq(1)
       gateway.store.intent_status("dm:replay-1").should eq("done")
       gateway.shutdown
+    end
+
+    it "delivery_id 唯一：同毫秒同内容的独立发送不撞 id（重投复用 id 才幂等）" do
+      store = ::Sebas::Platform::Store::Store.new(
+        Path[Dir.tempdir, "sebas-collab-spec", "uniq-#{Random::Secure.hex(4)}"] / "sebas.db")
+      registry = ::Sebas::Agents::AgentRegistry.new(collab_agents_dir)
+      registry.get_or_create("alice")
+      registry.get_or_create("bob")
+      messenger = ::Sebas::Orchestration::Collaboration::Messenger.new(registry, store)
+      ids = [] of String
+      messenger.deliver = ->(delivery : ::Sebas::Orchestration::Collaboration::Delivery) {
+        ids << delivery.delivery_id
+        true
+      }
+      messenger.send_message("alice", "bob", "same content")
+      messenger.send_message("alice", "bob", "same content")
+      ids.size.should eq(2)
+      ids.uniq.size.should eq(2) # 两条独立消息两个 id
+      store.close
     end
 
     it "拒投审计：未知收方静默返回且 admitter 不投递；拒投经 DeliveryRejected 上浮" do

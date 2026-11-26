@@ -71,7 +71,13 @@ module Sebas
             @store.finish_intent(delivery.delivery_id, "failed")
             return
           end
-          @store.append_transcript(session_key, "user", delivery.content)
+          # 注入判重（CodeRabbit）：重放路径先查 transcript 是否已有本 delivery
+          # 标记行——崩溃于「注入后、intent 完成前」时重放不得重复追加（prompt
+          # 含重复消息违反按 ID 幂等消费）；turn 仍继续执行未竟部分
+          injected = @store.transcripts(session_key).any? do |row|
+            row.role == "user" && row.content.includes?("[delivery: #{delivery.delivery_id}]")
+          end
+          @store.append_transcript(session_key, "user", delivery.content) unless injected
           task = @store.create_task("turn:#{delivery.delivery_id}", "turn", payload: delivery.payload)
           begin
             reply = agent_turn(agent_name, agent, session_key, task_id: task.id, event_id: delivery.delivery_id)

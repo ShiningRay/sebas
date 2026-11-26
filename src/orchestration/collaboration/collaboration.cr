@@ -100,7 +100,9 @@ module Sebas
             Log.warn { "message_agent: max_hops=#{@max_hops} exceeded (from=#{from_agent} to=#{to_agent} hops=#{hops})" }
             raise LoopGuardExceeded.new("max_hops=#{@max_hops} exceeded (hops=#{hops})")
           end
-          delivery_id = "dm:#{::Digest::SHA1.hexdigest("#{from_agent}:#{to_agent}:#{content}:#{Time.utc.to_unix_ms}")}"
+          # 每次独立发送唯一（随机分量）：同毫秒同内容不撞 id；重投同一条消息
+          # 复用其 id，调度层按 id 幂等（duplicate 只消费一次）
+          delivery_id = "dm:#{::Digest::SHA1.hexdigest("#{from_agent}:#{to_agent}:#{content}:#{Time.utc.to_unix_ms}:#{::Random::Secure.hex(8)}")}"
           signed = "Message from 🤖 #{from_agent}: #{content}\n[delivery: #{delivery_id}]"
           message = AgentMessage.new(delivery_id, from_agent, to_agent, signed, hops + 1)
           receiver_session = ::Sebas::Agents.session_key(to_agent, "internal", "collaboration", from_agent)
