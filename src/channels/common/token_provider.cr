@@ -59,8 +59,6 @@ module Sebas
 
       # 企微 gettoken（§5.3）：expires_in 7200s；有效期内重复获取返回相同 token
       class WecomTokenProvider < CachedTokenProvider
-        Log = Sebas::Log.for("channels.wecom.token")
-
         def initialize(corpid : String, secret : String, base_url : String = "https://qyapi.weixin.qq.com")
           super(30.minutes) do
             resp = HTTP::Client.post("#{base_url}/cgi-bin/gettoken?corpid=#{URI.encode_www_form(corpid)}&secret=#{URI.encode_www_form(secret)}")
@@ -75,8 +73,6 @@ module Sebas
 
       # 飞书 tenant_access_token（§5.3）：最长 2h 以 expires_in 为准；Header 预留 4KB（§15.2.19）
       class LarkTokenProvider < CachedTokenProvider
-        Log = Sebas::Log.for("channels.lark.token")
-
         def initialize(app_id : String, app_secret : String, base_url : String = "https://open.feishu.cn")
           super(30.minutes) do
             resp = HTTP::Client.post("#{base_url}/auth/v3/tenant_access_token/internal",
