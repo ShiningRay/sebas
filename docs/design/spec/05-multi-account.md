@@ -77,9 +77,10 @@ Gmail API 作为**存档备选**保留，切换条件见本节末。
 
 **接收**（长连接型，见 §5.2）：
 
-- **IMAP IDLE 常驻**（RFC 2177）：一次 IDLE 只监听一个文件夹（默认 INBOX）；每 **≤29 分钟**终止并重发
-  IDLE（RFC 2177 建议；RFC 3501 §5.4 要求服务器 autologout ≥30 分钟）；NAT/中间设备可能掐断空闲 TCP，
-  需应用层心跳与重连；重连后重新 SELECT，UIDVALIDITY 变化须作废旧游标并重建基线。
+- **IMAP IDLE 常驻**（RFC 2177）：一次 IDLE 只监听一个文件夹（默认 INBOX）；**「发出 IDLE → DONE 收尾完成」
+  全程 ≤29 分钟**，即提前 `29 分钟 − 收尾期限` 主动 `DONE`，收尾时间算在窗口内（RFC 2177 建议；
+  RFC 3501 §5.4 要求服务器 autologout ≥30 分钟）；NAT/中间设备可能掐断空闲 TCP，需应用层心跳与重连；
+  重连后重新 SELECT，UIDVALIDITY 变化须作废旧游标并重建基线。
 - **兜底轮询**（与 IDLE 并存）：独立 watchdog 每 **5 分钟**用**短连接**执行 `SELECT` + `UIDNEXT` 比对
   （必要时 `SEARCH UID <last+1>:*`），有新增即触发一次补收。短连接不复用 IDLE 连接，单账号占用 2 条
   （IDLE 1 + 轮询 1），在 15 连接上限内；IDLE 正常时轮询只是两条极小命令。
@@ -135,8 +136,8 @@ Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3
 | 机制 | 设计口径 | 实现状态 |
 |---|---|---|
 | IDLE 定期重发 | ≤29 分钟 | **偏差**：`read_timeout = idle_poll + 1min` = 30 分钟，静默连接要等读超时才结束 IDLE，实际窗口 **30 分钟**，超出 RFC 2177 建议的 ≤29 分钟 |
-| IDLE 整体截止时间（idle deadline） | 从发出 IDLE 起计时，**到 `idle_poll`（29 分钟）即主动 `DONE`**，不等读超时 | **未实现**：现在只有读超时。服务器若在窗口内持续发非 `EXISTS`/`EXPUNGE`/`FLAGS` 响应（`* OK` 等），`idle` 会继续读，总时长不受限。正解是按 IDLE 开始时间设 idle deadline，到点主动 `DONE`，而不是只把 `read_timeout` 改小 |
-| IDLE 收尾（`DONE` 后等标签响应）的独立期限 | **单独的**收尾期限（如 30 秒），与 idle deadline 分离：到点未收到标签响应才关连接重连 | **未实现**：`imap_client.cr` 的 `abort_idle` / `finish_idle` 都是无限循环 `read_line` 直到见到标签行；`abort_idle` 超时异常被 `rescue ::Exception` 吞掉，调用方不知道收尾失败，随后又在同一连接上重发 IDLE。规范要求：正常收到标签响应 → 按原规则重发 IDLE；收尾期限到点 → 断开重连，不在原连接重发 |
+| IDLE 整体截止时间（idle deadline） | **从发出 IDLE 到完成 `DONE` 收尾的全程 ≤29 分钟**：到 `29 分钟 − 收尾期限`（如 30 秒）即主动 `DONE`，把收尾时间算进窗口 | **未实现**：现在只有读超时。服务器若在窗口内持续发非 `EXISTS`/`EXPUNGE`/`FLAGS` 响应（`* OK` 等），`idle` 会继续读，总时长不受限。正解是按 IDLE 开始时间设 idle deadline，到点主动 `DONE`，而不是只把 `read_timeout` 改小 |
+| IDLE 收尾（`DONE` 后等标签响应）的独立期限 | **单独的**收尾期限（如 30 秒）：到点未收到标签响应才关连接重连 | **未实现**：`imap_client.cr` 的 `abort_idle` / `finish_idle` 都是无限循环 `read_line` 直到见到标签行；`abort_idle` 超时异常被 `rescue ::Exception` 吞掉，调用方不知道收尾失败，随后又在同一连接上重发 IDLE。规范要求：正常收到标签响应 → 按原规则重发 IDLE；收尾期限到点 → 断开重连，不在原连接重发 |
 | 断线补收、跨重连游标、UIDVALIDITY 重建 | 有 | 已实现（PR #230） |
 | 兜底轮询 5 分钟 | 有 | **未实现** |
 | 假活判定 | 有 | **未实现**；注意它与上一条「整体截止时间」配套才能成立 |
