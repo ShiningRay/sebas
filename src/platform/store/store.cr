@@ -5,6 +5,7 @@ require "./expectations_store"
 require "./task_effects_store"
 require "./steer_store"
 require "./scheduling_overlay_store"
+require "./telegram_store"
 require "digest/sha256"
 require "../../log"
 require "../../sessions/scheduling/policy"
@@ -208,6 +209,41 @@ module Sebas
         "created_at     TEXT NOT NULL, " \
         "updated_at     TEXT NOT NULL)",
         "CREATE INDEX IF NOT EXISTS idx_expectations_fork ON expectations(fork_id)",
+        # ---- Telegram 适配器（M3-WP8；m8 提案 §4.2 第 5 点）----
+        #
+        # telegram_accounts：每账号轮询状态。persisted_offset=最后确认的 update_id
+        # （0 = 从未确认）；last_update_at=最近一次非空 getUpdates 响应到达时刻
+        # （空响应不刷新）；reset_mode=空闲重置模式跨崩溃延续位。
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS telegram_accounts (
+            account_id       TEXT PRIMARY KEY,
+            persisted_offset INTEGER NOT NULL DEFAULT 0,
+            last_update_at   TEXT,
+            reset_mode       INTEGER NOT NULL DEFAULT 0
+          )
+          SQL
+        # telegram_updates：写入顺序纪律三步的持久底座。event_id 主键（确定性
+        # 派生 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`）；
+        # (account_id, content_fingerprint) 唯一索引=跨重置周期内容排重兜底；
+        # dispatched 由消费者侧置位；status='pending'|'dead_letter'（dead_letter
+        # 被两条扫描路径排除）；retry_count 仅供 record_intent 失败计数（调度器
+        # 扩展 #252 消费）；bus_publish_timeout_count 为 bus 饱和观测计数。
+        <<-SQL,
+          CREATE TABLE IF NOT EXISTS telegram_updates (
+            event_id            TEXT PRIMARY KEY,
+            account_id          TEXT NOT NULL,
+            update_id           INTEGER NOT NULL,
+            content_fingerprint TEXT NOT NULL,
+            raw_payload         TEXT NOT NULL,
+            dispatched          INTEGER NOT NULL DEFAULT 0,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            retry_count         INTEGER NOT NULL DEFAULT 0,
+            bus_publish_timeout_count INTEGER NOT NULL DEFAULT 0,
+            created_at          TEXT NOT NULL
+          )
+          SQL
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_updates_fp ON telegram_updates(account_id, content_fingerprint)",
+        "CREATE INDEX IF NOT EXISTS idx_telegram_updates_pending ON telegram_updates(account_id, status, update_id)",
       ]
 
       class Store
@@ -215,6 +251,7 @@ module Sebas
         include ::Sebas::Platform::SteerStoreMethods
         include ::Sebas::Platform::SchedulingOverlayStoreMethods
         include ::Sebas::Platform::ExpectationStoreMethods
+        include ::Sebas::Platform::TelegramStoreMethods
 
         getter db : ::DB::Database
         getter path : Path

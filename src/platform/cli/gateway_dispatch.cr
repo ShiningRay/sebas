@@ -255,7 +255,21 @@ module Sebas
               @supervisor.register(adapter)
             end
           end
+          # Telegram（M3-WP8）：每账号一条 long-poll fiber；恢复扫描在 LongPoll.run 内
+          if telegram = @config.channels.telegram
+            telegram.accounts.each { |account| register_telegram_adapter(account) }
+          end
           # wecom/lark 渠道 M1-WP4/5 落位（§13 channels/）
+        end
+
+        # Telegram 装配（spawn_adapters 与 apply_config 热换共用）：adapter 注册 +
+        # 监督体登记。适配器持有 store（轮询状态持久化）；api_base_url 反代由
+        # TelegramAccount 携带（缺省官方 api.telegram.org）。
+        private def register_telegram_adapter(account : Config::TelegramAccount) : Nil
+          adapter = Channels::Telegram::TelegramChannelAdapter.new(account, @bus, @store)
+          @store.ensure_telegram_account(account.id)
+          @channels.register(adapter)
+          @supervisor.register(adapter)
         end
 
         # 协作 messenger 装配（#185 WP1）：max_hops 取自 gateway.collaboration。
