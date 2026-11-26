@@ -65,6 +65,7 @@
 - 依赖：无前置。
 - 验收：`crystal spec` 全绿（含旧三渠道）；新 schema 拒绝缺 `bot_token` 的账号；设计稿逐条标注「已覆盖 / 需新增」。
 - 风险：若既有抽象假定「每渠道至多一个 token」，Telegram 的 `bot_token` 单 token 恰好适配，Slack 的双 token 才是顶破点——Slack 留在 M8 处理。[推演]
+- ✅ **已完成（2026-11-26）**：PR #236 / 5e48db5。`CHANNEL_TYPES` 登记 `telegram`、`TelegramAccount` 校验（`bot_token` 必填、`api_base_url`/`token_ref` 可选）、`InboundMessage.message_id` 尾置默认 nil；提案 §4.1 增扩展点逐条判定表。门禁 spec 388/0、format、ameba 150/0、check_docs FAIL 0。
 
 **M3-WP8 Telegram 适配器（long-poll + Bot API）**（2.5–3.5 pd）
 - 目标：跑通 Telegram 多账号收发。
