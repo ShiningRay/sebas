@@ -11,6 +11,9 @@ module Sebas
       dir = gateway_tmp_dir("reception")
       # 前台配置：agents.reception（只读默认档）
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -55,6 +58,9 @@ module Sebas
     it "已知 binding 消息仍路由 main（前台不劫持）" do
       dir = gateway_tmp_dir("reception-known")
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -93,6 +99,9 @@ module Sebas
     it "无前台配置保持 fail-closed 丢弃（回归：M0 行为 + 审计保留）" do
       dir = gateway_tmp_dir("reception-none")
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
