@@ -17,11 +17,18 @@ module Sebas
       record MailSummary, uid : String, from : String, subject : String, body : String
 
       class ImapClient
-        Log = Sebas::Log.for("sebas.channels.email.imap")
+        Log = Sebas::Log.for("channels.email.imap")
 
         @io : ::IO
 
         getter last_uidvalidity : String?
+
+        # SELECT 响应里的 UIDNEXT：下一个将要分配的 UID。调用方用它跳过既有邮件历史
+        # （RFC 3501 §7.3.1），否则从 0 起步会把整个 INBOX 当新邮件重放。
+        getter last_uidnext : Int64?
+
+        # 单批拉取上限：超过时调用方须继续取下一批，否则新邮件会被积压挤住。
+        FETCH_BATCH = 10
 
         def initialize(host : String, port : Int32, user : String, password : String,
                        tls : Bool = true, connect_timeout : Time::Span = 15.seconds,
@@ -30,6 +37,7 @@ module Sebas
           @password = password
           @tls = tls
           @last_uidvalidity = nil
+          @last_uidnext = nil
           @next_tag = 0
           @io = ImapClient.dial(host, port, tls, connect_timeout, read_timeout)
         end
@@ -65,14 +73,14 @@ module Sebas
           resp = run("SELECT #{mailbox}")
           raise ImapError.new("imap select failed: #{resp["status"]}") unless resp["status"].to_s.includes?("OK")
           @last_uidvalidity = resp["uidvalidity"]?.try(&.to_s)
+          @last_uidnext = resp["uidnext"]?.try(&.to_s.to_i64?)
         end
 
         # 进入 IDLE：阻塞至出现 EXISTS/EXPUNGE/FLAGS 事件，或 read_timeout 到点。
         # 返回事件行（如 "* 12 EXISTS"）；等待窗口耗尽返回 nil（调用方重发 IDLE）。
         def idle : String?
           tag = "I#{next_tag}"
-          @io.puts("#{tag} IDLE")
-          @io.flush
+          write_command("#{tag} IDLE")
           line = read_line
           return unless line.starts_with?("+") # 服务端拒绝 idling
           begin
@@ -89,8 +97,7 @@ module Sebas
         end
 
         private def finish_idle(tag : String, event : String) : String
-          @io.puts("DONE")
-          @io.flush
+          write_command("DONE")
           loop do
             line = read_line
             break if line.starts_with?(tag)
@@ -99,8 +106,7 @@ module Sebas
         end
 
         private def abort_idle(tag : String) : Nil
-          @io.puts("DONE")
-          @io.flush
+          write_command("DONE")
           loop do
             line = read_line
             break if line.starts_with?(tag)
@@ -150,9 +156,15 @@ module Sebas
 
         private def run(command : String) : Hash(String, String | Array(String))
           tag = "A#{next_tag}"
-          @io.puts("#{tag} #{command}")
-          @io.flush
+          write_command("#{tag} #{command}")
           read_response(tag)
+        end
+
+        # 命令行尾必须是 CRLF（RFC 3501 §2.2）：Gmail/Qq/Outlook 对只有 LF 的
+        # 命令行不响应，表现为读超时（IO#puts 写单个 "\n"）。
+        private def write_command(line : String) : Nil
+          @io.print(line, "\r\n")
+          @io.flush
         end
 
         private def read_response(tag : String) : Hash(String, String | Array(String))
@@ -184,6 +196,8 @@ module Sebas
               result["uids"] = uid_list[1].split(" ").reject(&.empty?)
             elsif uv = line.match(/UIDVALIDITY (\d+)/)
               result["uidvalidity"] = uv[1]
+            elsif un = line.match(/UIDNEXT (\d+)/)
+              result["uidnext"] = un[1]
             end
           end
         end

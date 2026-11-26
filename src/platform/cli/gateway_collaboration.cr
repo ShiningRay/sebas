@@ -7,7 +7,7 @@ module Sebas
   module Platform
     module CLI
       module GatewayCollaboration
-        Log = Sebas::Log.for("sebas.gateway")
+        Log = Sebas::Log.for("gateway")
 
         # 内部消息 admission（#186 方案 B）：收方 agent 存在即入其协作会话批次
         # （queue 模式即封即派）；未知收方拒投并审计（fail-closed 不排队）。

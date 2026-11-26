@@ -13,7 +13,7 @@ module Sebas
       # @steer_center/@steer_registry/@steer_dispatch_ready/@scheduling/
       # @lifecycle_store/@bus）。
       module GatewaySteer
-        Log = Sebas::Log.for("sebas.gateway")
+        Log = Sebas::Log.for("gateway")
 
         # 显式 /steer 命令（M4.5-WP4）：明确 correction 语义入口——普通
         # 聊天正文不靠关键词/LLM 猜测纠偏意图；回执经提交状态落库。

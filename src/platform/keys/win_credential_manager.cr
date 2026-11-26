@@ -8,7 +8,7 @@
     module Platform
       module Keys
         class WinCredentialStore
-          Log = Sebas::Log.for("sebas.keys.wincred")
+          Log = Sebas::Log.for("keys.wincred")
 
           CRED_TYPE_GENERIC          = 1_u32
           CRED_PERSIST_LOCAL_MACHINE = 2_u32

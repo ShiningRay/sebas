@@ -15,7 +15,7 @@ module Sebas
   module Channels
     module Lark
       class LarkCallbackAdapter < ChannelAdapter
-        Log = Sebas::Log.for("sebas.channels.lark")
+        Log = Sebas::Log.for("channels.lark")
 
         getter health : String
 

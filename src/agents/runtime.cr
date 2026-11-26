@@ -15,7 +15,7 @@ module Sebas
     # → 下一次模型调用——steer 不取消运行中的工具、不篡改参数，只在轮边界
     # 以 user 消息注入（M4.3-WP1 ReAct 循环语义保持不变）。
     class AgentRuntime
-      Log = ::Sebas::Log.for("sebas.agents.runtime")
+      Log = ::Sebas::Log.for("agents.runtime")
 
       MAX_TOOL_ROUNDS = 8
 
