@@ -1,5 +1,6 @@
 require "file_utils"
 require "../log"
+require "../platform/config/schema" # config_agents 双视图引用 AgentConfig（显式声明依赖）
 
 # Agent 实例（M3-WP1，design.md §3.1）：人格（SOUL）+记忆目录+工具面独立；
 # 无渠道凭据（凭据归 Account，两轴正交）。

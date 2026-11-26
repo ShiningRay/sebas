@@ -3,6 +3,7 @@ require "file_utils"
 require "../../src/agents/agents"
 require "../../src/agents/subagent"
 require "../../src/orchestration/collaboration/collaboration"
+require "../support/collaboration_spec_helper"
 require "../../src/tools/executor"
 require "../../src/channels/registry"
 require "../../src/platform/store/store"
@@ -27,16 +28,6 @@ def wait_for(seconds : Time::Span = 5.seconds, &condition : -> Bool) : Bool
     sleep 20.milliseconds
   end
   condition.call
-end
-
-# 装配层同径构造（#185 WP1）：默认工具面 → 协作工具注册 → 白名单裁剪 → 真实 Executor。
-# 与 GatewayDispatch#attenuated_registry 同序同口径，spec 不绕过装配层直接 new 工具。
-def collab_tool_face(messenger, allowed : Array(String))
-  channels = ::Sebas::Channels::Registry.new
-  registry = ::Sebas::Tools.default_registry(channels)
-  ::Sebas::Orchestration::Collaboration.register_tool_face(registry, messenger)
-  registry.restrict_to(allowed)
-  {::Sebas::Tools::Executor.new(registry, channels), registry, channels}
 end
 
 module Sebas

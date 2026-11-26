@@ -8,6 +8,7 @@ require "../../../src/sessions/scheduling/registry"
 require "../../../src/channels/email/adapter"
 require "../../support/gateway_spec_helper"
 require "../../support/fake_smtp_server"
+require "../../support/collaboration_spec_helper"
 
 # 脚本化 Provider（#186 spec）：按调用序出脚本响应，记录收到的完整 prompt
 # （验收「收方下一 turn 的 prompt 中含该消息」直证）；调用无跨会话共享状态，
