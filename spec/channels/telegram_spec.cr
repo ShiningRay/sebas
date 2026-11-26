@@ -365,9 +365,10 @@ module Sebas
       expect_raises(ArgumentError, /https/) do
         ::Sebas::Channels::Telegram::BotApi.new("t", "http://relay.example.com:8080")
       end
-      # 回环豁免（本机 mock/反代）
+      # 回环豁免（本机 mock/反代）；IPv6 回环走 hostname 去方括号匹配
       ::Sebas::Channels::Telegram::BotApi.new("t", "http://127.0.0.1:8080")
       ::Sebas::Channels::Telegram::BotApi.new("t", "http://localhost:8080")
+      ::Sebas::Channels::Telegram::BotApi.new("t", "http://[::1]:8080")
     end
   end
 end

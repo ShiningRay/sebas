@@ -68,7 +68,8 @@ module Sebas
         private def check_base_scheme(base : String) : Nil
           uri = ::URI.parse(base)
           return unless uri.scheme == "http"
-          host = uri.host || ""
+          # hostname 对 IPv6 去方括号（[::1] → ::1），host 会带括号匹配不上白名单
+          host = uri.hostname || ""
           loopback = {"localhost", "127.0.0.1", "::1"}
           unless host.in?(loopback)
             raise ArgumentError.new("api_base_url must use https for non-loopback hosts (got #{base}); " \
