@@ -13,7 +13,7 @@ module Sebas
   module Channels
     module Wecom
       class WecomCallbackAdapter < ChannelAdapter
-        Log = Sebas::Log.for("sebas.channels.wecom")
+        Log = Sebas::Log.for("channels.wecom")
 
         getter crypto : WecomCrypto
         getter health : String

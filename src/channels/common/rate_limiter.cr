@@ -6,7 +6,7 @@ module Sebas
   module Channels
     module Common
       class RateLimiter
-        Log = Sebas::Log.for("sebas.channels.ratelimit")
+        Log = Sebas::Log.for("channels.ratelimit")
 
         private record Bucket, tokens : Float64, last_refill : Time::Instant, cooling_until : Time::Instant
 

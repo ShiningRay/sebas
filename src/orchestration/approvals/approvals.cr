@@ -25,7 +25,7 @@ module Sebas
       record Decision, approved : Bool, reason : String
 
       class Center
-        Log = Sebas::Log.for("sebas.approvals")
+        Log = Sebas::Log.for("approvals")
 
         DEFAULT_TIMEOUT = 300
 

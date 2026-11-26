@@ -10,7 +10,7 @@ require "../bus/bus"
 module Sebas
   module Platform
     module Supervisor
-      Log = Sebas::Log.for("sebas.supervisor")
+      Log = Sebas::Log.for("supervisor")
 
       record HealthState, account_id : String, channel_type : String, status : String
 

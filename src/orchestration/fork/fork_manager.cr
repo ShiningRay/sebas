@@ -5,7 +5,7 @@ require "random"
 module Sebas
   module Orchestration
     module Fork
-      Log = Sebas::Log.for("sebas.fork")
+      Log = Sebas::Log.for("fork")
 
       # fork/join 原语的装配面（M4.1-WP1）：组件进生产链路，键契约就位。
       #

@@ -12,7 +12,7 @@ require "../../log"
 module Sebas
   module Orchestration
     class TriggerManager
-      Log = Sebas::Log.for("sebas.orchestration.triggers")
+      Log = Sebas::Log.for("orchestration.triggers")
 
       record CronJob, agent_id : String, workflow_id : String, expr : String, next_at : Time
 

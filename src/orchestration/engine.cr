@@ -12,7 +12,7 @@ require "../log"
 module Sebas
   module Orchestration
     class Engine
-      Log = Sebas::Log.for("sebas.orchestration.engine")
+      Log = Sebas::Log.for("orchestration.engine")
 
       getter store : ::Sebas::Platform::Store::Store
 

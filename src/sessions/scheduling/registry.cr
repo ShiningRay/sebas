@@ -10,7 +10,7 @@ module Sebas
   module Sessions
     module Scheduling
       class Registry
-        Log = Sebas::Log.for("sebas.scheduling.registry")
+        Log = Sebas::Log.for("scheduling.registry")
 
         @mutex = Mutex.new
         @schedulers = {} of String => SessionScheduler
