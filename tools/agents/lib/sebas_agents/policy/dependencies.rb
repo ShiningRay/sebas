@@ -208,9 +208,18 @@ module SebasAgents
         [match[1].length, match[2].to_s.sub(CLOSING_HASHES, "").strip]
       end
 
-      # 标题去掉尾部 issue 引用后的文字，用于分类（「外部依赖 #3」按「外部依赖」归类）。
+      # 标题去掉尾部 issue 引用后的文字，用于分类。
+      # 一次剥掉整串引用（「外部依赖 #3 #5」→「外部依赖」）：
+      # 只剥一个会留下「外部依赖 #3」，既不匹配变体规则也过不了精确标题，引用被静默忽略。
       def heading_label(title)
-        title.sub(/\s*#{ISSUE_REFERENCE.source}\s*\z/, "").strip
+        rest = title
+        loop do
+          stripped = rest.sub(/\s*#{ISSUE_REFERENCE.source}\s*\z/, "")
+          break if stripped == rest
+
+          rest = stripped
+        end
+        rest.strip
       end
 
       def mismatched_dependency_headings(body)
