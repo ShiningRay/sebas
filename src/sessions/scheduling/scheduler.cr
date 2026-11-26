@@ -19,7 +19,7 @@ module Sebas
     module Scheduling
       # 每会话调度器：批次状态机 + 有界容量 + 串行派发
       class SessionScheduler
-        Log = Sebas::Log.for("sebas.scheduling.scheduler")
+        Log = Sebas::Log.for("scheduling.scheduler")
 
         getter session_key : String
 

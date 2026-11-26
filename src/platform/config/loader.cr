@@ -24,7 +24,7 @@ module Sebas
 
       module Loader
         extend self
-        Log = ::Sebas::Log.for("sebas.config.loader")
+        Log = ::Sebas::Log.for("config.loader")
 
         def load(path : String | Path) : Config
           path = Path[path]

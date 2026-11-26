@@ -8,7 +8,7 @@ require "../log"
 # design.md §4.1——每 agent 可绑不同模型/厂商；M1-WP8 的 provider key 热换以实例池为宿主。
 module Sebas
   module Providers
-    Log = Sebas::Log.for("sebas.providers")
+    Log = Sebas::Log.for("providers")
 
     record Message, role : String, content : String do
       include JSON::Serializable

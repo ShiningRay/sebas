@@ -8,7 +8,7 @@ require "../log"
 module Sebas
   module Orchestration
     class Ledger
-      Log = Sebas::Log.for("sebas.orchestration.ledger")
+      Log = Sebas::Log.for("orchestration.ledger")
 
       getter store : ::Sebas::Platform::Store::Store
 
@@ -25,7 +25,7 @@ module Sebas
     end
 
     class Budget
-      Log = Sebas::Log.for("sebas.orchestration.budget")
+      Log = Sebas::Log.for("orchestration.budget")
 
       getter limit_tokens : Int64
       getter store : ::Sebas::Platform::Store::Store

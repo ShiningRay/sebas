@@ -14,7 +14,7 @@ module Sebas
     module HTTP
       class Server
         include ::Sebas::Admin::HTTP::SchedulingHTTPMethods
-        Log = Sebas::Log.for("sebas.admin.http")
+        Log = Sebas::Log.for("admin.http")
 
         getter port : Int32
         setter lifecycle : ::Sebas::Sessions::Lifecycle::Store?
