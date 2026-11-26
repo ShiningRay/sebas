@@ -50,6 +50,7 @@ module Sebas
           raise ArgumentError.new("bot token must not be empty") if token.empty?
           @poll_timeout = poll_timeout
           @base = (base_url || DEFAULT_BASE_URL).rstrip('/')
+          check_base_scheme(@base)
           if client = @http
             @client = client
           else
@@ -59,6 +60,20 @@ module Sebas
             @client.read_timeout = read_timeout || (poll_timeout.seconds + 15.seconds)
           end
           @token = token
+        end
+
+        # bot_token 随每个请求走 Authorization path（/bot<token>/...），明文 http
+        # 即凭据明文传输（CWE-319）。仅回环地址（本机 mock/反代）豁免——
+        # api_base_url 指向非回环自建 server 时必须 https。
+        private def check_base_scheme(base : String) : Nil
+          uri = ::URI.parse(base)
+          return unless uri.scheme == "http"
+          host = uri.host || ""
+          loopback = {"localhost", "127.0.0.1", "::1"}
+          unless host.in?(loopback)
+            raise ArgumentError.new("api_base_url must use https for non-loopback hosts (got #{base}); " \
+                                    "plaintext http would expose the bot token")
+          end
         end
 
         def close : Nil

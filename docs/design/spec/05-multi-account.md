@@ -194,3 +194,16 @@ Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3
 **多账号要点**：
 - **每租户各建一个自建应用**（多组 `app_id/app_secret` 并存，单进程分别取 token）——个人平台多飞书账号的最简路径（渠道笔记 b2）；商店应用（ISV）模式不采用（本轮未展开）。
 - **base_url 必须入账号配置**：飞书 `open.feishu.cn` / Lark `open.larksuite.com`，用错报 `1000040351 Incorrect domain name`；**飞书与 Lark 是不同主体运营的独立产品，账号体系完全不互通**（渠道笔记 b4）——渠道类型统一为 `lark`，`platform` 字段区分。
+
+### 5.7 Telegram 接入方案（M3-WP8 落地，2026-11-27）
+
+长连接型（出站 long-poll，免公网，与 §5.2 长连接优先一致）；完整设计与恢复语义契约见
+[proposals/m8-channel-expansion-slack-telegram.md](../proposals/m8-channel-expansion-slack-telegram.md) §4.2。
+
+- **接收**：`getUpdates(offset, timeout=50)` 每账号一条 long-poll fiber；`persisted_offset` 落 store（telegram_accounts），重启续接。
+- **空闲重置双模**：`last_update_at` 距今 ≥6 天（官方「至少一周」留 1 天边际）或持久位 `reset_mode=true` 进入重置模式——无 offset 拉全集 + 内容指纹排重；退出时 offset 与 reset_mode 同事务。
+- **写入顺序纪律**：先落 `telegram_updates`（`dispatched=false`）→ 再推进 offset → 再入总线；`dispatched=true` 由消费者在 `record_intent` 落库后置位（含已有 intent 分支），`admit duplicate` 分支与启动恢复后全量扫描补确认；启动 + 周期双扫描重投未确认行。
+- **确定性 event_id**：`tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——update_id 与内容指纹同纳入，重置后 update_id 复用不产生 intent 排重误杀。
+- **出站**：`sendMessage` + 双桶限流（per `(account_id, chat_id)` 1 msg/s、全局 30 msg/s）；超长文本按 4096 字符上限切分多条；出站走独立 HTTP client（不与 long-poll 共享）。
+- **配置**：`channels.telegram.accounts[]`（`bot_token` 必填、`api_base_url` 可选自建反代——非回环必须 https，bot_token 随请求路径传输不可明文；配置树见提案 §4.1）。
+- **非目标**：webhook 形态（需公网）；运行期 `record_intent` 失败恢复依赖调度器 failed 批次重试扩展（独立卡跟踪）。

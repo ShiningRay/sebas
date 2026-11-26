@@ -332,5 +332,42 @@ module Sebas
         store.close
       end
     end
+
+    it "adapter.start 驱动 run 循环真实轮询（stop 标志语义回归：true=运行）" do
+      store = build_store("startloop")
+      server = FakeBotApiServer.new
+      server.serve
+      begin
+        account = ::Sebas::Platform::Config::TelegramAccount.from_yaml(
+          "id: acct\nbot_token: \"#{server.token}\"\n"
+        )
+        bus = ::Sebas::Platform::Bus::Bus.new(8)
+        adapter = ::Sebas::Channels::Telegram::TelegramChannelAdapter.new(account, bus, store,
+          scan_interval: 1.hour, backoff: 10.milliseconds,
+          api: ::Sebas::Channels::Telegram::BotApi.new(server.token, http: server.client))
+        server.queue_updates([] of ::JSON::Any)
+        adapter.start
+        # run 循环真实轮询：mock 服务端收到的 getUpdates 请求持续增长
+        deadline = Time.instant + 5.seconds
+        until server.recorded_offsets.size >= 2
+          raise "run loop did not poll (recorded=#{server.recorded_offsets.size})" if Time.instant > deadline
+          sleep 10.milliseconds
+        end
+        adapter.stop
+        adapter.health.should eq("online")
+      ensure
+        server.close
+        store.close
+      end
+    end
+
+    it "BotApi 非回环 api_base_url 拒绝明文 http（bot_token 防明文传输）" do
+      expect_raises(ArgumentError, /https/) do
+        ::Sebas::Channels::Telegram::BotApi.new("t", "http://relay.example.com:8080")
+      end
+      # 回环豁免（本机 mock/反代）
+      ::Sebas::Channels::Telegram::BotApi.new("t", "http://127.0.0.1:8080")
+      ::Sebas::Channels::Telegram::BotApi.new("t", "http://localhost:8080")
+    end
   end
 end

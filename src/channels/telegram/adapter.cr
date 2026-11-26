@@ -71,11 +71,14 @@ module Sebas
         def send(peer : String, content : String, idempotency_key : String? = nil) : SendResult
           message_id : String? = nil
           split_message(content).each do |chunk|
-            unless @global_limiter.acquire(@account.id, "*", 10.seconds)
-              return SendResult.error("telegram global rate limit (30 msg/s) wait timeout")
-            end
+            # 先单 chat 桶（可能等待冷却）再全局限流：全局许可紧贴实际发送时刻
+            # 取得，避免「先取全局、等待期间桶再补充、实际发送超全局速率」的
+            # 顺序性超限（全局限流必须约束发送瞬间而非调用瞬间）
             unless @peer_limiter.acquire(@account.id, peer, 10.seconds)
               return SendResult.error("telegram peer rate limit (1 msg/s) wait timeout")
+            end
+            unless @global_limiter.acquire(@account.id, "*", 10.seconds)
+              return SendResult.error("telegram global rate limit (30 msg/s) wait timeout")
             end
             message_id = send_api.send_message(peer, chunk)
           end

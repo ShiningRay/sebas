@@ -43,22 +43,28 @@ module Sebas
           @store.ensure_telegram_account(@account_id)
         end
 
-        # 完整运行循环（adapter fiber 调用；stop 由调用方翻转后由轮询周期感知）。
-        # 任何单轮异常（BotApi 网络错误 / 存储层瞬时故障）只退避重试，不逃出循环——
-        # 异常逃出即账号停收且无人重启（supervisor 只观察 health 不重启 fiber）。
+        # 完整运行循环（adapter fiber 调用；stop 为运行标志：true=运行，置 false 后
+        # 本轮感知退出）。任何单轮异常（BotApi 网络错误 / 存储层瞬时故障）只退避
+        # 重试，不逃出循环——异常逃出即账号停收且无人重启（supervisor 只观察
+        # health 不重启 fiber）。
         def run(stop : Atomic(Bool), scan_interval : ::Time::Span = 60.seconds,
                 backoff : ::Time::Span = 5.seconds, max_backoff : ::Time::Span = 60.seconds) : Nil
           current_backoff = backoff
           last_scan = ::Time.instant - scan_interval # 首轮即执行启动恢复扫描
-          until stop.get
+          while stop.get
+            # 恢复扫描独立于轮询成败：getUpdates 持续失败（网络中断等）时本地
+            # 未投递行仍按周期重投，不等远端恢复（recover 自身故障同受退避保护）
+            if ::Time.instant - last_scan >= scan_interval
+              begin
+                recover_pending
+              rescue ex : ::Exception
+                Log.error(exception: ex) { "telegram recover scan failed (account=#{@account_id})" }
+              end
+              last_scan = ::Time.instant
+            end
             begin
               poll_once
               current_backoff = backoff
-              # 运行期恢复：周期扫描重投 dispatched=false 行（与启动扫描同构）
-              if ::Time.instant - last_scan >= scan_interval
-                recover_pending
-                last_scan = ::Time.instant
-              end
             rescue ex : BotApiError
               Log.warn { "getUpdates failed (account=#{@account_id}): #{ex.message}; backoff #{current_backoff}" }
               sleep current_backoff
