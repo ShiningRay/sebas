@@ -127,7 +127,10 @@ module Sebas
       ledger : EffectsLedger? = nil,
       approvals : ::Sebas::Orchestration::Approvals::Center? = nil,
       unattended : Bool = true,
-      approval_mode : String = "deny"
+      approval_mode : String = "deny",
+      # 协作 turn 的链路跳数（#186）：绑定启动本 turn 的 delivery——message_agent
+      # 缺省 hops 取此值而非会话 memo（同会话多链路并发时 memo 会被新链覆盖）
+      collab_hops : Int64? = nil
 
     abstract class Tool
       getter name : String

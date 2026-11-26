@@ -180,8 +180,10 @@ module Sebas
           from = ctx.session_key.split(":")[1]? || "main"
           # expect_reply（#186）：缺省 false——单向通知不产生回声链
           expect_reply = args["expect_reply"]?.try(&.as_bool?) || false
-          # 显式 hops 仅测试/内部编排可用；生产缺省从 ctx 会话键继承（#185 WP1）
-          hops = args["hops"]?.try(&.as_i64?) || @messenger.hops_for(ctx.session_key)
+          # 显式 hops 仅测试/内部编排可用；生产缺省绑定启动本 turn 的 delivery
+          # （ctx.collab_hops，#186 CodeRabbit：会话 memo 会被同会话新链路覆盖，
+          # 在途 turn 读到旧值会绕过防环上限）；memo 仅遗留会话兜底
+          hops = args["hops"]?.try(&.as_i64?) || ctx.collab_hops || @messenger.hops_for(ctx.session_key)
           begin
             message = @messenger.send_message(from, to, content, hops, expect_reply)
             if message

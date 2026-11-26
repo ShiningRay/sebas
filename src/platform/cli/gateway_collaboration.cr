@@ -78,16 +78,22 @@ module Sebas
             row.role == "user" && row.content.includes?("[delivery: #{delivery.delivery_id}]")
           end
           @store.append_transcript(session_key, "user", delivery.content) unless injected
-          task = @store.create_task("turn:#{delivery.delivery_id}", "turn", payload: delivery.payload)
+          # task 复用（CodeRabbit）：崩溃于建 task 后完成前时，重放再 INSERT 同 id
+          # 必然主键冲突且 intent 永卡 dispatched——已存在即复用原任务行
+          task_id = "turn:#{delivery.delivery_id}"
+          unless @store.task_status?(task_id)
+            @store.create_task(task_id, "turn", payload: delivery.payload)
+          end
           begin
-            reply = agent_turn(agent_name, agent, session_key, task_id: task.id, event_id: delivery.delivery_id)
+            reply = agent_turn(agent_name, agent, session_key, task_id: task_id,
+              event_id: delivery.delivery_id, collab_hops: delivery.hops)
             @store.append_transcript(session_key, "agent", reply)
-            @store.complete_task(task.id, reply)
+            @store.complete_task(task_id, reply)
             route_collaboration_reply(agent_name, delivery, reply)
             @store.finish_intent(delivery.delivery_id, "done")
           rescue ex : ::Exception
             Log.error(exception: ex) { "collaboration turn failed (delivery=#{delivery.delivery_id})" }
-            @store.fail_task(task.id, ex.message)
+            @store.fail_task(task_id, ex.message)
             @store.finish_intent(delivery.delivery_id, "failed")
           end
         end

@@ -265,6 +265,30 @@ module Sebas
       store.close
     end
 
+    it "message_agent hops 绑定启动 turn 的 delivery（ctx.collab_hops），不读会话 memo" do
+      store = ::Sebas::Platform::Store::Store.new(
+        Path[Dir.tempdir, "sebas-collab-spec", "hops-#{Random::Secure.hex(4)}"] / "sebas.db")
+      registry = ::Sebas::Agents::AgentRegistry.new(collab_agents_dir)
+      {"alice", "bob"}.each { |id| registry.get_or_create(id) }
+      messenger = ::Sebas::Orchestration::Collaboration::Messenger.new(registry, store, max_hops: 4)
+      messenger.deliver = ->(_delivery : ::Sebas::Orchestration::Collaboration::Delivery) { true }
+
+      # 本链路 memo 已被同会话新链路覆盖为 1（CodeRabbit 失败路径：
+      # 收方在途 turn 若读 memo 会绕过防环上限）
+      messenger.send_message("alice", "bob", "seed chain")
+      bob_session = ::Sebas::Agents.session_key("bob", "internal", "collaboration", "alice")
+      messenger.hops_for(bob_session).should eq(1)
+
+      # 但在途 turn 携带的是本 delivery 的 hops=4：以 bob 身份回信必被拒
+      executor, _tools, _channels = collab_tool_face(messenger, ["message_agent"])
+      ctx = ::Sebas::Tools::ToolContext.new(bob_session, "internal", "evt-hops", store,
+        nil, nil, true, "deny", 4_i64)
+      result = executor.run("message_agent", ::JSON.parse(%({"agent": "alice", "content": "over-hop"})), ctx)
+      result.ok?.should be_false
+      result.error.to_s.should contain("max_hops=4")
+      store.close
+    end
+
     it "拒投审计：未知收方静默返回且 admitter 不投递；拒投经 DeliveryRejected 上浮" do
       store = ::Sebas::Platform::Store::Store.new(
         Path[Dir.tempdir, "sebas-collab-spec", "reject-#{Random::Secure.hex(4)}"] / "sebas.db")

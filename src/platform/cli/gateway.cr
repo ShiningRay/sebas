@@ -331,7 +331,7 @@ module Sebas
         # 转 queued 后续批次（验收：turn 结束不丢消息）。
         private def agent_turn(agent_name : String, agent : Config::AgentConfig,
                                session_key : String, task_id : String? = nil,
-                               event_id : String = "") : String
+                               event_id : String = "", collab_hops : Int64? = nil) : String
           # 每 turn 取配置快照纪律（§11.2④）：M0 单配置整根即快照；M1 起 Atomic(Config).get
           history = @store.transcripts(session_key).last(agent.memory.try(&.window) || 50).map do |row|
             # agent → assistant；tool 行转 user（内容自带 "tool:" 前缀）——
@@ -368,7 +368,7 @@ module Sebas
           lease = @steer_registry.register(session_key, turn_id)
           turn_ctx = Agents::TurnContext.new(session_key, lease.turn_id, lease.generation)
           begin
-            runtime.run(session_key, turn_ctx, provider, executor, messages, task_id, event_id)
+            runtime.run(session_key, turn_ctx, provider, executor, messages, task_id, event_id, collab_hops)
           ensure
             @steer_registry.unregister(session_key, turn_id)
             begin
