@@ -6,12 +6,15 @@ module Sebas
   module Platform
     module Bus
       # 入站消息事件：requestId = 渠道侧事件 ID（幂等三件套提交级，§7.3）
+      # message_id（M3-WP7 扩展点定稿，m8 提案 §4.1）：渠道侧消息定位 ID
+      # （Telegram 的 message.message_id 等）。尾置默认 nil——旧适配器五参构造零改动。
       record InboundMessage,
         event_id : String,
         channel_type : String,
         account_id : String,
         peer : String,
-        content : String do
+        content : String,
+        message_id : String? = nil do
         include ::JSON::Serializable
       end
 
