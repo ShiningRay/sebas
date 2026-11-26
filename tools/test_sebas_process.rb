@@ -658,6 +658,20 @@ class SelectionTest < Minitest::Test
     assert_equal ["外部依赖"], SebasAgents::Policy::Dependencies.mismatched_dependency_headings(variant)
   end
 
+  # 精确标题带尾部引用（「依赖 #3」「前置依赖 #3」）不是合规依赖节，必须报。
+  def test_exact_heading_with_trailing_reference_is_variant
+    ["## 依赖 #3", "## 前置依赖 #3"].each do |heading|
+      body = "#{heading}\n\n无。\n"
+      variants = SebasAgents::Policy::Dependencies.mismatched_dependency_headings(body)
+      assert_equal [heading.sub(/\A#+\s*/, "")], variants, heading
+    end
+
+    # 对照：规范的依赖节不受影响。
+    ok = "## 依赖\n\n- 前置：#3 完成\n"
+    assert_equal [], SebasAgents::Policy::Dependencies.mismatched_dependency_headings(ok)
+    assert_equal [3], SebasAgents::Policy::Dependencies.prose_dependencies(ok)
+  end
+
   # 变体标题尾部带 issue 引用（「外部依赖 #3」）时，分类要先剥离尾部引用。
   def test_variant_heading_with_trailing_reference_is_classified
     body = "## 外部依赖 #3\n\n无。\n"

@@ -225,8 +225,9 @@ module SebasAgents
           next unless level
 
           label = heading_label(title)
-          next if label.match?(EXACT_HEADING)
-          next unless label.match?(VARIANT_HEADING)
+          # 精确标题只有在不带尾部引用时才是合规依赖节；带了引用就成了变体。
+          next if label.match?(EXACT_HEADING) && label == title
+          next unless label.match?(EXACT_HEADING) || label.match?(VARIANT_HEADING)
           next unless heading_or_section_mentions_issue?(lines, index, level, title)
 
           variants << title
