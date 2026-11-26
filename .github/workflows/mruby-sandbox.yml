@@ -24,15 +24,15 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: sebas
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: mruby/mruby
           ref: 831da26b9021de0369d17b71b5667e2941a1a32d # mruby 4.0.0 pinned
           path: mruby
-      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+      - uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c # v2
         with:
           msystem: UCRT64
           update: false
@@ -73,7 +73,7 @@ jobs:
           echo "--- sebas_print 输出 ---"
           test "$($MRUBY -e "sebas_print 'sebas-ok'")" = "sebas-ok"
           echo "ALL SMOKE CHECKS PASSED"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mruby-sandbox-windows
           path: mruby/build/host/bin/mruby.exe
