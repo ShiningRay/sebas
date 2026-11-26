@@ -3369,6 +3369,81 @@ class PullRequestsPaginationTest < Minitest::Test
       end
     end
 
+    # 在线路径：不带 --snapshot，走真实 GithubGateway。断言目标 PR 真的发起了
+    # checks 查询——只断言参数传下去的话，删掉 gateway 的 attach_checks 分支
+    # 用例仍会通过。
+    class PathRunner < SebasAgents::CommandRunner
+      attr_reader :seen
+
+      def initialize(payloads)
+        super(dry_run: true)
+        @payloads = payloads
+        @seen = []
+        @lock = Mutex.new
+      end
+
+      def json!(*argv, chdir: Dir.pwd)
+        joined = argv.join(" ")
+        @lock.synchronize { @seen << joined }
+        key = @payloads.keys.find { |candidate| joined.include?(candidate) }
+        raise "未预期的请求：#{joined}" if key.nil?
+
+        JSON.parse(@payloads.fetch(key))
+      end
+    end
+
+    class OnlineCli < SebasAgents::CLI
+      attr_reader :runner
+
+      def initialize(runner:, **kw)
+        super(**kw)
+        @runner = runner
+      end
+
+      private
+
+      def runner(_options)
+        @runner
+      end
+    end
+
+    def online_payloads
+      {
+        "milestones" => JSON.generate([milestone(number: 2, order: 4, track: "main", open_issues: 0)]),
+        "issues/comments" => JSON.generate([]),
+        "repos/o/r/issues?state=all" => JSON.generate([]),
+        "commits/main" => JSON.generate({"sha" => "abc123"}),
+        "blockedBy" => JSON.generate({"data" => {"repository" => {}}}),
+        "statusCheckRollup" => JSON.generate({"data" => {"repository" => {"p" => {
+          "number" => 10, "headRefOid" => "sha10",
+          "statusCheckRollup" => {"contexts" => {
+            "pageInfo" => {"hasNextPage" => false},
+            "nodes" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+          }}
+        }}}}),
+        "pullRequests" => JSON.generate({"data" => {"repository" => {"pullRequests" => {
+          "pageInfo" => {"hasNextPage" => false},
+          "nodes" => [{"number" => 10, "state" => "MERGED", "headRefName" => "f", "baseRefName" => "main",
+                       "headRefOid" => "sha10", "mergeStateStatus" => "CLEAN", "url" => "u",
+                       "isCrossRepository" => false,
+                       "closingIssuesReferences" => {"pageInfo" => {"hasNextPage" => false},
+                                                     "nodes" => [{"number" => 10}]}}]
+        }}}})
+      }
+    end
+
+    def test_verify_merge_over_network_loads_target_pr_checks
+      runner = PathRunner.new(online_payloads)
+      cli = OnlineCli.new(runner: runner, out: StringIO.new, err: StringIO.new)
+      out = StringIO.new
+      cli.instance_variable_set(:@out, out)
+      cli.run(["verify", "merge", "10", "10", "--repo", "o/r"])
+
+      checks_calls = runner.seen.select { |call| call.include?("statusCheckRollup") }
+      assert(checks_calls.any? { |call| call.include?("number: 10") },
+        "必须对目标 PR #10 发起 checks 查询（实际：#{runner.seen.inspect}）")
+    end
+
     def test_verify_merge_requests_target_pr_checks
       data = snapshot(
         issues: [issue(10, body: automation, state: "CLOSED", state_reason: "COMPLETED")],
