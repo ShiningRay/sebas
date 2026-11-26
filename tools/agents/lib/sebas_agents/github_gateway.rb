@@ -17,7 +17,12 @@ module SebasAgents
     # blockedBy 连接的节点上限。超过即拒绝——截断会让依赖判定漏看前置。
     BLOCKED_BY_PAGE = 100
 
-    ALL_PULL_REQUESTS_QUERY = <<-'GRAPHQL'
+    # PR 清单只取身份与关联字段。statusCheckRollup 单独按需取：
+    # 它对每个 PR 都要服务端汇总 contexts，实测 106 个 PR 全量取要 4.2~6.2s / 139KB，
+    # 而当期 open PR 为 0——绝大多数载荷无人消费。
+    # 只有 OPEN 的 PR（选择器与 pre 核验要判 CI）和调用方显式指定的 PR
+    # （合并后核验要复核 CI）才值得付这份成本。
+    PULL_REQUEST_LIST_QUERY = <<-'GRAPHQL'
       query($owner: String!, $name: String!, $cursor: String) {
         repository(owner: $owner, name: $name) {
           pullRequests(states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}, first: 100, after: $cursor) {
@@ -32,15 +37,14 @@ module SebasAgents
               url
               isCrossRepository
               closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number } }
-              statusCheckRollup { contexts(first: 100) {
-                pageInfo { hasNextPage }
-                nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
-              } }
             }
           }
         }
       }
     GRAPHQL
+
+    # statusCheckRollup 的 contexts 单页上限；超了即拒绝，不产出不完整检查清单。
+    ROLLUP_PAGE = 100
 
     def initialize(runner, repo:)
       @runner = runner
@@ -153,10 +157,13 @@ end
       raw.dig("type", "name")
     end
 
-    def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil)
+    def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil, verified_pr: nil)
       milestones = fetch_milestones
       issues = fetch_all_issues
       pull_requests = fetch_pull_requests(proposal_evidence: !proposal_issue.nil?)
+      # verify merge 要复核指定 PR 的 CI：清单已不带 rollup，这里按编号补取。
+      # 补不到就抛错——宁可失败，也不能让门禁拿着「未取」当「通过」。
+      pull_requests = attach_checks(pull_requests, [verified_pr]) if verified_pr
       issues = attach_blocked_by(issues)
       issues = close_over_dependencies(issues)
 
@@ -177,6 +184,24 @@ end
         source_bodies: resolve_bodies(blocks),
         proposal_evidence: proposal_evidence
       )
+    end
+
+    # 给指定编号的 PR 补取 CI 汇总（verify merge 的目标 PR）。
+    # 名单里的 PR 必须在快照内：编号对不上说明快照与请求不匹配，直接拒绝。
+    def attach_checks(pull_requests, numbers)
+      wanted = numbers.map(&:to_i).uniq
+      missing = wanted - pull_requests.map(&:number)
+      unless missing.empty?
+        raise CommandError.new(
+          "PR #{missing.map { |n| "##{n}" }.join("、")} 不在快照内，无法补取 CI 检查",
+          command: ["gh", "api", "graphql"]
+        )
+      end
+
+      loaded = wanted.to_h { |number| [number, fetch_checks(number)] }
+      pull_requests.map do |pr|
+        loaded.key?(pr.number) ? pr.with(checks: loaded[pr.number]) : pr
+      end
     end
 
     # 只查一个 issue 的完整信息（含 blocked_by）。依赖闭包按需补取走这里。
@@ -567,7 +592,11 @@ end
     # PR 全量清单走 GraphQL 分页（M4x-Comm-WP3 #244 后实证）：gh pr list --limit 100
     # 在仓库 PR 总量破百后永远打满单页，原「达到上限即 fail-closed」守卫把
     # verify merge / unclaim / next 全部堵死。游标分页保证全量，无截断面。
-    # statusCheckRollup 的 contexts 取 first:100——本仓单 PR 检查数远小于该值。
+    #
+    # 清单本身不带 CI 汇总（见 PULL_REQUEST_LIST_QUERY 的说明）：
+    #   - open PR 在明细阶段单独取 checks（选择器与 pre 核验要判 CI）；
+    #   - 其余 PR 留 nil，表示「未取」，不是「没有检查」；
+    #   - verify merge 需要的目标 PR 由 checks_for 按编号补取。
     def fetch_pull_requests(proposal_evidence: false)
       owner, name = @repo.split("/", 2)
       raw = []
@@ -578,7 +607,7 @@ end
         if pages > MAX_PAGES
           raise CommandError.new("pullRequests 分页超过 #{MAX_PAGES} 页仍未到底，拒绝继续", command: ["gh", "api", "graphql"])
         end
-        args = ["gh", "api", "graphql", "-f", "query=#{ALL_PULL_REQUESTS_QUERY}",
+        args = ["gh", "api", "graphql", "-f", "query=#{PULL_REQUEST_LIST_QUERY}",
           "-f", "owner=#{owner}", "-f", "name=#{name}"]
         args += ["-f", "cursor=#{cursor}"] if cursor
         payload = @runner.json!(*args)
@@ -636,6 +665,14 @@ end
         else
           {}
         end
+        # checks 的取值口径：列表不再带 rollup，所以这里的 key 缺失是常态。
+        # open PR 必须补齐（选择器要判 CI、pre 核验要拦未完成），
+        # 其余留 nil 表示「未取」，与「检查为空」区分开——下游据此判断是否可判定。
+        checks = if item.key?("statusCheckRollup")
+          normalize_checks(item["statusCheckRollup"])
+        elsif item["state"].to_s.casecmp?("OPEN")
+          fetch_checks(item["number"])
+        end
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -643,12 +680,52 @@ end
           "head_sha" => item["headRefOid"],
           "state" => item["state"],
           "merge_state_status" => item["mergeStateStatus"],
-          "checks" => normalize_checks(item["statusCheckRollup"]),
+          "checks" => checks,
           "review_threads" => threads,
           "closing_issues" => Array(item["closingIssuesReferences"]).map { |ref| ref["number"] },
           "url" => item["url"]
         ).merge_pr_details(details)
       end
+    end
+
+    # 按编号取单个 PR 的 CI 汇总，返回与 normalize_checks 一致的形状。
+    # 供 open PR 组装与 verify merge 的目标 PR 复核使用。
+    # 结构与截断校验与列表口径一致：读不到就抛错，不当空集。
+    def fetch_checks(number)
+      owner, name = @repo.split("/", 2)
+      fields = "p: pullRequest(number: #{number}) { number statusCheckRollup " \
+        "{ contexts(first: #{ROLLUP_PAGE}) { pageInfo { hasNextPage } nodes " \
+        "{ __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } }"
+      args = ["gh", "api", "graphql",
+        "-f", "query=#{blocked_by_query(owner, name, [fields])}"]
+      payload = @runner.json!(*args)
+      errors = payload["errors"]
+      unless errors.nil? || (errors.respond_to?(:empty?) && errors.empty?)
+        raise CommandError.new("PR ##{number} checks 查询失败：#{errors.inspect}", command: args)
+      end
+      node = payload.dig("data", "repository", "p")
+      unless node.is_a?(Hash) && node["number"].to_i == number
+        raise CommandError.new("PR ##{number} checks 查询缺对应节点（结构非法，不当空集）", command: args)
+      end
+
+      rollup = node["statusCheckRollup"]
+      # 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法。
+      return [] if node.key?("statusCheckRollup") && rollup.nil?
+
+      contexts = rollup.is_a?(Hash) ? rollup["contexts"] : nil
+      page_info = contexts.is_a?(Hash) ? contexts["pageInfo"] : nil
+      nodes = contexts.is_a?(Hash) ? contexts["nodes"] : nil
+      unless page_info.is_a?(Hash) && (page_info["hasNextPage"] == true || page_info["hasNextPage"] == false) &&
+          nodes.is_a?(Array)
+        raise CommandError.new("PR ##{number} 的 statusCheckRollup 结构非法：#{rollup.inspect[0, 120]}",
+          command: args)
+      end
+      if page_info["hasNextPage"]
+        raise CommandError.new("PR ##{number} 的 contexts 超过 #{ROLLUP_PAGE} 条被截断，拒绝产出不完整检查清单",
+          command: args)
+      end
+
+      normalize_checks(nodes)
     end
 
     # GraphQL 节点映射回 gh pr list 的 item 形状，下游转换零改动：
@@ -687,12 +764,6 @@ end
         end
         ns
       }
-      # statusCheckRollup 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法
-      rollup_nodes = if node.key?("statusCheckRollup") && node["statusCheckRollup"].nil?
-        []
-      else
-        inner_nodes.call(["statusCheckRollup", "contexts"], 100)
-      end
       closing_nodes = inner_nodes.call(["closingIssuesReferences"], 10)
       {
         "number" => node["number"],
@@ -701,7 +772,6 @@ end
         "headRefOid" => node["headRefOid"],
         "state" => node["state"],
         "mergeStateStatus" => node["mergeStateStatus"],
-        "statusCheckRollup" => rollup_nodes,
         "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"] } },
         "url" => node["url"],
         "isCrossRepository" => false
