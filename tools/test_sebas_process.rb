@@ -1131,12 +1131,32 @@ class SelectionTest < Minitest::Test
   end
 
   # 反向守卫：仍在持有的 phase 遇到不同认领必须继续判冲突，不能因上一条放宽而漏判。
+  # 必须同时断言原因含「冲突」——否则 claiming/aborted 等会经 resume_claimed /
+  # reconcile_aborted 返回同样 invalid_plan 的动作，把冲突检查的回归掩盖掉。
   def test_holding_phases_still_conflict_with_other_claim
     data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     %w[claiming claimed paused aborted].each do |phase|
       action = select(data, record: {"issue" => 99, "phase" => phase})
       assert_equal "invalid_plan", action.action, "phase=#{phase} 必须判冲突"
+      assert_includes action.reason, "冲突",
+        "phase=#{phase} 必须因本地记录与远端认领冲突而判定，实际：#{action.reason}"
     end
+  end
+
+  # released 记录整条降级为「无记录」：远端认领别的卡时不得报假冲突，
+  # 也不得把该记录的 worktree 当作新认领的续做状态。
+  # 注意：降级后若远端确实有认领而本地无记录，会走 resume_claimed 的
+  # 「已认领但缺本地运行记录」fail-closed 分支——那是既有正确行为，不是本缺陷。
+  def test_released_record_is_not_reused_as_resume_state
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    action = select(data, record: {"issue" => 99, "phase" => "released", "worktree" => "/tmp/old-99"})
+
+    refute_includes action.reason.to_s, "与远端认领",
+      "released 记录不得与远端认领判假冲突：#{action.reason}"
+    refute_includes action.reason.to_s, "/tmp/old-99",
+      "released 记录的 worktree 不得被当作续做状态"
+    assert_includes action.reason.to_s, "缺本地运行记录",
+      "降级后应走既有的「认领但无本地记录」fail-closed 分支：#{action.reason}"
   end
 
   def test_handoff_release_when_no_open_issues

@@ -15,18 +15,20 @@ module SebasAgents
         milestones = Milestones.normalize(snapshot.milestones)
         observed = snapshot.main_sha
 
+        # released 表示该卡已收口（unclaim 成功：PR 已合并且 issue 已关闭），
+        # 这条记录只剩历史价值，**不再代表任何持有的认领**。若把它继续当活动记录：
+        #   - 远端认领别的卡时，下面的冲突检查会报永久假冲突；
+        #   - 即便跳过冲突检查，resume_claimed 也会沿用它的 worktree 等字段当续做状态。
+        # 两者都会把 next 堵死或给出错误的续做依据，故统一在入口降级为「无记录」。
+        record = nil if record && record["phase"].to_s == "released"
+
         in_progress = snapshot.in_progress_issues
         if in_progress.length > 1
           return invalid(observed, "存在 #{in_progress.length} 张执行中 issue（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}")
         end
 
         claimed = in_progress.first
-        # phase=released 表示该卡已收口（unclaim 成功：PR 已合并且 issue 已关闭），
-        # 它不再持有认领，因此不得与远端认领比对——否则远端一有别的卡被认领，
-        # next 就报永久假冲突「本地记录 #旧卡 与远端认领 #新卡 冲突」，整条链堵死。
-        # 只有仍可能握有认领的 phase（claiming / claimed / paused / aborted）才参与判定。
-        if claimed && record && record["issue"] && record["phase"].to_s != "released" &&
-           record["issue"].to_i != claimed.number
+        if claimed && record && record["issue"] && record["issue"].to_i != claimed.number
           return invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突")
         end
 
