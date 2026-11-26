@@ -56,6 +56,14 @@ module SebasAgents
           reasons << "##{issue.number} 正文依赖字段提到 #{undeclared.inspect}，但 Automation depends_on 未声明" unless undeclared.empty?
           unmentioned = expected - prose
           reasons << "##{issue.number} 的 Automation depends_on #{unmentioned.inspect} 未出现在正文依赖字段" unless unmentioned.empty?
+        elsif automation["kind"] == "work_package"
+          # 工作包写了依赖节但标题不合规（如「依赖关系」）时，prose 为 nil，
+          # 上面整段核对被跳过——看着绿灯，实际没校验。必须显式报错，不能静默放过。
+          variants = mismatched_dependency_headings(issue.body)
+          unless variants.empty?
+            reasons << "##{issue.number} 的依赖节标题不是「依赖」或「前置依赖」：" \
+              "#{variants.map(&:inspect).join("、")}；正文依赖核对因此被跳过"
+          end
         end
         status = "invalid" unless reasons.empty?
 
@@ -87,8 +95,7 @@ module SebasAgents
       def prose_dependencies(body)
         # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码；
         # 强制按 UTF-8 归一，避免中文正则遇到非 UTF-8 串直接抛 Encoding::CompatibilityError。
-        text = body.to_s.dup.force_encoding(Encoding::UTF_8)
-        text = text.scrub unless text.valid_encoding?
+        text = normalize_body(body)
         lines = text.lines
         start = lines.index { |line| line.match?(DEPENDENCY_HEADING) }
         return nil unless start
@@ -110,6 +117,52 @@ module SebasAgents
           numbers.concat(main.scan(/#(\d+)/).flatten.map(&:to_i))
         end
         numbers.uniq.sort
+      end
+
+      # 依赖节标题写法不合规的变体，例如「依赖关系」「外部依赖」「依赖顺序」。
+      # 这些标题会让 prose_dependencies 返回 nil，正文核对被整段跳过而不报错。
+      # 仅在整篇没有合规依赖节时才有意义（调用方已确认 prose 为 nil）。
+      #
+      # 判定要收紧，否则正文类小标题（如「问题 2：依赖口径校验在…空窗」）会误报：
+      # 只认「依赖」开头或结尾的短标题，且不含冒号——那是论述性标题。
+      VARIANT_HEADING = /\A(?:前置)?依赖[^：:]{0,10}\z|\A[^：:]{0,10}(?:前置)?依赖\z/
+      EXACT_HEADING = /\A(?:前置)?依赖\z/
+
+      def mismatched_dependency_headings(body)
+        lines = normalize_body(body).lines
+        variants = []
+
+        lines.each_with_index do |line, index|
+          match = line.match(/\A(#+)\s*(\S.*?)\s*\z/)
+          next unless match
+
+          title = match[2]
+          next if title.match?(EXACT_HEADING)
+          next unless title.match?(VARIANT_HEADING)
+          next unless section_mentions_issue?(lines, index, match[1].length)
+
+          variants << title
+        end
+        variants.uniq
+      end
+
+      # 从第 index 行的标题开始，取同级与更低级的行，判断是否出现 #N 引用。
+      # 只认真正的 issue 引用：「E.1#1」这类外部编号紧跟字母数字或点，不算。
+      ISSUE_REFERENCE = /(?<![A-Za-z0-9.#])#\d+/
+
+      def section_mentions_issue?(lines, index, level)
+        lines[(index + 1)..].to_a.each do |line|
+          match = line.match(/\A(#+)\s+\S/)
+          break if match && match[1].length <= level
+          return true if line.match?(ISSUE_REFERENCE)
+        end
+        false
+      end
+
+      def normalize_body(body)
+        # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码。
+        text = body.to_s.dup.force_encoding(Encoding::UTF_8)
+        text.valid_encoding? ? text : text.scrub
       end
 
       def evaluate_one(dependency, issue, snapshot)

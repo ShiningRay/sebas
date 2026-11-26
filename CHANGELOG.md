@@ -39,6 +39,9 @@
 
 ### Fixed
 
+- 工作包依赖节标题写成「依赖关系」这类变体时，`prose_dependencies` 返回 `nil`，正文与 `Automation.depends_on`、
+  原生 `blocked_by` 的核对被整段跳过且不报警（看着绿灯，实际没校验）。现在 `kind=work_package` 遇到标题不合规
+  直接判 `invalid_plan` 并列出变体标题；非工作包不查，变体节内无 `#N` 引用也不报，避免把说明文字误判成依赖声明。
 - email 渠道真机收发两处缺陷：① IMAP/SMTP 命令行原用 `IO#puts`（行尾裸 LF，RFC 3501 §2.2 / RFC 5321 §4.1.1.4
   要求 CRLF），Gmail/QQ/Outlook 的 IMAP 对 LF 命令行不响应直到读超时、QQ SMTP 对 LF 的 EHLO 直接 502；
   现统一 `print(line, "\r\n")`，并把正文裸 LF 归一为 CRLF 后再点填充（否则多行正文的行首点号漏填、DATA 分帧非法）。

@@ -342,6 +342,90 @@ class SelectionTest < Minitest::Test
     assert_equal "claim_issue", action.action, action.reason
   end
 
+  # 依赖节标题写成变体（如「依赖关系」）时 prose_dependencies 返回 nil，
+  # 正文核对会被整段跳过。必须显式报 invalid，不能静默放过。
+  def test_variant_dependency_heading_is_invalid
+    body = <<~MD
+      ## 目标
+      测试
+
+      ## 依赖关系
+
+      - 前置：#3 完成
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "invalid_plan", action.action, action.reason
+    assert_includes action.reason, "依赖节标题"
+    assert_includes action.reason, "依赖关系"
+  end
+
+  # 变体标题下没有 #N 引用就不构成依赖声明，不该报警。
+  def test_variant_heading_without_issue_reference_is_fine
+    body = <<~MD
+      ## 目标
+      测试
+
+      ## 外部依赖
+
+      - E.1#1：Slack workspace（用户侧）
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 论述性小标题含「依赖」字样（带冒号）不是依赖节，不能误报。
+  def test_descriptive_heading_mentioning_dependency_is_not_a_variant
+    body = <<~MD
+      ## 目标
+      测试
+
+      ### 问题 2：依赖口径校验在「前置已关」时空窗
+
+      见 #108。
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 非工作包（tracking/manual/design）不进 Implementer 选卡，变体标题不报。
+  def test_variant_heading_ignored_for_non_work_packages
+    body = <<~MD
+      ## 目标
+      测试
+
+      ## 依赖顺序
+
+      WP4 → WP5 → WP6（见 #17）
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "tracking", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    # tracking 被排除在候选之外，不会因依赖分叉报 invalid。
+    refute_equal "invalid_plan", action.action, action.reason
+  end
+
   def test_completed_dependency_without_evidence_blocks
     data = snapshot(issues: [
       issue(1, body: automation(depends_on: [9]), blocked_by: [9]),
