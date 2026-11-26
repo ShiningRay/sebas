@@ -39,6 +39,13 @@ module Sebas
       # 测试注入点：默认 STDERR；改用 sync 派发保证短命进程退出前日志已落盘。
       class_property log_io : IO = STDERR
 
+      # :nodoc:
+      # 供测试在换回 io 后重建全局绑定（只换 log_io 字段不会重绑已注册的
+      # ::Log 后端——后端在 setup 时已固化，必须重新执行一次 setup）。
+      def reset_logging : Nil
+        setup_logging
+      end
+
       private def setup_logging : Nil
         backend = ::Log::IOBackend.new(io: log_io, dispatcher: :sync)
         ::Log.setup_from_env(default_sources: DEFAULT_LOG_SOURCES, default_level: :info, backend: backend)

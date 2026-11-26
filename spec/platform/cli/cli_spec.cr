@@ -2,7 +2,10 @@ require "spec"
 require "../../../src/sebas"
 
 module Sebas
-  # 捕获 CLI 日志输出：日志后端默认写 STDERR，测试期间换成内存 IO 才能断言文案
+  # 捕获 CLI 日志输出：日志后端默认写 STDERR，测试期间换成内存 IO 才能断言文案。
+  # `CLI.run` 在 setup_logging 里把当时的 log_io 注册为全局后端，因此恢复时必须
+  # 重新执行一次绑定（reset_logging），否则后续测试的日志会写进没人读的
+  # IO::Memory，诊断输出丢失。
   def self.capture_cli_log(&) : String
     original = Platform::CLI.log_io
     io = IO::Memory.new
@@ -11,6 +14,7 @@ module Sebas
       yield
     ensure
       Platform::CLI.log_io = original
+      Platform::CLI.reset_logging
     end
     io.to_s
   end
