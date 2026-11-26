@@ -15,7 +15,7 @@ src/platform/
 src/channels/
   base.cr                  # abstract ChannelAdapter（start/stop/send + account 维度）
   common/                  # markdown 转换器【A8】、token_provider【§5.3】、限流桶
-  email/                   # imap_idle.cr / gmail_api.cr / smtp.cr
+  email/                   # imap_idle.cr / smtp.cr（gmail_api.cr 为备选，未实现，§5.4）
   wecom/                   # aibot_longconn.cr / app_callback.cr / crypto.cr（自实现 AES-CBC）
   lark/                    # ws_longconn.cr / webhook.cr
 src/routing/
