@@ -6,6 +6,7 @@ end
 
 require_relative "sebas_agents/errors"
 require_relative "sebas_agents/json_block"
+require_relative "sebas_agents/advisory_checks"
 require_relative "sebas_agents/model"
 require_relative "sebas_agents/output"
 require_relative "sebas_agents/verification_report"

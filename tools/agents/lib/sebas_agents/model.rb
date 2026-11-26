@@ -213,15 +213,20 @@ module SebasAgents
         end
       end
 
+      # 第三方审阅的 check run 只表示「本轮审阅进行中」，不进分支保护的必需检查。
+      # 把它算作 pending 会让选择器 wait、Evidence 预登记失败，等一个不影响
+      # 合并条件的读数（详见 AdvisoryChecks 的边界说明）。
       def pending_checks
-        checks.select do |check|
-          status = check["status"].to_s.upcase
-          !status.empty? && status != "COMPLETED"
-        end
+        checks.select { |check| AdvisoryChecks.pending?(check) && !AdvisoryChecks.advisory?(check) }
+      end
+
+      # 只统计门禁类检查；「只有 advisory」不能算有 CI 结果。
+      def gate_checks
+        checks.reject { |check| AdvisoryChecks.advisory?(check) }
       end
 
       def green?
-        checks.any? && failing_checks.empty? && pending_checks.empty?
+        gate_checks.any? && failing_checks.empty? && pending_checks.empty?
       end
 
       def checks_green?

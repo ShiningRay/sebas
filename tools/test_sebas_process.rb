@@ -1019,6 +1019,46 @@ class SelectionTest < Minitest::Test
     assert_equal "wait", select(data, record: {"issue" => 1, "pr" => 50}).action
   end
 
+  # 第三方审阅的 check run 只是「本轮审阅进行中」，不进分支保护的必需检查。
+  # 把它算作 pending 会让 selector 空等 4-8 分钟，而合并条件根本不看它。
+  def test_pending_advisory_check_does_not_block_merge
+    pr = {
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "checks" => [
+        {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
+        {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
+      ],
+      "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, status: "In progress")],
+      pull_requests: [pr]
+    )
+    action = select(data, record: {"issue" => 1, "pr" => 50})
+    assert_equal "resume_pr", action.action, "advisory pending 不应导致 wait"
+    assert_includes action.reason, "CLEAN"
+  end
+
+  # 只豁免「进行中」：advisory 已完成却是失败结论时仍按失败处理
+  # （历史 CodeRabbit 服务故障 CANCELLED 需人工裁决，不能静默放过）。
+  def test_failed_advisory_check_still_blocks_merge
+    pr = {
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "UNKNOWN",
+      "checks" => [
+        {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
+        {"name" => "CodeRabbit", "status" => "COMPLETED", "conclusion" => "CANCELLED"}
+      ],
+      "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, status: "In progress")],
+      pull_requests: [pr]
+    )
+    action = select(data, record: {"issue" => 1, "pr" => 50})
+    assert_equal "resume_pr", action.action
+    assert_includes action.reason, "失败检查"
+  end
+
   def test_claiming_interruption_resumes
     data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     action = select(data, record: {"issue" => 1, "phase" => "claiming"})
@@ -1508,6 +1548,32 @@ class VerifierTest < Minitest::Test
     report = run_pre(data)
     refute report.pass?
     assert(report.blockers.map(&:message).any? { |m| m.include?("没有任何 CI 检查记录") })
+  end
+
+  # 只收到第三方审阅的 check 不是门禁读数：与空 checks 同口径阻断，
+  # 否则「没看见 CI」会被当成「全绿」。
+  def test_pre_blocks_when_only_advisory_checks_present
+    body = automation + evidence(subject: "issue:39", merged: false, source: "workflow")
+    data = pre_data(issue_body: body, pr_extra: {
+      "checks" => [{"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}]
+    })
+    report = run_pre(data)
+    refute report.pass?
+    assert(report.blockers.map(&:message).any? { |m| m.include?("没有任何 CI 检查记录") })
+  end
+
+  # advisory 进行中不拦合并前门禁：权威是未解决 review thread（上一条测试），
+  # 而不是第三方 check 的进度。
+  def test_pre_passes_with_pending_advisory_check
+    body = automation + evidence(subject: "issue:39", merged: false, source: "workflow")
+    data = pre_data(issue_body: body, pr_extra: {
+      "checks" => [
+        {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
+        {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
+      ]
+    })
+    report = run_pre(data)
+    assert report.pass?, "advisory pending 应通过，实际 blocked: #{report.blockers.map(&:message)}"
   end
 end
 

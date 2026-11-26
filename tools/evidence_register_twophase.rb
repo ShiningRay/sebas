@@ -21,6 +21,13 @@ module EvidenceRegister
     SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
     COMMENT_ID = /#issuecomment-(\d+)\z/
 
+    # 非门禁的第三方审阅 check（如 CodeRabbit）：只表示「本轮审阅进行中」。
+    # 本文件被 evidence-register.yml 以 `ruby tools/evidence_register.rb` 直接加载，
+    # 不经过 agents 库，因此这里保留一份名单；由
+    # test_evidence_register.rb 的 test_advisory_lists_stay_in_sync 锁住与
+    # SebasAgents::AdvisoryChecks::NAMES 一致，防止两处漂移。
+    ADVISORY_CHECK_NAMES = ["CodeRabbit"].freeze
+
     module_function
 
     # 合并前登记。-pre 语义：PR 仍 open、目标 main、CI 全绿、issue 仍 open。
@@ -114,13 +121,26 @@ module EvidenceRegister
         return :failed
       end
 
-      pending = runs.reject { |run| run["status"].to_s == "completed" }
+      # 第三方审阅 check（如 CodeRabbit）在轮次进行中是 in_progress，一轮 4-8 分钟。
+      # 它不在分支保护的必需检查里，等它只会让预登记反复失败（实测 PR #237 连续
+      # 5 次同因失败）；审阅意见的权威载体是未解决 review thread，由
+      # `verify merge --pre` 单独校验。只豁免「进行中」：已完成若为失败结论，
+      # 仍按下面的失败分支拒绝登记。
+      gate_runs = runs.reject do |run|
+        ADVISORY_CHECK_NAMES.include?(run["name"].to_s) && run["status"].to_s != "completed"
+      end
+      if gate_runs.empty?
+        out.puts "fail: PR ##{pr_number} 除第三方审阅外没有任何 CI 检查记录，无法确认全绿"
+        return :failed
+      end
+
+      pending = gate_runs.reject { |run| run["status"].to_s == "completed" }
       unless pending.empty?
         out.puts "fail: PR ##{pr_number} 仍有未完成的检查：#{pending.map { |r| r["name"] }.join("、")}"
         return :failed
       end
 
-      bad = runs.reject { |run| SUCCESSFUL_CONCLUSIONS.include?(run["conclusion"].to_s) }
+      bad = gate_runs.reject { |run| SUCCESSFUL_CONCLUSIONS.include?(run["conclusion"].to_s) }
       unless bad.empty?
         out.puts "fail: PR ##{pr_number} 存在失败的检查：#{bad.map { |r| r["name"] }.join("、")}"
         return :failed
