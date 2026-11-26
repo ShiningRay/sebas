@@ -46,11 +46,14 @@
   重连后再次重放，且单批只取最老 10 封使新邮件永远排不上；现首连以 SELECT 的 `UIDNEXT - 1` 为基线跳过历史、
   游标提为进程内字段跨重连保留、`drain_inbox` 循环取批直到空。Gmail 实测：332 封历史的邮箱只投递新到的一封，
   重启静置 25s 零重放（Fixes #20）。
-- email 收信三处健壮性补齐：① 游标与 `UIDVALIDITY` 绑定，服务端换 UID 命名空间后作废重建，
+- email 收信五处健壮性补齐：① 游标与 `UIDVALIDITY` 绑定，服务端换 UID 命名空间后作废重建，
   而非沿用旧游标筛选新邮件（RFC 3501 §2.3.1.1）；② 每次连上后、进 IDLE 前先补收一次，避免
   「断线期间到信、重连后无新信」永久漏收（IDLE 只报状态变化，不重发已通报状态，RFC 2177）；
   ③ 过滤发件人为本账号的邮件——自投递/副本同步会让 agent 与自身无限对聊（真机实测出现
-  连续自对聊累积）。重连退避改为可注入参数，便于测试。
+  连续自对聊累积）；④ SELECT 未返回 `UIDNEXT` 时不再退回 UID 0 取信（那会把历史整批重放），
+  改为本次会话不投递并记 warn；⑤ `event_id` 纳入 `UIDVALIDITY`（`email:<账号>:<uidvalidity>:<uid>`），
+  否则换命名空间后 UID 复用会撞 `intents.id` / `session_inputs.event_id` 主键，新邮件被当重复
+  投递静默丢弃。重连退避改为可注入参数，便于测试。
 
 - Crystal 最低版本由 `>= 1.19.0` 修正为 `>= 1.22.0`：`src/platform/keys/vault.cr` 用了 1.22 才进入 stdlib 的
   `OpenSSL::Cipher#gcm_tag`，旧下限会让本地构建报误导性的 `undefined method 'gcm_tag'`。`Makefile` 新增

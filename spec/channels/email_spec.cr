@@ -147,7 +147,7 @@ module Sebas
         msg.account_id.should eq("test-mailbox")
         msg.peer.should eq("carol@example.com")
         msg.content.should eq("looks good to me")
-        msg.event_id.should eq("email:test-mailbox:2")
+        msg.event_id.should eq("email:test-mailbox:1:2")
       ensure
         bus.close
         server.close
@@ -177,7 +177,7 @@ module Sebas
       adapter.stop
       begin
         msg = event.should be_a(Platform::Bus::InboundMessage)
-        msg.event_id.should eq("email:test-mailbox:31")
+        msg.event_id.should eq("email:test-mailbox:1:31")
         bus.receive?(200.milliseconds).should be_nil
       ensure
         bus.close
@@ -211,7 +211,7 @@ module Sebas
       adapter.stop
       begin
         msg = event.should be_a(Platform::Bus::InboundMessage)
-        msg.event_id.should eq("email:test-mailbox:2")
+        msg.event_id.should eq("email:test-mailbox:1:2")
       ensure
         bus.close
         server.close
@@ -245,7 +245,7 @@ module Sebas
       adapter.stop
       begin
         msg = first.should be_a(Platform::Bus::InboundMessage)
-        msg.event_id.should eq("email:test-mailbox:2")
+        msg.event_id.should eq("email:test-mailbox:1:2")
       ensure
         bus.close
         server.close
@@ -284,7 +284,81 @@ module Sebas
       adapter.stop
       begin
         msg = event.should be_a(Platform::Bus::InboundMessage)
-        msg.event_id.should eq("email:test-mailbox:3")
+        msg.event_id.should eq("email:test-mailbox:2:3")
+      ensure
+        bus.close
+        server.close
+      end
+    end
+
+    it "avoids event_id collision when uidvalidity changes (换命名空间 UID 复用不撞主键)" do
+      # 回归：event_id 只由「账号 + UID」组成时，换 UIDVALIDITY 后 UID 复用会撞
+      # intents.id / session_inputs.event_id 主键，新邮件被当重复投递静默丢弃。
+      server = FakeImapServer.new
+      server.add_mail("1", "ns1@example.com", "ns1", "namespace 1 mail")
+      server.serve
+
+      account = Platform::Config::EmailAccount.from_yaml(
+        "id: test-mailbox\nplatform: 127.0.0.1\nreceive: imap-idle\ncredentials: { user: u, password: p }"
+      )
+      bus = Platform::Bus::Bus.new(16)
+      adapter = Channels::Email::EmailChannelAdapter.new(
+        account, bus, idle_poll: 2.seconds,
+        imap_host: "127.0.0.1", imap_port: server.port, imap_tls: false,
+        smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none",
+        backoff: 50.milliseconds
+      )
+      adapter.start
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+      server.add_mail("2", "ns1@example.com", "ns1 second", "uid 2 in namespace 1")
+      first = bus.receive?(5.seconds)
+
+      # 换命名空间后复用 UID 2：event_id 必须与上面那条不同
+      server.reset_namespace("2")
+      server.add_mail("1", "ns2@example.com", "ns2", "ns2 history")
+      server.drop_connections
+      wait_for(3.seconds) { server.seen_commands.count(&.includes?("SELECT")) >= 2 }.should be_true
+      server.add_mail("2", "ns2@example.com", "ns2 reused", "uid 2 reused in namespace 2")
+      second = bus.receive?(8.seconds)
+      adapter.stop
+      begin
+        a = first.should be_a(Platform::Bus::InboundMessage)
+        b = second.should be_a(Platform::Bus::InboundMessage)
+        a.event_id.should eq("email:test-mailbox:1:2")
+        b.event_id.should eq("email:test-mailbox:2:2")
+        a.event_id.should_not eq(b.event_id)
+      ensure
+        bus.close
+        server.close
+      end
+    end
+
+    it "does not replay history when SELECT omits UIDNEXT (缺 UIDNEXT 不退回 UID 0)" do
+      # 回归：UIDNEXT 缺失时基线为 nil，若退回 UID 0 会发 UID SEARCH UID 0:*，
+      # 把整个历史当新邮件重放。正确行为是本次会话不投递。
+      server = FakeImapServer.new
+      server.send_uidnext = false
+      5.times { |i| server.add_mail((i + 1).to_s, "hist#{i}@example.com", "old #{i}", "history #{i}") }
+      server.serve
+
+      account = Platform::Config::EmailAccount.from_yaml(
+        "id: test-mailbox\nplatform: 127.0.0.1\nreceive: imap-idle\ncredentials: { user: u, password: p }"
+      )
+      bus = Platform::Bus::Bus.new(16)
+      adapter = Channels::Email::EmailChannelAdapter.new(
+        account, bus, idle_poll: 2.seconds,
+        imap_host: "127.0.0.1", imap_port: server.port, imap_tls: false,
+        smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none",
+        backoff: 50.milliseconds
+      )
+      adapter.start
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+      server.add_mail("6", "new@example.com", "new", "arrived later")
+      adapter.stop
+      begin
+        # 不得发出 UID SEARCH UID 0:*（那会把历史捞出来），也不得投递任何事件
+        server.seen_commands.none?(&.includes?("UID SEARCH UID 0:*")).should be_true
+        bus.receive?(200.milliseconds).should be_nil
       ensure
         bus.close
         server.close

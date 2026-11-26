@@ -135,25 +135,36 @@ module Sebas
 
         # 定基线：首连或 UIDVALIDITY 变化时以 UIDNEXT - 1 起算（历史视为已读），
         # 否则沿用游标补收。UIDVALIDITY 不同则旧游标不可比，必须作废。
+        # 没有 UIDNEXT 就建立不了可靠基线：此时宁可本次会话不投递，也不能退回
+        # UID 0 —— 那会把整个历史分批当新件重放（RFC 3501 §6.3.1 要求 SELECT
+        # 必带 UIDNEXT；真缺了说明服务端不规范，按不可用处理）。
         private def establish_baseline(client : ImapClient) : Nil
           uidvalidity = client.last_uidvalidity
+          uidnext = client.last_uidnext
           if @cursor_uidvalidity != uidvalidity
             if uidvalidity && @cursor_uidvalidity
               Log.warn { "uidvalidity changed (#{@cursor_uidvalidity} -> #{uidvalidity}); resetting cursor (account=#{@account.id})" }
             end
             @cursor_uidvalidity = uidvalidity
-            @last_uid = client.last_uidnext.try(&.-(1_i64))
+            @last_uid = uidnext.try(&.-(1_i64))
             return
           end
           # 同命名空间：保留已推进的游标；首次连接（游标仍空）才取基线
-          @last_uid ||= client.last_uidnext.try(&.-(1_i64))
+          @last_uid ||= uidnext.try(&.-(1_i64))
         end
 
         # 循环取批直到没有新邮件：单批 FETCH_BATCH 上限之上还要继续，否则
         # 积压超过一批时新邮件永远排在老邮件后面取不到。
         private def drain_inbox(client : ImapClient) : Nil
           loop do
-            mails = client.fetch_since(@last_uid.try(&.to_s) || "0", ImapClient::FETCH_BATCH)
+            # 每轮重读游标：循环内 advance_cursor 会推进它，用快照会把同一封
+            # 重复投递，直到耗尽 FETCH_BATCH 上限才停。
+            current = @last_uid
+            if current.nil?
+              Log.warn { "no UIDNEXT baseline; skip fetch this session (account=#{@account.id})" }
+              return
+            end
+            mails = client.fetch_since(current.to_s, ImapClient::FETCH_BATCH)
             break if mails.empty?
             mails.each do |mail|
               advance_cursor(mail.uid.to_i64)
@@ -176,13 +187,23 @@ module Sebas
             return
           end
           @bus.publish(Platform::Bus::InboundMessage.new(
-            event_id: "email:#{@account.id}:#{mail.uid}",
+            event_id: event_id_for(mail.uid),
             channel_type: "email",
             account_id: @account.id,
             peer: mail.from,
             content: mail.body
           ))
           @health = "online"
+        end
+
+        # event_id 必须带上 UIDVALIDITY：换命名空间后 UID 会从头复用，只按
+        # 「账号 + UID」编号会与已投递事件撞主键（intents.id / session_inputs.event_id），
+        # 新邮件被当成重复投递丢弃。无 UIDVALIDITY 时退化为旧格式。
+        private def event_id_for(uid : String) : String
+          if namespace = @cursor_uidvalidity
+            return "email:#{@account.id}:#{namespace}:#{uid}"
+          end
+          "email:#{@account.id}:#{uid}"
         end
 
         # 发件人是否就是本账号（大小写不敏感；角括号与显示名由 from_address 归一）

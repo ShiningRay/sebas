@@ -17,6 +17,9 @@ class FakeImapServer
   # uidvalidity 可变：改值模拟服务端换 UID 命名空间（RFC 3501 §2.3.1.1）
   property uidvalidity : String = "1"
 
+  # 是否在 SELECT 回 UIDNEXT（false 模拟不规范服务端，验证不退回 UID 0 重放历史）
+  property? send_uidnext : Bool = true
+
   # 切到新 UID 命名空间：旧空间的邮件不复存在，UIDNEXT 也从新空间重新计。
   # 只改 uidvalidity 而留着旧邮件，max_uid 会按旧空间算，测不出真实行为。
   def reset_namespace(uidvalidity : String) : Nil
@@ -133,7 +136,7 @@ class FakeImapServer
     size = mail_count
     @reported_size = size
     io.puts "* #{size} EXISTS"
-    io.puts "* OK [UIDNEXT #{max_uid + 1}] predicted next uid"
+    io.puts "* OK [UIDNEXT #{max_uid + 1}] predicted next uid" if send_uidnext?
     io.puts "* OK [UIDVALIDITY #{@uidvalidity}] uids valid"
     io.puts "#{tag} OK [READ-WRITE] selected"
   end
