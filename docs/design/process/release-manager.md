@@ -15,8 +15,9 @@
 bump 后必须 grep 复核两处一致。
 
 `sebas version` 输出 `sebas X.Y.Z (<git rev>)`：rev 是构建提交的 12 位短哈希，编译期由
-`src/version.cr` 的宏从 `git rev-parse --short=12 HEAD` 取得；没有 `.git` 的构建（源码包、
-受控构建）可用环境变量 `SEBAS_BUILD_REV` 注入，两者都缺时退化为 `unknown`。
+`src/version.cr` 的宏直接解析仓库 `.git` 的 HEAD（不调用 git，覆盖 packed-refs / detached /
+worktree / submodule / bare）；没有 `.git` 的构建（源码包、受控构建）可用环境变量
+`SEBAS_BUILD_REV` 注入，读不到时退化为 `unknown`，不影响构建。
 
 ### 2. Patch 自动发版
 

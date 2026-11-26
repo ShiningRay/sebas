@@ -8,9 +8,10 @@
 ### Added
 
 - `sebas version` / `--help` 首行带构建来源的 git 提交：输出 `sebas X.Y.Z (<git rev>)`。rev 由
-  `src/version.cr` 的编译期宏从 `git rev-parse --short=12 HEAD` 取得，无 `.git` 的构建可用
-  `SEBAS_BUILD_REV` 注入，两者皆缺时退化为 `unknown`；`release verify` 冒烟校验同步接受
-  带 rev 与不带 rev 两种形态。
+  `src/version.cr` 的编译期宏**直接解析 `.git` 的 HEAD**取得（覆盖 packed-refs、detached、
+  worktree、submodule、bare；不调用 git，故无 shell 与平台差异），无 `.git` 的构建可用
+  `SEBAS_BUILD_REV` 注入，读不到时退化为 `unknown` 且不中断构建；`release verify` 冒烟校验
+  同步接受带 rev 与不带 rev 两种形态。
 - **M4x-Comm-WP1 message_agent 工具面接线**：`message_agent` 进 `agent_turn` 衰减工具面（受 `agent.tools.allow` 白名单约束，装配未接线时工具不可见）；
   防环上限改由 `gateway.collaboration.max_hops` 配置（默认 4，loader 校验 ≥ 1，热更新即生效）；hops 不再由模型自报——投递时按收方会话键落库链路跳数，
   下一跳从工具 ctx 继承，回执形如 `queued <delivery_id> hops=<n>`；inbox 按 `to_agent` 分片，收方只取本 agent 的消息（[#185](https://github.com/ShiningRay/sebas/pull/185)）。
