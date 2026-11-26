@@ -501,15 +501,18 @@ end
     # - closingIssuesReferences 取 nodes 数组（gh pr list 输出即数组）；
     # - statusCheckRollup 取 contexts.nodes（normalize_checks 已兼容 StatusContext 的
     #   只有 state 无 status 的形状，不能凭空补 COMPLETED）；
-    # - 内层连接强校验（#246 review round 2/3）：存在的连接必须有对象 pageInfo、
-    #   严格布尔 hasNextPage、数组 nodes；超 first 上限截断即拒绝——静默丢弃会让
-    #   verifier 漏判失败检查、selection 重复分配关联 issue。statusCheckRollup=null
-    #   合法（检查未产出，非结构非法）。
+    # - 内层连接强校验（#246 review round 2/3/4）：连接字段缺失即拒绝（closing
+    #   关联丢失会让 selection 重复分配）；仅 statusCheckRollup 显式 null 合法
+    #   （检查未产出）；存在的连接必须有对象 pageInfo、严格布尔 hasNextPage、
+    #   数组 nodes，超 first 上限截断即拒绝。
     # - isCrossRepository 的布尔校验与 fork 剔除在调用方完成（先排除后查内层）。
     def graphql_pr_to_list_item(node)
       inner_nodes = lambda { |path, limit|
         conn = node.dig(*path)
-        return [] if conn.nil?
+        raise CommandError.new(
+          "PR ##{node["number"]} 缺 #{path.first} 连接字段（结构非法，不得当空集放行）",
+          command: ["gh", "api", "graphql"]
+        ) if conn.nil?
         page_info = conn["pageInfo"]
         unless page_info.is_a?(Hash) && (page_info["hasNextPage"] == true || page_info["hasNextPage"] == false)
           raise CommandError.new(
@@ -530,7 +533,12 @@ end
         end
         ns
       }
-      rollup_nodes = inner_nodes.call(["statusCheckRollup", "contexts"], 100)
+      # statusCheckRollup 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法
+      rollup_nodes = if node.key?("statusCheckRollup") && node["statusCheckRollup"].nil?
+        []
+      else
+        inner_nodes.call(["statusCheckRollup", "contexts"], 100)
+      end
       closing_nodes = inner_nodes.call(["closingIssuesReferences"], 10)
       {
         "number" => node["number"],

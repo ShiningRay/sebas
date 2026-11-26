@@ -3284,6 +3284,24 @@ class PullRequestsPaginationTest < Minitest::Test
     assert_empty prs.first.checks
   end
 
+  # round 4：字段缺失 ≠ 显式 null——statusCheckRollup 键整体缺失是结构非法
+  def test_missing_rollup_key_rejects
+    node = pr_node(number: 1)
+    node.delete("statusCheckRollup")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "缺 statusCheckRollup 连接字段"
+  end
+
+  # round 4：closingIssuesReferences 缺失会让关联 issue 从快照消失（selection 重复分配）
+  def test_missing_closing_issues_connection_rejects
+    node = pr_node(number: 1)
+    node.delete("closingIssuesReferences")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "缺 closingIssuesReferences 连接字段"
+  end
+
   # round 3：errors 与有效 data 并存 = 拒绝部分成功，不得直接消费 data
   def test_errors_with_valid_data_rejects
     payload = page([pr_node(number: 1)], false, nil)
