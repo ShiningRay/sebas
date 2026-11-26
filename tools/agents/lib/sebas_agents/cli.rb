@@ -555,7 +555,7 @@ module SebasAgents
 # 默认 dry-run；--apply 才写评论与置顶。人工摘要区在标记之后，工具永不覆盖。
 #
 # 不读全仓快照：digest 只需要目标 issue 与它的评论。走 snapshot 会拉全仓
-# PR/milestone/依赖闭包，仓库 PR 数触顶时还会因单页上限守卫直接失败。
+# PR/milestone/依赖闭包（PR 清单已改 GraphQL 游标分页，无单页截断面）。
 def run_digest(argv)
   return help if argv.include?("--help") || argv.include?("-h")
 

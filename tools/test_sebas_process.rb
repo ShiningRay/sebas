@@ -3095,6 +3095,230 @@ class PrDetailsHeadMismatchTest < Minitest::Test
   end
 end
 
+# #245/#246：PR 清单 GraphQL 分页的守卫用例（CodeRabbit 两轮六条：isCrossRepository
+# 直取、pageInfo 缺失拒绝、游标不推进拒绝、isCrossRepository 缺失/非法拒绝、
+# 内层连接截断拒绝、请求参数确实带游标推进）。
+class PullRequestsPaginationTest < Minitest::Test
+  StubRunner = PrDetailsHeadMismatchTest::StubRunner
+
+  # 记录请求参数：分页测试要证明第二次请求真的带了 cursor（Trivial 意见——
+  # 只按顺序吐响应的话，生产代码不发游标也能凑绿）。
+  class ArgRecordingRunner < StubRunner
+    attr_reader :argvs
+
+    def initialize(responses)
+      super
+      @argvs = []
+    end
+
+    def json!(*argv)
+      @argvs << argv
+      super
+    end
+  end
+
+  def pr_node(number:, cross: false, rollup_truncated: false, closing_truncated: false, drop_cross: false)
+    {
+      "number" => number, "state" => "MERGED",
+      "headRefName" => "feat/#{number}", "baseRefName" => "main",
+      "headRefOid" => "sha#{number}", "mergeStateStatus" => "CLEAN",
+      "url" => "https://example.test/pr/#{number}",
+      "closingIssuesReferences" => {
+        "pageInfo" => { "hasNextPage" => closing_truncated },
+        "nodes" => closing_truncated ? Array.new(10) { |i| { "number" => i } } : []
+      },
+      "statusCheckRollup" => {
+        "contexts" => {
+          "pageInfo" => { "hasNextPage" => rollup_truncated },
+          "nodes" => rollup_truncated ? Array.new(100) { |i| { "name" => "check#{i}", "status" => "COMPLETED", "conclusion" => "SUCCESS" } } : []
+        }
+      }
+    }.tap do |node|
+      node["isCrossRepository"] = cross unless drop_cross
+    end
+  end
+
+  def page(nodes, has_next, cursor)
+    info = { "hasNextPage" => has_next }
+    info["endCursor"] = cursor unless cursor.nil?
+    { "data" => { "repository" => { "pullRequests" => {
+      "nodes" => nodes,
+      "pageInfo" => info
+    } } } }
+  end
+
+  def test_paginates_until_explicit_false_with_real_cursor_advance
+    payload1 = page([pr_node(number: 1), pr_node(number: 2, cross: true)], true, "cur1")
+    payload2 = page([pr_node(number: 3)], false, nil)
+    runner = ArgRecordingRunner.new([JSON.generate(payload1), JSON.generate(payload2)])
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    prs = gateway.send(:fetch_pull_requests)
+    # 同名 fork（cross=true）被剔除，本仓 PR 全保留——两页游标推进到底
+    assert_equal [1, 3], prs.map(&:number)
+    assert prs.all?(&:merged?)
+    # 请求参数断言：首请求无游标，第二请求带 cursor=cur1（证明真实推进）
+    refute_includes runner.argvs[0].join(" "), "cursor="
+    assert_includes runner.argvs[1].join(" "), "cursor=cur1"
+  end
+
+  def test_missing_page_info_rejects_instead_of_treating_as_last_page
+    payload = { "data" => { "repository" => { "pullRequests" => {
+      "nodes" => [pr_node(number: 1)]
+    } } } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_non_boolean_has_next_page_rejects
+    payload = { "data" => { "repository" => { "pullRequests" => {
+      "nodes" => [pr_node(number: 1)],
+      "pageInfo" => { "hasNextPage" => "true", "endCursor" => "cur1" }
+    } } } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_stuck_cursor_rejects
+    payload1 = page([pr_node(number: 1)], true, "cur1")
+    payload2 = page([pr_node(number: 2)], true, "cur1") # 与上一页同游标：拒绝，不循环重读
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload1), JSON.generate(payload2)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "游标未推进"
+  end
+
+  def test_nil_end_cursor_rejects
+    payload1 = page([pr_node(number: 1)], true, nil) # hasNextPage=true 但游标为空
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload1)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "游标未推进"
+  end
+
+  def test_missing_is_cross_repository_rejects
+    payload = page([pr_node(number: 1, drop_cross: true)], false, nil)
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "isCrossRepository"
+  end
+
+  def test_invalid_is_cross_repository_rejects
+    node = pr_node(number: 1)
+    node["isCrossRepository"] = "false" # 字符串非法：不得降级当 false 放行
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "isCrossRepository"
+  end
+
+  def test_truncated_rollup_contexts_reject
+    payload = page([pr_node(number: 1, rollup_truncated: true)], false, nil)
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "contexts 超过 100 条"
+  end
+
+  def test_truncated_closing_issues_reject
+    payload = page([pr_node(number: 1, closing_truncated: true)], false, nil)
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "closingIssuesReferences 超过 10 条"
+  end
+
+  def test_missing_nodes_rejects
+    payload = { "data" => { "repository" => { "pullRequests" => {
+      "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+    } } } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页缺 nodes"
+  end
+
+  def test_runaway_pagination_rejects_at_max_pages
+    responses = Array.new(101) { |i| JSON.generate(page([pr_node(number: i)], true, "cur#{i}")) }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new(responses), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页超过"
+  end
+
+  # round 3：fork 先剔除再查内层——fork 的异常数据不得阻断整个快照
+  def test_fork_with_truncated_inner_data_excluded_without_raising
+    fork = pr_node(number: 1, cross: true, closing_truncated: true)
+    own = pr_node(number: 2)
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([fork, own], false, nil))]), repo: "o/r")
+    prs = gateway.send(:fetch_pull_requests)
+    assert_equal [2], prs.map(&:number)
+  end
+
+  # round 3：存在的内层连接必须有合法 pageInfo（缺失/字符串布尔都拒绝）
+  def test_inner_page_info_missing_rejects
+    node = pr_node(number: 1)
+    node["statusCheckRollup"]["contexts"].delete("pageInfo")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_inner_page_info_non_boolean_rejects
+    node = pr_node(number: 1)
+    node["statusCheckRollup"]["contexts"]["pageInfo"]["hasNextPage"] = "true"
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_inner_missing_nodes_rejects
+    node = pr_node(number: 1)
+    node["closingIssuesReferences"].delete("nodes")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "缺 nodes"
+  end
+
+  # statusCheckRollup=null 合法（检查未产出，非结构非法）
+  def test_null_rollup_is_legal_empty_checks
+    node = pr_node(number: 1)
+    node["statusCheckRollup"] = nil
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    prs = gateway.send(:fetch_pull_requests)
+    assert_equal [1], prs.map(&:number)
+    assert_empty prs.first.checks
+  end
+
+  # round 4：字段缺失 ≠ 显式 null——statusCheckRollup 键整体缺失是结构非法
+  def test_missing_rollup_key_rejects
+    node = pr_node(number: 1)
+    node.delete("statusCheckRollup")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "缺 statusCheckRollup 连接字段"
+  end
+
+  # round 4：closingIssuesReferences 缺失会让关联 issue 从快照消失（selection 重复分配）
+  def test_missing_closing_issues_connection_rejects
+    node = pr_node(number: 1)
+    node.delete("closingIssuesReferences")
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "缺 closingIssuesReferences 连接字段"
+  end
+
+  # round 3：errors 与有效 data 并存 = 拒绝部分成功，不得直接消费 data
+  def test_errors_with_valid_data_rejects
+    payload = page([pr_node(number: 1)], false, nil)
+    payload["errors"] = [{ "message" => "something partial" }]
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "pullRequests 查询失败"
+  end
+
+  def test_missing_pull_requests_connection_rejects
+    payload = { "data" => { "repository" => {} } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "查询缺 data.repository.pullRequests"
+  end
+end
+
 # #125 第二轮复审（3 条）回归。
 class PathChecksRound3Test < Minitest::Test
   def change(path, patch)
