@@ -3531,6 +3531,46 @@ class BlockedByBatchTest < Minitest::Test
     assert_includes error.message, "被截断"
   end
 
+  # totalCount 缺失/为 null/类型非法：to_i 会把它们静默变 0，
+  # 于是空 nodes 看着像「没有前置」——必须显式拒绝。
+  def test_missing_or_invalid_total_count_rejects
+    [nil, "0", 0.0, -1].each do |total|
+      connection = {"totalCount" => total, "nodes" => []}
+      payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => connection}}}}
+      gateway, = gateway_with(JSON.generate(payload))
+      error = assert_raises(SebasAgents::CommandError, "totalCount=#{total.inspect} 必须拒绝") do
+        gateway.send(:fetch_blocked_by_batch, [1])
+      end
+      assert_includes error.message, "totalCount"
+    end
+
+    # 字段整体缺失同样拒绝。
+    payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => {"nodes" => []}}}}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "totalCount"
+  end
+
+  # totalCount=0 + nodes=[] 是合法空结果，不能被上一条守卫误伤。
+  def test_zero_total_with_empty_nodes_is_legal
+    payload = batch_payload([{number: 1, blocked_by: connection([])}])
+    gateway, = gateway_with(JSON.generate(payload))
+    assert_equal({1 => []}, gateway.send(:fetch_blocked_by_batch, [1]))
+  end
+
+  # data.repository 缺失或为 null：结构非法，不得当成「全仓无前置」。
+  def test_missing_repository_rejects
+    [{"data" => {}}, {"data" => {"repository" => nil}}, {}].each do |payload|
+      gateway, = gateway_with(JSON.generate(payload))
+      error = assert_raises(SebasAgents::CommandError, payload.inspect) do
+        gateway.send(:fetch_blocked_by_batch, [1])
+      end
+      assert_includes error.message, "缺 data.repository"
+    end
+  end
+
   # 返回编号与请求不符：别名错位会让依赖张冠李戴，必须拒绝。
   def test_alias_mismatch_rejects
     payload = {"data" => {"repository" => {

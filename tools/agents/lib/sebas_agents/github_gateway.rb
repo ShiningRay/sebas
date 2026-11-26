@@ -234,7 +234,16 @@ end
             raise CommandError.new("issue ##{number} 的 blockedBy 连接结构非法：#{connection.inspect[0, 120]}",
               command: args)
           end
-          if connection["totalCount"].to_i > nodes.length
+          total = connection["totalCount"]
+          # 显式校验而非 to_i：缺失/nil/字符串都会被静默当成 0，
+          # 于是 nodes 为空时看着合法，实际是读坏了。
+          unless total.is_a?(Integer) && total >= 0
+            raise CommandError.new(
+              "issue ##{number} 的 blockedBy.totalCount 缺失或非非负整数：#{total.inspect}，" \
+              "拒绝把残缺响应当成无前置", command: args
+            )
+          end
+          if total > nodes.length
             raise CommandError.new(
               "issue ##{number} 的 blockedBy 超过 #{BLOCKED_BY_PAGE} 条被截断，拒绝产出不完整依赖图",
               command: args
