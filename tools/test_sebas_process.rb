@@ -3095,6 +3095,76 @@ class PrDetailsHeadMismatchTest < Minitest::Test
   end
 end
 
+# #245/#246：PR 清单 GraphQL 分页的守卫用例（CodeRabbit 三条：isCrossRepository
+# 直取、pageInfo 缺失拒绝、游标不推进拒绝）。
+class PullRequestsPaginationTest < Minitest::Test
+  StubRunner = PrDetailsHeadMismatchTest::StubRunner
+  def pr_node(number:, cross: false)
+    {
+      "number" => number, "state" => "MERGED",
+      "headRefName" => "feat/#{number}", "baseRefName" => "main",
+      "headRefOid" => "sha#{number}", "mergeStateStatus" => "CLEAN",
+      "url" => "https://example.test/pr/#{number}",
+      "isCrossRepository" => cross,
+      "closingIssuesReferences" => { "nodes" => [] },
+      "statusCheckRollup" => { "contexts" => { "nodes" => [] } }
+    }
+  end
+
+  def page(nodes, has_next, cursor)
+    info = { "hasNextPage" => has_next }
+    info["endCursor"] = cursor unless cursor.nil?
+    { "data" => { "repository" => { "pullRequests" => {
+      "nodes" => nodes,
+      "pageInfo" => info
+    } } } }
+  end
+
+  def test_paginates_until_explicit_false_and_maps_cross_repository_flag
+    payload1 = page([pr_node(number: 1), pr_node(number: 2, cross: true)], true, "cur1")
+    payload2 = page([pr_node(number: 3)], false, nil)
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload1), JSON.generate(payload2)]), repo: "o/r")
+    prs = gateway.send(:fetch_pull_requests)
+    # 同名 fork（cross=true）被剔除，本仓 PR 全保留——两页游标推进到底
+    assert_equal [1, 3], prs.map(&:number)
+    assert prs.all?(&:merged?)
+  end
+
+  def test_missing_page_info_rejects_instead_of_treating_as_last_page
+    payload = { "data" => { "repository" => { "pullRequests" => {
+      "nodes" => [pr_node(number: 1)]
+    } } } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_non_boolean_has_next_page_rejects
+    payload = { "data" => { "repository" => { "pullRequests" => {
+      "nodes" => [pr_node(number: 1)],
+      "pageInfo" => { "hasNextPage" => "true", "endCursor" => "cur1" }
+    } } } }
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "分页元数据缺失或非法"
+  end
+
+  def test_stuck_cursor_rejects
+    payload1 = page([pr_node(number: 1)], true, "cur1")
+    payload2 = page([pr_node(number: 2)], true, "cur1") # 与上一页同游标：拒绝，不循环重读
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload1), JSON.generate(payload2)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "游标未推进"
+  end
+
+  def test_nil_end_cursor_rejects
+    payload1 = page([pr_node(number: 1)], true, nil) # hasNextPage=true 但游标为空
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([JSON.generate(payload1)]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "游标未推进"
+  end
+end
+
 # #125 第二轮复审（3 条）回归。
 class PathChecksRound3Test < Minitest::Test
   def change(path, patch)

@@ -24,7 +24,7 @@ module SebasAgents
               headRefOid
               mergeStateStatus
               url
-              headRepository { name }
+              isCrossRepository
               closingIssuesReferences(first: 10) { nodes { number } }
               statusCheckRollup { contexts(first: 100) {
                 nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
@@ -417,7 +417,12 @@ end
       owner, name = @repo.split("/", 2)
       raw = []
       cursor = nil
+      pages = 0
       loop do
+        pages += 1
+        if pages > MAX_PAGES
+          raise CommandError.new("pullRequests 分页超过 #{MAX_PAGES} 页仍未到底，拒绝继续", command: ["gh", "api", "graphql"])
+        end
         args = ["gh", "api", "graphql", "-f", "query=#{ALL_PULL_REQUESTS_QUERY}",
           "-f", "owner=#{owner}", "-f", "name=#{name}"]
         args += ["-f", "cursor=#{cursor}"] if cursor
@@ -428,9 +433,26 @@ end
         end
         conn = payload.dig("data", "repository", "pullRequests")
         raise CommandError.new("pullRequests 查询缺 data.repository.pullRequests", command: args) if conn.nil?
-        conn.fetch("nodes").each { |node| raw << graphql_pr_to_list_item(node, repo_name: name) }
-        break unless conn.dig("pageInfo", "hasNextPage")
-        cursor = conn.dig("pageInfo", "endCursor")
+        # 分页元数据强校验（#246 review）：pageInfo 缺失不能静默当末页——
+        # 多页清单会被误当成完整快照。只有明确 false 才是合法末页。
+        page_info = conn["pageInfo"]
+        unless page_info.is_a?(Hash) && (page_info["hasNextPage"] == true || page_info["hasNextPage"] == false)
+          raise CommandError.new(
+            "pullRequests 分页元数据缺失或非法（pageInfo.hasNextPage 必须为布尔）：#{page_info.inspect[0, 120]}",
+            command: args
+          )
+        end
+        nodes = conn["nodes"]
+        raise CommandError.new("pullRequests 分页缺 nodes：#{conn.inspect[0, 120]}", command: args) unless nodes.is_a?(Array)
+        nodes.each { |node| raw << graphql_pr_to_list_item(node) }
+        break unless page_info["hasNextPage"]
+        # 游标推进校验（#246 review）：hasNextPage=true 但 endCursor 空/重复时，
+        # 下一次请求会重读同页无限追加 raw——拒绝继续而不是烧配额。
+        next_cursor = page_info["endCursor"].to_s
+        if next_cursor.empty? || next_cursor == cursor
+          raise CommandError.new("pullRequests 分页游标未推进（endCursor 空/重复），拒绝循环重读", command: args)
+        end
+        cursor = next_cursor
       end
       raw.reject { |item| item["isCrossRepository"] }.map do |item|
         # 只有 open PR 需要未解决 thread；已合并/关闭的 PR 不发起 GraphQL 往返。
@@ -466,8 +488,9 @@ end
     # - closingIssuesReferences 取 nodes 数组（gh pr list 输出即数组）；
     # - statusCheckRollup 取 contexts.nodes（normalize_checks 已兼容 StatusContext 的
     #   只有 state 无 status 的形状，不能凭空补 COMPLETED）；
-    # - isCrossRepository 以 headRepository.name 是否等于本仓名近似（fork PR 剔除口径不变）。
-    def graphql_pr_to_list_item(node, repo_name:)
+    # - isCrossRepository 直取（#246 review）：仓库名近似会漏掉同名 fork
+    #   （contributor/sebas → ShiningRay/sebas 会被误判 false 保留 fork PR）。
+    def graphql_pr_to_list_item(node)
       {
         "number" => node["number"],
         "headRefName" => node["headRefName"],
@@ -478,7 +501,7 @@ end
         "statusCheckRollup" => Array(node.dig("statusCheckRollup", "contexts", "nodes")),
         "closingIssuesReferences" => Array(node.dig("closingIssuesReferences", "nodes")).map { |n| { "number" => n["number"] } },
         "url" => node["url"],
-        "isCrossRepository" => node.dig("headRepository", "name").to_s != repo_name
+        "isCrossRepository" => node["isCrossRepository"] == true
       }
     end
 
