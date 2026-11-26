@@ -21,6 +21,7 @@ module Sebas
     {% root = (__DIR__ + "/..").tr("\\", "/") %}
     {% env_rev = env("SEBAS_BUILD_REV") %}
     {% rev = "" %}
+    {% rev_failed = false %}
 
     {% if env_rev && !env_rev.strip.empty? %}
       {% rev = env_rev.strip %}
@@ -61,12 +62,17 @@ module Sebas
             {% end %}
           {% end %}
           {% for base in bases %}
-            {% if rev.empty? %}
-              {% raw_ref = read_file?(base + "/" + refname) %}
-              {% rev = raw_ref.strip if raw_ref %}
+            {% if rev.empty? && !rev_failed %}
+              {% refpath = base + "/" + refname %}
+              {% raw_ref = read_file?(refpath) %}
+              {% if raw_ref %}
+                {% rev = raw_ref.strip %}
+              {% elsif file_exists?(refpath) %}
+                {% rev_failed = true %}
+              {% end %}
             {% end %}
           {% end %}
-          {% if rev.empty? %}
+          {% if rev.empty? && !rev_failed %}
             {% for base in bases %}
               {% if rev.empty? %}
                 {% raw_packed = read_file?(base + "/packed-refs") %}
