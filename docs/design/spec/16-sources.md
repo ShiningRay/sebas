@@ -17,7 +17,7 @@
 | 9 | 限流桶 (账号,目标) | 渠道笔记设计启示 4 + a7/b5/c2 |
 | 10 | 企微 AIBot 长连接优先 / 自建回调备选（AES-CBC+receiveid+msgid 排重+5 秒） | 渠道笔记 a1/a2/a5/d3 |
 | 11 | 飞书 WS 长连接（自建应用、3 秒、50 连接、非广播、事件 id 排重）/ base_url 入账号配置 | 渠道笔记 b1/b2/b4 |
-| 12 | Email：IMAP IDLE（非 Gmail）/ Gmail API；XOAUTH2；15 连接；29 分钟重发 | 渠道笔记 c1/c2/c3/c5 |
+| 12 | Email：IMAP IDLE（Gmail 与非 Gmail 同走，**#23 裁决定线**）/ XOAUTH2 为升级路径；15 连接；29 分钟重发；兜底轮询 5 分钟 | 渠道笔记 c1/c2/c3/c5；[§5.4](05-multi-account.md) |
 | 13 | 会话键含账号+agent 维度 | autobot B4；OpenClaw §4.1（dmScope per-account-channel-peer 教训 5） |
 | 14 | SQLite(WAL) 主存储 + working-set 内存模型 | Pi §2（存储后端/内存模型）、§6；OpenClaw §4.1（per-agent SQLite）；旁证建议（SQLite FTS5） |
 | 15 | 记忆=人可读 Markdown + FTS5 检索层 | OpenClaw §4.2 借鉴 5；autobot A5；Hermes §3（FTS5 session search） |

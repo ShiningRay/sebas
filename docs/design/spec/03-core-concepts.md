@@ -43,12 +43,12 @@ channels:
   email:
     accounts:
       - id: personal-gmail            # Account：一个 email 账号
-        platform: gmail.com
-        receive: gmail-api            # Gmail 走 API（IDLE 不可靠，见 §5.4）
-        smtp: { port: 465, tls: implicit }
+        platform: imap.gmail.com      # IMAP 主机；SMTP 也用它（smtp 段无 host 字段，属已知欠账，见 §5.4）
+        receive: imap-idle            # Gmail 与应用专用密码同走 IDLE（#23 裁决，§5.4）
+        smtp: { port: 465, tls: implicit }   # 依赖 imap.gmail.com:465 提供 SMTPS 的非规范行为
         credentials:                   # 值经 ${ENV} 展开；敏感值入 keyring（§10.2）
-          client_id: ${GMAIL_CLIENT_ID}
-          refresh_token_ref: keyring:email/personal-gmail/refresh_token
+          user: ${MAIL_USER}
+          password: ${MAIL_PASSWORD}   # 应用专用密码（§5.4；M1-WP7 起改 keyring 引用）
       - id: work-outlook
         platform: outlook.office365.com
         receive: imap-idle            # 非 Gmail 邮箱走 IMAP IDLE
