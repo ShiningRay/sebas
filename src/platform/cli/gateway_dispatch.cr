@@ -54,7 +54,8 @@ module Sebas
           data = JSON.parse(payload)
           Bus::InboundMessage.new(
             data["event_id"].as_s, data["channel_type"].as_s,
-            data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
+            data["account_id"].as_s, data["peer"].as_s, data["content"].as_s,
+            data["message_id"]?.try(&.as_s?) # M3-WP7：渠道消息定位 ID 随回放保真
           )
         end
 
@@ -334,7 +335,8 @@ module Sebas
               end
               message = Bus::InboundMessage.new(
                 data["event_id"].as_s, data["channel_type"].as_s,
-                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
+                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s,
+                data["message_id"]?.try(&.as_s?) # M3-WP7：渠道消息定位 ID 随回放保真
               )
               Log.info { "replaying unfinished intent #{intent.id} (#{intent.status})" }
               # admission 会话归属回查（#176）：有 envelope 行即按 admission 时

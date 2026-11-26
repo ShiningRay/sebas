@@ -187,6 +187,13 @@ module Sebas
           errors << "#{tag}.credentials.app_secret is required" if account.credentials["app_secret"]?.nil?
         end
 
+        private def validate_telegram_account(account : TelegramAccount, tag : String, errors : Array(String)) : Nil
+          # bot_token 缺键由 YAML 反序列化拒绝（非空类型）；此处拦空串
+          errors << "#{tag}.bot_token must not be empty" if account.bot_token.strip.empty?
+          errors << "#{tag}.api_base_url must not be empty when set" if account.api_base_url.try(&.strip.empty?)
+          errors << "#{tag}.token_ref must not be empty when set" if account.token_ref.try(&.strip.empty?)
+        end
+
         private def validate_bindings(config : Config, errors : Array(String)) : Nil
           config.bindings.each_with_index do |binding, i|
             tag = "bindings[#{i}]"
