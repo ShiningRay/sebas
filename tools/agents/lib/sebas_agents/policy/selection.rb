@@ -15,6 +15,13 @@ module SebasAgents
         milestones = Milestones.normalize(snapshot.milestones)
         observed = snapshot.main_sha
 
+        # released 表示该卡已收口（unclaim 成功：PR 已合并且 issue 已关闭），
+        # 这条记录只剩历史价值，**不再代表任何持有的认领**。若把它继续当活动记录：
+        #   - 远端认领别的卡时，下面的冲突检查会报永久假冲突；
+        #   - 即便跳过冲突检查，resume_claimed 也会沿用它的 worktree 等字段当续做状态。
+        # 两者都会把 next 堵死或给出错误的续做依据，故统一在入口降级为「无记录」。
+        record = nil if record && record["phase"].to_s == "released"
+
         in_progress = snapshot.in_progress_issues
         if in_progress.length > 1
           return invalid(observed, "存在 #{in_progress.length} 张执行中 issue（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}")
