@@ -87,6 +87,9 @@
 - M4.0-WP2 定稿吸收回写与失效引用修正（[#134](https://github.com/ShiningRay/sebas/pull/134)）、M8 渠道扩展（Slack + Telegram）提案与 WBS（[#137](https://github.com/ShiningRay/sebas/pull/137)）、
   Agent 分类与标签元数据模型提案（[#151](https://github.com/ShiningRay/sebas/pull/151)）、设计提案走 issue 治理（[#155](https://github.com/ShiningRay/sebas/pull/155)）。
 - 多任务并行开发提案定稿候选：每卡独立租约与集中合并收口，附恢复、迁移与验证续篇（[#191](https://github.com/ShiningRay/sebas/pull/191)）。
+- Gmail 路线裁决落盘（[#23](https://github.com/ShiningRay/sebas/issues/23)）：继续应用专用密码 + IMAP IDLE / SMTP，不迁 Gmail API；
+  兜底轮询 5 分钟、假活判定、指数退避 5s→60s 与已知边界写入 §5.4，并给出切换 API 的六条触发条件；
+  同步消除 plan 与 spec 各处的「待用户决策」残留。
 - 流程工具验收报告（[#100](https://github.com/ShiningRay/sebas/pull/100)）、合并前门禁口径改为 `verify merge --pre`（[#119](https://github.com/ShiningRay/sebas/pull/119)）、
   LLM 语义核验可行性评估——结论不做（[#131](https://github.com/ShiningRay/sebas/pull/131)）。
 

@@ -30,11 +30,11 @@
 
 **M0-WP4 渠道骨架 + email 账号**（3–4 pd）
 - 目标：abstract ChannelAdapter + 第一个真实账号收发。
-- 范围：`src/channels/base.cr`（account 维度接口）；email 适配器：IMAP IDLE（应用专用密码起步——Gmail 路线待用户决策，附录 3 [来源: design.md 附录]）；markdown 转换器【A8 直接搬】；TokenProvider 骨架（email 无 token 流，接口占位）。
+- 范围：`src/channels/base.cr`（account 维度接口）；email 适配器：IMAP IDLE（应用专用密码路线，已由 #23 裁决，见 [spec/05-multi-account.md](../../spec/05-multi-account.md) §5.4）；markdown 转换器【A8 直接搬】；TokenProvider 骨架（email 无 token 流，接口占位）。
 - 交付物：`src/channels/email/` + 收信入总线 spec。
 - 依赖：M0-WP2（配置树）。
 - 验收：真实邮箱收信触发事件入总线（集成测试）；发信出站投递成功。
-- 风险：Gmail IMAP IDLE 不可靠为社区长期报告 [来源: design.md §15.1.2]——若用户 Gmail 为首账号，M0 验收以「至少收到一封触发」为界，稳定性问题记录不阻塞门禁；选 Gmail API 路线则本包 +2–3 pd。
+- 风险：Gmail IMAP IDLE 不可靠为社区长期报告 [来源: design.md §15.1.2]——本包以「至少收到一封触发」为验收界；兜底轮询、假活判定与指数退避由后续邮箱实现包补（§5.4 设计口径已有）。
 
 **M0-WP5 事件总线 + agent worker 池**（3–4 pd）
 - 目标：去全局单 Loop，per-session worker 池成立。

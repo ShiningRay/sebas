@@ -69,14 +69,77 @@ end
 
 ### 5.4 Email 渠道接入方案
 
-**接收**：
-- 非 Gmail 邮箱：**IMAP IDLE 常驻**（RFC 2177）——一次 IDLE 只监听一个文件夹（默认只 IDLE INBOX）；每 **≤29 分钟**终止并重发 IDLE；NAT 可能掐空闲 TCP，需应用层心跳+重连；重连后重新 SELECT，UIDVALIDITY 变化需全量重扫；兜底轮询（渠道笔记 c1）。
-- **Gmail**：官方推荐 **Gmail API `watch` + Cloud Pub/Sub** 推送（社区长期报告 Gmail IMAP IDLE 推送不可靠——**渠道笔记标注未实测，本设计照实引用**）；简化路径为 Gmail API 轮询。设计上 Gmail 账号走 API 而非依赖 IDLE。
-- **认证**：basic auth 已死——Gmail 2025-03-14 起、Exchange Online 2022-10-01 起、Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用；须走 **XOAUTH2**（`base64("user=<email>\x01auth=Bearer <token>\x01\x01")`）；应用专用密码（Gmail，需两步验证）可作快速接入的过渡（渠道笔记 c2/c3/c4）。
+**路线裁决（2026-11-26，E.1-4 / #23）**：Gmail 账号**继续走应用专用密码 + IMAP IDLE / SMTP**，不迁 Gmail API。
+依据：单账号个人规模下 IDLE 满足「秒级到分钟级」到达；Gmail API 需 GCP 项目、OAuth 同意屏与
+Pub/Sub 拓扑，凭据面与运维成本都更大；M0 已用真实 Gmail 邮箱跑通收发（#20、PR #230）。
+Gmail API 作为**存档备选**保留，切换条件见本节末。
 
-**发送**：SMTP 465（隐式 TLS）/ 587（STARTTLS），禁 25 明文中继；XOAUTH2 认证。
+**接收**（长连接型，见 §5.2）：
 
-**多账号要点**（渠道笔记 c5）：Gmail 每账号同时 **15 个 IMAP 连接**上限（含全部后台连接——**来源为第三方引用，渠道笔记标注未验证**）；每账号独立 refresh token 与刷新调度；统一连接池+每账号并发上限，避免多组件对同一账号各开多连接。
+- **IMAP IDLE 常驻**（RFC 2177）：一次 IDLE 只监听一个文件夹（默认 INBOX）；每 **≤29 分钟**终止并重发
+  IDLE（RFC 2177 建议；RFC 3501 §5.4 要求服务器 autologout ≥30 分钟）；NAT/中间设备可能掐断空闲 TCP，
+  需应用层心跳与重连；重连后重新 SELECT，UIDVALIDITY 变化须作废旧游标并重建基线。
+- **兜底轮询**（与 IDLE 并存）：独立 watchdog 每 **5 分钟**用**短连接**执行 `SELECT` + `UIDNEXT` 比对
+  （必要时 `SEARCH UID <last+1>:*`），有新增即触发一次补收。短连接不复用 IDLE 连接，单账号占用 2 条
+  （IDLE 1 + 轮询 1），在 15 连接上限内；IDLE 正常时轮询只是两条极小命令。
+- **假活判定**：一个 IDLE 窗口内（≤29 分钟）未收到任何服务器响应（含 `OK` 收尾）即判连接假活，
+  主动断开重连，不等 TCP 超时。
+- **重连退避**：指数退避 **5s → 10s → 20s → 40s → 60s 封顶**，成功 SELECT 后重置；带 ±20% 抖动，
+  避免多账号同拍重连。
+- **游标**：首连以 `UIDNEXT - 1` 为基线（历史视为已读）；同 UIDVALIDITY 重连续用游标补收断线窗口；
+  UIDVALIDITY 变化作废旧游标。
+
+**认证**：basic auth 已死——Gmail 2025-03-14 起、Exchange Online 2022-10-01 起、
+Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3/c4）。
+本路线用**应用专用密码**（Gmail，需账号开启两步验证）；XOAUTH2
+（`base64("user=<email>\x01auth=Bearer <token>\x01\x01")`）为升级路径，切 Gmail API 时一并启用，
+本轮不作为必需项。
+
+**发送**：SMTP 465（隐式 TLS）/ 587（STARTTLS），禁 25 明文中继；当前用应用专用密码走 AUTH PLAIN，
+XOAUTH2 同上为升级路径。
+
+**多账号要点**（渠道笔记 c5）：Gmail 每账号同时 **15 个 IMAP 连接**上限（含全部后台连接——
+**来源为第三方引用，渠道笔记标注未验证**）；每账号独立凭据与连接；统一连接池 + 每账号并发上限，
+避免多组件对同一账号各开多连接。
+
+**已知边界**（如实列）：
+
+- Gmail IMAP IDLE 推送不可靠为社区长期报告，本项目**未实测**（渠道笔记 c1、§15.1.2）；
+  兜底轮询与假活判定即为此设。
+- 轮询间隔 5 分钟即延迟上界：IDLE 静默失效且轮询同样漏判时，最坏到达延迟为 5 分钟。
+- 进程重启后游标不持久：首连以 `UIDNEXT - 1` 重建基线，**停机窗口内到达的邮件不补投**
+  （持久化游标与停机补收未实现）。
+- 只监听 INBOX；其他文件夹/标签需多连接或轮换。
+- 应用专用密码依赖两步验证，Google 账户安全策略可致其失效（#20 实测遇到过一次）。
+- 发送限额：500 封/日（超限封 1–24 小时）；第三方 IMAP 客户端另有约 100 封/24h 的更低口径
+  （未逐字核对，渠道笔记 c2）。
+- 配置项 `receive` 的 `gmail-api` 值**尚无实现**：校验层放行但适配器不读取，等效静默降级为
+  IMAP IDLE；实现该值时必须同时补 fail-closed 校验。
+
+**设计口径与当前实现的差距**（截至 2026-11-26）：
+
+| 机制 | 设计口径 | 实现状态 |
+|---|---|---|
+| IDLE ≤29 分钟重发 | 有 | 已实现（`read_timeout = idle_poll + 1min`，超时后 NOOP 重发） |
+| 断线补收、跨重连游标、UIDVALIDITY 重建 | 有 | 已实现（PR #230） |
+| 兜底轮询 5 分钟 | 有 | **未实现** |
+| 假活判定 | 有 | **未实现** |
+| 指数退避 5s→60s | 有 | **未实现**（`@backoff` 固定 5s，不递增） |
+
+后三项需另开实现工作包；本条（E.1-4）只做路线裁决与文档回写。
+
+**切换 Gmail API 的触发条件**（满足任一即重开 E.1-4）：
+
+1. 真实 Gmail 账号上「IDLE + 兜底轮询」在连续 7×24 内漏收 ≥1 次，或到达延迟 P95 > 5 分钟；
+2. 需要低延迟监听 INBOX 之外的文件夹/标签（IDLE 单连接单文件夹，多标签要多连接）；
+3. 多账号并发触碰 15 连接上限（IDLE + 轮询每账号 2 条，约 7 个账号即到顶）；
+4. Google 收紧或取消应用专用密码 / IMAP 访问（政策变更或实测不可用）；
+5. 需要 Gmail 语义能力（`historyId` 增量同步、`threadId`）或受限 scope 合规要求；
+6. GCP 项目、OAuth 凭据与 Pub/Sub 拓扑已就绪，边际成本低于维持 IDLE 兜底。
+
+切换时清单：GCP 项目 + OAuth 客户端；受限 scope 最小集（`gmail.readonly` + `gmail.send`，
+优先于完整邮箱 `https://mail.google.com/`）；Pub/Sub topic + 订阅 + `users.watch` 续期（7 天）；
+refresh token 入 vault；`receive: gmail-api` 接线与 fail-closed 校验。
 
 ### 5.5 企业微信（WeCom）接入方案
 
