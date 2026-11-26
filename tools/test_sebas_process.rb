@@ -672,9 +672,18 @@ class SelectionTest < Minitest::Test
     assert_equal [3], SebasAgents::Policy::Dependencies.prose_dependencies(ok)
   end
 
-  # 标题尾部带多个引用（「外部依赖 #3 #5」）时，必须整串剥掉再分类。
+  # 标题尾部带多个引用（「外部依赖 #3 #5」「#3、#5」）时，必须整串剥掉再分类。
+  # 「外部依赖 #3、#5」是关键用例：剥离不彻底会残留「外部依赖 #3、」，
+  # 既不匹配变体规则也过不了精确标题，因而漏检。
   def test_variant_heading_with_multiple_trailing_references
-    ["## 外部依赖 #3 #5", "## 依赖 #3 #5", "## 依赖关系 #3、#5"].each do |heading|
+    [
+      "## 外部依赖 #3 #5",
+      "## 外部依赖 #3、#5",
+      "## 外部依赖 #3， #5",
+      "## 外部依赖 #3, #5",
+      "## 依赖 #3 #5",
+      "## 依赖关系 #3、#5"
+    ].each do |heading|
       body = "#{heading}\n\n无。\n"
       variants = SebasAgents::Policy::Dependencies.mismatched_dependency_headings(body)
       assert_equal [heading.sub(/\A#+\s*/, "")], variants, heading

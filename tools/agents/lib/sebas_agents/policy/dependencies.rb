@@ -209,12 +209,13 @@ module SebasAgents
       end
 
       # 标题去掉尾部 issue 引用后的文字，用于分类。
-      # 一次剥掉整串引用（「外部依赖 #3 #5」→「外部依赖」）：
-      # 只剥一个会留下「外部依赖 #3」，既不匹配变体规则也过不了精确标题，引用被静默忽略。
+      # 一次剥掉整串引用（「外部依赖 #3 #5」→「外部依赖」），
+      # 并吃掉引用之间的分隔符「、，,」——否则会残留「外部依赖 #3、」，
+      # 既不匹配变体规则也过不了精确标题，引用被静默忽略。
       def heading_label(title)
         rest = title
         loop do
-          stripped = rest.sub(/\s*#{ISSUE_REFERENCE.source}\s*\z/, "")
+          stripped = rest.sub(/\s*(?:[、，,]\s*)?#{ISSUE_REFERENCE.source}\s*\z/, "")
           break if stripped == rest
 
           rest = stripped
