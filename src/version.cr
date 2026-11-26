@@ -6,10 +6,13 @@ module Sebas
   #   2. 编译时仓库根 .git 的 `git rev-parse --short=12 HEAD`；
   #   3. "unknown"（两者都不可用，如 tarball 未注入环境变量、环境里没有 git）。
   # Crystal 每次构建都会重新执行宏命令，增量构建同样刷新 rev。
-  # 命令结果是 MacroId，必须 stringify 落成字符串字面量，否则数字开头的哈希被当成变量名；
-  # env() 已是 StringLiteral，再加 stringify 会多出一层引号。
-  # 宏命令由 host 的 shell 执行：POSIX 是 /bin/sh，Windows 是 cmd.exe，
-  # 重定向与 `||` 语法不同，故按 host_flag? 分支（跨编译时取编译机而非目标平台）。
+  # 两个必须踩准的细节：
+  #   - 命令结果是 MacroId，必须 stringify 落成字符串字面量，否则数字开头的哈希
+  #     会被当成变量名；env() 已是 StringLiteral，再加 stringify 会多出一层引号。
+  #   - #{root} 插值出来自带引号（StringLiteral 的形态），外层不能再包 "..."：
+  #     否则得到 `""D:\a\sebas\src/..""`。POSIX 的 sh 折叠空引号看不出问题，
+  #     Windows 却把它原样交给 git，`-C` 路径就坏了（#224 windows-latest 实测）。
+  # 重定向与 `||` 的写法按 host 分支：POSIX 走 /bin/sh，Windows 走 cmd.exe。
   {% begin %}
     {% root = __DIR__ + "/.." %}
     {% env_rev = env("SEBAS_BUILD_REV") %}
@@ -18,9 +21,9 @@ module Sebas
       {% rev = rev[0..11] if rev.size == 40 %}
     {% elsif file_exists?(root + "/.git") %}
       {% if host_flag?(:windows) %}
-        {% rev = `git -C "#{root}" rev-parse --short=12 HEAD 2>nul || echo unknown`.strip.stringify %}
+        {% rev = `git -C #{root} rev-parse --short=12 HEAD 2>nul || echo unknown`.strip.stringify %}
       {% else %}
-        {% rev = `git -C "#{root}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown`.strip.stringify %}
+        {% rev = `git -C #{root} rev-parse --short=12 HEAD 2>/dev/null || echo unknown`.strip.stringify %}
       {% end %}
     {% else %}
       {% rev = "unknown" %}
