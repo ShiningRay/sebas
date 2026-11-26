@@ -80,7 +80,7 @@ module Sebas
           errors = begin
             Loader.from_content(yaml)
             [] of String
-          rescue ex : ValidationError
+          rescue ex : Sebas::Platform::Config::ValidationError
             ex.errors
           end
           joined = errors.join("\n")
@@ -103,7 +103,7 @@ module Sebas
           errors = begin
             Loader.from_content(yaml)
             [] of String
-          rescue ex : ValidationError
+          rescue ex : Sebas::Platform::Config::ValidationError
             ex.errors
           end
           errors.join("\n").should contain("gateway.collaboration.max_hops must be >= 1")
@@ -371,7 +371,7 @@ module Sebas
             errors = begin
               Loader.from_content(dangling)
               [] of String
-            rescue ex : ValidationError
+            rescue ex : Sebas::Platform::Config::ValidationError
               ex.errors
             end
             errors.join("\n").should contain("agents.main.provider 'ghost' references an undefined providers entry")
@@ -418,5 +418,86 @@ module Sebas
         end
       end
     end
+  end
+end
+
+def agent_yaml(category : String?, tags : Array(String)) : String
+  lines = ["agents:", "  main:", "    model: deepseek/chat"]
+  lines << "    category: #{category}" if category
+  lines << "    tags: [#{tags.join(", ")}]" unless tags.empty?
+  lines << "bindings: []"
+  lines << "gateway:"
+  lines << "  http: { bind: 127.0.0.1, port: 18790, auth: token }"
+  lines << "  ipc: { mode: auto, port: 18791 }"
+  lines << "  data_dir: data"
+  lines.join("\n") + "\n"
+end
+
+def validation_errors(yaml : String) : Array(String)
+  Sebas::Platform::Config::Loader.from_content(yaml)
+  [] of String
+rescue ex : Sebas::Platform::Config::ValidationError
+  ex.errors
+end
+
+describe "agent category/tags (M4x-WP1, #147)" do
+  it "parses category and tags; defaults are nil / empty array" do
+    config = Sebas::Platform::Config::Loader.from_content(agent_yaml(nil, [] of String))
+    config.agents["main"].category.should be_nil
+    config.agents["main"].tags.should eq([] of String)
+    Sebas::Platform::Config::Loader.validate(config).should be_empty
+
+    tagged = Sebas::Platform::Config::Loader.from_content(agent_yaml("worker", ["alpha", "beta-2"]))
+    tagged.agents["main"].category.should eq("worker")
+    tagged.agents["main"].tags.should eq(["alpha", "beta-2"])
+    Sebas::Platform::Config::Loader.validate(tagged).should be_empty
+  end
+
+  it "rejects invalid category with agents.<name>.category message" do
+    errors = validation_errors(agent_yaml("Worker_1", [] of String))
+    errors.join("\n").should contain(
+      "agents.main.category must be lowercase [a-z0-9][a-z0-9-]* of 1..64 chars (got 'Worker_1')")
+  end
+
+  it "rejects invalid tag entry with agents.<name>.tags[i] message" do
+    errors = validation_errors(agent_yaml(nil, ["ok-tag", "-bad"]))
+    joined = errors.join("\n")
+    joined.should contain(
+      "agents.main.tags[1] must be lowercase [a-z0-9][a-z0-9-]* of 1..64 chars (got '-bad')")
+    joined.should_not contain("tags[0]")
+  end
+
+  it "rejects duplicate tags without silent dedup" do
+    errors = validation_errors(agent_yaml(nil, ["dup", "dup"]))
+    errors.join("\n").should contain("agents.main.tags[1] 'dup' duplicates an earlier tag")
+  end
+
+  it "rejects overlong category beyond 64 chars" do
+    errors = validation_errors(agent_yaml("a" * 65, [] of String))
+    errors.join("\n").should contain("agents.main.category must be lowercase")
+  end
+end
+
+describe "agent category/tags trailing newline (M4x-WP1 review)" do
+  it "rejects values with trailing newline (PCRE2 $ pitfall, strict Az anchoring)" do
+    yaml = <<-YAML
+      agents:
+        main:
+          model: deepseek/chat
+          category: |
+            worker
+      bindings: []
+      gateway:
+        http: { bind: 127.0.0.1, port: 18790, auth: token }
+        ipc: { mode: auto, port: 18791 }
+        data_dir: data
+      YAML
+    errors = begin
+      Sebas::Platform::Config::Loader.from_content(yaml)
+      [] of String
+    rescue ex : Sebas::Platform::Config::ValidationError
+      ex.errors
+    end
+    errors.join("\n").should contain("agents.main.category must be lowercase")
   end
 end
