@@ -9,7 +9,7 @@ require "../../log"
 module Sebas
   module Agents
     module Skills
-      Log = Sebas::Log.for("sebas.agents.skills")
+      Log = Sebas::Log.for("agents.skills")
 
       # role（M4.4-WP2 角色卡挂点）：frontmatter `role:` 声明该技能适用的
       # fork 角色名——fork role 参数与之匹配时该技能优先注入（角色卡）。

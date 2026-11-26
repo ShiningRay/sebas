@@ -11,7 +11,7 @@ require "../log"
 module Sebas
   module Agents
     class SubagentManager
-      Log = Sebas::Log.for("sebas.agents.subagent")
+      Log = Sebas::Log.for("agents.subagent")
 
       DEFAULT_MAX_CONCURRENT = 3
 

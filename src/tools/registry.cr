@@ -7,7 +7,7 @@ require "../orchestration/approvals/approvals"
 # 决策级幂等走 memo（first-write-wins）；日志全程脱敏（A9）。
 module Sebas
   module Tools
-    Log = Sebas::Log.for("sebas.tools")
+    Log = Sebas::Log.for("tools")
 
     # 重放语义（Pi §4 二分）：只读/整文件写=Safe 可重跑；未标注一律 Effectful 不重跑
     enum ReplaySemantics

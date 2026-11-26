@@ -60,7 +60,7 @@ module Sebas
         include GatewaySecrets
         include GatewayCollaboration
 
-        Log = Sebas::Log.for("sebas.gateway")
+        Log = Sebas::Log.for("gateway")
 
         getter config : Config::Config
         getter store : Store::Store

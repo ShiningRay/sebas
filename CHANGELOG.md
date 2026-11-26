@@ -39,6 +39,13 @@
 
 ### Fixed
 
+- `sebas gateway` 启动失败时静默退出（无输出、退出码 1）。两处叠加：① 各模块日志常量写成
+  `Sebas::Log.for("sebas.<layer>")`，在源 `sebas` 下再拼一层得到 `sebas.sebas.<layer>`，而 CLI 只绑定了
+  `sebas` 这一个源，`Log::Builder#matches` 按整段前缀匹配，全部子源日志被静默丢弃（配置拒启、IMAP 连接失败、
+  健康变化一概无输出）。现统一改为 `Sebas::Log.for("<layer>")`，绑定改为 `sebas,sebas.*`；② `-c` 未被识别为
+  `--config` 的别名，传 `-c x.yaml` 时静默回退到 cwd 的 `config.yaml`。日志统一走 STDERR，`--config`/`-c`
+  缺值时报错退出。回归用例 `spec/platform/cli/cli_spec.cr`。
+- `.gitignore` 的 `main` 规则误伤 `agents/main/`（人格目录），改为 `/main` 只忽略仓库根的构建产物。
 - email 渠道真机收发两处缺陷：① IMAP/SMTP 命令行原用 `IO#puts`（行尾裸 LF，RFC 3501 §2.2 / RFC 5321 §4.1.1.4
   要求 CRLF），Gmail/QQ/Outlook 的 IMAP 对 LF 命令行不响应直到读超时、QQ SMTP 对 LF 的 EHLO 直接 502；
   现统一 `print(line, "\r\n")`，并把正文裸 LF 归一为 CRLF 后再点填充（否则多行正文的行首点号漏填、DATA 分帧非法）。
@@ -54,7 +61,6 @@
   改为本次会话不投递并记 warn；⑤ `event_id` 纳入 `UIDVALIDITY`（`email:<账号>:<uidvalidity>:<uid>`），
   否则换命名空间后 UID 复用会撞 `intents.id` / `session_inputs.event_id` 主键，新邮件被当重复
   投递静默丢弃。重连退避改为可注入参数，便于测试。
-
 - Crystal 最低版本由 `>= 1.19.0` 修正为 `>= 1.22.0`：`src/platform/keys/vault.cr` 用了 1.22 才进入 stdlib 的
   `OpenSSL::Cipher#gcm_tag`，旧下限会让本地构建报误导性的 `undefined method 'gcm_tag'`。`Makefile` 新增
   `crystal-version-check` 前置目标，低于下限立即失败并给出修法；所有编译/检查目标支持 `CRYSTAL=` 覆盖。

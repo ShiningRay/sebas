@@ -11,7 +11,7 @@ module Sebas
       class SmtpError < ::Exception; end
 
       class SmtpClient
-        Log = Sebas::Log.for("sebas.channels.email.smtp")
+        Log = Sebas::Log.for("channels.email.smtp")
 
         @io : ::IO
 
