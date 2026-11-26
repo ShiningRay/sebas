@@ -3199,10 +3199,12 @@ class PullRequestsPaginationTest < Minitest::Test
   end
 
   # fetch_checks 的响应形状：单个别名 p，内含 statusCheckRollup。
-  def rollup_payload(number, nodes:, has_next:, drop_page_info: false)
+  def rollup_payload(number, nodes:, has_next:, drop_page_info: false, head: nil)
     contexts = {"nodes" => nodes}
     contexts["pageInfo"] = {"hasNextPage" => has_next} unless drop_page_info
-    {"data" => {"repository" => {"p" => {"number" => number, "statusCheckRollup" => {"contexts" => contexts}}}}}
+    node = {"number" => number, "statusCheckRollup" => {"contexts" => contexts}}
+    node["headRefOid"] = head unless head.nil?
+    {"data" => {"repository" => {"p" => node}}}
   end
 
   def page(nodes, has_next, cursor)
@@ -3386,15 +3388,32 @@ class PullRequestsPaginationTest < Minitest::Test
 
   # attach_checks：给点名 PR 补取 checks；不在快照里必须拒绝。
   def test_attach_checks_loads_named_pr
-    rollup = JSON.generate({"data" => {"repository" => {"p" => {"number" => 1, "statusCheckRollup" => {
-      "contexts" => {"pageInfo" => {"hasNextPage" => false},
-                     "nodes" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]}
-    }}}}})
+    rollup = JSON.generate(rollup_payload(1, head: "sha1",
+      nodes: [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}], has_next: false))
     gateway = SebasAgents::GithubGateway.new(StubRunner.new([rollup]), repo: "o/r")
-    pr = SebasAgents::Model::PullRequest.from_hash({"number" => 1, "state" => "MERGED"})
+    pr = SebasAgents::Model::PullRequest.from_hash({"number" => 1, "state" => "MERGED", "head_sha" => "sha1"})
     loaded = gateway.send(:attach_checks, [pr], [1]).first
     assert loaded.checks_loaded?
     assert_equal ["spec"], loaded.checks.map { |c| c["name"] }
+  end
+
+  # checks 属于另一个 head：必须拒绝，不能拼成混合快照。
+  def test_attach_checks_rejects_head_advance
+    rollup = JSON.generate(rollup_payload(1, head: "new-sha", nodes: [], has_next: false))
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([rollup]), repo: "o/r")
+    pr = SebasAgents::Model::PullRequest.from_hash({"number" => 1, "state" => "MERGED", "head_sha" => "old-sha"})
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:attach_checks, [pr], [1]) }
+    assert_includes error.message, "混合快照"
+  end
+
+  # 回读缺 headRefOid 且要求绑定 head：拒绝，不猜。
+  def test_fetch_checks_requires_head_when_expected
+    payload = JSON.generate(rollup_payload(1, nodes: [], has_next: false))
+    gateway = SebasAgents::GithubGateway.new(StubRunner.new([payload]), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_checks, 1, expected_head: "sha1")
+    end
+    assert_includes error.message, "缺 headRefOid"
   end
 
   def test_attach_checks_rejects_unknown_pr
@@ -3411,6 +3430,53 @@ class PullRequestsPaginationTest < Minitest::Test
     )
     pr = gateway.send(:fetch_pull_requests).first
     refute pr.checks_loaded?, "merged PR 不取 rollup，必须是未取状态"
+  end
+
+  # open PR 必须补取 checks，且绑定到列表记录的 head：
+  # 不传 expected_head 就会把新提交的绿灯安到旧 head 上。
+  def test_open_pr_checks_are_loaded_with_head_binding
+    open_node = pr_node(number: 1).merge("state" => "OPEN")
+    open_node.delete("statusCheckRollup")
+    list_payload = page([open_node], false, nil)
+    checks_payload = rollup_payload(1, head: "sha1", nodes: [
+      {"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}
+    ], has_next: false)
+    review_payload = {"data" => {"repository" => {"pullRequest" => {
+      "reviewThreads" => {"nodes" => [], "pageInfo" => {"hasNextPage" => false}}
+    }}}}
+    details_payload = '{"body": "b", "head_sha": "sha1"}'
+    files_payload = "[]"
+
+    # 调用顺序：list → reviewThreads → prDetail → files → prDetail → checks
+    gateway = SebasAgents::GithubGateway.new(
+      StubRunner.new([JSON.generate(list_payload), JSON.generate(review_payload),
+        details_payload, files_payload, details_payload, JSON.generate(checks_payload)]),
+      repo: "o/r"
+    )
+    pr = gateway.send(:fetch_pull_requests).first
+
+    assert pr.checks_loaded?, "open PR 必须取回 checks"
+    assert_equal ["spec"], pr.checks.map { |c| c["name"] }
+  end
+
+  # open PR 的 checks 若来自另一个 head：整体拒绝，不产出混合快照。
+  def test_open_pr_checks_head_mismatch_rejects
+    open_node = pr_node(number: 1).merge("state" => "OPEN")
+    open_node.delete("statusCheckRollup")
+    list_payload = page([open_node], false, nil)
+    checks_payload = rollup_payload(1, head: "OTHER", nodes: [], has_next: false)
+    review_payload = {"data" => {"repository" => {"pullRequest" => {
+      "reviewThreads" => {"nodes" => [], "pageInfo" => {"hasNextPage" => false}}
+    }}}}
+    details_payload = '{"body": "b", "head_sha": "sha1"}'
+
+    gateway = SebasAgents::GithubGateway.new(
+      StubRunner.new([JSON.generate(list_payload), JSON.generate(review_payload),
+        details_payload, "[]", details_payload, JSON.generate(checks_payload)]),
+      repo: "o/r"
+    )
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
+    assert_includes error.message, "混合快照"
   end
 
   # round 4：字段缺失 ≠ 显式 null——单 PR 查询缺 statusCheckRollup 是结构非法

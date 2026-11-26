@@ -198,7 +198,12 @@ end
         )
       end
 
-      loaded = wanted.to_h { |number| [number, fetch_checks(number)] }
+      # head 必须绑定到快照记录：checks 反映的是 PR 当前 head，
+      # 不校验就会把新提交的绿灯安到旧 head 的核验结论上。
+      heads = pull_requests.to_h { |pr| [pr.number, pr.head_sha] }
+      loaded = wanted.to_h do |number|
+        [number, fetch_checks(number, expected_head: heads[number])]
+      end
       pull_requests.map do |pr|
         loaded.key?(pr.number) ? pr.with(checks: loaded[pr.number]) : pr
       end
@@ -671,7 +676,7 @@ end
         checks = if item.key?("statusCheckRollup")
           normalize_checks(item["statusCheckRollup"])
         elsif item["state"].to_s.casecmp?("OPEN")
-          fetch_checks(item["number"])
+          fetch_checks(item["number"], expected_head: item["headRefOid"])
         end
         Model::PullRequest.from_hash(
           "number" => item["number"],
@@ -691,9 +696,15 @@ end
     # 按编号取单个 PR 的 CI 汇总，返回与 normalize_checks 一致的形状。
     # 供 open PR 组装与 verify merge 的目标 PR 复核使用。
     # 结构与截断校验与列表口径一致：读不到就抛错，不当空集。
-    def fetch_checks(number)
+    #
+    # expected_head：调用方快照记录的 head sha。statusCheckRollup 反映的是
+    # PR **当前** head 的检查，而快照的 head_sha/files 属于采集时刻的 head。
+    # 两次请求之间 PR 若推了新提交，返回的 checks 就属于另一个 commit——
+    # 用它去判 A 的合并会把 B 的绿灯当成 A 的绿灯。因此这里回读 headRefOid
+    # 并强校验，不一致即拒绝（与 fetch_pr_details 的既有守卫同口径）。
+    def fetch_checks(number, expected_head: nil)
       owner, name = @repo.split("/", 2)
-      fields = "p: pullRequest(number: #{number}) { number statusCheckRollup " \
+      fields = "p: pullRequest(number: #{number}) { number headRefOid statusCheckRollup " \
         "{ contexts(first: #{ROLLUP_PAGE}) { pageInfo { hasNextPage } nodes " \
         "{ __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } }"
       args = ["gh", "api", "graphql",
@@ -707,6 +718,7 @@ end
       unless node.is_a?(Hash) && node["number"].to_i == number
         raise CommandError.new("PR ##{number} checks 查询缺对应节点（结构非法，不当空集）", command: args)
       end
+      ensure_checks_head!(number, node["headRefOid"], expected_head, args)
 
       rollup = node["statusCheckRollup"]
       # 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法。
@@ -831,6 +843,26 @@ end
         "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{pr["head_sha"]}）；" \
         "拒绝构建混合快照，请重跑选择器",
         command: ["gh", "api", "pulls/#{number}"]
+      )
+    end
+
+    # checks 的 head 守卫：expected_head 为 nil 时（离线/无快照 head）不做比对，
+    # 一旦给了就必须严格相等；回读值缺失同样拒绝。
+    def ensure_checks_head!(number, actual_head, expected_head, args)
+      return if expected_head.nil?
+
+      if actual_head.to_s.empty?
+        raise CommandError.new(
+          "PR ##{number} 的 checks 查询缺 headRefOid，无法确认与快照同 head；拒绝（fail-closed）",
+          command: args
+        )
+      end
+      return if actual_head.to_s == expected_head.to_s
+
+      raise CommandError.new(
+        "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{actual_head}）；" \
+        "checks 属于另一个 commit，拒绝拼成混合快照",
+        command: args
       )
     end
 
