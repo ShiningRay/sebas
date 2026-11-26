@@ -8,9 +8,32 @@ module SebasAgents
   # 网络调用做了缓存与批量补齐，避免逐 issue 往返。
   class GithubGateway
     PAGE_SIZE = 100
-    PAGE_LIMIT_WARNING = 100
     MAX_PAGES = 100
     MAX_DEPENDENCY_FETCH = 300
+
+    ALL_PULL_REQUESTS_QUERY = <<-'GRAPHQL'
+      query($owner: String!, $name: String!, $cursor: String) {
+        repository(owner: $owner, name: $name) {
+          pullRequests(states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}, first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              number
+              state
+              headRefName
+              baseRefName
+              headRefOid
+              mergeStateStatus
+              url
+              headRepository { name }
+              closingIssuesReferences(first: 10) { nodes { number } }
+              statusCheckRollup { contexts(first: 100) {
+                nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
+              } }
+            }
+          }
+        }
+      }
+    GRAPHQL
 
     def initialize(runner, repo:)
       @runner = runner
@@ -386,18 +409,28 @@ end
       nil
     end
 
+    # PR 全量清单走 GraphQL 分页（M4x-Comm-WP3 #244 后实证）：gh pr list --limit 100
+    # 在仓库 PR 总量破百后永远打满单页，原「达到上限即 fail-closed」守卫把
+    # verify merge / unclaim / next 全部堵死。游标分页保证全量，无截断面。
+    # statusCheckRollup 的 contexts 取 first:100——本仓单 PR 检查数远小于该值。
     def fetch_pull_requests(proposal_evidence: false)
-      raw = @runner.json!("gh", "pr", "list", "--repo", @repo, "--state", "all", "--limit", "100",
-        "--json", "number,headRefName,baseRefName,headRefOid,state,mergeStateStatus,statusCheckRollup,closingIssuesReferences,url,isCrossRepository")
-      unless raw.is_a?(Array)
-        raise CommandError.new("pr list 返回非数组：#{raw.inspect[0, 200]}", command: ["gh", "pr", "list"])
-      end
-      # gh pr list 单页上限：达到上限时数据可能被截断，不能静默当成全量。
-      if raw.length >= PAGE_LIMIT_WARNING
-        raise CommandError.new(
-          "PR 列表达到单页上限 #{PAGE_LIMIT_WARNING}，可能截断在途 PR；请改用 gh api 分页",
-          command: ["gh", "pr", "list"]
-        )
+      owner, name = @repo.split("/", 2)
+      raw = []
+      cursor = nil
+      loop do
+        args = ["gh", "api", "graphql", "-f", "query=#{ALL_PULL_REQUESTS_QUERY}",
+          "-f", "owner=#{owner}", "-f", "name=#{name}"]
+        args += ["-f", "cursor=#{cursor}"] if cursor
+        payload = @runner.json!(*args)
+        errors = payload["errors"]
+        unless errors.nil? || (errors.respond_to?(:empty?) && errors.empty?)
+          raise CommandError.new("pullRequests 查询失败：#{errors.inspect}", command: args)
+        end
+        conn = payload.dig("data", "repository", "pullRequests")
+        raise CommandError.new("pullRequests 查询缺 data.repository.pullRequests", command: args) if conn.nil?
+        conn.fetch("nodes").each { |node| raw << graphql_pr_to_list_item(node, repo_name: name) }
+        break unless conn.dig("pageInfo", "hasNextPage")
+        cursor = conn.dig("pageInfo", "endCursor")
       end
       raw.reject { |item| item["isCrossRepository"] }.map do |item|
         # 只有 open PR 需要未解决 thread；已合并/关闭的 PR 不发起 GraphQL 往返。
@@ -427,6 +460,26 @@ end
           "url" => item["url"]
         ).merge_pr_details(details)
       end
+    end
+
+    # GraphQL 节点映射回 gh pr list 的 item 形状，下游转换零改动：
+    # - closingIssuesReferences 取 nodes 数组（gh pr list 输出即数组）；
+    # - statusCheckRollup 取 contexts.nodes（normalize_checks 已兼容 StatusContext 的
+    #   只有 state 无 status 的形状，不能凭空补 COMPLETED）；
+    # - isCrossRepository 以 headRepository.name 是否等于本仓名近似（fork PR 剔除口径不变）。
+    def graphql_pr_to_list_item(node, repo_name:)
+      {
+        "number" => node["number"],
+        "headRefName" => node["headRefName"],
+        "baseRefName" => node["baseRefName"],
+        "headRefOid" => node["headRefOid"],
+        "state" => node["state"],
+        "mergeStateStatus" => node["mergeStateStatus"],
+        "statusCheckRollup" => Array(node.dig("statusCheckRollup", "contexts", "nodes")),
+        "closingIssuesReferences" => Array(node.dig("closingIssuesReferences", "nodes")).map { |n| { "number" => n["number"] } },
+        "url" => node["url"],
+        "isCrossRepository" => node.dig("headRepository", "name").to_s != repo_name
+      }
     end
 
     # PR 详情：正文 + 变更文件（filename/patch）。失败必须抛错——
