@@ -15,15 +15,20 @@ module SebasAgents
       end
     end
 
-    attr_reader :calls
-
     # `gh api` 只读：判定依据是「未显式声明写方法，且未用隐含 POST 的字段参数」。
     API_FIELD_FLAGS = %w[-f -F --field --raw-field].freeze
 
     def initialize(dry_run: true)
       @dry_run = dry_run
       @calls = []
+      @calls_lock = Mutex.new
       @allowed_write = nil
+    end
+
+    # 只读快照可能并发发起多条命令流，记录调用必须串行；
+    # 返回值是副本，避免调用方在遍历时被并发追加打断。
+    def calls
+      @calls_lock.synchronize { @calls.dup }
     end
 
     def dry_run?
@@ -40,7 +45,7 @@ module SebasAgents
     end
 
     def capture(*argv, chdir: Dir.pwd, stdin: nil)
-      @calls << argv
+      @calls_lock.synchronize { @calls << argv }
       if @dry_run && !read_only?(argv) && !allowed_write?(argv)
         return Result.new(stdout: "", stderr: "", status: FakeStatus.new(true))
       end
