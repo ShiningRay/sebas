@@ -107,6 +107,8 @@ jobs:
             exit 1
           fi
           echo "m-gate check passed for v$next_minor (gate: $gate_file)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Decide bump track and compute next version
         id: bump
