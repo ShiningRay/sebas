@@ -15,7 +15,8 @@ module Sebas
   #   - 显式走 `cmd.exe /c` 只是把引号转义再叠一层，仍然依赖构建机装有 git。
   #   直接读文件则零依赖、零平台差异：.git 的布局是 git 的稳定契约。
   # 覆盖 layout：普通仓、packed-refs、detached HEAD、worktree、submodule、bare。
-  # 任何一步读不到或内容不像 SHA，一律 unknown。
+  # 所有读取都用 read_file?（失败返回 nil 而非中断宏展开），任何一步取不到或
+  # 内容不像 SHA 一律 unknown。
   {% begin %}
     {% root = (__DIR__ + "/..").tr("\\", "/") %}
     {% env_rev = env("SEBAS_BUILD_REV") %}
@@ -29,25 +30,30 @@ module Sebas
       {% dotgit = root + "/.git" %}
       {% if file_exists?(dotgit + "/") %}
         {% gitdir = dotgit %}
-      {% elsif file_exists?(dotgit) %}
-        {% ptr = read_file(dotgit).strip %}
-        {% if ptr.starts_with?("gitdir:") %}
-          {% target = ptr["gitdir:".size..].strip.tr("\\", "/") %}
-          {% if target.starts_with?("/") || target.split("/")[0].ends_with?(":") %}
-            {% gitdir = target %}
-          {% else %}
-            {% gitdir = root + "/" + target %}
+      {% else %}
+        {% raw_ptr = read_file?(dotgit) %}
+        {% if raw_ptr %}
+          {% ptr = raw_ptr.strip %}
+          {% if ptr.starts_with?("gitdir:") %}
+            {% target = ptr["gitdir:".size..].strip.tr("\\", "/") %}
+            {% if target.starts_with?("/") || target.split("/")[0].ends_with?(":") %}
+              {% gitdir = target %}
+            {% else %}
+              {% gitdir = root + "/" + target %}
+            {% end %}
           {% end %}
         {% end %}
       {% end %}
 
-      {% if !gitdir.empty? && file_exists?(gitdir + "/HEAD") %}
-        {% head = read_file(gitdir + "/HEAD").strip %}
+      {% if !gitdir.empty? %}
+        {% raw_head = read_file?(gitdir + "/HEAD") %}
+        {% head = raw_head ? raw_head.strip : "" %}
         {% if head.starts_with?("ref:") %}
           {% refname = head["ref:".size..].strip %}
           {% bases = [gitdir] %}
-          {% if file_exists?(gitdir + "/commondir") %}
-            {% common = read_file(gitdir + "/commondir").strip.tr("\\", "/") %}
+          {% raw_common = read_file?(gitdir + "/commondir") %}
+          {% if raw_common %}
+            {% common = raw_common.strip.tr("\\", "/") %}
             {% if common.starts_with?("/") || common.split("/")[0].ends_with?(":") %}
               {% bases = bases + [common] %}
             {% else %}
@@ -55,19 +61,23 @@ module Sebas
             {% end %}
           {% end %}
           {% for base in bases %}
-            {% if rev.empty? && file_exists?(base + "/" + refname) %}
-              {% rev = read_file(base + "/" + refname).strip %}
+            {% if rev.empty? %}
+              {% raw_ref = read_file?(base + "/" + refname) %}
+              {% rev = raw_ref.strip if raw_ref %}
             {% end %}
           {% end %}
           {% if rev.empty? %}
             {% for base in bases %}
-              {% if rev.empty? && file_exists?(base + "/packed-refs") %}
-                {% hit = read_file(base + "/packed-refs").lines.find(&.ends_with?(" " + refname)) %}
-                {% rev = hit.split(" ")[0] if hit %}
+              {% if rev.empty? %}
+                {% raw_packed = read_file?(base + "/packed-refs") %}
+                {% if raw_packed %}
+                  {% hit = raw_packed.lines.find(&.ends_with?(" " + refname)) %}
+                  {% rev = hit.split(" ")[0] if hit %}
+                {% end %}
               {% end %}
             {% end %}
           {% end %}
-        {% else %}
+        {% elsif !head.empty? %}
           {% rev = head %}
         {% end %}
       {% end %}

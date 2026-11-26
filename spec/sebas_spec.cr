@@ -15,10 +15,19 @@ describe Sebas do
     Sebas::GIT_REV.size.should be <= 40
   end
 
-  it "resolves the revision to a 12-char prefix of the checked-out HEAD" do
-    # 仓库内构建必然读得到 .git；与 git 自己算的短哈希对齐，可提前发现解析偏差
-    head = `git -C "#{__DIR__}/.." rev-parse HEAD`.strip
-    Sebas::GIT_REV.should eq(head[0..11]) unless head.empty?
+  # 未注入 SEBAS_BUILD_REV 时构建读 .git 并与 HEAD 对齐；注入是受支持的构建方式
+  # （源码包 / 受控构建），此时 rev 跟仓库 HEAD 无关，只校验裁剪规则。
+  it "resolves the revision from .git or from the SEBAS_BUILD_REV override" do
+    override = ENV["SEBAS_BUILD_REV"]?.to_s.strip
+    if override.empty?
+      unless Sebas::GIT_REV == "unknown" # 无 .git 的源码包里允许 unknown
+        head = `git -C "#{__DIR__}/.." rev-parse HEAD`.strip
+        Sebas::GIT_REV.should eq(head[0..11]) unless head.empty?
+      end
+    else
+      expected = override.size == 40 ? override[0..11] : override
+      Sebas::GIT_REV.should eq(expected)
+    end
   end
 
   it "renders version and git revision as one line" do
