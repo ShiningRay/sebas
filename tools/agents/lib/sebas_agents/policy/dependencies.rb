@@ -123,17 +123,21 @@ module SebasAgents
       # 这些标题会让 prose_dependencies 返回 nil，正文核对被整段跳过而不报错。
       # 仅在整篇没有合规依赖节时才有意义（调用方已确认 prose 为 nil）。
       #
-      # 判定要收紧，否则正文类小标题（如「问题 2：依赖口径校验在…空窗」）会误报：
-      # 只认「依赖」开头或结尾的短标题，且不含冒号——那是论述性标题。
+      # 两个收紧条件，缺一都会误报：
+      #   1. `#` 后必须有空白——ATX 标题的规则，`#3 的依赖` 是正文引用而非标题。
+      #   2. 只认「依赖」开头或结尾的短标题，且不含冒号——带冒号的论述性标题
+      #      （如「问题 2：依赖口径校验…」）不是依赖节。
       VARIANT_HEADING = /\A(?:前置)?依赖[^：:]{0,10}\z|\A[^：:]{0,10}(?:前置)?依赖\z/
       EXACT_HEADING = /\A(?:前置)?依赖\z/
+      # ATX 标题：# 与文字之间必须有空白。
+      ATX_HEADING = /\A(#+)\s+(\S.*?)\s*\z/
 
       def mismatched_dependency_headings(body)
         lines = normalize_body(body).lines
         variants = []
 
         lines.each_with_index do |line, index|
-          match = line.match(/\A(#+)\s*(\S.*?)\s*\z/)
+          match = line.match(ATX_HEADING)
           next unless match
 
           title = match[2]

@@ -385,15 +385,35 @@ class SelectionTest < Minitest::Test
     assert_equal "claim_issue", action.action, action.reason
   end
 
-  # 论述性小标题含「依赖」字样（带冒号）不是依赖节，不能误报。
-  def test_descriptive_heading_mentioning_dependency_is_not_a_variant
+  # 论述性标题带冒号（如「依赖：背景说明」）不是依赖节标题，不能误报。
+  # 该用例必须真正依赖冒号过滤：标题以「依赖」开头，去掉冒号排除后会命中正则。
+  def test_descriptive_heading_with_colon_is_not_a_variant
     body = <<~MD
       ## 目标
       测试
 
-      ### 问题 2：依赖口径校验在「前置已关」时空窗
+      ### 依赖：背景说明
 
       见 #108。
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 正文里以 #N 开头的普通句子不是标题（ATX 标题要求 # 后有空白），不能误报。
+  def test_issue_reference_line_is_not_treated_as_heading
+    body = <<~MD
+      ## 目标
+      测试
+
+      #3 的依赖
+      参见 #5。
 
       ```json automation
       #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
