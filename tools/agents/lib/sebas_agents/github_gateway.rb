@@ -50,6 +50,7 @@ module SebasAgents
       @thread_cache = {}
       @author_cache = {}
       @body_cache = {}
+      @issue_comment_index = nil
     end
 
     # 认领/暂停所需的写操作：只碰标签，不碰 issue 内容。
@@ -404,11 +405,53 @@ end
       end
     end
 
+    # 全仓 issue 评论的本地索引：key 是评论 database id。
+    #
+    # 每个 source_ref 原本要两次独立请求（author + body），49 个引用就是 98 次；
+    # 而本仓评论总数只有 4 页。一次全量分页把这段从 210.6s 降到 2.2s。
+    #
+    # 索引仅供命中，不作为缺失的兜底：ref 不在索引里必须回退单条请求，
+    # 否则「评论已被删除/超出一页」会变成空正文——而 Evidence 校验对空正文是
+    # 放行作者校验的，那等于 fail-open。
+    def issue_comment_index
+      @issue_comment_index ||= begin
+        index = {}
+        page = 1
+        loop do
+          batch = @runner.json!("gh", "api",
+            "repos/#{@repo}/issues/comments?per_page=#{PAGE_SIZE}&page=#{page}")
+          unless batch.is_a?(Array)
+            raise CommandError.new("issue comments 分页返回非数组：#{batch.inspect[0, 200]}",
+              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+          end
+          batch.each do |comment|
+            id = comment.is_a?(Hash) ? comment["id"] : nil
+            unless id.is_a?(Integer)
+              raise CommandError.new("issue 评论缺 id：#{comment.inspect[0, 120]}",
+                command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+            end
+            index[id] = comment
+          end
+          break if batch.length < PAGE_SIZE
+
+          page += 1
+          if page > MAX_PAGES
+            raise CommandError.new("issue comments 分页超过 #{MAX_PAGES} 页：#{@repo}",
+              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+          end
+        end
+        index
+      end
+    end
+
     def ref_body(ref)
       @body_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
             (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
-          fetch_body("repos/#{@repo}/issues/comments/#{match[2]}")
+          comment = indexed_comment(match[2])
+          # 未命中必须回退单条：评论可能超出分页范围或已被删除，
+          # 空正文会让 Evidence 校验退化成「只验作者」。
+          comment.nil? ? fetch_body("repos/#{@repo}/issues/comments/#{match[2]}") : comment["body"].to_s
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_body("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -423,7 +466,7 @@ end
       @author_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
             (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
-          fetch_login("repos/#{@repo}/issues/comments/#{match[2]}")
+          indexed_author(match[2]) || fetch_login("repos/#{@repo}/issues/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_login("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -435,6 +478,23 @@ end
     end
 
     private
+
+    # 全量索引命中则直接返回，未命中返回 nil 交给调用方回退单条请求。
+    def indexed_comment(id)
+      issue_comment_index[id.to_i]
+    end
+
+    def indexed_author(id)
+      comment = indexed_comment(id)
+      return nil if comment.nil?
+
+      login = comment.dig("user", "login")
+      # 索引里存在但缺作者：结构非法，不能当「无人登记」放过去。
+      raise CommandError.new("issue 评论 #{id} 缺 user.login：#{comment.inspect[0, 120]}",
+        command: ["gh", "api", "repos/#{@repo}/issues/comments"]) if login.to_s.empty?
+
+      login
+    end
 
     def fetch_login(path)
       @runner.json!("gh", "api", path).dig("user", "login")
