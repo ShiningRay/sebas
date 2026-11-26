@@ -137,18 +137,18 @@ module Sebas
         smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none"
       )
       adapter.start
-      # 等 adapter 登录并进入 IDLE 后再投递新邮件，模拟真实到达时序
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-      server.add_mail("2", "carol@example.com", "PR merged", "looks good to me")
-      event = bus.receive?(5.seconds)
-      adapter.stop
       begin
+        # 等 adapter 登录并进入 IDLE 后再投递新邮件，模拟真实到达时序
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+        server.add_mail("2", "carol@example.com", "PR merged", "looks good to me")
+        event = bus.receive?(5.seconds)
         msg = event.should be_a(Platform::Bus::InboundMessage)
         msg.account_id.should eq("test-mailbox")
         msg.peer.should eq("carol@example.com")
         msg.content.should eq("looks good to me")
         msg.event_id.should eq("email:test-mailbox:1:2")
       ensure
+        adapter.stop
         bus.close
         server.close
       end
@@ -170,16 +170,16 @@ module Sebas
         smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none"
       )
       adapter.start
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-      # 新邮件到达：只应看到这一封，历史 30 封不得出现
-      server.add_mail("31", "fresh@example.com", "new", "just arrived")
-      event = bus.receive?(5.seconds)
-      adapter.stop
       begin
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+        # 新邮件到达：只应看到这一封，历史 30 封不得出现
+        server.add_mail("31", "fresh@example.com", "new", "just arrived")
+        event = bus.receive?(5.seconds)
         msg = event.should be_a(Platform::Bus::InboundMessage)
         msg.event_id.should eq("email:test-mailbox:1:31")
         bus.receive?(200.milliseconds).should be_nil
       ensure
+        adapter.stop
         bus.close
         server.close
       end
@@ -202,17 +202,17 @@ module Sebas
         smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none"
       )
       adapter.start
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-
-      # 自己的回信进 INBOX（显示名 + 角括号形式），随后才是真正的外部来信
-      server.add_mail("1", "Me <ME@example.com>", "Sebas", "my own reply")
-      server.add_mail("2", "friend@example.com", "hi", "real inbound")
-      event = bus.receive?(5.seconds)
-      adapter.stop
       begin
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+
+        # 自己的回信进 INBOX（显示名 + 角括号形式），随后才是真正的外部来信
+        server.add_mail("1", "Me <ME@example.com>", "Sebas", "my own reply")
+        server.add_mail("2", "friend@example.com", "hi", "real inbound")
+        event = bus.receive?(5.seconds)
         msg = event.should be_a(Platform::Bus::InboundMessage)
         msg.event_id.should eq("email:test-mailbox:1:2")
       ensure
+        adapter.stop
         bus.close
         server.close
       end
@@ -236,17 +236,17 @@ module Sebas
         backoff: 50.milliseconds
       )
       adapter.start
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-
-      # 掐断在途连接制造重连；新邮件在断开之后才写入，重连后收不到任何 EXISTS
-      server.drop_connections
-      server.add_mail("2", "late@example.com", "late", "arrived while offline")
-      first = bus.receive?(8.seconds)
-      adapter.stop
       begin
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+
+        # 掐断在途连接制造重连；新邮件在断开之后才写入，重连后收不到任何 EXISTS
+        server.drop_connections
+        server.add_mail("2", "late@example.com", "late", "arrived while offline")
+        first = bus.receive?(8.seconds)
         msg = first.should be_a(Platform::Bus::InboundMessage)
         msg.event_id.should eq("email:test-mailbox:1:2")
       ensure
+        adapter.stop
         bus.close
         server.close
       end
@@ -270,22 +270,22 @@ module Sebas
         backoff: 50.milliseconds
       )
       adapter.start
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-
-      # 换命名空间（UIDVALIDITY 2）：新空间 UID 从头编号，旧空间的 100 已不存在。
-      # 若沿用旧游标 100，之后的 UID 6 永远小于游标而被过滤；修好后基线重置为
-      # UIDNEXT - 1 = 2，于是 UID 3 能投出来。
-      server.reset_namespace("2")
-      server.add_mail("2", "ns2-old@example.com", "ns2", "ns2 history")
-      server.drop_connections
-      wait_for(3.seconds) { server.seen_commands.count(&.includes?("SELECT")) >= 2 }.should be_true
-      server.add_mail("3", "ns2-new@example.com", "ns2 new", "arrived after reconnect")
-      event = bus.receive?(8.seconds)
-      adapter.stop
       begin
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+
+        # 换命名空间（UIDVALIDITY 2）：新空间 UID 从头编号，旧空间的 100 已不存在。
+        # 若沿用旧游标 100，之后的 UID 6 永远小于游标而被过滤；修好后基线重置为
+        # UIDNEXT - 1 = 2，于是 UID 3 能投出来。
+        server.reset_namespace("2")
+        server.add_mail("2", "ns2-old@example.com", "ns2", "ns2 history")
+        server.drop_connections
+        wait_for(3.seconds) { server.seen_commands.count(&.includes?("SELECT")) >= 2 }.should be_true
+        server.add_mail("3", "ns2-new@example.com", "ns2 new", "arrived after reconnect")
+        event = bus.receive?(8.seconds)
         msg = event.should be_a(Platform::Bus::InboundMessage)
         msg.event_id.should eq("email:test-mailbox:2:3")
       ensure
+        adapter.stop
         bus.close
         server.close
       end
@@ -309,25 +309,25 @@ module Sebas
         backoff: 50.milliseconds
       )
       adapter.start
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-      server.add_mail("2", "ns1@example.com", "ns1 second", "uid 2 in namespace 1")
-      first = bus.receive?(5.seconds)
-
-      # 换命名空间后复用 UID 2：event_id 必须与上面那条不同
-      server.reset_namespace("2")
-      server.add_mail("1", "ns2@example.com", "ns2", "ns2 history")
-      server.drop_connections
-      wait_for(3.seconds) { server.seen_commands.count(&.includes?("SELECT")) >= 2 }.should be_true
-      server.add_mail("2", "ns2@example.com", "ns2 reused", "uid 2 reused in namespace 2")
-      second = bus.receive?(8.seconds)
-      adapter.stop
       begin
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+        server.add_mail("2", "ns1@example.com", "ns1 second", "uid 2 in namespace 1")
+        first = bus.receive?(5.seconds)
+
+        # 换命名空间后复用 UID 2：event_id 必须与上面那条不同
+        server.reset_namespace("2")
+        server.add_mail("1", "ns2@example.com", "ns2", "ns2 history")
+        server.drop_connections
+        wait_for(3.seconds) { server.seen_commands.count(&.includes?("SELECT")) >= 2 }.should be_true
+        server.add_mail("2", "ns2@example.com", "ns2 reused", "uid 2 reused in namespace 2")
+        second = bus.receive?(8.seconds)
         a = first.should be_a(Platform::Bus::InboundMessage)
         b = second.should be_a(Platform::Bus::InboundMessage)
         a.event_id.should eq("email:test-mailbox:1:2")
         b.event_id.should eq("email:test-mailbox:2:2")
         a.event_id.should_not eq(b.event_id)
       ensure
+        adapter.stop
         bus.close
         server.close
       end
@@ -352,14 +352,14 @@ module Sebas
         backoff: 50.milliseconds
       )
       adapter.start
-      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
-      server.add_mail("6", "new@example.com", "new", "arrived later")
-      adapter.stop
       begin
+        wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+        server.add_mail("6", "new@example.com", "new", "arrived later")
         # 不得发出 UID SEARCH UID 0:*（那会把历史捞出来），也不得投递任何事件
         server.seen_commands.none?(&.includes?("UID SEARCH UID 0:*")).should be_true
         bus.receive?(200.milliseconds).should be_nil
       ensure
+        adapter.stop
         bus.close
         server.close
       end
