@@ -10,7 +10,9 @@ module SebasAgents
   # 条件的读数，而且 GitHub 侧的 auto-merge 本来就不看它。
   #
   # 边界（只放宽 pending，不放宽结论）：
-  #   - 仍在进行中：不参与「CI 未完成」判定。
+  #   - 进行中（queued / in_progress）：不参与「CI 未完成」判定。
+  #   - 状态取值不在这两态、也不是 completed：按未完成处理（fail-closed）。
+  #     未知状态不能因为落不进任何分支就默认放行。
   #   - 已完成且结论为 failure / cancelled / timed_out：仍按失败检查处理。
   #     历史上 CodeRabbit 服务故障 CANCELLED 确实需要人工裁决，不能静默放过。
   #   - review 意见的权威载体是「未解决 review thread」，不是 check 结论；
@@ -22,6 +24,9 @@ module SebasAgents
   module AdvisoryChecks
     NAMES = ["CodeRabbit"].freeze
 
+    # GitHub 定义的未完成状态；advisory 只在这两态被豁免。
+    KNOWN_PENDING = %w[QUEUED IN_PROGRESS].freeze
+
     module_function
 
     def advisory?(check)
@@ -32,6 +37,12 @@ module SebasAgents
     def pending?(check)
       status = check["status"].to_s.upcase
       !status.empty? && status != "COMPLETED"
+    end
+
+    # 豁免出「CI 未完成」判定的唯一一类：advisory 且状态明确为未完成。
+    # 未知状态不算豁免，宁可多等一轮也不静默放行。
+    def exempt?(check)
+      advisory?(check) && KNOWN_PENDING.include?(check["status"].to_s.upcase)
     end
   end
 end

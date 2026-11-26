@@ -1020,10 +1020,11 @@ class SelectionTest < Minitest::Test
   end
 
   # 第三方审阅的 check run 只是「本轮审阅进行中」，不进分支保护的必需检查。
-  # 把它算作 pending 会让 selector 空等 4-8 分钟，而合并条件根本不看它。
-  def test_pending_advisory_check_does_not_block_merge
+  # 把它算作 pending 会让 selector 报「等待 CI」，而合并条件根本不看它。
+  # 用非 CLEAN 状态，避免落到 select_action 的 CLEAN 短路分支从而测不到判定。
+  def test_pending_advisory_check_is_not_reported_as_ci_wait
     pr = {
-      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "BLOCKED",
       "checks" => [
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
@@ -1035,8 +1036,26 @@ class SelectionTest < Minitest::Test
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 50})
-    assert_equal "resume_pr", action.action, "advisory pending 不应导致 wait"
-    assert_includes action.reason, "CLEAN"
+    assert_equal "wait", action.action
+    refute_includes action.reason, "等待 CI", "advisory 进度不应被报成等 CI"
+    assert_includes action.reason, "BLOCKED"
+  end
+
+  # 对照：真正的门禁检查未完成时仍报「等待 CI」。
+  def test_pending_gate_check_is_reported_as_ci_wait
+    pr = {
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "BLOCKED",
+      "checks" => [
+        {"name" => "spec / ubuntu-latest", "status" => "IN_PROGRESS", "conclusion" => nil},
+        {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
+      ],
+      "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, status: "In progress")],
+      pull_requests: [pr]
+    )
+    assert_includes select(data, record: {"issue" => 1, "pr" => 50}).reason, "等待 CI"
   end
 
   # 只豁免「进行中」：advisory 已完成却是失败结论时仍按失败处理
@@ -1057,6 +1076,24 @@ class SelectionTest < Minitest::Test
     action = select(data, record: {"issue" => 1, "pr" => 50})
     assert_equal "resume_pr", action.action
     assert_includes action.reason, "失败检查"
+  end
+
+  # advisory 的未知状态不豁免：豁免只认 queued/in_progress，其余留在 pending 里
+  # 继续按「等待 CI」处理，而不是因为落不进任何分支就静默放行。
+  def test_unknown_advisory_status_still_reported_as_ci_wait
+    pr = {
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "BLOCKED",
+      "checks" => [
+        {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
+        {"name" => "CodeRabbit", "status" => "BOGUS", "conclusion" => nil}
+      ],
+      "closing_issues" => [1], "review_threads" => []
+    }
+    data = snapshot(
+      issues: [issue(1, body: automation, status: "In progress")],
+      pull_requests: [pr]
+    )
+    assert_includes select(data, record: {"issue" => 1, "pr" => 50}).reason, "等待 CI"
   end
 
   def test_claiming_interruption_resumes

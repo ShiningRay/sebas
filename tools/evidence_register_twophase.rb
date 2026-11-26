@@ -28,6 +28,11 @@ module EvidenceRegister
     # SebasAgents::AdvisoryChecks::NAMES 一致，防止两处漂移。
     ADVISORY_CHECK_NAMES = ["CodeRabbit"].freeze
 
+    # GitHub 只定义这三种 check run 状态。未知取值一律拒绝：advisory 被整类
+    # 排除出 gate_runs 后，未知状态既不在 pending 也不进 failed_advisory，
+    # 静默放行就把 fail-closed 反过来了（CodeRabbit Minor，PR #243）。
+    CHECK_STATUSES = %w[queued in_progress completed].freeze
+
     module_function
 
     # 合并前登记。-pre 语义：PR 仍 open、目标 main、CI 全绿、issue 仍 open。
@@ -118,6 +123,17 @@ module EvidenceRegister
       runs = raw.reject { |run| run["name"] == SELF_CHECK_NAME }
       if runs.empty?
         out.puts "fail: PR ##{pr_number} 没有任何 CI 检查记录，无法确认全绿"
+        return :failed
+      end
+
+      # advisory 整类被排除出 gate_runs，未知状态就落不进任何判定分支而静默通过。
+      # 必须在这里显式拒绝：GitHub 只定义 queued/in_progress/completed 三态，
+      # 出现别的取值说明数据可疑（CodeRabbit Minor，PR #243）。
+      unknown = runs.select do |run|
+        !CHECK_STATUSES.include?(run["status"].to_s)
+      end
+      unless unknown.empty?
+        out.puts "fail: PR ##{pr_number} 存在状态未知的检查记录（#{unknown.map { |r| "#{r["name"]}=#{r["status"].inspect}" }.join("、")}），拒绝登记"
         return :failed
       end
 

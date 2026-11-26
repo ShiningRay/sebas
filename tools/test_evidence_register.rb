@@ -739,6 +739,33 @@ class EvidenceRegisterTest < Minitest::Test
     assert(calls.none? { |m, _| m == "POST" }, "不得登记，calls=#{calls.inspect}")
   end
 
+  # advisory 整类被排除出 gate_runs 后，未知状态会落不进任何判定分支。
+  # 必须在豁免前显式拒绝——GitHub 只定义 queued/in_progress/completed 三态。
+  def test_pre_register_blocks_on_unknown_advisory_status
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "spec", "status" => "completed", "conclusion" => "success"},
+        {"name" => "CodeRabbit", "status" => "bogus", "conclusion" => nil}
+      ]
+    })
+    code, calls, out = run_pre(fake)
+    assert_equal 1, code, "未知状态必须拒绝，out=#{out}"
+    assert_includes out, "状态未知的检查记录"
+    assert(calls.none? { |m, _| m == "POST" }, "不得登记，calls=#{calls.inspect}")
+  end
+
+  # 未知状态对非 advisory 检查同样拒绝：与 advisory 一致，不留静默放行口。
+  def test_pre_register_blocks_on_unknown_gate_status
+    fake = pre_fake("GET repos/o/r/commits/head123/check-runs?per_page=100" => {
+      "check_runs" => [
+        {"name" => "spec", "status" => "weird", "conclusion" => "success"}
+      ]
+    })
+    code, _calls, out = run_pre(fake)
+    assert_equal 1, code
+    assert_includes out, "状态未知的检查记录"
+  end
+
   # 两份 advisory 名单分别给 workflow 脚本与 agents 库使用，必须一致：
   # 只改一处会让 selector 与 Evidence 预登记对同一个 check 判出相反结论。
   def test_advisory_lists_stay_in_sync
