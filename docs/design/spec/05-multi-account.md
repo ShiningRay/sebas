@@ -136,6 +136,7 @@ Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3
 |---|---|---|
 | IDLE 定期重发 | ≤29 分钟 | **偏差**：`read_timeout = idle_poll + 1min` = 30 分钟，静默连接要等读超时才结束 IDLE，实际窗口 **30 分钟**，超出 RFC 2177 建议的 ≤29 分钟 |
 | IDLE 整体截止时间 | 从发出 IDLE 起计时到点必退 | **未实现**：现在只有读超时。服务器若在窗口内持续发非 `EXISTS`/`EXPUNGE`/`FLAGS` 响应（`* OK` 等），`idle` 会继续读，总时长不受限。正解是按 IDLE 开始时间设 deadline，到点 `DONE` 后重发，而不是只把 `read_timeout` 改小 |
+| IDLE 收尾（`DONE` 后等标签响应）也受同一 deadline 约束 | 到点未收到标签响应即关连接重连，不在原连接上重发 | **未实现**：`imap_client.cr` 的 `abort_idle` / `finish_idle` 都是无限循环 `read_line` 直到见到标签行；`abort_idle` 超时异常被 `rescue ::Exception` 吞掉，调用方不知道收尾失败，随后仍在同一连接上重发 IDLE。需覆盖：deadline 计入收尾阶段；到点仍未收到标签响应则断开重连 |
 | 断线补收、跨重连游标、UIDVALIDITY 重建 | 有 | 已实现（PR #230） |
 | 兜底轮询 5 分钟 | 有 | **未实现** |
 | 假活判定 | 有 | **未实现**；注意它与上一条「整体截止时间」配套才能成立 |
