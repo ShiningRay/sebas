@@ -425,6 +425,190 @@ class SelectionTest < Minitest::Test
     assert_equal "claim_issue", action.action, action.reason
   end
 
+  # CommonMark 允许 ≤3 前导空格与闭合标记；两种写法都是合法标题，必须照样检出。
+  def test_indented_and_closed_variant_headings_are_detected
+    ["  ## 外部依赖", "## 外部依赖 ##", "   ## 外部依赖 ##"].each do |heading|
+      body = <<~MD
+        ## 目标
+        测试
+
+        #{heading}
+
+        - #3
+
+        ```json automation
+        #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+           "depends_on" => [], "external" => []}.to_json}
+        ```
+      MD
+      data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+      action = select(data)
+      assert_equal "invalid_plan", action.action, "#{heading.inspect}：#{action.reason}"
+      assert_includes action.reason, "外部依赖"
+    end
+  end
+
+  # 代码围栏里的标题是示例内容，不是章节声明，不能据此报警。
+  def test_headings_inside_code_fence_are_ignored
+    body = <<~MD
+      ## 目标
+      测试
+
+      ```text
+      ## 依赖关系
+      - #3
+      ```
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 围栏内的变体标题配上围栏外的 #N：标题不算章节，不能报警。
+  def test_variant_heading_inside_fence_with_reference_outside
+    body = <<~MD
+      ## 目标
+      测试
+
+      ```text
+      ## 依赖关系
+      ```
+
+      - 参见 #5
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    # 围栏内的标题被跳过，所以不会走到 #5 的节内扫描；结果应为正常候选。
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 围栏外的变体标题，其节内的 #N 只出现在子围栏里：不算依赖声明，不能报警。
+  def test_variant_heading_section_reference_only_inside_fence
+    body = <<~MD
+      ## 目标
+      测试
+
+      ## 依赖关系
+
+      ```text
+      - #3
+      ```
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 对照：同一变体标题下，围栏外确有 #N，就要报 invalid。
+  def test_variant_heading_section_reference_outside_fence_is_invalid
+    body = <<~MD
+      ## 目标
+      测试
+
+      ## 依赖关系
+
+      ```text
+      - #3
+      ```
+
+      - 另见 #5
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "invalid_plan", action.action, action.reason
+    assert_includes action.reason, "依赖关系"
+  end
+
+  # 依赖节内的代码围栏里的 #N 是示例，不能算依赖声明。
+  def test_issue_reference_inside_fence_within_dependency_section_is_ignored
+    body = <<~MD
+      ## 目标
+      测试
+
+      ## 依赖
+
+      无前置。
+
+      ```
+      #999
+      ```
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 围栏内的「## 依赖」不是真节：它后面围栏外的 #N 不该被当成该节的依赖。
+  def test_exact_dependency_heading_inside_fence_is_not_the_section
+    body = <<~MD
+      ```text
+      ## 依赖
+      ```
+
+      - 前置：#5 完成
+
+      ```json automation
+      #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+         "depends_on" => [], "external" => []}.to_json}
+      ```
+    MD
+    data = snapshot(issues: [issue(4, body: body, blocked_by: [])])
+    action = select(data)
+    # 围栏内的标题不算依赖节，所以正文没有可对账的依赖声明，卡照常通过。
+    assert_equal "claim_issue", action.action, action.reason
+  end
+
+  # 合规依赖节写成缩进或带闭合标记（CommonMark 均合法）时，仍要能正常解析。
+  def test_indented_and_closed_exact_headings_are_recognized
+    ["  ## 依赖", "## 依赖 ##", "   ## 依赖 ##"].each do |heading|
+      body = <<~MD
+        ## 目标
+        测试
+
+        #{heading}
+
+        - 前置：#3 完成
+
+        ```json automation
+        #{{"schema" => 1, "kind" => "work_package", "order" => [4, 1],
+           "depends_on" => [3], "external" => []}.to_json}
+        ```
+      MD
+      data = snapshot(issues: [
+        issue(4, body: body, blocked_by: [3]),
+        issue(3, body: evidence(subject: "issue:3"), state: "CLOSED", state_reason: "COMPLETED")
+      ])
+      action = select(data)
+      refute_equal "invalid_plan", action.action, "#{heading.inspect}：#{action.reason}"
+      refute_includes action.reason.to_s, "依赖节标题"
+    end
+  end
+
   # 非工作包（tracking/manual/design）不进 Implementer 选卡，变体标题不报。
   def test_variant_heading_ignored_for_non_work_packages
     body = <<~MD
