@@ -10,7 +10,7 @@ require "file_utils"
 module Sebas
   module Sessions
     module Lifecycle
-      Log = ::Sebas::Log.for("sebas.sessions.lifecycle")
+      Log = ::Sebas::Log.for("sessions.lifecycle")
 
       record SessionRow, session_key : String, agent_id : String, kind : String,
         fork_id : String?, status : String, last_active_at : String,

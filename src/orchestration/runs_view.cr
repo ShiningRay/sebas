@@ -8,7 +8,7 @@ require "../log"
 module Sebas
   module Orchestration
     class RunsView
-      Log = Sebas::Log.for("sebas.orchestration.runs")
+      Log = Sebas::Log.for("orchestration.runs")
 
       def initialize(@store : ::Sebas::Platform::Store::Store, @ledger : Ledger)
       end

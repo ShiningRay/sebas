@@ -51,7 +51,7 @@ module Sebas
       # 发生（工具不被取消、参数不被篡改）；崩溃窗口保守口径——CAS injected
       # 后 transcript 落标记行，恢复扫描无标记即 unknown_not_injected 转 queued。
       class SteerCenter
-        Log = ::Sebas::Log.for("sebas.scheduling.steer")
+        Log = ::Sebas::Log.for("scheduling.steer")
 
         # 降级转 queued 后的投递清单项（gateway 合成入站事件组后续批次）
         record SteerDispatch, steer_id : String, session_key : String, payload : String

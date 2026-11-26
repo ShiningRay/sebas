@@ -5,10 +5,16 @@ module Sebas
   module Platform
     module CLI
       extend self
-      Log = Sebas::Log.for("sebas.cli")
+      Log = Sebas::Log.for("cli")
+
+      # 日志源绑定：Sebas::Log 的源是 "sebas"，子模块经实例方法
+      # Sebas::Log.for("layer") 派生为 "sebas.layer"。Log::Builder.matches 按整段
+      # 前缀匹配（"sebas" 不匹配 "sebas.cli"），只绑 "sebas" 会让所有子源日志被
+      # 静默丢弃——配置拒启、连接失败、健康变化一律无输出。
+      DEFAULT_LOG_SOURCES = "sebas,sebas.*"
 
       def run(args = ARGV) : Int32
-        ::Log.setup_from_env(default_sources: "sebas", default_level: :info)
+        setup_logging
 
         case args.first?
         when nil, "help", "--help", "-h"
@@ -28,9 +34,32 @@ module Sebas
         end
       end
 
+      # 日志统一写 STDERR：正常输出（help/version）与诊断流分离，拒启原因不会被误当正文。
+      # :nodoc:
+      # 测试注入点：默认 STDERR；改用 sync 派发保证短命进程退出前日志已落盘。
+      class_property log_io : IO = STDERR
+
+      # :nodoc:
+      # 供测试在换回 io 后重建全局绑定（只换 log_io 字段不会重绑已注册的
+      # ::Log 后端——后端在 setup 时已固化，必须重新执行一次 setup）。
+      def reset_logging : Nil
+        setup_logging
+      end
+
+      private def setup_logging : Nil
+        backend = ::Log::IOBackend.new(io: log_io, dispatcher: :sync)
+        ::Log.setup_from_env(default_sources: DEFAULT_LOG_SOURCES, default_level: :info, backend: backend)
+      end
+
       # 常驻网关（M0-WP8 装配）：加载配置 → Gateway#run → 常驻
       private def run_gateway(args : Array(String)) : Int32
-        config_path = arg_value(args, "--config") || "config.yaml"
+        config_path =
+          begin
+            arg_value(args, "--config", "-c") || "config.yaml"
+          rescue ex : ArgumentError
+            Log.error { ex.message.to_s }
+            return 1
+          end
         unless File.exists?(config_path)
           Log.error { "config not found: #{config_path}" }
           return 1
@@ -63,9 +92,20 @@ module Sebas
         0
       end
 
-      private def arg_value(args : Array(String), flag : String) : String?
-        idx = args.index(flag)
-        idx && args[idx + 1]?
+      # 取 flag 的值：支持多别名（--config / -c），按声明顺序取第一个出现的。
+      # 先逐个校验所有出现的别名 —— 任一缺值即报错，不允许被先命中的别名绕过
+      # （`--config valid.yaml -c` 也必须报错）；「用户传了参数却静默跑另一个
+      # 文件」是最误导的失败模式。
+      private def arg_value(args : Array(String), *flags : String) : String?
+        selected = nil
+        flags.each do |flag|
+          idx = args.index(flag)
+          next unless idx
+          value = args[idx + 1]?
+          raise ArgumentError.new("option #{flag} requires a value") if value.nil? || value.starts_with?("-")
+          selected ||= value
+        end
+        selected
       end
 
       private def print_help : Nil
@@ -74,7 +114,7 @@ module Sebas
         puts "Usage:"
         puts "  sebas help                          Show this help"
         puts "  sebas version                       Show version"
-        puts "  sebas gateway --config config.yaml  Run the resident gateway"
+        puts "  sebas gateway --config config.yaml  Run the resident gateway (-c is an alias)"
         puts "  sebas crashwrite <store-path>       Crash-drill writer (test aid)"
       end
     end
