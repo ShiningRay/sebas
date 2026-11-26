@@ -94,8 +94,10 @@ ruby tools/sebas-process claim <新卡号>
 
 读结果的边界：
 
-**先说两条限制。** ① `claim` 只做单卡检查，**不是开工许可**：它只要求卡挂了 milestone，
-不比较 milestone 的排期顺序，后续主线的卡也会返回 `ready`。能不能开工仍由 `next` 决定。
+**先说两条限制。** ① `claim` 只做单卡检查，**不是开工许可**：卡挂没挂 milestone 它只分两种情况——
+挂了就放行（不比较 milestone 的排期顺序，后续主线的卡也会返回 `ready`），
+没挂则仅当该卡是独立小修（`type=Task` + `kind=work_package` + `depends_on=[]`）时放行。
+能不能开工仍由 `next` 决定。
 ② `claim` 的任何 `status` 都不能证明正文核对过：标题写成「依赖关系」这类变体时
 `prose_dependencies` 返回 `nil`，正文声明被整段跳过——`ready`、`blocked`、`invalid` 都可能在
 正文有分叉时照常返回。开头的第 1 条规则只能靠人眼确认，工具不会替你发现。
