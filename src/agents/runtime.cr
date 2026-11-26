@@ -33,7 +33,8 @@ module Sebas
       # turn 注册/注销与 turn 结束 flush。
       def run(session_key : String, turn : TurnContext,
               provider : Providers::Provider, executor : Tools::Executor,
-              messages : Array(Providers::Message), task_id : String?, event_id : String) : String
+              messages : Array(Providers::Message), task_id : String?, event_id : String,
+              collab_hops : Int64? = nil) : String
         (1..MAX_TOOL_ROUNDS).each do |round|
           completion = provider.complete(messages)
           unless completion.ok?
@@ -49,7 +50,7 @@ module Sebas
           # 对话上下文人工在场（unattended=false）：L3 审批走 pending 等人
           # 工，approvals 装配使 fork 的 L3 门可达（M4.2-WP3 fail-closed）。
           round_ctx = Tools::ToolContext.new(session_key, "", "#{event_id}:r#{round}", @store,
-            nil, @approvals, false, "deny")
+            nil, @approvals, false, "deny", collab_hops)
           result = executor.run(call.tool, call.args, round_ctx)
           outcome = result.ok? ? result.output : "error: #{result.error}"
           Log.info { "react round #{round}: #{call.tool} -> #{result.ok? ? "ok" : "failed"}" }

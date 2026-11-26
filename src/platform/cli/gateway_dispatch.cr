@@ -29,6 +29,10 @@ module Sebas
             # webhook 会话批次（M4.5-WP5）：hook 事件不走聊天链（无 binding），
             # 分流到 workflow 执行（逐事件或显式批量合成 run）
             failed = run_hooks_batch(session_key, batch_id, @store.batch_inputs(batch_id))
+          elsif session_key.split(":")[3]? == "collaboration" # channel_type 段（五段键第 4 段）
+            # 协作会话批次（#186 方案 B）：内部消息显式分支——收方 turn 在协作
+            # 会话键下执行，不走 binding 路由与渠道发送
+            failed = run_collaboration_batch(session_key, batch_id)
           else
             @store.batch_inputs(batch_id).each do |input|
               process_message(message_from_payload(input.payload), admitted_session: session_key)
@@ -255,9 +259,16 @@ module Sebas
 
         # 协作 messenger 装配（#185 WP1）：max_hops 取自 gateway.collaboration。
         # 装配异常不阻断启动——message_agent 隐去（宁缺不可见，不留半接线）。
+        # 投递接线（#186 方案 B）：deliver 回调把内部消息送入独立 admission 分支
+        # （admit_collaboration）；duplicate 视同受理（同 delivery_id 只消费一次）。
         private def build_collaboration_messenger : ::Sebas::Orchestration::Collaboration::Messenger?
-          ::Sebas::Orchestration::Collaboration::Messenger.new(@agent_registry, @store,
+          messenger = ::Sebas::Orchestration::Collaboration::Messenger.new(@agent_registry, @store,
             max_hops: @config.gateway.collaboration.max_hops)
+          messenger.deliver = ->(delivery : ::Sebas::Orchestration::Collaboration::Delivery) {
+            receipt = admit_collaboration(delivery)
+            receipt.status == "accepted" || receipt.status == "duplicate"
+          }
+          messenger
         rescue ex : ::Exception
           Log.warn(exception: ex) { "collaboration messenger assembly failed; message_agent tool hidden" }
           nil
@@ -313,6 +324,14 @@ module Sebas
             next unless intent.kind == "message"
             begin
               data = JSON.parse(intent.payload)
+              if data["channel_type"]?.try(&.as_s?) == "collaboration"
+                # 协作投递重放（#186 方案 B）：收方 turn 续跑（intent 三明治防重）
+                delivery = ::Sebas::Orchestration::Collaboration::Delivery.from_payload(intent.payload)
+                admitted = @store.session_input_session_key(intent.id) || delivery.session_key
+                Log.info { "replaying collaboration intent #{intent.id} (#{intent.status})" }
+                process_collaboration_input(delivery, admitted, replay: true)
+                next
+              end
               message = Bus::InboundMessage.new(
                 data["event_id"].as_s, data["channel_type"].as_s,
                 data["account_id"].as_s, data["peer"].as_s, data["content"].as_s

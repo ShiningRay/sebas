@@ -20,7 +20,48 @@ module Sebas
       record AgentMessage, delivery_id : String, from_agent : String, to_agent : String,
         content : String, hops : Int64
 
+      # 投递载荷（#186 方案 B）：Messenger 组装，经 Gateway#admit_collaboration
+      # 入收方协作会话调度批次；payload JSON 即调度信封载荷，收方批次执行
+      # （run_collaboration_batch）按此还原。字段名与 Bus::InboundMessage 对齐
+      # （event_id/channel_type/account_id/peer/content），误入渠道解析路径也可读。
+      record Delivery, delivery_id : String, from_agent : String, to_agent : String,
+        session_key : String, content : String, hops : Int64, expect_reply : Bool,
+        payload : String do
+        def self.build(delivery_id : String, from_agent : String, to_agent : String,
+                       session_key : String, content : String, hops : Int64,
+                       expect_reply : Bool) : Delivery
+          payload = {
+            "kind":         "collaboration",
+            "event_id":     delivery_id,
+            "delivery_id":  delivery_id,
+            "channel_type": "collaboration",
+            "account_id":   "internal",
+            "peer":         from_agent,
+            "session_key":  session_key,
+            "from_agent":   from_agent,
+            "to_agent":     to_agent,
+            "content":      content,
+            "hops":         hops,
+            "expect_reply": expect_reply,
+          }.to_json
+          new(delivery_id, from_agent, to_agent, session_key, content, hops, expect_reply, payload)
+        end
+
+        def self.from_payload(raw : String) : Delivery
+          data = JSON.parse(raw)
+          hops = data["hops"]?.try(&.as_i64?) || 0_i64
+          expect_reply = data["expect_reply"]?.try(&.as_bool?) || false
+          new(
+            data["delivery_id"].as_s, data["from_agent"].as_s, data["to_agent"].as_s,
+            data["session_key"].as_s, data["content"].as_s, hops, expect_reply, raw
+          )
+        end
+      end
+
       class LoopGuardExceeded < ::Exception; end
+
+      # admission 拒投（#186：容量满/会话关闭等 fail-closed）——发送方无 ack 可重试
+      class DeliveryRejected < ::Exception; end
 
       class Messenger
         Log = Sebas::Log.for("sebas.collaboration")
@@ -32,16 +73,25 @@ module Sebas
         @inboxes = Hash(String, Channel(AgentMessage)).new
         @delivered = Hash(String, Array(AgentMessage)).new
         @mutex = Mutex.new
+        # 投递接线（#186 方案 B）：生产由 Gateway 注入——内部消息经独立
+        # admission 分支入收方协作会话调度批次（持久，崩溃可恢复）；
+        # 未接线时保留 #185 直投口径（transcript + 内存 inbox，测试/工具单测）。
+        @deliver : Proc(Delivery, Bool)? = nil
 
         def initialize(@registry : Agents::AgentRegistry, @store : ::Sebas::Platform::Store::Store,
                        @max_hops : Int64 = DEFAULT_MAX_HOPS, @inbox_capacity : Int32 = 64)
         end
 
-        # 发送 agent 间消息：署名 + hop 计数；超 max_hops 拒发（防互发死循环）。
-        # expect_reply=false 语义：接收方产生的回复默认 hop 计入同一链路（不可无限回环）。
+        setter deliver : Proc(Delivery, Bool)?
+
+        # 发送 agent 间消息：署名（含 delivery 标记，收方 turn 上下文可见）+
+        # hop 计数；超 max_hops 拒发（防互发死循环）。
+        # expect_reply（#186）：默认 false 单向通知（不产生回声链）；true 时
+        # 收方 turn 的终答回投发送方（回投本身不再可回投，hops 继承防环）。
         # hops 入参 = 本链路已用跳数（发送方从 ctx 继承，#185），出参 message.hops = hops + 1。
+        # 已接线时投递经 admission：拒投 raise DeliveryRejected（发送方无 ack 可重试）。
         def send_message(from_agent : String, to_agent : String, content : String,
-                         hops : Int64 = 0) : AgentMessage?
+                         hops : Int64 = 0, expect_reply : Bool = false) : AgentMessage?
           unless @registry.get(to_agent)
             Log.warn { "message_agent: unknown target '#{to_agent}' (from=#{from_agent})" }
             return
@@ -50,12 +100,21 @@ module Sebas
             Log.warn { "message_agent: max_hops=#{@max_hops} exceeded (from=#{from_agent} to=#{to_agent} hops=#{hops})" }
             raise LoopGuardExceeded.new("max_hops=#{@max_hops} exceeded (hops=#{hops})")
           end
-          signed = "Message from 🤖 #{from_agent}: #{content}"
-          delivery_id = "dm:#{::Digest::SHA1.hexdigest("#{from_agent}:#{to_agent}:#{content}:#{Time.utc.to_unix_ms}")}"
+          # 每次独立发送唯一（随机分量）：同毫秒同内容不撞 id；重投同一条消息
+          # 复用其 id，调度层按 id 幂等（duplicate 只消费一次）
+          delivery_id = "dm:#{::Digest::SHA1.hexdigest("#{from_agent}:#{to_agent}:#{content}:#{Time.utc.to_unix_ms}:#{::Random::Secure.hex(8)}")}"
+          signed = "Message from 🤖 #{from_agent}: #{content}\n[delivery: #{delivery_id}]"
           message = AgentMessage.new(delivery_id, from_agent, to_agent, signed, hops + 1)
           receiver_session = ::Sebas::Agents.session_key(to_agent, "internal", "collaboration", from_agent)
           # 先落链路状态再投递：收方消费到消息时下一跳的 hops 已可读（无竞态）
           record_hops(receiver_session, message.hops)
+          if callback = @deliver
+            delivery = Delivery.build(delivery_id, from_agent, to_agent, receiver_session,
+              signed, message.hops, expect_reply)
+            return message if callback.call(delivery)
+            raise DeliveryRejected.new("collaboration delivery rejected (delivery=#{delivery_id})")
+          end
+          # 未接线（#185 直投口径）：transcript 直落 + 内存 inbox（不进调度）
           @store.append_transcript(receiver_session, "user", signed)
           inbox_for(to_agent).send(message)
           message
@@ -119,10 +178,14 @@ module Sebas
           content = args["content"]?.try(&.as_s?)
           return ::Sebas::Tools::ToolResult.error("agent/content are required") unless to && content
           from = ctx.session_key.split(":")[1]? || "main"
-          # 显式 hops 仅测试/内部编排可用；生产缺省从 ctx 会话键继承（#185 WP1）
-          hops = args["hops"]?.try(&.as_i64?) || @messenger.hops_for(ctx.session_key)
+          # expect_reply（#186）：缺省 false——单向通知不产生回声链
+          expect_reply = args["expect_reply"]?.try(&.as_bool?) || false
+          # 显式 hops 仅测试/内部编排可用；生产缺省绑定启动本 turn 的 delivery
+          # （ctx.collab_hops，#186 CodeRabbit：会话 memo 会被同会话新链路覆盖，
+          # 在途 turn 读到旧值会绕过防环上限）；memo 仅遗留会话兜底
+          hops = args["hops"]?.try(&.as_i64?) || ctx.collab_hops || @messenger.hops_for(ctx.session_key)
           begin
-            message = @messenger.send_message(from, to, content, hops)
+            message = @messenger.send_message(from, to, content, hops, expect_reply)
             if message
               ::Sebas::Tools::ToolResult.success("queued #{message.delivery_id} hops=#{message.hops}")
             else
@@ -130,6 +193,8 @@ module Sebas
             end
           rescue ex : LoopGuardExceeded
             ::Sebas::Tools::ToolResult.error(ex.message || "loop guard") # 拒发（不投递）
+          rescue ex : DeliveryRejected
+            ::Sebas::Tools::ToolResult.error("collaboration delivery rejected: #{ex.message}") # 无 ack 可重试
           end
         end
       end
