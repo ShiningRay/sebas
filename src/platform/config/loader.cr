@@ -126,6 +126,14 @@ module Sebas
           hints
         end
 
+        # category/tags 词法（M4x-WP1，#147）：小写字母或数字开头，之后小写字母/
+        # 数字/连字符；长度 1..64。常量放模块级供 spec 对齐。
+        AGENT_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+
+        private def agent_category_valid?(value : String) : Bool
+          (1..64).covers?(value.size) && value.matches?(AGENT_CATEGORY_PATTERN)
+        end
+
         private def validate_agents(config : Config, errors : Array(String)) : Nil
           errors << "at least one agent must be defined" if config.agents.empty?
           config.agents.each do |name, agent|
@@ -137,6 +145,20 @@ module Sebas
             end
             (agent.skills || [] of String).each do |skill|
               errors << "agents.#{name}.skills entry must not be empty" if skill.strip.empty?
+            end
+            # category/tags（M4x-WP1，#147）：词法 + 长度校验；tags 内重复报错
+            # 不静默去重（重复=配置歧义，先验后换阶段必须显式拒绝）
+            if category = agent.category
+              unless agent_category_valid?(category)
+                errors << "agents.#{name}.category must match ^[a-z0-9][a-z0-9-]*$ and be 1..64 chars (got '#{category}')"
+              end
+            end
+            seen_tags = Set(String).new
+            agent.tags.each_with_index do |tag, i|
+              unless agent_category_valid?(tag)
+                errors << "agents.#{name}.tags[#{i}] must match ^[a-z0-9][a-z0-9-]*$ and be 1..64 chars (got '#{tag}')"
+              end
+              errors << "agents.#{name}.tags[#{i}] '#{tag}' duplicates an earlier tag" unless seen_tags.add?(tag)
             end
           end
         end

@@ -132,6 +132,10 @@ module Sebas
         getter skills : Array(String)?
         # 会话输入调度定向覆盖（session-input-scheduling.md §3.1；nil = 全继承 gateway.session）
         getter session : SessionPolicyConfig?
+        # 管理面筛选/聚合元数据（M4x-WP1，#147）：category 单值可空、tags 多值
+        # 缺省空数组；格式校验见 Loader#validate_agents（热更新先验后换复用同一校验）
+        getter category : String?
+        getter tags : Array(String) = [] of String
       end
 
       class MemoryConfig
