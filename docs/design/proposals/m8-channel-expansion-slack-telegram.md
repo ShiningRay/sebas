@@ -3,6 +3,12 @@
 > 状态：**Proposal**（设计提案，2026-11-23）。
 > 关联：[design.md §5 多账号设计](../spec/05-multi-account.md)、[research/hermes-agent.md](../research/hermes-agent.md)、[research/openclaw.md](../research/openclaw.md)。
 > 本文职责：在 Email / WeCom / Lark 三渠道之外扩展 Slack 与 Telegram 两个新渠道，对齐 Hermes 21+ 与 OpenClaw 33+ 渠道矩阵中已验证多账号形态的两个最常见入口。
+>
+> **2026-11-26 归属调整**（Maintainer 裁决，读本文前先看这条）：
+> - **Slack 仍属 M8**（现编号 M8.1-WP5）。
+> - **Telegram 迁至 `M3 · Telegram 渠道补位`**（M3-WP7/WP8）；本文 §3 与 §4.2 关于 Telegram 的设计与恢复语义仍为权威契约来源，只是实施轨道换到 M3。
+> - **M8 同时纳入企微与飞书的生产接线**（M8.1-WP2 / WP3 / WP4）：M1-WP4/WP5 只交过协议层，`spawn_adapters` 从未装配 wecom/lark，真机验收一直挂 E.1 未闭环。该部分不在本文设计范围内，契约见 [spec/05-multi-account.md](../spec/05-multi-account.md) §5.5/§5.6 与 [plan/wbs/m8-channels.md](../plan/wbs/m8-channels.md)。
+> - 本文标题保留「M8 渠道扩展」以维持历史引用可解析；milestone 与父卡已改名「渠道补齐（WeCom + Lark + Slack）」。
 
 ## 1. 背景与动机
 
@@ -69,7 +75,7 @@ Sebas 当前渠道数 = 3，对标对象成熟渠道数 ≥ 17（多账号一等
 
 ## 3. 首期范围（M8 · v0.6.0）
 
-仅 **Slack + Telegram** 两个渠道。理由：
+原定 **Slack + Telegram** 两个渠道。**2026-11-26 起 Telegram 实施轨道迁至 M3**，本文 §3 的范围判定与理由仍作为两渠道的选型依据保留；M8 实际实施范围见 [plan/wbs/m8-channels.md](../plan/wbs/m8-channels.md)（Slack + 企微接线 + 飞书接线）。理由：
 
 - Hermes 与 OpenClaw 都把 Telegram 列为首推接入渠道（"一个 bot token 即可"）；Slack 是 Hermes 多 profile 长轮询形态的教科书示例。
 - 两者都提供免公网的接收形态（Slack Socket Mode = 出站 WSS；Telegram long-poll = 出站 HTTPS 轮询），与 Sebas §5.2 长连接优先的设计一致。
@@ -116,9 +122,9 @@ channels:
 #### 扩展点定稿（M3-WP7，2026-11-26 自 M8.1-WP1 迁槽；Telegram 侧先行落地）
 
 > 逐条盘点既有抽象对 Telegram 接入的覆盖情况；**不重写抽象，只补必要字段**。
-> 落地件：`CHANNEL_TYPES` 登记 `telegram`、`TelegramAccount`（`bot_token` 必填、
+> 落地件（PR #236 / 5e48db5）：`CHANNEL_TYPES` 登记 `telegram`、`TelegramAccount`（`bot_token` 必填、
 > `api_base_url`/`token_ref` 可选）与 loader 校验、`InboundMessage.message_id`。
-> 适配器接线不在本卡范围（属 M8.1-WP3）：接入前配置可校验、发送时
+> 适配器接线不在本卡范围（属 M3-WP8）：接入前配置可校验、发送时
 > `Channels::Registry` 查无适配器 fail-loud。
 
 | 扩展点 | Telegram 所需 | 判定 |
@@ -129,10 +135,10 @@ channels:
 | `InboundMessage.message_id` | `message.message_id`（排重与回复定位；`update_id` 归排重层） | **需新增**——已补 `message_id : String? = nil`（尾置默认，旧适配器五参构造零改动；回放路径随 JSON 保真） |
 | `OutboundMessage` | 无独立 record：`send(peer, content, idempotency_key)` 即覆盖（`chat_id`=peer；客户端幂等键见 §4.4） | 已覆盖 |
 | 配置 `channels.telegram.accounts[]` | `bot_token` 必填（缺键 YAML 解析即报、空串由 loader 校验拒绝）、`api_base_url` 可选（自建 Bot API server）、`token_ref` keyring 指针 | **需新增**——已登记 `telegram` 并落地校验 |
-| TokenProvider / 限流桶 / 监督骨架 | 长期凭据无 refresh（§4.3）；token bucket 按 `(account_id, chat_id)`；fiber-per-account 监督（§5.1） | 已覆盖——沿用既有骨架，接入属 M8.1-WP3 |
+| TokenProvider / 限流桶 / 监督骨架 | 长期凭据无 refresh（§4.3）；token bucket 按 `(account_id, chat_id)`；fiber-per-account 监督（§5.1） | 已覆盖——沿用既有骨架，接入属 M3-WP8 |
 | Binding 路由 | `bindings[].channel: telegram` 校验与 `account_ids` 解析 | 已覆盖——`CHANNEL_TYPES` 登记后自动生效 |
 
-Slack 侧字段（`team_id`/`channel`/`ts`、`app_token`/`bot_token`）在同卡范围之外，接入前按同法盘点（M8.1-WP2）。
+Slack 侧字段（`team_id`/`channel`/`ts`、`app_token`/`bot_token`）不在本卡范围，接入前按同法盘点（现 M8.1-WP1 / #235）。
 
 #### Slack ACK 后崩溃恢复
 
@@ -166,7 +172,7 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
      - **已有 intent 分支也要确认**：若消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent（`INSERT OR IGNORE` 返回 false）而提前返回，**也必须**回调把对应 `telegram_updates.dispatched` 置 `true`——否则启动恢复会重投该行，消费者又走「已有 intent」分支提前返回，永远卡在 `dispatched=false`，每次启动都被重复重投。
      - 生产者在 `Bus#publish` 返回后**不置位**——`dispatched` 仍为 `false`，直到消费者确认；
      - 已标 `dispatched=true` 的行不得再次入总线。
-   - **`record_intent` 失败的运行期恢复**：若消费者 `record_intent` 因临时数据库错误抛异常，`dispatched` 保持 `false`、Telegram `update_id` 已被生产者侧推进 offset（Telegram 不会重投）。恢复路径依赖**调度器 failed 批次重试扩展**（见下方「前置依赖」节），M8 Telegram 适配器只负责渠道接入（long-poll 接收、持久化、offset 管理、发送），不实现调度器扩展。适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义。
+   - **`record_intent` 失败的运行期恢复**：若消费者 `record_intent` 因临时数据库错误抛异常，`dispatched` 保持 `false`、Telegram `update_id` 已被生产者侧推进 offset（Telegram 不会重投）。恢复路径依赖**调度器 failed 批次重试扩展**（见下方「前置依赖」节），Telegram 适配器（现 M3-WP8）只负责渠道接入（long-poll 接收、持久化、offset 管理、发送），不实现调度器扩展。适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义。
    - **入站 `event_id` 派生规则（确定性，含内容指纹）**：Telegram 入站消息的 `event_id` **唯一形式**为 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`——同时纳入 `update_id` 与 `content_fingerprint`。原因：Telegram 空闲重置后可能再次分配相同的 `update_id`，纯 `(account_id, update_id)` 派生会让内容不同的两条 update 得到相同 `event_id`，消费者 `record_intent` 用 `INSERT OR IGNORE` 会忽略新消息、且 Step 3 已标 `dispatched=true`，启动恢复也不会再投递，新消息被静默跳过。加入内容指纹后：
      - 同一条 update（同 `update_id` + 同内容）在所有投递路径上得到相同 `event_id`；
      - 内容不同的 update 即使 `update_id` 相同也得到不同 `event_id`，不会被 intent 排重忽略；
@@ -185,18 +191,18 @@ Telegram 官方 Bot API 文档明示：**`update_id` 在至少一周无新 updat
 4. **拒绝跳过新消息**：任何路径下，`getUpdates` 的 `offset` 参数都必须 ≥ 已确认的 `persisted_offset+1`，不允许因为「新值比旧值小」就跳过；重置模式通过内容指纹而非 offset 比较保证幂等。
 5. **store 表新增字段**：`telegram_accounts.last_update_at`（UTC instant）与 `telegram_accounts.reset_mode`（布尔，默认 false，标记重置模式是否跨崩溃延续）、`telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, status, retry_count, bus_publish_timeout_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引（指纹维度用于跨重置周期排重），`dispatched` 布尔标记用于启动时与周期扫描未投递行做恢复，`status` 枚举值 `'pending' | 'dead_letter'`（默认 `'pending'`）用于 dead-letter 排除，`retry_count` 用于 `max_dispatch_retries` 上限控制（仅 `record_intent` 失败计数），`bus_publish_timeout_count` 用于 bus 饱和观测与告警（不影响消息生命周期）。
 
-> 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m8-channels.md §M8.1-WP3 验收](../plan/wbs/m8-channels.md) 落地为可测验收条目。
+> 该策略参考 Telegram 官方 Bot API 文档「getUpdates」节对 `update_id` 的明确约束，并在 [plan/wbs/m3-collab-plugins.md §M3-WP8 验收](../plan/wbs/m3-collab-plugins.md) 落地为可测验收条目。
 
 #### 前置依赖：调度器 failed 批次重试扩展（独立 WP）
 
-Telegram 适配器的「`record_intent` 失败的运行期恢复」依赖 SessionScheduler 支持 `failed → queued` 状态迁移与重派触发器。这些属于**调度器本身的设计演进**，不在 M8 渠道接入范围内。M8 开工前，以下调度器扩展必须已完成（由独立 issue 跟踪，建议挂在 M4x 并行轨或 M5 主线）：
+Telegram 适配器（M3-WP8）的「`record_intent` 失败的运行期恢复」依赖 SessionScheduler 支持 `failed → queued` 状态迁移与重派触发器。这些属于**调度器本身的设计演进**，不在渠道接入范围内。**M3-WP8 开工前**，以下调度器扩展必须已完成（截至 2026-11-26 仍无独立 issue 跟踪、代码未实现，须先建卡落位）：
 
 - **扩展点 1 · `SessionScheduler#retry_failed_batch(batch_id)`**：批次内所有成员都是「无 intent 失败」（`intents` 表中无该 `event_id` 行）时，允许 `failed → queued` 迁移；`retry_failed_batch` 只在 `@running_batch.nil?` 且同会话无 `running` 批次时执行（保持会话串行约束）。**混合批次处理**：若批次中部分成员已有 intent、部分成员无 intent 失败，`retry_failed_batch` 只迁移无 intent 失败的成员回 `queued`，已有 intent 的成员保持原状态（由 `replay_unfinished` 覆盖）；批次状态迁移以「所有无 intent 失败成员已迁回 queued」为准。
 - **扩展点 2 · 重试成员状态流转**：无 intent 失败成员从 `failed` 重新排队后，由 `dispatch_locked` 推进至 `dispatched`，`batch_done` 能结算其成功完成或再次失败的结果。**混合批次执行体过滤**：`run_batch_job` 只处理本次迁回 `queued` 的无 intent 失败成员——已有 intent 的成员（`intents` 表中该 `event_id` 状态为 `done` 或 `dispatched`）**不纳入本次执行体**，避免其被重复计为失败；`batch_done` 结算也仅依据这些待重试成员的结果，已有 intent 成员通过 `replay_unfinished` 独立恢复。
 - **扩展点 3 · queued 批次重派触发器**：`dispatch_locked` 在 `@dispatch.call` 抛异常后把批次回退为 `queued` 时，需要显式重派触发器（周期扫描调用调度器派发入口，或仅依赖后续事件/启动恢复）。
 - **扩展点 4 · 启动屏障**：`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前设置 `@replay_completed = true`；扫描器在屏障前跳过 dispatch 触发，避免旧重放与新派发并发执行。
 
-M8 Telegram 适配器只负责**渠道接入**（long-poll 接收、持久化、offset 管理、发送），**不实现上述调度器扩展**。适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义。
+Telegram 适配器（M3-WP8）只负责**渠道接入**（long-poll 接收、持久化、offset 管理、发送），**不实现上述调度器扩展**。适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义。
 
 ### 4.3 TokenProvider 与凭据
 
