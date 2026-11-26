@@ -89,9 +89,29 @@ module Sebas
       joined.should contain("message.send requires idempotency_key")
       joined.should contain("duplicate action id")
       joined.should contain("unknown tool 'mystery.tool'")
-      joined.should contain("targets unknown agent 'ghost'")
+      # M4x-Comm-WP3 #187：subagent.ask 已移出白名单（校验期即报，不再有
+      # 「白名单有、执行无」的运行期失败路径）
+      joined.should contain("unknown tool 'subagent.ask'")
       joined.should contain("replay must be safe or effectful")
       joined.should contain("approval.mode must be manual/smart/off")
+    end
+
+    it "rejects subagent.ask even when the target agent exists" do
+      # 守卫：哪怕目标 agent 合法，移除案也不放行——防止未来有人把工具名加回
+      # KNOWN_TOOLS 却不接执行体（白名单有、执行无的回归闸）。
+      wf = ::Sebas::Orchestration::DSL::Parser.parse_workflow(<<-YAML
+        id: ask-wf
+        trigger:
+          type: cron
+          schedule: "0 9 * * *"
+        actions:
+          - id: ask
+            tool: subagent.ask
+            args: { agent: main, prompt: "hi" }
+        YAML
+      )
+      errors = ::Sebas::Orchestration::DSL::Validator.validate(wf, ["main"])
+      errors.should contain("workflow.ask-wf.actions[ask]: unknown tool 'subagent.ask'")
     end
 
     it "fails on missing required sections" do

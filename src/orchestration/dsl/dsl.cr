@@ -112,7 +112,10 @@ module Sebas
       module Validator
         extend self
 
-        KNOWN_TOOLS = %w[message.send memory.search memory.save session.read subagent.ask fork join]
+        # subagent.ask 不在白名单（M4x-Comm-WP3 #187）：白名单有、执行无的缺口以
+        # 「校验期即报 unknown tool」关死——运行期它落通用执行器查无此工具，run 中途
+        # 才失败，前序动作副作用已发生。求助并取结果类编排原语待后续 WP 设计。
+        KNOWN_TOOLS = %w[message.send memory.search memory.save session.read fork join]
 
         # 纯函数校验（热更新复用口径）：返回错误列表，空=合法
         def validate(workflow : Workflow, agent_names : Enumerable(String)) : Array(String)
@@ -157,12 +160,7 @@ module Sebas
             unless {"", "manual", "smart", "off"}.includes?(action.approval_mode)
               errors << "#{tag}: approval.mode must be manual/smart/off"
             end
-            if action.tool == "subagent.ask"
-              agent = workflow_action_agent(action)
-              unless agent.empty? || agents.includes?(agent)
-                errors << "#{tag}: subagent.ask targets unknown agent '#{agent}' (available: #{agents.join(",")})"
-              end
-            elsif !KNOWN_TOOLS.includes?(action.tool) && !action.tool.starts_with?("plugin.")
+            if !KNOWN_TOOLS.includes?(action.tool) && !action.tool.starts_with?("plugin.")
               errors << "#{tag}: unknown tool '#{action.tool}'"
             end
             # 发消息类动作必须带幂等键或可派生（§7.3：不重发）
@@ -170,13 +168,6 @@ module Sebas
               errors << "#{tag}: message.send requires idempotency_key"
             end
           end
-        end
-
-        private def workflow_action_agent(action : Action) : String
-          parsed = JSON.parse(action.args)
-          parsed["agent"]?.try(&.as_s?) || ""
-        rescue ::Exception
-          ""
         end
       end
     end

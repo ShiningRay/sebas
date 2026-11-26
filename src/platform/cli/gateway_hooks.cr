@@ -22,7 +22,10 @@ module Sebas
         # workflow YAML 装载（data_dir/workflows/*.yaml）：目录不存在即空
         # （向后兼容，无 workflow 部署时行为不变）；装载失败单文件 fail-logged
         # 不阻断其余。disabled（enabled: false）不注册（a4nz）；webhook source
-        # 含 ":" 跳过（event_id 分隔歧义，aD5g）。
+        # 含 ":" 跳过（event_id 分隔歧义，aD5g）。注册前过 Validator.validate
+        # （M4x-Comm-WP3 #244 review）：白名单/幂等键/duplicate id 等校验此前只在
+        # 测试里跑，生产装载从不校验——非法工作流会注册成功、run 中途才失败
+        # （前序动作副作用已发生）。校验不过按装载失败同口径 fail-logged 跳过。
         private def load_workflows(engine : Orchestration::Engine) : Nil
           workflow_dir = @data_dir / "workflows"
           return unless Dir.exists?(workflow_dir)
@@ -37,6 +40,11 @@ module Sebas
             end
             if workflow.trigger.type == "webhook" && workflow.trigger.source.includes?(":")
               Log.error { "webhook source must not contain ':', skipped: #{workflow.id} (#{workflow.trigger.source})" }
+              next
+            end
+            errors = Orchestration::DSL::Validator.validate(workflow, @config.agents.keys)
+            unless errors.empty?
+              Log.error { "workflow invalid, skipped: #{workflow.id} (#{errors.join("；")})" }
               next
             end
             engine.register(workflow)

@@ -70,19 +70,18 @@ workflows:
         - from_matches: "*.notify@github.com"
         - subject_contains: "PR merged"
     actions:
-      - id: summarize
-        tool: subagent.ask                 # 动作 = 工具调用（含内置工具）
+      - id: record
+        tool: memory.save                  # 动作 = 工具调用（含内置工具）
         args:
-          prompt: "总结该 PR 变更要点"
-          max_concurrent_key: inbox-triage  # 共享信号量（§8.3）
-        replay: safe                       # 只读，可安全重跑
+          content: "PR merged: ${trigger.subject}"
+        replay: safe                       # 幂等，可安全重跑
       - id: notify
         tool: message.send
         args:
           channel: lark
           account: feishu-main             # 显式指定出站账号
           peer: "oc_review_group"
-          content: "${summarize.result}"
+          content: "${trigger.subject}"
         idempotency_key: "notify:${trigger.event_id}"   # 发信幂等键
       - id: archive
         tool: label.apply
@@ -94,8 +93,8 @@ workflows:
       schedule: "0 9 * * 1-5"              # 工作日 9 点（cron 三态之表达式态，A10）
     actions:
       - id: gather
-        tool: subagent.ask
-        args: { prompt: "汇总本周工作邮箱要点", budget_tokens: 20000 }
+        tool: memory.search
+        args: { query: "工作邮箱 本周要点", budget_tokens: 20000 }
       - id: send
         tool: message.send
         args:
@@ -108,5 +107,10 @@ workflows:
           mode: manual
           timeout_seconds: 3600            # 超时即拒（fail-closed）
 ```
+
+> 注（M4x-Comm-WP3 #187）：`subagent.ask`（跨 agent 求助并取结果）已自 `KNOWN_TOOLS`
+> 白名单移除——校验期即报 `unknown tool`，不再存在「白名单有、执行无」的运行期失败路径。
+> 「LLM 求助并取结果」类编排原语待后续 WP 设计（fork/join 是并行/汇聚原语，不是求助原语），
+> 示例已改用既有原语表达；`label.apply` 为预留形态（同不在白名单）。
 
 外部 webhook 触发示例：`POST /hooks/wake`、`POST /hooks/<name>`（带鉴权；OpenClaw §8 inbound webhooks 同构）。
