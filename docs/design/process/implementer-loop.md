@@ -357,7 +357,7 @@ ruby tools/sebas-process claim 39 --apply      # 写本地运行记录
 - PR：`gh pr view --json statusCheckRollup,mergeStateStatus,closingIssuesReferences,headRefOid,…`。
 - 未解决 review threads：GraphQL 分页读取 `reviewThreads(first: 100, after: ...) { nodes { isResolved } pageInfo { hasNextPage endCursor } }`，再在本地过滤未解决项；该连接没有 `isResolved` 查询参数。
 
-所有列表处理分页和空值。`gh` 非零退出、JSON 解析失败、缺字段均 fail-closed；凭据只由运行环境注入，不写日志、运行记录或文档。
+所有列表处理分页和空值。evidence 的 `source_ref` 作者与正文从一次全仓 issue 评论分页中取，命中即用、未命中回退单条请求（不得以空正文放行）。`gh` 非零退出、JSON 解析失败、缺字段均 fail-closed；凭据只由运行环境注入，不写日志、运行记录或文档。
 
 ### Harness 适配
 
