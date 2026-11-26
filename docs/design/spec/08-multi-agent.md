@@ -6,12 +6,15 @@
 
 ### 8.1 Agent 间消息（防环三件套，参数化照抄 Hermes §4.3）
 
-- 工具 `message_agent(agent_id, content)`：**fire-and-forget**——发送方收 `ack=queued + delivery_id`，对方完成后带回复通知。
+- 工具 `message_agent(agent_id, content, expect_reply?)`：**fire-and-forget**——发送方收 `ack=queued + delivery_id`，对方完成后按 expect_reply 回复。
 - **工具面**（M4x-Comm-WP1 #185）：`message_agent` 进 `agent_turn` 的衰减工具面，受 `agent.tools.allow` 白名单约束；装配未接线（messenger 缺失）时工具不注册——工具面即生效面，不出现「白名单有、执行无」。
+- **投递落点与收方消费**（M4x-Comm-WP2 #186，方案 B 调度 admission）：内部消息组装成与渠道事件字段对齐的 `Delivery`，经独立 admission 分支入收方协作会话批次（`channel_type=collaboration`）；收方 turn 在 `agent:<to>:internal:collaboration:<from>` 键下执行，投递键与 turn 读取键同源一致。**不改** `schedule_input` 的「无 binding 即丢弃」fail-closed 语义；未知收方拒投并审计。
+- **transcript 执行期落库**：admission 持久（SQLite 批次）先于副作用，user 行在收方 turn 执行时写入并带署名与 `[delivery: dm:…]` 标记；intent 三明治标记已消费。
+- **幂等与恢复**：delivery_id 含随机分量，独立发送唯一；同 id 重投走 admission duplicate，只消费一次；崩溃后经批次重派（recover_dispatch）与 intent 重放（replay_unfinished 协作分支）续跑，重放不重复注入已落库行。
 - **署名**：消息自动带前缀 `Message from 🤖 <agent_id>:`，收方知道来源。
-- **防环上限**（配置项 `gateway.collaboration.max_hops`，默认 4）：一轮交换内 agent-to-agent 传递上限，超过拒发——防 agent 互发死循环。hops 不靠模型自报：投递时按收方会话键落库链路跳数，下一跳从工具 ctx 会话键继承；回执形如 `queued <delivery_id> hops=<n>`。
-- **收件分片**：inbox 按 `to_agent` 分片，收方只取本 agent 的消息（不串收他人投递）。
-- **回复默认不可再被回复**（`expect_reply=false`）：单向通知不产生回声链。
+- **防环上限**（配置项 `gateway.collaboration.max_hops`，默认 4）：一轮交换内 agent-to-agent 传递上限，超过拒发——防 agent 互发死循环。hops 不靠模型自报：投递时按收方会话键落库链路跳数，下一跳从工具 ctx 会话键继承；回执形如 `queued <delivery_id> hops=<n>`；expect_reply 回投走同一防环口径。
+- **收件分片**（messenger 未接线时的直投口径）：inbox 按 `to_agent` 分片，收方只取本 agent 的消息（不串收他人投递）；接线后投递走持久 admission（见上），崩溃可恢复。
+- **expect_reply 语义**（#186）：默认 false——单向通知不产生回声链；true 时收方 turn 终答回投发送方（hops 继承、回投自身不可再回投），拒投/超跳审计不炸 turn。
 
 ### 8.2 subagent（并行执行单元）
 
