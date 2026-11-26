@@ -7,6 +7,9 @@ class FakeSmtpServer
   # 已接收邮件：{from, to, payload}
   getter mails : Array(NamedTuple(from: String, to: String, payload: String))
 
+  # 原始命令行（含行尾符）：回归断言客户端按 RFC 5321 发 CRLF
+  getter raw_lines : Array(String) = [] of String
+
   def initialize
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.local_address.port
@@ -36,8 +39,9 @@ class FakeSmtpServer
     io.puts "220 fake smtp ready"
     envelope = {"from" => "", "to" => ""} of String => String
     loop do
-      line = io.gets
+      line = io.gets(chomp: false)
       break if line.nil?
+      @mutex.synchronize { @raw_lines << line }
       break unless handle_line(io, line.chomp, envelope)
     end
     io.close

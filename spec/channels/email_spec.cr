@@ -40,6 +40,59 @@ module Sebas
       calls.should eq(2)
     end
 
+    it "sends IMAP commands with CRLF line endings (RFC 3501)" do
+      # 回归：IO#puts 只写 "\n"，Gmail/QQ/Outlook 对 LF 命令行不响应（读超时）
+      server = FakeImapServer.new
+      server.add_mail("1", "alice@example.com", "hi", "body")
+      server.serve
+      begin
+        client = Channels::Email::ImapClient.new("127.0.0.1", server.port, "u", "p", tls: false)
+        client.login
+        client.select
+        client.logout
+        client.close
+        raw = server.raw_commands
+        raw.should_not be_empty
+        raw.each(&.should(end_with("\r\n")))
+      ensure
+        server.close
+      end
+    end
+
+    it "sends SMTP commands and DATA frames with CRLF line endings (RFC 5321)" do
+      # 回归：QQ SMTP 对 LF 的 EHLO 直接 502；DATA 段也须按 CRLF 分帧
+      server = FakeSmtpServer.new
+      server.serve
+      begin
+        client = Channels::Email::SmtpClient.new("127.0.0.1", server.port, "u", "p", tls_mode: "none")
+        client.send_mail("me@example.com", "you@example.com", "hi", "line1\nline2")
+        client.close
+        raw = server.raw_lines
+        raw.should_not be_empty
+        raw.each(&.should(end_with("\r\n")))
+        server.mails.first[:payload].should contain("line1\r\nline2")
+      ensure
+        server.close
+      end
+    end
+
+    it "dot-stuffs a body line that starts with a dot" do
+      server = FakeSmtpServer.new
+      server.serve
+      begin
+        client = Channels::Email::SmtpClient.new("127.0.0.1", server.port, "u", "p", tls_mode: "none")
+        client.send_mail("me@example.com", "you@example.com", "hi", ".hidden\n..double")
+        client.close
+        # fake 服务端按 RFC 逆点填充：往返后正文应与原文一致；
+        # 客户端若漏做点填充，".hidden" 会被服务端剥成 "hidden"
+        payload = server.mails.first[:payload]
+        payload.should contain("\r\n.hidden\r\n")
+        payload.should contain("\r\n..double\r\n")
+      ensure
+        server.close
+      end
+    end
+
     it "fetches messages over IMAP against the fake server" do
       server = FakeImapServer.new
       server.add_mail("1", "alice@example.com", "hi", "first body")
@@ -64,7 +117,8 @@ module Sebas
 
     it "publishes inbound messages to the bus on EXISTS (收信入总线)" do
       server = FakeImapServer.new
-      server.add_mail("1", "carol@example.com", "PR merged", "looks good to me")
+      # 历史先入 1 封，连接建立后才到新邮件——新邮件才是要投总线的
+      server.add_mail("1", "old@example.com", "old", "history should not be replayed")
       server.serve
 
       account = Platform::Config::EmailAccount.from_yaml(
@@ -77,14 +131,48 @@ module Sebas
         smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none"
       )
       adapter.start
-      event = bus.receive?(3.seconds)
+      # 等 adapter 登录并进入 IDLE 后再投递新邮件，模拟真实到达时序
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+      server.add_mail("2", "carol@example.com", "PR merged", "looks good to me")
+      event = bus.receive?(5.seconds)
       adapter.stop
       begin
         msg = event.should be_a(Platform::Bus::InboundMessage)
         msg.account_id.should eq("test-mailbox")
         msg.peer.should eq("carol@example.com")
         msg.content.should eq("looks good to me")
-        msg.event_id.should eq("email:test-mailbox:1")
+        msg.event_id.should eq("email:test-mailbox:2")
+      ensure
+        bus.close
+        server.close
+      end
+    end
+
+    it "skips pre-existing mail on first connect (不重放历史)" do
+      # 回归：last_uid 曾硬编码 "0"，332 封历史会被逐封重放进总线并触发回信
+      server = FakeImapServer.new
+      30.times { |i| server.add_mail((i + 1).to_s, "bulk#{i}@example.com", "old #{i}", "history #{i}") }
+      server.serve
+
+      account = Platform::Config::EmailAccount.from_yaml(
+        "id: test-mailbox\nplatform: 127.0.0.1\nreceive: imap-idle\ncredentials: { user: u, password: p }"
+      )
+      bus = Platform::Bus::Bus.new(64)
+      adapter = Channels::Email::EmailChannelAdapter.new(
+        account, bus, idle_poll: 2.seconds,
+        imap_host: "127.0.0.1", imap_port: server.port, imap_tls: false,
+        smtp_host: "127.0.0.1", smtp_port: 1, smtp_tls: "none"
+      )
+      adapter.start
+      wait_for(3.seconds) { server.seen_commands.any?(&.includes?("IDLE")) }.should be_true
+      # 新邮件到达：只应看到这一封，历史 30 封不得出现
+      server.add_mail("31", "fresh@example.com", "new", "just arrived")
+      event = bus.receive?(5.seconds)
+      adapter.stop
+      begin
+        msg = event.should be_a(Platform::Bus::InboundMessage)
+        msg.event_id.should eq("email:test-mailbox:31")
+        bus.receive?(200.milliseconds).should be_nil
       ensure
         bus.close
         server.close

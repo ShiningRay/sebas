@@ -39,6 +39,14 @@
 
 ### Fixed
 
+- email 渠道真机收发两处缺陷：① IMAP/SMTP 命令行原用 `IO#puts`（行尾裸 LF，RFC 3501 §2.2 / RFC 5321 §4.1.1.4
+  要求 CRLF），Gmail/QQ/Outlook 的 IMAP 对 LF 命令行不响应直到读超时、QQ SMTP 对 LF 的 EHLO 直接 502；
+  现统一 `print(line, "\r\n")`，并把正文裸 LF 归一为 CRLF 后再点填充（否则多行正文的行首点号漏填、DATA 分帧非法）。
+  ② 收信游标 `last_uid` 硬编码 `"0"` 且是循环内局部变量——有历史邮件的邮箱会把整个 INBOX 逐封当新邮件重放并回信，
+  重连后再次重放，且单批只取最老 10 封使新邮件永远排不上；现首连以 SELECT 的 `UIDNEXT - 1` 为基线跳过历史、
+  游标提为进程内字段跨重连保留、`drain_inbox` 循环取批直到空。Gmail 实测：332 封历史的邮箱只投递新到的一封，
+  重启静置 25s 零重放（Fixes #20）。
+
 - Crystal 最低版本由 `>= 1.19.0` 修正为 `>= 1.22.0`：`src/platform/keys/vault.cr` 用了 1.22 才进入 stdlib 的
   `OpenSSL::Cipher#gcm_tag`，旧下限会让本地构建报误导性的 `undefined method 'gcm_tag'`。`Makefile` 新增
   `crystal-version-check` 前置目标，低于下限立即失败并给出修法；所有编译/检查目标支持 `CRYSTAL=` 覆盖。

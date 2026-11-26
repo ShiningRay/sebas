@@ -16,6 +16,12 @@ module Sebas
 
         getter health : String
 
+        # 收信基线（进程内）：首次连上时取 SELECT 的 UIDNEXT 作为起点，跳过既有
+        # 历史——否则 332 封旧邮件会被当新邮件重放进总线并逐封回信。重连沿用
+        # 已推进的值，断线窗口内到达的邮件不会被漏掉。进程重启后基线会重新建立，
+        # 停机期间收到的邮件不会补投（持久化游标待 M1，与 UIDVALIDITY 全量重扫同批）。
+        @last_uid : Int64? = nil
+
         def initialize(account : Platform::Config::EmailAccount, @bus : Platform::Bus::Bus,
                        provider : Common::TokenProvider? = nil, idle_poll : Time::Span = 29.minutes,
                        imap_host : String? = nil, imap_port : Int32 = 993, imap_tls : Bool = true,
@@ -100,7 +106,8 @@ module Sebas
         end
 
         private def idle_session(client : ImapClient) : Nil
-          last_uid = "0"
+          # 首次连接：把 UIDNEXT 当作「已读到这里」，既有邮件全部视为历史。
+          @last_uid ||= client.last_uidnext.try(&.-(1_i64)) || 0_i64
           while @running.get
             event = client.idle
             if event.nil?
@@ -108,14 +115,30 @@ module Sebas
               next
             end
             next unless event.includes?("EXISTS")
-            client.fetch_since(last_uid).each do |mail|
-              last_uid = mail.uid if mail.uid.to_i64 > last_uid.to_i64
-              publish_inbound(mail)
-            end
+            drain_inbox(client)
           end
         ensure
           client.logout
           client.close
+        end
+
+        # 循环取批直到没有新邮件：单批 FETCH_BATCH 上限之上还要继续，否则
+        # 积压超过一批时新邮件永远排在老邮件后面取不到。
+        private def drain_inbox(client : ImapClient) : Nil
+          loop do
+            mails = client.fetch_since(@last_uid.try(&.to_s) || "0", ImapClient::FETCH_BATCH)
+            break if mails.empty?
+            mails.each do |mail|
+              advance_cursor(mail.uid.to_i64)
+              publish_inbound(mail)
+            end
+          end
+        end
+
+        # 游标只前进不后退（服务端 UID 单调递增，回退意味着数据异常）
+        private def advance_cursor(uid : Int64) : Nil
+          current = @last_uid
+          @last_uid = uid if current.nil? || uid > current
         end
 
         private def publish_inbound(mail : MailSummary) : Nil
