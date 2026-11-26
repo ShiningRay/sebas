@@ -94,11 +94,15 @@ ruby tools/sebas-process claim <新卡号>
 
 读结果的边界：
 
-- `status=ready` → 三方一致且前置已满足，可开工。
-- `status=blocked` 且 reason 指向真实前置（`前置 #N 仍 open`）→ 三方一致，只是前置没完成。
-  **但 `blocked` 不代表正文核对过**：依赖节标题写成「依赖关系」这类变体时，
-  `prose_dependencies` 返回 `nil`，正文声明被整段跳过，照样可能报 `blocked`。
-  标题写法只能靠人眼确认，工具不会替你发现。
+**先说结论：`claim` 的任何 `status` 都不能证明正文核对过。** 标题写成「依赖关系」这类变体时
+`prose_dependencies` 返回 `nil`，正文声明被整段跳过——`ready`、`blocked`、`invalid` 都可能
+在正文有分叉时照常返回。开头的第 1 条规则只能靠人眼确认，工具不会替你发现。
+
+逐个状态的含义：
+
+- `status=ready` → `depends_on` 与 `blocked_by` 一致、前置已满足，可开工。
+  正文有没有被核对过，这一行看不出来，须自己回看标题。
+- `status=blocked` 且 reason 指向真实前置（`前置 #N 仍 open`）→ 已声明的依赖一致，只是前置没完成。
 - `status=invalid` → 有分叉，但未必是依赖：`external` 未进 `depends_on`、`depends_on` 写成
   `"#N"`、缺 Automation 块、`blocked_by` 与 `depends_on` 不一致都会报 `invalid`。
   按 reason 逐条核对，不要一律当成三方不一致。
