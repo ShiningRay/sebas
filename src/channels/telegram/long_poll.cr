@@ -43,25 +43,32 @@ module Sebas
           @store.ensure_telegram_account(@account_id)
         end
 
-        # 完整运行循环（adapter fiber 调用；stop 由调用方翻转后由轮询周期感知）
+        # 完整运行循环（adapter fiber 调用；stop 由调用方翻转后由轮询周期感知）。
+        # 任何单轮异常（BotApi 网络错误 / 存储层瞬时故障）只退避重试，不逃出循环——
+        # 异常逃出即账号停收且无人重启（supervisor 只观察 health 不重启 fiber）。
         def run(stop : Atomic(Bool), scan_interval : ::Time::Span = 60.seconds,
                 backoff : ::Time::Span = 5.seconds, max_backoff : ::Time::Span = 60.seconds) : Nil
           current_backoff = backoff
-          last_scan = ::Time.instant
-          recover_pending
+          last_scan = ::Time.instant - scan_interval # 首轮即执行启动恢复扫描
           until stop.get
             begin
               poll_once
               current_backoff = backoff
+              # 运行期恢复：周期扫描重投 dispatched=false 行（与启动扫描同构）
+              if ::Time.instant - last_scan >= scan_interval
+                recover_pending
+                last_scan = ::Time.instant
+              end
             rescue ex : BotApiError
               Log.warn { "getUpdates failed (account=#{@account_id}): #{ex.message}; backoff #{current_backoff}" }
               sleep current_backoff
               current_backoff = Math.min(current_backoff * 2, max_backoff)
-            end
-            # 运行期恢复：周期扫描重投 dispatched=false 行（与启动扫描同构）
-            if ::Time.instant - last_scan >= scan_interval
-              recover_pending
-              last_scan = ::Time.instant
+            rescue ex : ::Exception
+              # 存储层瞬时故障（SQLite busy 等）：退避后重试；连续异常由退避
+              # 上限节流，不形成错误日志风暴
+              Log.error(exception: ex) { "telegram poll iteration failed (account=#{@account_id}); backoff #{current_backoff}" }
+              sleep current_backoff
+              current_backoff = Math.min(current_backoff * 2, max_backoff)
             end
           end
         end
@@ -84,8 +91,14 @@ module Sebas
           count = 0
           @store.pending_telegram_updates(@account_id).each do |row|
             chat_id, message_id, text = Telegram.parse_message_payload(row.raw_payload)
+            if chat_id.nil?
+              # 非消息类行（persist 后置位前崩溃的窗口残留）：自愈置位，不入总线
+              # （无投递语义，空消息入总线只会产生空 intent）
+              @store.mark_telegram_dispatched(row.event_id)
+              next
+            end
             @bus.publish(::Sebas::Platform::Bus::InboundMessage.new(
-              row.event_id, "telegram", row.account_id, chat_id || "", text || "", message_id))
+              row.event_id, "telegram", row.account_id, chat_id, text || "", message_id))
             count += 1
           end
           Log.info { "telegram recover scan re-published #{count} pending updates (account=#{@account_id})" } if count.positive?
@@ -125,8 +138,11 @@ module Sebas
         private def poll_reset_once : Outcome
           updates = @api.get_updates(nil)
           return Outcome::Empty if updates.empty?
-          @store.touch_telegram_last_update(@account_id, @clock.call.to_rfc3339)
+          # 先置持久位再刷新空闲基准：中途崩溃则 last_update_at 仍是旧值（≥6 天），
+          # 重启后按判定重新进入重置模式；反序会留下「基准已新近 + reset_mode=0」
+          # 组合，重启后被误判回活跃窗口、旧 offset 确认跳过重置后的小 ID update。
           @store.enter_telegram_reset_mode(@account_id)
+          @store.touch_telegram_last_update(@account_id, @clock.call.to_rfc3339)
           max_id = 0_i64
           updates.each do |update|
             process_update(update, advance_offset: false)
@@ -147,10 +163,11 @@ module Sebas
           inserted = @store.persist_telegram_update(
             event_id, @account_id, update.update_id, update.content_fingerprint, update.raw_payload)
 
-          if inserted && update.chat_id.nil?
+          if update.chat_id.nil?
             # 非消息类 update（无 chat 可投，如 callback_query）：落库推进 offset
-            # 但不入总线；无总线投递即无消费者确认环节，直接置 dispatched，
-            # 否则该行会被恢复扫描永久重投。
+            # 但不入总线；无总线投递即无消费者确认环节，直接置 dispatched。
+            # 置位判定不看 inserted——persist 后、置位前崩溃的重推走同一路径补
+            # 置位，该行不会滞留 pending 被恢复扫描当空消息重投。
             @store.mark_telegram_dispatched(event_id)
             advance_offset_or_noop(update, advance_offset)
             return
