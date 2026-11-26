@@ -111,23 +111,39 @@ class SetupActionTest < Minitest::Test
     assert status.success?, out
   end
 
-  # vcpkg 的二进制缓存目录写两处：restore/save 的 path 与安装步骤里的
-  # VCPKG_DEFAULT_BINARY_CACHE。任一处改了而另一处没跟上，缓存会命中但用不上
+  # vcpkg 的二进制缓存目录写三处：restore 与 save 的 path，以及安装步骤里的
+  # VCPKG_DEFAULT_BINARY_CACHE。任一处改了而其余没跟上，缓存会命中但用不上
   # ——CI 仍然是绿的，只是白跑一趟缓存，无声无息。
   def test_vcpkg_cache_path_matches_the_install_step
     restore = step("Restore vcpkg binary cache")
-    assert_equal ".vcpkg-archives", restore.dig("with", "path"),
-      "缓存目录写成工作区相对路径，供安装步骤用 $PWD 拼绝对路径"
-    assert_includes restore["if"].to_s, "runner.os == 'Windows'"
-    assert_match(%r{\Aactions/cache/restore@[0-9a-f]{40}\z}, restore["uses"].to_s,
-      "新增 action 必须 SHA 钉版")
+    save = step("Save vcpkg binary cache")
+    cache_dir = ".vcpkg-archives"
+
+    [restore, save].each do |entry|
+      assert_equal cache_dir, entry.dig("with", "path"),
+        "#{entry["name"]} 的 path 必须与实际落盘目录一致"
+      assert_includes entry["if"].to_s, "runner.os == 'Windows'"
+      assert_match(%r{\Aactions/cache/(restore|save)@[0-9a-f]{40}\z}, entry["uses"].to_s,
+        "新增 action 必须 SHA 钉版")
+    end
+    # restore 与 save 必须指向同一目录，否则存进去的读不回来。
+    assert_equal restore.dig("with", "path"), save.dig("with", "path")
 
     install = step("Install SQLite3 (Windows)")["run"]
-    assert_includes install, '$env:VCPKG_DEFAULT_BINARY_CACHE = "$PWD\.vcpkg-archives"',
+    assert_includes install, %($env:VCPKG_DEFAULT_BINARY_CACHE = "$PWD\\#{cache_dir}"),
       "安装步骤必须把 vcpkg 的二进制缓存指到同一个目录"
-    # 目录不存在时 vcpkg 会直接失败，所以必须先建。
-    assert_match(/New-Item.*\$env:VCPKG_DEFAULT_BINARY_CACHE/, install,
-      "缓存目录必须先创建再安装")
+  end
+
+  # 目录创建必须在 vcpkg install 之前：vcpkg 在缓存目录不存在时直接失败，
+  # 顺序颠倒会让两个平台之间只差一行，问题只在 Windows CI 上暴露。
+  def test_vcpkg_cache_dir_is_created_before_install
+    install = step("Install SQLite3 (Windows)")["run"]
+    made = install.index("New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE")
+    used = install.index('vcpkg install "sqlite3[fts5]:x64-windows"')
+
+    refute_nil made, "安装步骤必须先创建缓存目录"
+    refute_nil used
+    assert made < used, "目录创建必须出现在 vcpkg install 之前"
   end
 
   # 主键必须带 run_id，且 restore/save 两步一致。
