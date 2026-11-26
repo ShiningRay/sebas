@@ -19,4 +19,6 @@
 
 各期共同门禁：`crystal spec` + `./bin/ameba`（质量门禁现行权威为 [CONTRIBUTING.md](../../../CONTRIBUTING.md) 质量门禁节 + `Makefile` + `.github/workflows/ci.yml`；M4.1–M4.4 统一改用「调度四条」= `make format-check` + `make spec` + `make lint` + `make release`，Q7 裁断；M4.0 纯文档包以评审通过替代命令门禁，见 [gates.md](../plan/schedule/gates.md) B.3）。
 
+**装配类验收口径**（M4x-Comm-WP3 #187，2026-11-26 起）：凡把既有构件接入生产装配路径的工作包，验收须含**生产可调用性与端到端可达证据**——spec 通过不等于生产可达。M3-WP3 教训：subagent 的信号量/找回经 spec 验收，生产装配从未接线，DSL 白名单面 `subagent.ask` 在 run 中途才失败。本口径与 [implementer-loop.md §2.3](../process/implementer-loop.md) 的前置完成标准同源。
+
 **M3 追加包（2026-11-26）**：Telegram 渠道补位（long-poll 接收 + Bot API 发送）由 M8 迁入 M3 槽位，编号 M3-WP7/WP8，详见 [m3-collab-plugins.md](../plan/wbs/m3-collab-plugins.md) 的「M3 追加包」节。该追加不改写 v0.1.0 已发布的 M3 门禁结论，只新增轨道。

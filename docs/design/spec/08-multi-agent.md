@@ -24,11 +24,16 @@
 - subagent = **被拥有的会话/任务**（Pi §3：工具在 commit 内创建 ownership 子会话，崩溃重跑经 ownerTaskId 找回同一个）。
 - 受限工具集：剔除 message/spawn 等社交工具、不能递归、不看主会话历史（autobot §8 现成先例：`create_subagent_registry`）。
 - 结果以系统消息回注发起方的下一 turn（autobot `announce_result` 模式），但**不再依赖全局单 Loop**——直接投递到该 agent 的会话 worker（B3 修复）。
+- **生产接线状态**（M4x-Comm-WP3 #187，2026-11-26）：
+  - `SubagentManager`（`src/agents/subagent.cr`，M3-WP3 落地件：ownership 找回 + 命名信号量并发上限）作为内部构件保留，有 spec 覆盖（collaboration_spec 崩溃找回/并发上限两条）。
+  - **DSL 面已移除**：`subagent.ask` 不在 `KNOWN_TOOLS`（`dsl.cr`），校验期即报 unknown tool——此前白名单有、Engine 无执行分支且工具注册表无该工具，工作流会在 run 中途以 `unknown tool` 失败（前序动作副作用已发生），违背校验器 fail-closed 的存在意义，故移除。
+  - **跨 agent「求助并取结果」编排原语暂缺**：§7.6 的 LLM 摘要类动作当前无可表达原语（fork/join 是并行/汇聚原语，非求助原语）；后续 WP 设计该原语时以本节的 ownership/受限工具集/信号量三件为地基，并在落地时补「装配类验收须含生产可调用性证据」（implementer-loop §2.3）。
+  - 多 agent 并行机制的现役形态是 **fork/join 影分身（§8.4）**——分身五段会话键与 subagent 的 `sub:` 任务键同构（channel_type 枚举值不同）。
 
 ### 8.3 并发上限（信号量）
 
 - autobot 教训 B8：`agent/subagent.cr:83-85` 每任务一 fiber、零信号量，多账号场景放大成资源失控。
-- 本平台：subagent 并发用**命名信号量**（semaphore pool）约束，默认 `max_concurrent = 3`（可配；autobot 曾提议同值未实现）；workflow 可用 `max_concurrent_key` 共享同一个信号量（如「最多 2 个并发摘要任务」）。
+- 本平台：subagent 并发用**命名信号量**（semaphore pool）约束，默认 `max_concurrent = 3`（可配；autobot 曾提议同值未实现）；workflow 可用 `max_concurrent_key` 共享同一个信号量（如「最多 2 个并发摘要任务」；该用法随 `subagent.ask` DSL 面移除【§8.2，#187】暂无入口，语义随构件保留待求助原语落地）。
 - agent turn 的 worker 池同样有全局上限；请求超上限进入每会话队列排队（不丢弃、不饿死：队列按会话分片）。
 
 ### 8.4 fork / join 影分身（契约摘要）

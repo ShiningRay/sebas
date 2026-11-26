@@ -195,5 +195,85 @@ module Sebas
         gateway.shutdown # 全部 store 断言结束后再关（a4np）
       end
     end
+
+    it "装载校验：非法工作流注册前拒注册（#244 review），合法的照常生效" do
+      dir = gateway_tmp_dir("hooks-invalid-wf")
+      FileUtils.mkdir_p(dir / "workflows")
+      # 非法：subagent.ask 不在白名单（M4x-Comm-WP3 #187）——校验期必须拒注册，
+      # 不能等 run 中途才以 unknown tool 失败（前序动作副作用已发生）
+      File.write(dir / "workflows" / "bad.yaml", <<-YAML
+        id: bad-ask-hook
+        description: 白名单外工具
+        enabled: true
+        trigger:
+          type: webhook
+          source: bad-ask
+        actions:
+          - id: ask
+            tool: subagent.ask
+            args: { agent: main, prompt: "hi" }
+        YAML
+      )
+      # 合法：memory.save 在白名单且无幂等键要求
+      File.write(dir / "workflows" / "good.yaml", <<-YAML
+        id: good-ask-hook
+        description: 合法工作流
+        enabled: true
+        trigger:
+          type: webhook
+          source: good-ask
+        actions:
+          - id: remember
+            tool: memory.save
+            args:
+              key: "hook-${trigger.event_id}"
+              body: "ok"
+        YAML
+      )
+      config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http:
+            port: 0
+            auth: token
+          ipc: { port: 0 }
+        channels:
+          email:
+            accounts:
+              - id: test-acc
+                platform: 127.0.0.1
+                receive: imap-idle
+                smtp: { port: 2525, tls: none }
+                credentials: { user: me@example.com, password: p }
+        agents:
+          main: { model: fake/chat }
+        bindings:
+          - { channel: email, account: test-acc, peer: "*", agent: main }
+        YAML
+      )
+      provider = ::Sebas::Providers::FakeProvider.new("fake/chat", ["ok"])
+      gateway = ::Sebas::Platform::CLI::Gateway.new(config, dir) do |_agent, _key|
+        provider
+      end
+      gateway.bus.publish(::Sebas::Platform::Bus::InboundMessage.new(
+        "noop-2", "email", "test-acc", "n@example.com", "warm up"
+      ))
+      gateway.run
+      base = "http://127.0.0.1:#{gateway.http.port}"
+      headers = HTTP::Headers{"Authorization" => "Bearer #{HOOK_TOKEN}"}
+      begin
+        # 非法工作流未注册：hook 未知 → 404（fail-closed）
+        bad = HTTP::Client.post("#{base}/hooks/bad-ask", headers: headers, body: "{}")
+        bad.status_code.should eq(404)
+        JSON.parse(bad.body)["error"].as_s.should eq("unknown hook")
+        # 合法工作流照常注册：202 受理
+        good = HTTP::Client.post("#{base}/hooks/good-ask", headers: HTTP::Headers{
+          "Authorization"   => "Bearer #{HOOK_TOKEN}",
+          "Idempotency-Key" => "k1",
+        }, body: "{}")
+        good.status_code.should eq(202)
+      ensure
+        gateway.shutdown
+      end
+    end
   end
 end
