@@ -1,11 +1,12 @@
-# development-plan M8 · 渠道扩展（Slack + Telegram）（10.5–16.5 pd）
+# development-plan M8 · 渠道补齐（WeCom + Lark + Slack + email 健壮性）（20–33.5 pd）
 
 > 导航：[设计总览](../../design.md) ｜ [文档索引](../../README.md) ｜ [计划总览](../../development-plan.md) ｜ 上一节：[M7](m7-projection.md)
 
-### M8 · 渠道扩展（Slack + Telegram）——估时合计 10.5–16.5 pd（2026-11-23 追加，v0.6.0）
+### M8 · 渠道补齐（WeCom + Lark + Slack + email 健壮性）——估时合计 20–33.5 pd（2026-11-23 追加，2026-11-26 重定范围，v0.6.0）
 
 > 依据：[proposals/m8-channel-expansion-slack-telegram.md](../../proposals/m8-channel-expansion-slack-telegram.md)（本文档只做工作包、依赖、估时与验收；**不新造设计决策**——语义有变更回写提案与 design.md，不在本计划内定）。
-> 期定位：在 Email / WeCom / Lark 三渠道之外扩展 Slack 与 Telegram 两个新渠道，对齐 Hermes/OpenClaw 已验证多账号形态的两个最常见入口。渠道适配复用 §5 已有的「账号生命周期监督 fiber + TokenProvider + 限流桶 + 接收形态归并」骨架，不引入新原语。
+> **2026-11-26 范围调整（Maintainer 裁决）**：①企业微信、飞书相关功能与任务迁入本 milestone——M1-WP4/WP5 只交过协议层与 spec，生产装配从未发生（`spawn_adapters` 仅遍历 email），真实账号集成验收一直挂 E.1 未闭环；②Telegram 相关任务迁出至 milestone `M3 · Telegram 渠道补位`（见 [m3-collab-plugins.md](m3-collab-plugins.md) 追加包 M3-WP7/WP8）。期名由「渠道扩展」改为「渠道补齐」。
+> 期定位：把 Email 之外的三个渠道补到「生产可跑 + 真机验过」：企微自建回调、企微 AIBot 长连接、飞书 WS 长连接，外加新渠道 Slack。适配层复用 §5 的「账号生命周期监督 fiber + TokenProvider + 限流桶 + 接收形态归并」骨架，不引入新原语。
 > 期门禁：标准四条（`make format-check` + `make spec` + `make lint` + `make release`）。M8.0-WP1 为纯文档包豁免命令门禁（评审通过即可）；其余 WP 不豁免。
 > 开工三闸：在 active milestone 内 / WP 依赖前置已有完成证据 / 外部依赖就绪（E.1 见下）。
 
@@ -13,29 +14,57 @@
 
 | 编号 | 依赖项 | 就绪时点 | 说明 |
 |---|---|---|---|
-| E.1#1 | Slack workspace + Slack App（Socket Mode enabled） | M8.1-WP2 开工前 | 至少 1 个 workspace、2 个 app（多账号验收需要），用户侧动作 |
-| E.1#2 | Telegram BotFather 注册 2 个 bot | M8.1-WP3 开工前 | 多账号验收需要，用户侧动作 |
-| E.1#3 | 科学上网环境（CI 不需要，仅本地实测需要） | M8.1-WP2/WP3 验收前 | 两个渠道的公网端点国内不可达 |
+| #21 | 企微测试企业 + 应用/机器人 + 可信 IP（含出口 IP 固定） | M8.1-WP2/WP3 真机段前 | 用户侧动作；可信 IP 需已认证企业 + 可信域名先行 |
+| #22 | 飞书自建应用（至少 2 个，多账号验收用） | M8.1-WP4 真机段前 | 用户侧动作；WS 形态仅自建应用可用 |
+| E.1#13 | Slack workspace + Slack App（Socket Mode enabled）×2 | M8.1-WP5 开工前 | 用户侧动作；见 [risks.md](../risks.md) E.1#13 |
+| E.1#14 | 科学上网环境（CI 不需要，仅本地实测需要） | Slack 验收前 | Slack 公网端点国内不可达；E.1#14 |
 
 ---
 
 **M8.0-WP1 提案评审与回写定稿**（0.5–1 pd）
 - 目标：提案 [m8-channel-expansion-slack-telegram.md](../../proposals/m8-channel-expansion-slack-telegram.md) 评审修订并回写 design.md。
-- 范围：评审 §2 候选矩阵、§3 首期范围、§4 设计要点、§5 风险；回写 [spec/02-goals-non-goals.md](../../spec/02-goals-non-goals.md) §2.1 渠道清单扩至 5 类、[spec/05-multi-account.md](../../spec/05-multi-account.md) §5 追加 §5.7 Slack 接入方案 / §5.8 Telegram 接入方案、[spec/14-roadmap.md](../../spec/14-roadmap.md) 追加 M5–M8 行（与 M5/M6/M7 同步回写，避免再次欠账）。
+- 范围：评审 §2 候选矩阵、§3 首期范围、§4 设计要点、§5 风险；回写 [spec/02-goals-non-goals.md](../../spec/02-goals-non-goals.md) §2.1 渠道清单、[spec/05-multi-account.md](../../spec/05-multi-account.md) §5 追加 §5.7 Slack 接入方案、[spec/14-roadmap.md](../../spec/14-roadmap.md) 追加 M5–M8 行（与 M5/M6/M7 同步回写，避免再次欠账）。
 - 交付物：提案定稿版 + 三处 spec 修订。
 - 依赖：无。
 - 验收：评审通过；§14 含 M8 期验收条目；`ruby tools/check_docs.rb` FAIL=0。
 - 风险：评审若推翻首期范围（如改首批为 Discord），后续 WP 链整体调整——估时按下限单轮计。[推演]
 
-**M8.1-WP1 ChannelAdapter 抽象层核对与最小扩展点定稿**（1–1.5 pd）
-- 目标：盘点 M0/M1 已落地的 `src/channels/base.cr` 抽象接口，确认 Slack/Telegram 接入所需的扩展点；**不重写抽象**，只补必要字段。
-- 范围：核对 `abstract class ChannelAdapter` 的方法集（`start` / `stop` / `send` / `health`）；核对 InboundEvent/OutboundMessage 字段是否覆盖 Slack 的 `team_id/channel/ts`、Telegram 的 `chat_id/message_id`；若缺则补字段（新字段必须非破坏，旧适配器零改动通过）；配置 schema 加 `channels.slack.accounts[]` / `channels.telegram.accounts[]` 校验规则。
+**M8.1-WP1 ChannelAdapter 抽象层核对与最小扩展点定稿**（0.5–1 pd；对应 #235）
+- 目标：确认 Slack 接入所需的扩展点；**不重写抽象**，只补必要字段。Telegram 侧的同类核对已随 Telegram 迁至 M3-WP7，本包只处理双 token 形态。
+- 范围：核对 `abstract class ChannelAdapter` 的方法集（`start` / `stop` / `send` / `health`）；核对入站/出站字段是否覆盖 Slack 的 `team_id/channel/ts`；若缺则补字段（新字段必须非破坏，旧适配器零改动通过）；配置 schema 加 `channels.slack.accounts[]` 校验规则。
 - 交付物：扩展点设计稿 + spec 校验规则 + 现有 email/wecom/lark 适配器回归通过证据。
 - 依赖：M8.0-WP1。
-- 验收：`crystal spec` 全绿（含旧三渠道回归）；新配置 schema 拒绝缺 `bot_token` 的 Slack 账号、缺 `bot_token` 的 Telegram 账号。
+- 验收：`crystal spec` 全绿（含旧三渠道回归）；新配置 schema 拒绝缺 `bot_token` 的 Slack 账号。
 - 风险：M1 抽象若已假定「每渠道至多一个 token 类型」，Slack 的 `app_token + bot_token` 双 token 会顶破假设——扩展点必须支持命名凭据集（map of tokens），不能沿用单 token 字段。[推演]
 
-**M8.1-WP2 Slack 适配器：Socket Mode 接收 + Web API 发送**（3–4.5 pd）
+**M8.1-WP2 企微自建应用回调生产接线**（3–5 pd；对应 #232）
+- 目标：让 `WecomCallbackAdapter` 真正跑在 gateway 里。M1-WP4 的 `crypto.cr` + `app_callback.cr` 与 6 个 spec 已在库，但生产装配从未发生。
+- 范围（装配与路由）：`spawn_adapters` 装配 `app-callback` 账号，`apply_config` 账号增删分支按 `CHANNEL_TYPES` 处理 wecom；`/cb/wecom/<account_id>` 路由与 `callback_path` 对齐（与 lark 共用一套规则）。
+- 范围（出站与解析）：注入 `WecomTokenProvider`；`send` 实装 `POST /cgi-bin/message/send`（`agentid` 必填、`touser` ≤1000、幂等键透传）；回调体外层报文按 XML 取 `encrypt`（保留 JSON 兼容不破坏既有 spec）；`errcode=60020` 转 typed error 并显式上报。
+- 交付物：装配 + 路由 + token + send + XML 解析 + 热更新，五项各带 spec。
+- 依赖：M8.1-WP1（共用适配层扩展点）。
+- 验收：配置含 app-callback 账号时启动后 registry 可查到；`POST /cb/wecom/<account>` 走完验签→解密→receiveid→msgid 排重→入总线，重复投递 200 但不二投；mock server 断言 `message/send` 请求体含 `agentid`；`60020` 转 typed error 且日志脱敏；运行中加/删账号不重启生效。真机段（依赖 #21）单列：URL 验证 1 秒回显、POST 5 秒内响应、跨企业密文 403；未实测时卡面列「未实测」。
+- 风险：回调体是 XML 而现实现按 JSON 解析——真机会落通用 rescue 的 500；本包须先以真机抓包确认再改。[推演]
+
+**M8.1-WP3 企微 AIBot 长连接主路**（3–5 pd，含开工首日核对 0.5–1 pd；对应 #233）
+- 目标：`cmd=aibot_msg_callback` / `cmd=aibot_event_callback` 出站长连接接收，回透传 `headers.req_id`。
+- 范围（核对）：**开工首日逐页核对 AIBot 官方接口**（握手帧、心跳、`cmd` 分发、回复帧、主动发消息），产出 10 行 demo 并回写 [spec/15-risks.md](../../spec/15-risks.md) 未验证 #1。
+- 范围（实现）：`src/channels/wecom/aibot_longconn.cr` 建连/心跳/退避 5s→60s/凭据指纹 park；`cmd` 分发入 `InboundMessage`（peer 取 `chatid`，`from.userid` 为加密值时经应用接口转换）；多媒体按消息内 `aeskey` 下载；`msgid` 排重落 store memo；`spawn_adapters` 按 `mode: aibot-longconn` 装配且与 app-callback 互斥。
+- 交付物：核对报告 + 长连接适配器 + mock WSS spec + 真机报告。
+- 依赖：M8.1-WP2（共用装配点、路由、排重 memo、TokenProvider 注入点，先落一套再扩展）。
+- 验收：mock WSS 单账号入总线且会话键含 account 维度；两账号同 peer 不串扰；心跳超时按 5s→60s 退避重连且不重放已消费消息；回复帧字段齐全。真机段（依赖 #21 + 机器人）单列。
+- 风险：**AIBot 主动发消息 API 官方页未逐页核对**（§15.1 未验证 #1）——若形态与调研不符，按原口径把回调备选升级为主路，估时内含不扩期；本包范围相应收窄为「核对结论 + 风险回写」。
+
+**M8.1-WP4 飞书/Lark 生产接线**（4–6 pd，含 WS 帧协议核对；对应 #234）
+- 目标：WS 长连接主路 + `LarkCallbackAdapter` 装配 + 出站实装。
+- 范围（接收）：`src/channels/lark/ws_longconn.cr` 逐帧对照官方 SDK 核对后实现（事件 id 排重、3 秒处理、单应用 ≤50 连接、`base_url` 取账号 `platform`，混用报 `1000040351`）；`spawn_adapters` 按 `receive` 装配 WS 或 webhook。
+- 范围（出站与装配）：`im/v1/messages` + token bucket（`(account_id, chat_id)` 5 次/秒）+ `230020` 退避；注入 `LarkTokenProvider`（现有实现无调用者）；Header 预留 4KB（§15.2.19）；账号增删走 `CHANNEL_TYPES`。
+- 交付物：WS 适配器 + 装配 + 出站 + mock 双账号 spec + 真机报告。
+- 依赖：M8.1-WP1。
+- 验收：mock WS 下两账号（`feishu.cn` / `larksuite.com` 各一）事件各自入会话不串扰；重复 `event_id` 不二投；入总线即返回（3 秒约束）；mock `im/v1/messages` 断言 tenant token header 与请求体；运行中加 lark 账号不重启生效。真机段（依赖 #22）单列。
+- 风险：WS 帧协议细节依赖官方 SDK 对照，若 Crystal 侧无可用 WS 客户端需退化为 webhook 备选，估时不变但真机验收依赖公网 URL。[推演]
+
+**M8.1-WP5 Slack 适配器：Socket Mode 接收 + Web API 发送**（3–4.5 pd；对应 #141）
 - 目标：跑通 Slack 多账号收发。
 - 范围：
   - `src/channels/slack/` 目录：adapter.cr / socket_mode.cr / web_api.cr / markdown.cr；
@@ -47,7 +76,7 @@
   - 限流 429 响应处理：读 `Retry-After` 头退避；
   - 多账号：每账号一连接一 fiber，配置增删走 §11 热更新（不重写热更新机制，直接复用）。
 - 交付物：Slack 适配器 + 接收/发送 spec（用 vcr/webmock 风格 fixture）+ 单账号本地实测报告。
-- 依赖：M8.1-WP1；E.1#1；E.1#3（验收依赖）。
+- 依赖：M8.1-WP1；E.1#13（Slack workspace + App）；E.1#14（科学上网，验收依赖）。
 - 验收：
   - 两账号同时 online，互不串扰（A 收的 message 不会进 B 的 session）；
   - 同账号同 `event_id` 重推被排重；
@@ -56,60 +85,52 @@
   - **ACK 后、入总线前强杀进程**：用 fault-injection 在 ACK 帧发出后立即 `kill -9`，重启后从持久化记录恢复该事件并入总线（不依赖 Slack 重推，因为 Slack 已收到 ACK）——验证「先落库再 ACK」顺序真的挡住了静默丢失窗口。
 - 风险：Crystal `HTTP::WebSocket` 客户端长连接稳定性——若发现 keepalive 不足，退化为「心跳超时后主动断线重连」。[推演]
 
-**M8.1-WP3 Telegram 适配器：long-poll 接收 + Bot API 发送**（2.5–3.5 pd）
-- 目标：跑通 Telegram 多账号收发。
+**M8.1-WP6 email IMAP IDLE 健壮性**（2–3 pd；对应 #239）
+- 目标：把 [spec/05-multi-account.md](../../spec/05-multi-account.md) §5.4 差距表里 IDLE 侧的 5 项补齐，让 E.1-4 的「继续应用专用密码」裁决有真实兜底。
 - 范围：
-  - `src/channels/telegram/` 目录：adapter.cr / long_poll.cr / bot_api.cr；
-  - long-poll：`getUpdates(offset, timeout=50)` 循环；offset 落 store 持久化，启动时读；**活跃窗口/空闲双模**——**每轮调用 `getUpdates` 前都检查 `last_update_at`**，若距今 ≥6 天进入重置模式（不重启进程，详见 [proposals/m8-channel-expansion-slack-telegram.md §4.2](../../proposals/m8-channel-expansion-slack-telegram.md)「Telegram 空闲后 `update_id` 重置策略」）；
-  - 排重：活跃窗口内 `update_id` 单调递增推进；重置模式下用内容指纹（`update_id + chat_id + message_id + text hash`）查重，不靠 offset 比较；**持久化优先于 offset 推进**——每条 update 按「Step 1 落 `telegram_updates`（含 `dispatched=false`）→ Step 2 推进 `persisted_offset` → Step 3 入总线」顺序；**`dispatched=true` 由消费者侧在 `record_intent` 落库成功后回调置位**，`Bus#publish` 返回不等于处理完成；启动时扫 `dispatched=false` 重投；
-  - 重置模式退出条件：本轮 ≥1 条新 update 且全部持久化 + 入总线成功后才重置 `persisted_offset` 并切回活跃窗口；**空轮询继续保持重置模式**；
-  - store 表新增 `telegram_accounts.last_update_at` 与 `telegram_updates(content_fingerprint, account_id, update_id, raw_payload, dispatched, status, retry_count, bus_publish_timeout_count, created_at)`，`(content_fingerprint, account_id)` 唯一索引；
-  - 发送：`sendMessage` + token bucket（按 `(account_id, chat_id)` 建桶，1 msg/s；全局 30 msg/s 桶）；
-  - TokenProvider 同 Slack 退化形态；
-  - 多账号：每账号一 long-poll fiber；
-  - `api_base_url` 账号级配置（支持自建反代，应对国内不可达）。
-- 交付物：Telegram 适配器 + spec + 单账号本地实测报告。
-- 依赖：M8.1-WP1；E.1#2；E.1#3（验收依赖）；**调度器 failed 批次重试扩展（独立前置 WP，见提案 §4.2「前置依赖」节）**。
-- 验收：
-  - 两账号同时 online，互不串扰；
-  - 重启后 offset 续接，未消费 update 不丢；
-  - 单 chat 限流触发时排队而非丢弃；
-  - `api_base_url` 指向 mock server 时收发全通（CI 用此路径，无需公网）；
-  - **空闲重置场景**：mock server 模拟「bot 空闲 ≥1 周后，下一条 update 的 `update_id` 小于持久化 offset」——适配器进入重置模式，**不丢弃该消息**（内容指纹查重落库 + 入总线），并把 `persisted_offset` 重置为新值；同一条 update 重推时按内容指纹排重，不重复入总线；
-  - **拒绝旧 offset 确认**：在重置模式下，任何 `getUpdates` 调用不得因为「新 `update_id` < persisted_offset」而直接 ACK 跳过——必须在内容指纹查重后才决定是否消费；
-  - **活跃窗口持久化优先**：fault-injection 在「Step 1 落库后、Step 2 推进 offset 前」`kill -9`，重启后扫 `dispatched=false` 行重投入总线，不丢消息；再注入「Step 2 推进 offset 后、Step 3 入总线前」`kill -9`，同样靠 `dispatched=false` 扫描恢复；
-  - **`dispatched` 由消费者置位**：fault-injection 在「`Bus#publish` 已返回但消费者尚未 `record_intent`」`kill -9`——生产者侧 `dispatched` 仍为 `false`；重启后扫到该行重投入总线，消费者这次完成 `record_intent` 并回调置 `dispatched=true`；验证 bus 投递成功不等于处理完成、`dispatched` 不会因 bus 返回被过早置位；
-  - **唯一索引冲突不阻塞 offset 推进**：mock server 让进程在 Step 1 后、Step 2 前崩溃，重启并恢复后 mock server 再次返回同一条 `update_id`——适配器在 Step 1 命中唯一索引冲突时**不视为失败**，继续 Step 2 推进 `persisted_offset`；该行的 `dispatched` 已为 `true`，Step 3 跳过不重复入总线。验证轮询不停滞、消息不重复入总线；
-  - **入站 `event_id` 确定性派生（含内容指纹）**：fault-injection 在「消费者 `record_intent` 落库成功后、`dispatched` 置位前」`kill -9`，重启后扫到 `dispatched=false` 行重建消息——用持久化行的 `update_id` 与 `content_fingerprint` 按提案 §4.2 唯一形式 `tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>` 算出与原投递**同值**的 `event_id`；经 **`Bus#publish`** 重新入总线（走正常 admission → dispatch 流程，不绕过会话调度器的串行约束），消费者 `process_message` 被调起，`record_intent` 命中已有 intent（`INSERT OR IGNORE` 返回 false）走「已有 intent」分支**也要**回调置 `dispatched=true`——该 update 全程只被处理一次，触发的发消息动作也只执行一次；额外验证：mock server 让适配器进入重置模式后收到两条 `update_id` 相同但内容不同的 update，两条都能得到独立 `event_id`，第二条不会被消费者 intent 排重忽略；
-  - **空轮询不退重置模式**：mock server 让适配器进入重置模式后，前 N 轮 `getUpdates()` 返回空数组，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——前 N 轮持续无 offset 轮询、不重置 offset；第 N+1 轮该 update 被消费，`persisted_offset` 重置为新值，下一轮回到活跃窗口；
-  - **不重启进程的空闲重置**：mock server 让适配器持续运行，前 N 轮 `getUpdates(offset=旧值)` 返回空数组；mock 时间推进 ≥6 天，第 N+1 轮返回一条 `update_id` 小于持久化 offset 的 update——适配器在**不重启进程**的情况下检测到 `last_update_at` 距今 ≥6 天，进入重置模式，该 update 被消费、`persisted_offset` 重置为新值；验证运行期空闲窗口检查生效；
-  - **批次处理延迟不改变空闲计时**：mock server 让一次 `getUpdates` 响应包含 update A 和 B，并断言该非空响应到达时 `last_update_at` 即被持久化为到达时刻；A 的 Step 3 入总线阻塞 2 天（fault-injection 挂起 bus 消费者），期间 `last_update_at` 不得因处理完成或超时再次刷新；Telegram 在响应到达 7 天后返回一条 `update_id` 小于持久化 offset 的新 update——适配器按响应到达时刻已空闲 7 天计算（而非按处理完成时刻的 5 天），**必须进入重置模式**，且**不得跳过该 update**；再注入处理中途崩溃，重启后仍保留崩溃前最近一次非空响应的到达时刻，不得回退到退出重置模式时才刷新；
-  - **重置模式跨崩溃延续**：mock server 让适配器进入重置模式（`reset_mode=true` 落库），随后返回一条 `update_id` 小于持久化 offset 的非空响应——断言 `last_update_at` 先被刷成到达时刻；在 update 落库前 `kill -9`；重启后 `last_update_at` 虽是近期值，但因 `reset_mode=true` 仍进入重置模式、继续**无 offset** 轮询，该较小 ID 的 update 被消费且不丢；随后断言退出时 `persisted_offset` 与 `reset_mode=false` 同事务写入，且不出现「offset 已推进、`reset_mode` 仍为 true」的半完成态；
-  - **`record_intent` 失败的运行期恢复（前置依赖：调度器 failed 批次重试扩展）**：fault-injection 让消费者 `record_intent` 第一次抛 SQLite 临时错误（`SQLITE_BUSY`），`dispatched` 保持 `false`、入站事件已完成 admission、`session_inputs` 行已落库；**前置依赖**：调度器 failed 批次重试扩展（`SessionScheduler#retry_failed_batch` + failed → queued 状态迁移 + queued 批次重派触发器 + 启动屏障）已完工；适配器通过标准 `Bus#publish` 入总线，由调度器扩展保证恢复语义；第二次 `record_intent` 成功并回调置 `dispatched=true`；再注入「连续 20 次 `record_intent` 失败」，该行 `status` 置为 `'dead_letter'`、上报管理面告警、**两条扫描路径都用 `status != 'dead_letter'` 显式排除**——验证 dead-letter 行不再被周期扫描或启动扫描选中；
-  - **Case B · 首次 admission 前崩溃的 update**：fault-injection 在「Step 1 落库后、Step 3 入总线前」`kill -9`——事件从未进入 admission、`session_inputs` 无对应行；重启后扫描器经 **`Bus#publish`** 重新入总线（走正常 admission 流程建立 `session_inputs` 行——含 `received_seq`、批次归属、`policy_snapshot`——再经 `SessionScheduler` 按批次串行约束 dispatch）；断言恢复后该事件具有完整 `session_inputs` 行、正确的 `received_seq` 与批次归属、`policy_snapshot`，且**不绕过会话调度器的串行约束**（同 session 其他事件按 received_seq 顺序被调度）；
-  - **bus 饱和降级与两类失败分开计数**：**实现方式：在 `Bus` 中新增带超时的投递方法 `Bus#publish_with_timeout(event, timeout : Time::Span) : PublishResult`**——内部用 Crystal 标准库 `select` 同时等待 `@channel.send(event)` 与 `timeout(timeout)` 两个分支（`src/admin/ipc/server.cr` 已有同类写法）：发送就绪即写入返回 `PublishResult::Sent`、超时先触发返回 `PublishResult::Timeout`。**超时后消息未入队**——`@channel.send` 未执行，事件仍只在扫描器内存中，下一轮扫描器重试。`record_intent` 与回调仅在 `PublishResult::Sent` 后由消费者正常执行；`PublishResult::Timeout` 时扫描器跳过本轮、`bus_publish_timeout_count` 加 1、下一轮再试，验证扫描器不被卡死。再让 bus 持续饱和直到 `bus_publish_timeout_count > 20`——验证 `retry_count` **未增加**、行**未转入 `dead_letter`**（bus 超时不计入消费者失败上限）；恢复 bus 容量，下一轮扫描 `publish_with_timeout` 返回 `PublishResult::Sent`、消费者 `record_intent` 成功、回调置 `dispatched=true`——验证 bus 恢复后健康消息无需人工重放；
-  - **启动屏障（等待 replay_unfinished 完成）**：**前置依赖**：调度器启动屏障扩展（`Gateway#recover_dispatch` 在 `replay_unfinished` 完成后、适配器启动前设置 `@replay_completed = true`）已完工；mock Gateway 启动流程——`replay_unfinished` 期间扫描器检查 `@replay_completed = false`，跳过本轮、记录 `dispatch_recovery_deferred_total`、不触发 dispatch；`replay_unfinished` 完成后 `@replay_completed = true`，下一轮扫描正常触发 dispatch；断言旧 intent 重放期间不会有新批次被派发、两个 turn 不并发执行；再注入 `replay_unfinished` 超过 300s 未完成，Gateway 上报 `ReplayStuck` 告警、扫描器继续等待（不强行突破屏障）；
-  - **已有 intent 也要确认**：消费者 `process_message` 在 `record_intent` 时发现已有持久化 intent 而提前返回的分支，**必须**回调置 `dispatched=true`——fault-injection 让进程在「`record_intent` 成功后、回调置位前」崩溃，重启后扫到 `dispatched=false` 行重投入总线，消费者走「已有 intent」分支也置位，验证不会卡在 `dispatched=false` 被无限重投。
-- 风险：long-poll 在 NAT/反代后容易被中间设备掐空闲连接——`timeout=50` 是官方推荐值，不低于 30 不高于 60。[推演]
+  - **IDLE 整体 deadline**：「发出 IDLE → DONE 收尾完成」全程 ≤29 分钟，到 `min(idle_poll, 29 分钟) − 收尾期限` 主动 `DONE`（`idle_poll` 构造参数保留可配置，但不得把 29 分钟上界顶开）；
+  - **收尾期限**：与 deadline 分离的独立有界期限（默认 30s）；期限到点未收到标签响应则断开重连，**不在原连接重发 IDLE**；`abort_idle` 的 `rescue ::Exception` 不再静默吞异常；
+  - **假活判定**：一个 IDLE 窗口内零响应（含 `OK` 收尾）即断连重连，不等 TCP 超时；
+  - **兜底轮询**：独立 watchdog 每 5 分钟用短连接 `SELECT` + 比对 `UIDNEXT`（必要时 `SEARCH UID <last+1>:*`），有新增触发一次补收；短连接不复用 IDLE 连接；
+  - **指数退避**：5s → 10s → 20s → 40s → 60s 封顶，±20% 抖动，成功 `SELECT` 后重置。
+- 交付物：`src/channels/email/` 与 `imap_client.cr` 改造 + 5 类时序 spec（deadline / 收尾期限 / 假活 / 轮询 / 退避）。
+- 依赖：无前置（改动全在 email 适配器内部，不依赖 M8.1-WP1 扩展点）。
+- 验收：fake server 场景逐条断言上界（deadline 窗口内必退出、收尾期限到点必断连、轮询 ≤5 分钟触发且不重复投递、退避递增至 60s 封顶并在成功后重置）；既有 email 用例零回退；`crystal spec` / `crystal tool format --check` / `ameba` 全绿。
+- 风险：fake IMAP server 现以短读超时轮询 DONE，加 deadline 后需同步改测试夹具；真实 Gmail 长稳仍无法在 CI 覆盖（§15.1.2 未实测）。[推演]
 
-**M8.2-WP1 管理面与运维闭环**（1.5–2 pd）
-- 目标：Slack/Telegram 账号纳入 TUI/HTTP 双入口管理。
-- 范围：`accounts.create/list/disable/enable/rotate-credential` 命令对 slack/telegram 生效；健康上报（连接状态、最近 event 时刻、限流水位）经管理面可查（沿用 §5.1 第 5 项职责）；`sebas channels probe` 自检命令。
+**M8.1-WP7 email 配置域收口**（1–2 pd；对应 #240）
+- 目标：补 `smtp.host` 独立主机字段，并为 `receive: gmail-api` 补 fail-closed 校验。
+- 范围：
+  - `SmtpConfig` 增加可选 `host`，缺省回退 `account.platform`（既有配置零改动可加载）；`EmailChannelAdapter` 的 `@smtp_host` 取 `smtp.host || platform`；
+  - `starttls` / `implicit` 都按实际连接主机名校验证书，不因回退放宽；
+  - `examples/config.example.yaml` 与 §3.4 示例给出 Gmail 的 `imap.gmail.com` + `smtp.host: smtp.gmail.com` 组合；
+  - `receive: gmail-api` 在实现前由 loader 拒绝并提示改 `imap-idle`（该路线零实现，放行只会让配置者误以为已切换成功）。
+- 交付物：`schema.cr` / `loader.cr` / `adapter.cr` 改动 + 示例配置 + 「示例配置可被 loader 通过」的 spec。
+- 依赖：无前置。
+- 验收：无 `host` 时行为与现状一致；配 `host` 时 SMTP 拨号连 `host`；`starttls` 主机名不匹配以 typed error 失败；`receive: gmail-api` 被拒绝并有可操作提示；`crystal spec` / format / ameba 全绿。
+- 风险：`smtp.host` 新增字段要确认不破坏现网 `config.yaml`（gitignored，需人工回归一次真实邮箱）。[推演]
+
+**M8.2-WP1 管理面与运维闭环**（1.5–2 pd；对应 #143）
+- 目标：WeCom/Lark/Slack 账号纳入 TUI/HTTP 双入口管理。
+- 范围：`accounts.create/list/disable/enable/rotate-credential` 对四渠道生效；健康上报（连接状态、最近 event 时刻、限流水位）经管理面可查（沿用 §5.1 第 5 项职责）；`sebas channels probe` 自检命令。
 - 交付物：管理面命令 + spec + TUI 截图。
-- 依赖：M8.1-WP2、M8.1-WP3。
-- 验收：`sebas accounts list` 输出 slack/telegram 账号状态；`sebas accounts disable <id>` 后该账号 fiber 优雅停止；`sebas channels probe` 报告可达性。
+- 依赖：M8.1-WP2、M8.1-WP4、M8.1-WP5。
+- 验收：`sebas accounts list` 输出四渠道账号状态；`sebas accounts disable <id>` 后该账号 fiber 优雅停止；`sebas channels probe` 报告可达性。
 - 风险：TUI 现有代码若硬编码渠道枚举需要逐一展开——必须改为遍历 adapter registry。[推演]
 
-**M8.2-WP2 文档、示例与发布准备**（1.5–2.5 pd）
-- 目标：让用户能照着文档 5 分钟接入一个 Slack 或 Telegram 账号。
+**M8.2-WP2 文档、示例与发布准备**（1.5–2.5 pd；对应 #144）
+- 目标：让用户能照着文档接入 WeCom / Lark / Slack 账号。
 - 范围：
-  - README 渠道矩阵扩至 5 类；
-  - `docs/examples/` 新增 `slack-bot.yaml` / `telegram-bot.yaml` 示例配置；
-  - `docs/design/spec/05-multi-account.md` §5.7/§5.8 写作落档（M8.0-WP1 是占位，此包填实）；
+  - README 渠道矩阵补齐；
+  - `docs/examples/` 新增 `wecom-callback.yaml` / `lark-bot.yaml` / `slack-bot.yaml` 示例配置；
+  - `docs/design/spec/05-multi-account.md` §5.7 Slack 写作落档（M8.0-WP1 是占位，此包填实）；§5.5/§5.6 补齐生产接线后的实际行为；
   - 限流数字、接收形态、排重字段的核实引用补全；
   - 版本号同步：`shard.yml` + `src/version.cr` → v0.6.0。
 - 交付物：文档 + 示例 + 版本号修订。
-- 依赖：M8.2-WP1。
+- 依赖：M8.2-WP1、M8.1-WP3、M8.1-WP6、M8.1-WP7。
+  - M8.1-WP3：期级验收要求「企微 AIBot 长连接跑通」。**例外**：若走期级验收的「降级例外」并经 Maintainer 书面裁决，则 v0.6.0 允许以回调形态发版，但须同时满足三条——裁决记录写入 gate 文档（`plan/schedule/` 下的 gate 文件或 issue 评论均可，须含日期与结论）、gate 记「长连接未实现」为显式未验证项、release notes 注明该渠道为回调形态。
+  - M8.1-WP6 / WP7：期级验收同样含 email 两条主线，且 M8 的里程碑口径是「清零后打 tag」——发布包若不等这两包，会出现「版本号已升、发布准备已完成，但期级验收项未过」。
+  - 管理面包 M8.2-WP1 保持原依赖（管理面覆盖企微/飞书/Slack 账号，不涉及 email 两包）。
 - 验收：`ruby tools/check_docs.rb` FAIL=0；新用户按 README 配置示例即可启动；`make release` 全绿。
 - 风险：文档与代码漂移——发布前 Verifier 逐条对照示例配置字段名与代码 schema。[推演]
 
@@ -117,43 +138,70 @@
 
 ## 期级验收主线（M8）
 
-- 同渠道 N 账号并存：Slack 2 账号 + Telegram 2 账号同时 online，互不串扰（继承 M1 期级验收主线）。
-- 长连接形态覆盖：Slack Socket Mode（WSS）+ Telegram long-poll（HTTPS 出站）都跑通，无新增公网 IP 依赖。
-- TokenProvider 抽象未破坏：现有 WeCom/Lark 临期刷新路径回归通过。
-- 配置热更新覆盖新渠道：运行中增/删/改 Slack/Telegram 账号不需重启进程。
+- 同渠道 N 账号并存：WeCom 2 账号 / Lark 2 账号 / Slack 2 账号分别验，互不串扰（继承 M1 期级验收主线）。
+- 长连接形态覆盖：企微 AIBot 长连接 + 飞书 WS 长连接 + Slack Socket Mode 都跑通，无新增公网 IP 依赖。
+  - **降级例外**（须 Maintainer 书面裁决，不由实现者自行判定）：
+    - 触发条件：M8.1-WP3 的 AIBot 形态经开工首日核对确认不可用（官方 API 与调研不符且无法按回调备选实现），或 M8.1-WP4 的飞书 WS 在 Crystal 侧无可用客户端。
+    - 处理：对应渠道允许以「回调 / webhook 形态」通过本期验收，但 gate 文档必须记「长连接未实现」为显式未验证项。
+    - 边界：该渠道不得计入「长连接覆盖」主线的通过数；降级只决定门禁口径，不改本行验收文字的适用范围。
+    - 与发版的关系：经裁决的降级**不阻塞 v0.6.0 发版**，但须满足 §M8.2-WP2「依赖」列的三个附带条件（裁决记录入 gate、gate 记未验证项、release notes 注明形态）。
+- TokenProvider 抽象未破坏：现有临期刷新路径回归通过。
+- 配置热更新覆盖新渠道：运行中增/删/改账号不需重启（当前实现仅 email，四渠道均需补齐）。
+- email IDLE 健壮性：IDLE 全程（含 `DONE` 收尾）≤29 分钟、收尾期限到点断连重连、假活判定、兜底轮询 ≤5 分钟、指数退避 5s→60s 封顶（M8.1-WP6 / #239）。
+- email 配置域：`smtp.host` 独立主机生效且无 `host` 时行为不变；`receive: gmail-api` 不再静默降级（M8.1-WP7 / #240）。
 - 标准四条全绿 + `ruby tools/check_docs.rb` FAIL=0。
 
 ## DAG
 
 ```
-M8.0-WP1 ──> M8.1-WP1 ──┬──> M8.1-WP2 (Slack) ────┐
-                        └──> M8.1-WP3 (Telegram) ───┤
-                                                    ├──> M8.2-WP1 ──> M8.2-WP2
-E.1#1 ────────────────────> M8.1-WP2
-E.1#2 ────────────────────> M8.1-WP3
-E.1#3 ────────────────────> M8.1-WP2 / WP3 验收
-调度器 failed 批次重试扩展 ──> M8.1-WP3（前置 WP，独立 issue 跟踪）
+M8.0-WP1 ──> M8.1-WP1 ──┬──> M8.1-WP2 (企微回调) ──> M8.1-WP3 (企微 AIBot) ──┐
+                        ├──> M8.1-WP4 (飞书 WS) ──┐                          │
+                        └──> M8.1-WP5 (Slack) ────┤                          │
+                                                 └──> M8.2-WP1 ─────────────┤
+                                                                             │
+                                             M8.2-WP2 <─────────────────────┘
+#21 ─────────────────────> M8.1-WP2 / WP3 真机段
+#22 ─────────────────────> M8.1-WP4 真机段
+E.1#13 / E.1#14 ─────────> M8.1-WP5
+M8.1-WP6 (email IDLE) ──── 独立，无前置
+M8.1-WP7 (email 配置) ──── 独立，无前置
 ```
 
-跨期依赖：M8 开工需 M5–M7 主线已收尾（v0.5.0 已发），且 M4x 并行轨无阻断。
+边义：`{M8.1-WP2, M8.1-WP4, M8.1-WP5} → M8.2-WP1`；`{M8.2-WP1, M8.1-WP3, M8.1-WP6, M8.1-WP7} → M8.2-WP2`。
+
+发布包 M8.2-WP2 依赖 `M8.2-WP1` **与** `M8.1-WP3`：期级验收要求企微 AIBot 长连接跑通，而 M8.2-WP1 的依赖链不含 WP3，若不显式加边，v0.6.0 会在 AIBot 缺席时完成发布准备。
+
+跨期依赖：M8 开工需 M5–M7 主线已收尾（v0.5.0 已发），且 M4x 并行轨无阻断。Telegram 两张卡已迁至 M3 轨道，不再属本图。
 
 ## 估时合计
 
 | 包 | 下限 | 上限 |
 |---|---|---|
 | M8.0-WP1 | 0.5 | 1 |
-| M8.1-WP1 | 1 | 1.5 |
-| M8.1-WP2 | 3 | 4.5 |
-| M8.1-WP3 | 2.5 | 3.5 |
+| M8.1-WP1 | 0.5 | 1 |
+| M8.1-WP2 企微回调 | 3 | 5 |
+| M8.1-WP3 企微 AIBot | 3 | 5 |
+| M8.1-WP4 飞书 WS | 4 | 6 |
+| M8.1-WP5 Slack | 3 | 4.5 |
+| M8.1-WP6 email IDLE | 2 | 3 |
+| M8.1-WP7 email 配置 | 1 | 2 |
 | M8.2-WP1 | 1.5 | 2 |
 | M8.2-WP2 | 1.5 | 2.5 |
-| **合计** | **10.0** | **15.0** |
+| **合计** | **20** | **32** |
 
-含 +0.5–1.5 pd 缓冲（依 Tessell 口径）→ **10.5–16.5 pd**。
+**卡片对应（2026-11-26 复核）**：M8.0-WP1 → #139（`kind=design`，Scribe 执行）；M8.1-WP1 → #235；M8.1-WP2 → #232；M8.1-WP3 → #233；M8.1-WP4 → #234；M8.1-WP5 → #141；M8.1-WP6 → #239；M8.1-WP7 → #240；M8.2-WP1 → #143；M8.2-WP2 → #144。十张卡均带 Automation 块与原生 blocked_by，`M8.1-WP1` 为企微/飞书/Slack 四个实现包的共同前置；email 两包无前置。
+
+**估时复算**：原表（Slack + Telegram 两渠道）10.0–15.0 pd；迁出 Telegram（2.5–3.5 pd）剩 7.5–11.5 pd；迁入企微回调 + AIBot + 飞书（10–16 pd）后为 17–27 pd。
+
+2026-11-26 追加 email 两包（3–5 pd，源于 E.1-4 Gmail 路线裁决后的实现缺口复核）后逐包复算：
+
+- 下限：0.5+0.5+3+3+4+3+2+1+1.5+1.5 = **20**
+- 上限：1+1+5+5+6+4.5+3+2+2+2.5 = **32**
+- 对外口径 **20–33.5 pd** = 下限不另加缓冲、上限再加 1.5 pd 缓冲（评审与真机段的不确定性集中在上限侧）
 
 ## 版本计划
 
-- milestone：`M8 · v0.6.0 渠道扩展（Slack + Telegram）`
+- milestone：`M8 · v0.6.0 渠道补齐（WeCom + Lark + Slack）`
 - 期序：主线第 8 期（order: 8）
-- 排期：W48–W51（4 周窗口，含缓冲），紧随 M7 之后
+- 排期：原 W48–W51（4 周）估算随范围变化失效，**待重排**
 - 发版：manual minor（`workflow_dispatch` 输入 `minor`），三平台资产 + sha256 + 裸 ubuntu:24.04 容器冒烟

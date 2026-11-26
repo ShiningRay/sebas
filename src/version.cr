@@ -1,5 +1,5 @@
 module Sebas
-  VERSION = "0.1.0"
+  VERSION = "0.2.0"
 
   # 构建来源的 git 提交标识，编译期确定。取值顺序：
   #   1. 环境变量 SEBAS_BUILD_REV（无 .git 的源码包 / 受控构建用；40 位完整 SHA 截为 12 位）；

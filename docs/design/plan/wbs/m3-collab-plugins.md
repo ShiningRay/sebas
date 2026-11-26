@@ -51,3 +51,33 @@
 - 依赖：M3-WP5、M1-WP8（共用触发-校验-换引用管线）、M1-WP9（管理 API）。
 - 验收：**改开发目录脚本仅影响新调用，在途调用不受干扰**；安装默认禁用；同版本异摘要、路径穿越/压缩炸弹、未批准新 capability 均拒绝；升级保留配置/数据且失败保旧可回滚；被引用卸载拒绝、默认卸载保留数据、purge 有确认。
 - 风险：ZIP 安全限制、原子替换与 Windows 文件占用须测试；签名/远程市场不在本包范围。复杂插件的受控多文件与常驻 worker 见 [review/plugin-evolution.md](../../review/plugin-evolution.md)，**不计入 M3 WP4~WP6 范围或门禁**。
+
+### M3 追加包 · Telegram 渠道补位（2026-11-26 由 M8 迁入，3.5–5 pd）
+
+> 迁入依据：Maintainer 2026-11-26 裁决「Telegram 相关任务移入 M3」。原属 M8.1-WP1 与 M8.1-WP3，现挂 milestone `M3 · Telegram 渠道补位`（`order: 3`、`track: main`）。**M0–M3 的 v0.1.0 门禁结论不受影响**——本组是已发布期号下的追加轨道，不是对 M3 门禁的追溯修改。
+>
+> 编号取舍：沿用 M3-WP7 / M3-WP8 两个新号，不重排既有 WP1–WP6（重排会让 §14 与各 review 存档的引用失效）。
+
+> 估时口径：M3-WP7（1–1.5 pd）+ M3-WP8（2.5–3.5 pd）= **3.5–5 pd**。原 M8 侧写作 5.5–8.5 pd，含一个未估时的前置 WP（「调度器 failed 批次重试扩展」，见提案 §4.2）——该扩展**至今无独立 issue、无估时**，不计入本区间，按 M3-WP8 的硬前置单独跟踪。
+
+**M3-WP7 ChannelAdapter 抽象层扩展点定稿**（1–1.5 pd）
+- 目标：确认 Telegram 接入所需的适配层扩展点；不重写抽象，只补必要字段。
+- 范围：核对 `src/channels/base.cr` 的 `start` / `stop` / `send` / `health`；核对入站/出站字段是否覆盖 Telegram 的 `chat_id` / `message_id`；配置 schema 增加 `channels.telegram.accounts[]`（`bot_token` 必填、`api_base_url` 可选）；email/wecom/lark 三渠道回归。
+- 交付物：扩展点设计稿 + schema 校验 spec + 三渠道回归证据。
+- 依赖：无前置。
+- 验收：`crystal spec` 全绿（含旧三渠道）；新 schema 拒绝缺 `bot_token` 的账号；设计稿逐条标注「已覆盖 / 需新增」。
+- 风险：若既有抽象假定「每渠道至多一个 token」，Telegram 的 `bot_token` 单 token 恰好适配，Slack 的双 token 才是顶破点——Slack 留在 M8 处理。[推演]
+- ✅ **已完成（2026-11-26）**：PR #236 / 5e48db5。`CHANNEL_TYPES` 登记 `telegram`、`TelegramAccount` 校验（`bot_token` 必填、`api_base_url`/`token_ref` 可选）、`InboundMessage.message_id` 尾置默认 nil；提案 §4.1 增扩展点逐条判定表。门禁 spec 388/0、format、ameba 150/0、check_docs FAIL 0。
+
+**M3-WP8 Telegram 适配器（long-poll + Bot API）**（2.5–3.5 pd）
+- 目标：跑通 Telegram 多账号收发。
+- 范围：`src/channels/telegram/`（adapter/long_poll/bot_api）；`getUpdates(offset, timeout=50)` 循环 + `persisted_offset` 落 store。核心机制分四条：
+  - **双模空闲检测**：`last_update_at` 距今 ≥6 天进入重置模式，`reset_mode` 与 offset 同事务退出；
+  - **写入顺序纪律**：先落 `telegram_updates` 的 `dispatched=false` → 再推进 offset → 再入总线；
+  - **确定性 event_id**：`tg:<account_id>:<sha256(update_id || ":" || content_fingerprint)>`；
+  - **恢复扫描**：启动扫描 + 运行期周期扫描重投 `dispatched=false` 且 `status != 'dead_letter'` 的行。
+- 范围（出站）：`sendMessage` + token bucket（`(account_id, chat_id)` 1 msg/s、全局 30 msg/s）；`api_base_url` 账号级配置支持反代。
+- 交付物：Telegram 适配器 + spec + 单账号本地实测报告。
+- 依赖：M3-WP7；**调度器 failed 批次重试扩展**（`retry_failed_batch` + failed→queued + 重派触发器 + 启动屏障，见 [提案 §4.2 前置依赖](../../proposals/m8-channel-expansion-slack-telegram.md)）；外部：Telegram BotFather 注册 2 bot。
+- 验收：两账号同时 online 不串扰；重启后 offset 续接；单 chat 限流排队不丢；`api_base_url` 指向 mock server 收发全通（CI 路径）；空闲重置不丢消息且按内容指纹排重；三个崩溃窗口经 `dispatched=false` 扫描恢复；dead-letter 行不被两条扫描路径选中。
+- 风险：long-poll 在 NAT/反代后易被中间设备掐空闲连接——`timeout=50` 为官方推荐值，不低于 30 不高于 60。[推演]
