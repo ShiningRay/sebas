@@ -70,10 +70,17 @@ while unresolved_threads > 0:
   bug → 修代码 + reply 说明改了什么 + resolve
   建议 → 采纳则修，不采纳则 reply 说明理由 + resolve
   误报 → reply 给出证据 + resolve
-  push 新 commit → 等 CodeRabbit 再扫 → 重复
 ```
 
-直到 `mergeStateStatus=CLEAN`。
+**批量修、单次推**：先把本轮所有 thread 一次改完，再 push 一个 commit。
+每推一次都会触发新的一轮审阅（单轮 4-8 分钟），逐条 push 等于把等待时间乘以轮数。
+实测 #231 十一轮 push、118 分钟完成，其中大半是轮次之间的串行等待。
+
+收尾判据是 `mergeStateStatus=CLEAN` 且 unresolved thread 为 0。**不看 `CodeRabbit`
+这条 check 的进度**：它只表示「本轮审阅进行中」，不在分支保护的必需检查里，
+选择器与 Evidence 预登记都已把它排除出「CI 未完成」判定（见
+[`tools/agents/lib/sebas_agents/advisory_checks.rb`](../../../tools/agents/lib/sebas_agents/advisory_checks.rb)）。
+只豁免进行中——它已完成而结论是 failure/cancelled 时仍按失败处理。
 
 review 的提示质量由仓库根的 [`.coderabbit.yaml`](../../../.coderabbit.yaml) 决定：它把
 Crystal 三平台隔离、单文件体量三项、文档不用行号锚、workflow 的 SHA 钉版红线等约定

@@ -271,7 +271,7 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 `--pre` **不能**复用合并后口径：后者要求 `merged?` 与 `completed`，合并前必然 blocker。反之，合并后再跑 `--pre` 会因 issue 已关闭而拒绝执行。
 
-`--pre` 之所以要查 Evidence 与 thread，是因为这两项在合并前就已确定，且无法在合并后补救——带着未验收结论合并，事后再核验只能发现错误，不能撤销。
+`--pre` 之所以要查 Evidence 与 thread，是因为这两项在合并前就已确定，且无法在合并后补救——带着未验收结论合并，事后再核验只能发现错误，不能撤销。第三方审阅（`CodeRabbit`）的进行中状态不参与「未完成检查」判定，见 [implementer.md](implementer.md) §2。
 
 ### 3.7 卡面契约的时效
 
