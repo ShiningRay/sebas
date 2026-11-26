@@ -10,6 +10,12 @@ module SebasAgents
     PAGE_SIZE = 100
     MAX_PAGES = 100
     MAX_DEPENDENCY_FETCH = 300
+    # 原生 blocked_by 单条端点每次约 1.5s（进程 + TLS 握手），逐卡请求是
+    # 快照的主要耗时项之一。改 GraphQL 别名批量后，一批只付一次固定成本。
+    # 50 是实测的安全批量：82 张卡 2 批共 2.1s，单批 query 远低于长度上限。
+    BLOCKED_BY_BATCH = 50
+    # blockedBy 连接的节点上限。超过即拒绝——截断会让依赖判定漏看前置。
+    BLOCKED_BY_PAGE = 100
 
     ALL_PULL_REQUESTS_QUERY = <<-'GRAPHQL'
       query($owner: String!, $name: String!, $cursor: String) {
@@ -184,6 +190,65 @@ end
       @blocked_cache[number] ||= begin
         raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}/dependencies/blocked_by")
         Array(raw).map { |item| item.fetch("number") }
+      end
+    end
+
+    # 批量拉取 blocked_by：一次 GraphQL 查询带 BLOCKED_BY_BATCH 个别名。
+    # 只用于 attach_blocked_by 的快照组装；单卡补取（依赖闭包）仍走 REST。
+    #
+    # 三条 fail-closed 校验，缺一都可能把「读不到」当成「没有前置」：
+    #   1. 任何别名缺节点（issue 不存在/无权访问）→ 拒绝，不返回部分结果；
+    #   2. blockedBy 连接必须是对象且 nodes 是数组 → 拒绝，不当空集；
+    #   3. totalCount > nodes.length 说明被 first 截断 → 拒绝，不产出不完整依赖。
+    def fetch_blocked_by_batch(numbers)
+      numbers.each_slice(BLOCKED_BY_BATCH).each_with_object({}) do |group, result|
+        fields = group.each_with_index.map do |number, index|
+          "b#{index}: issue(number: #{number}) { number blockedBy(first: #{BLOCKED_BY_PAGE}) " \
+            "{ totalCount nodes { number } } }"
+        end
+        owner, name = @repo.split("/", 2)
+        args = ["gh", "api", "graphql",
+          "-f", "query=#{blocked_by_query(owner, name, fields)}"]
+        payload = @runner.json!(*args)
+        errors = payload["errors"]
+        unless errors.nil? || (errors.respond_to?(:empty?) && errors.empty?)
+          raise CommandError.new("blocked_by 批量查询失败：#{errors.inspect}", command: args)
+        end
+        data = payload.dig("data", "repository")
+        unless data.is_a?(Hash)
+          raise CommandError.new("blocked_by 批量查询缺 data.repository：#{payload.inspect[0, 160]}",
+            command: args)
+        end
+
+        group.each_with_index do |number, index|
+          node = data["b#{index}"]
+          if node.nil?
+            raise CommandError.new(
+              "blocked_by 批量查询缺 issue ##{number} 节点（不存在或无权访问），" \
+              "拒绝产出不完整依赖图", command: args
+            )
+          end
+          connection = node["blockedBy"]
+          nodes = connection.is_a?(Hash) ? connection["nodes"] : nil
+          unless nodes.is_a?(Array)
+            raise CommandError.new("issue ##{number} 的 blockedBy 连接结构非法：#{connection.inspect[0, 120]}",
+              command: args)
+          end
+          if connection["totalCount"].to_i > nodes.length
+            raise CommandError.new(
+              "issue ##{number} 的 blockedBy 超过 #{BLOCKED_BY_PAGE} 条被截断，拒绝产出不完整依赖图",
+              command: args
+            )
+          end
+          # 回读的编号必须与请求一致：别名错位会让依赖张冠李戴。
+          reported = node["number"]
+          unless reported.to_i == number
+            raise CommandError.new("blocked_by 批量结果错位：请求 ##{number}，返回 ##{reported}",
+              command: args)
+          end
+
+          result[number] = nodes.map { |item| item.fetch("number").to_i }
+        end
       end
     end
 
@@ -370,10 +435,16 @@ end
     end
 
     def attach_blocked_by(issues)
+      target = issues.select { |issue| JsonBlock.present?(issue.body, "automation") }
+      bulk = fetch_blocked_by_batch(target.map(&:number))
+      # 批量结果同时写进单卡缓存：依赖闭包后续 fetch_blocked_by 直接命中，
+      # 不再为同一张卡重复往返。
+      bulk.each { |number, blocked| @blocked_cache[number] = blocked }
+
       issues.map do |issue|
         next issue unless JsonBlock.present?(issue.body, "automation")
 
-        issue.with(blocked_by: fetch_blocked_by(issue.number))
+        issue.with(blocked_by: bulk.fetch(issue.number))
       end
     rescue CommandError => e
       raise CommandError.new("读取 blocked_by 失败；不把错误当成空依赖：#{e.message}",
@@ -580,6 +651,12 @@ end
     end
 
     private
+
+    # GraphQL 查询外壳：别名列表由调用方拼；owner/name 作为字面量嵌入，
+    # 避免再占两个变量位（本查询没有游标，不需要变量化）。
+    def blocked_by_query(owner, name, fields)
+      %(query { repository(owner: "#{owner}", name: "#{name}") { #{fields.join(" ")} } })
+    end
 
     def read_pr_detail(number)
       @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}",
