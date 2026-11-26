@@ -1749,6 +1749,21 @@ class ReleaseTest < Minitest::Test
     plan = SebasAgents::Release.plan(latest_tag: "v1.2.9", subjects: ["fix(orchestration): x"])
     assert_equal "1.2.10", plan["next_version"]
   end
+
+  # 冒烟输出自 v0.1.0 起带构建 git rev：`sebas X.Y.Z (<rev>)`。
+  def test_smoke_output_accepts_build_rev
+    assert SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.1")
+    assert SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.1 (abc1234def56)")
+    assert SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.1 (unknown)")
+    assert SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.1 (abc1234def56)\n")
+  end
+
+  def test_smoke_output_rejects_mismatch
+    refute SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.2 (abc1234)")
+    refute SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.1 (abc) extra")
+    refute SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.00")
+    refute SebasAgents::Release.smoke_output_matches?("0.1.1", "")
+  end
 end
 
 class CliTest < Minitest::Test
