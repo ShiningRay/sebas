@@ -9,7 +9,7 @@ require "../platform/store/store"
 module Sebas
   module Tools
     class Executor
-      Log = Sebas::Log.for("sebas.tools.executor")
+      Log = Sebas::Log.for("tools.executor")
 
       def initialize(@registry : Registry, @channels : Channels::Registry)
       end

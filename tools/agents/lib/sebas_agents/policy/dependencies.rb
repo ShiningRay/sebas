@@ -56,6 +56,14 @@ module SebasAgents
           reasons << "##{issue.number} 正文依赖字段提到 #{undeclared.inspect}，但 Automation depends_on 未声明" unless undeclared.empty?
           unmentioned = expected - prose
           reasons << "##{issue.number} 的 Automation depends_on #{unmentioned.inspect} 未出现在正文依赖字段" unless unmentioned.empty?
+        elsif automation["kind"] == "work_package"
+          # 工作包写了依赖节但标题不合规（如「依赖关系」）时，prose 为 nil，
+          # 上面整段核对被跳过——看着绿灯，实际没校验。必须显式报错，不能静默放过。
+          variants = mismatched_dependency_headings(issue.body)
+          unless variants.empty?
+            reasons << "##{issue.number} 的依赖节标题不是「依赖」或「前置依赖」：" \
+              "#{variants.map(&:inspect).join("、")}；正文依赖核对因此被跳过"
+          end
         end
         status = "invalid" unless reasons.empty?
 
@@ -78,26 +86,36 @@ module SebasAgents
       # 只认依赖句里的编号：卡面还会写「见 #35 开工条件」这类引用说明，
       # 全局扫 #N 会把说明误判成依赖。因此逐行处理，且只剥掉「引用说明」本身——
       # 不能整行跳过，否则同一行里的真实依赖（如「WP1（#3）完成；另见 #35」）会丢失。
-      DEPENDENCY_HEADING = /^#+\s*(前置依赖|依赖)\s*$/
+      #
+      # 与变体检测共用同一套 ATX 标题解析，避免两边对「什么算标题」判断不一致：
+      # 缩进的 `  ## 依赖` 和带闭合标记的 `## 依赖 ##` 都是合法依赖节。
+      DEPENDENCY_HEADING_TITLES = %w[依赖 前置依赖].freeze
       # 括号内以引用词开头的补充说明，例如「（见 #35 开工条件）」。
       REFERENCE_PAREN = /[（(]\s*(?:见|参见|详见)[^）)]*[）)]/
       # 行内引用短语，例如「另见 #35 开工条件」「参见 #7」。
       REFERENCE_INLINE = /(?:另?见|参见|详见)\s*#\d+[^；;。\n]*/
 
       def prose_dependencies(body)
-        # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码；
-        # 强制按 UTF-8 归一，避免中文正则遇到非 UTF-8 串直接抛 Encoding::CompatibilityError。
-        text = body.to_s.dup.force_encoding(Encoding::UTF_8)
-        text = text.scrub unless text.valid_encoding?
+        text = normalize_body(body)
         lines = text.lines
-        start = lines.index { |line| line.match?(DEPENDENCY_HEADING) }
+        fenced = fenced_line_indexes(lines)
+        start = lines.each_index.find do |index|
+          next if fenced.include?(index)
+
+          level, title = heading_at(lines, index)
+          level && DEPENDENCY_HEADING_TITLES.include?(title)
+        end
         return nil unless start
 
+        level, = heading_at(lines, start)
         section = []
-        lines[(start + 1)..].to_a.each do |line|
-          break if line.match?(/^#+\s+\S/) && !line.match?(DEPENDENCY_HEADING)
+        ((start + 1)...lines.length).each do |index|
+          next if fenced.include?(index)
 
-          section << line
+          next_level, = heading_at(lines, index)
+          break if next_level && next_level <= level
+
+          section << lines[index]
         end
 
         numbers = []
@@ -110,6 +128,155 @@ module SebasAgents
           numbers.concat(main.scan(/#(\d+)/).flatten.map(&:to_i))
         end
         numbers.uniq.sort
+      end
+
+      # 代码围栏内的行下标（含围栏标记行本身）。
+      #
+      # 按 CommonMark 判定，三处不能简化：
+      #   1. 闭合围栏必须同字符（` 与 ~ 不互通）、长度 ≥ 开启长度；
+      #   2. 闭合行只能有空白或闭合标记，带 info string 的不是闭合；
+      #   3. ```x``` 这类单行是行内代码跨度，不是围栏，不能吞掉后续内容。
+      def fenced_line_indexes(lines)
+        indexes = []
+        in_fence = false
+        fence_char = nil
+        fence_length = 0
+
+        lines.each_with_index do |line, index|
+          if in_fence
+            indexes << index
+            if fence_closes?(line, fence_char, fence_length)
+              in_fence = false
+              fence_char = nil
+              fence_length = 0
+            end
+            next
+          end
+
+          opening = fence_opening(line)
+          next unless opening
+
+          indexes << index
+          in_fence = true
+          fence_char = opening[0]
+          fence_length = opening[1]
+        end
+        indexes
+      end
+
+      # 返回 [字符, 长度]；不是围栏开启行返回 nil。
+      # 反引号围栏的 info string 里不能再出现反引号（否则是行内代码跨度）。
+      def fence_opening(line)
+        stripped = line.sub(/\A {0,3}/, "")
+        run = stripped[/\A(`{3,}|~{3,})/, 1]
+        return nil unless run
+
+        info = stripped[run.length..].to_s
+        return nil if run.start_with?("`") && info.include?("`")
+
+        [run[0], run.length]
+      end
+
+      # 闭合围栏只能有空白或若干个同字符标记，且长度不少于开启长度。
+      def fence_closes?(line, char, length)
+        !line.match(/\A {0,3}(#{Regexp.escape(char)}{#{length},})[ \t]*\n?\z/).nil?
+      end
+
+      # 依赖节标题写法不合规的变体，例如「依赖关系」「外部依赖」「依赖顺序」。
+      # 这些标题会让 prose_dependencies 返回 nil，正文核对被整段跳过而不报错。
+      # 仅在整篇没有合规依赖节时才有意义（调用方已确认 prose 为 nil）。
+      #
+      # 三个收紧条件，缺一都会误报：
+      #   1. `#` 后必须有空白——ATX 标题的规则，`#3 的依赖` 是正文引用而非标题。
+      #   2. 只认「依赖」开头或结尾的短标题，且不含冒号——带冒号的论述性标题
+      #      （如「问题 2：依赖口径校验…」）不是依赖节。
+      #   3. 跳过代码围栏内的行——示例里的标题是内容，不是章节。
+      VARIANT_HEADING = /\A(?:前置)?依赖[^：:]{0,10}\z|\A[^：:]{0,10}(?:前置)?依赖\z/
+      EXACT_HEADING = /\A(?:前置)?依赖\z/
+      # ATX 标题：≤3 个前导空格 + 1–6 个 # + 空白 + 文字，可带闭合标记。
+      # 空标题（如裸 `##`）也是合法 ATX，按 CommonMark 同样终止上一节。
+      ATX_HEADING = %r{\A {0,3}(\#{1,6})(?:\s+(.*?))?\s*\z}
+      # 闭合标记：末尾的空格 + 若干 #（CommonMark 允许）。
+      CLOSING_HASHES = /\s+#+\s*\z/
+
+      # 解析标题行，返回 [level, title]，非标题返回 nil。空标题的 title 为 ""。
+      # title 保留尾部 #N 原样——引用检查需要看到它。
+      def heading_at(lines, index)
+        match = lines[index].to_s.match(ATX_HEADING)
+        return nil unless match
+
+        [match[1].length, match[2].to_s.sub(CLOSING_HASHES, "").strip]
+      end
+
+      # 标题去掉尾部 issue 引用后的文字，用于分类。
+      # 一次剥掉整串引用（「外部依赖 #3 #5」→「外部依赖」），
+      # 并吃掉引用之间的分隔符「、，,」——否则会残留「外部依赖 #3、」，
+      # 既不匹配变体规则也过不了精确标题，引用被静默忽略。
+      def heading_label(title)
+        rest = title
+        loop do
+          stripped = rest.sub(/\s*(?:[、，,]\s*)?#{ISSUE_REFERENCE.source}\s*\z/, "")
+          break if stripped == rest
+
+          rest = stripped
+        end
+        rest.strip
+      end
+
+      def mismatched_dependency_headings(body)
+        lines = normalize_body(body).lines
+        fenced = fenced_line_indexes(lines)
+        variants = []
+
+        lines.each_index do |index|
+          next if fenced.include?(index)
+
+          level, title = heading_at(lines, index)
+          next unless level
+
+          label = heading_label(title)
+          # 精确标题只有在不带尾部引用时才是合规依赖节；带了引用就成了变体。
+          next if label.match?(EXACT_HEADING) && label == title
+          next unless label.match?(EXACT_HEADING) || label.match?(VARIANT_HEADING)
+          next unless heading_or_section_mentions_issue?(lines, index, level, title)
+
+          variants << title
+        end
+        variants.uniq
+      end
+
+      # 依赖声明出现在标题行本身（如「## 依赖关系 #3」）也算——否则这唯一的
+      # 引用会被整段忽略，工作包静默通过。
+      def heading_or_section_mentions_issue?(lines, index, level, title)
+        return true if title.match?(ISSUE_REFERENCE)
+
+        section_mentions_issue?(lines, index, level)
+      end
+
+      # 从第 index 行的标题开始，取同级与更低级的行，判断是否出现 #N 引用。
+      # 只认真正的 issue 引用：「E.1#1」这类外部编号紧跟字母数字或点，不算。
+      # 代码围栏内的行跳过——示例里的 #3 不是依赖。
+      ISSUE_REFERENCE = /(?<![A-Za-z0-9.#])#\d+/
+
+      def section_mentions_issue?(lines, index, level)
+        fenced = fenced_line_indexes(lines)
+
+        ((index + 1)...lines.length).each do |offset|
+          next if fenced.include?(offset)
+
+          next_level, = heading_at(lines, offset)
+          break if next_level && next_level <= level
+          return true if lines[offset].match?(ISSUE_REFERENCE)
+        end
+        false
+      end
+
+      def normalize_body(body)
+        # 卡面正文来自 GitHub API（UTF-8），但离线快照或本地记录可能是其它编码。
+        # 行尾统一为 LF：CRLF 会让围栏闭合正则与节末判定失配（CommonMark 两者都接受）。
+        text = body.to_s.dup.force_encoding(Encoding::UTF_8)
+        text = text.scrub unless text.valid_encoding?
+        text.gsub("\r\n", "\n").gsub("\r", "\n")
       end
 
       def evaluate_one(dependency, issue, snapshot)

@@ -7,6 +7,15 @@
 
 ### Added
 
+- **M3-WP7 Telegram 渠道扩展点定稿**：`CHANNEL_TYPES` 登记 `telegram`，配置 schema 新增
+  `channels.telegram.accounts[]`（`bot_token` 必填、`api_base_url`/`token_ref` 可选，loader 逐条校验），
+  绑定路由与账号解析自动生效；`InboundMessage` 补 `message_id`（尾置默认 nil，旧适配器零改动，
+  回放路径随 JSON 保真）。适配器接线属 M8.1-WP3，接入前发送时查无适配器 fail-loud。
+- `sebas version` / `--help` 首行带构建来源的 git 提交：输出 `sebas X.Y.Z (<git rev>)`。rev 由
+  `src/version.cr` 的编译期宏**直接解析 `.git` 的 HEAD**取得（覆盖 packed-refs、detached、
+  worktree、submodule、bare；不调用 git，故无 shell 与平台差异），无 `.git` 的构建可用
+  `SEBAS_BUILD_REV` 注入，读不到时退化为 `unknown` 且不中断构建；`release verify` 冒烟校验
+  同步接受带 rev 与不带 rev 两种形态。
 - **M4x-Comm-WP1 message_agent 工具面接线**：`message_agent` 进 `agent_turn` 衰减工具面（受 `agent.tools.allow` 白名单约束，装配未接线时工具不可见）；
   防环上限改由 `gateway.collaboration.max_hops` 配置（默认 4，loader 校验 ≥ 1，热更新即生效）；hops 不再由模型自报——投递时按收方会话键落库链路跳数，
   下一跳从工具 ctx 继承，回执形如 `queued <delivery_id> hops=<n>`；inbox 按 `to_agent` 分片，收方只取本 agent 的消息（[#185](https://github.com/ShiningRay/sebas/pull/185)）。
@@ -39,6 +48,16 @@
 
 ### Fixed
 
+- 工作包依赖节标题写成「依赖关系」这类变体时，`prose_dependencies` 返回 `nil`，正文与 `Automation.depends_on`、
+  原生 `blocked_by` 的核对被整段跳过且不报警（看着绿灯，实际没校验）。现在 `kind=work_package` 遇到标题不合规
+  直接判 `invalid_plan` 并列出变体标题；非工作包不查，变体节内无 `#N` 引用也不报，避免把说明文字误判成依赖声明。
+- `sebas gateway` 启动失败时静默退出（无输出、退出码 1）。两处叠加：① 各模块日志常量写成
+  `Sebas::Log.for("sebas.<layer>")`，在源 `sebas` 下再拼一层得到 `sebas.sebas.<layer>`，而 CLI 只绑定了
+  `sebas` 这一个源，`Log::Builder#matches` 按整段前缀匹配，全部子源日志被静默丢弃（配置拒启、IMAP 连接失败、
+  健康变化一概无输出）。现统一改为 `Sebas::Log.for("<layer>")`，绑定改为 `sebas,sebas.*`；② `-c` 未被识别为
+  `--config` 的别名，传 `-c x.yaml` 时静默回退到 cwd 的 `config.yaml`。日志统一走 STDERR，`--config`/`-c`
+  缺值时报错退出。回归用例 `spec/platform/cli/cli_spec.cr`。
+- `.gitignore` 的 `main` 规则误伤 `agents/main/`（人格目录），改为 `/main` 只忽略仓库根的构建产物。
 - email 渠道真机收发两处缺陷：① IMAP/SMTP 命令行原用 `IO#puts`（行尾裸 LF，RFC 3501 §2.2 / RFC 5321 §4.1.1.4
   要求 CRLF），Gmail/QQ/Outlook 的 IMAP 对 LF 命令行不响应直到读超时、QQ SMTP 对 LF 的 EHLO 直接 502；
   现统一 `print(line, "\r\n")`，并把正文裸 LF 归一为 CRLF 后再点填充（否则多行正文的行首点号漏填、DATA 分帧非法）。
@@ -54,7 +73,6 @@
   改为本次会话不投递并记 warn；⑤ `event_id` 纳入 `UIDVALIDITY`（`email:<账号>:<uidvalidity>:<uid>`），
   否则换命名空间后 UID 复用会撞 `intents.id` / `session_inputs.event_id` 主键，新邮件被当重复
   投递静默丢弃。重连退避改为可注入参数，便于测试。
-
 - Crystal 最低版本由 `>= 1.19.0` 修正为 `>= 1.22.0`：`src/platform/keys/vault.cr` 用了 1.22 才进入 stdlib 的
   `OpenSSL::Cipher#gcm_tag`，旧下限会让本地构建报误导性的 `undefined method 'gcm_tag'`。`Makefile` 新增
   `crystal-version-check` 前置目标，低于下限立即失败并给出修法；所有编译/检查目标支持 `CRYSTAL=` 覆盖。

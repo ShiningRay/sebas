@@ -64,7 +64,7 @@ module Sebas
       class DeliveryRejected < ::Exception; end
 
       class Messenger
-        Log = Sebas::Log.for("sebas.collaboration")
+        Log = Sebas::Log.for("collaboration")
 
         getter max_hops : Int64
         # 热更新（§11.3 数据类）：配置换值即生效，无需重建 messenger

@@ -60,7 +60,7 @@ module Sebas
     module IPC
       class Server
         include ::Sebas::Admin::IPC::AdminCommands
-        Log = Sebas::Log.for("sebas.admin.ipc")
+        Log = Sebas::Log.for("admin.ipc")
 
         getter token : String
         getter port : Int32

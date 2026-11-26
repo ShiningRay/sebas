@@ -23,7 +23,7 @@ module Sebas
     module Scheduling
       module Recovery
         extend self
-        Log = Sebas::Log.for("sebas.scheduling.recovery")
+        Log = Sebas::Log.for("scheduling.recovery")
 
         record Summary, sealed : Int32, requeued : Int32, failed : Int32, settled : Int32
 

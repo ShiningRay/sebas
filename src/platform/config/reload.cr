@@ -18,7 +18,7 @@ module Sebas
       record ReloadResult, accepted : Bool, errors : Array(String), restart_required : Array(String)
 
       class ReloadManager
-        Log = Sebas::Log.for("sebas.config.reload")
+        Log = Sebas::Log.for("config.reload")
 
         DEBOUNCE = 300.milliseconds
 

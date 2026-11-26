@@ -11,7 +11,7 @@ module Sebas
         # 词法作用域提示：module 内 Log 按定义处解析，看不到 Gateway 类的
         # Log 常量——须显式声明同源 logger，保迁移后 admission/批次/消费日志
         # 仍挂 sebas.gateway 来源（CodeRabbit PRRT_kwDOVzNPQM66vjmM）。
-        Log = Sebas::Log.for("sebas.gateway")
+        Log = Sebas::Log.for("gateway")
 
         # 池内执行：payload 为批次派发 JSON（{batch_id, session_key}）。成员 turn 逐条
         # 执行（queue 模式单成员），全部落库后按 intent 终态收敛批次并派发下一批。
@@ -54,7 +54,8 @@ module Sebas
           data = JSON.parse(payload)
           Bus::InboundMessage.new(
             data["event_id"].as_s, data["channel_type"].as_s,
-            data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
+            data["account_id"].as_s, data["peer"].as_s, data["content"].as_s,
+            data["message_id"]?.try(&.as_s?) # M3-WP7：渠道消息定位 ID 随回放保真
           )
         end
 
@@ -334,7 +335,8 @@ module Sebas
               end
               message = Bus::InboundMessage.new(
                 data["event_id"].as_s, data["channel_type"].as_s,
-                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s
+                data["account_id"].as_s, data["peer"].as_s, data["content"].as_s,
+                data["message_id"]?.try(&.as_s?) # M3-WP7：渠道消息定位 ID 随回放保真
               )
               Log.info { "replaying unfinished intent #{intent.id} (#{intent.status})" }
               # admission 会话归属回查（#176）：有 envelope 行即按 admission 时

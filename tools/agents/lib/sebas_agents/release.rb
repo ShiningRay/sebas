@@ -59,6 +59,7 @@ module SebasAgents
     end
 
     # 产物校验：只核对 sha256 清单与冒烟输出，不自行下载。
+    # 冒烟输出自 v0.1.0 起为 `sebas X.Y.Z (<git rev>)`；不带 rev 的旧形态也接受。
     def verify_assets(dir, version, expected: nil)
       problems = []
       sidecars = Dir.glob(File.join(dir, "*.sha256")).sort
@@ -70,11 +71,17 @@ module SebasAgents
         problems << "sha256 校验失败：#{File.basename(sidecar)}" unless status
       end
 
-      if expected && expected.strip != "sebas #{version}"
-        problems << "冒烟输出不符：期望 sebas #{version}，实际 #{expected.strip.inspect}"
+      if expected && !smoke_output_matches?(version, expected)
+        problems << "冒烟输出不符：期望 sebas #{version}[(<git rev>)]，实际 #{expected.strip.inspect}"
       end
 
       problems
+    end
+
+    # `sebas version` 的合法输出：`sebas X.Y.Z`，或带构建 git rev 的
+    # `sebas X.Y.Z (<rev>)`。rev 允许 unknown（无 .git 的源码包构建）。
+    def smoke_output_matches?(version, output)
+      output.strip.match?(/\Asebas #{Regexp.escape(version)}(?: \(\S+\))?\z/)
     end
   end
 end

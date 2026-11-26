@@ -10,7 +10,7 @@ require "../../log"
 module Sebas
   module Platform
     module Keys
-      Log = Sebas::Log.for("sebas.keys")
+      Log = Sebas::Log.for("keys")
 
       class VaultError < ::Exception; end
 

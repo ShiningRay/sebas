@@ -31,7 +31,7 @@ module Sebas
     record Job, session_key : String, payload : String
 
     class Pool
-      Log = Sebas::Log.for("sebas.agents.pool")
+      Log = Sebas::Log.for("agents.pool")
 
       getter session_queue_capacity : Int32
       getter max_concurrency : Int32

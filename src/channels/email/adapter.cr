@@ -12,7 +12,7 @@ module Sebas
   module Channels
     module Email
       class EmailChannelAdapter < ChannelAdapter
-        Log = Sebas::Log.for("sebas.channels.email")
+        Log = Sebas::Log.for("channels.email")
 
         getter health : String
 

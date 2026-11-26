@@ -4,7 +4,7 @@ require "http"
 
 module Sebas
   module Channels
-    Log = Sebas::Log.for("sebas.channels")
+    Log = Sebas::Log.for("channels")
 
     # 回调入站结果（§5.2 回调面共享监听）
     record CallbackResult, status : Int32, body : String, content_type : String do

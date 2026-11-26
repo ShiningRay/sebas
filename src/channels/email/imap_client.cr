@@ -17,7 +17,7 @@ module Sebas
       record MailSummary, uid : String, from : String, subject : String, body : String
 
       class ImapClient
-        Log = Sebas::Log.for("sebas.channels.email.imap")
+        Log = Sebas::Log.for("channels.email.imap")
 
         @io : ::IO
 

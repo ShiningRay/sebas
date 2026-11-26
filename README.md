@@ -90,15 +90,18 @@ Windows. Download the archive for your platform, extract it, and run `sebas`.
 ## Quick start
 
 ```sh
-# 1. Copy and edit the example configuration
+# 1. Copy and edit the example configuration, and give the agent a persona file
+#    (the loader rejects a dangling agents.<name>.persona_file)
 cp examples/config.example.yaml config.yaml
+mkdir -p agents/main && printf '# main\n\nYou are my personal assistant.\n' > agents/main/SOUL.md
 
 # 2. Export the values referenced by ${...} in the config
 export MAIL_USER=you@example.com
 export MAIL_PASSWORD=...
 export LLM_API_KEY=...
 
-# 3. Run the resident gateway
+# 3. Run the resident gateway (-c is an alias for --config)
+#    Logs go to stderr; a rejected config exits 1 with the reason on stderr.
 ./bin/sebas gateway --config config.yaml
 
 # Inspect the CLI surface

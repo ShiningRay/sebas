@@ -12,7 +12,7 @@ module Sebas
       # 或显式批量合成一个 run）。include mixin，实例变量由宿主 Gateway 提供
       # （@store/@config/@triggers/@engine/@scheduling/@lifecycle_store）。
       module GatewayHooks
-        Log = Sebas::Log.for("sebas.gateway")
+        Log = Sebas::Log.for("gateway")
 
         # hooks 提交回执（HTTP 层透传 code/body，类型零耦合）
         record HookReceipt, code : Int32, body : String

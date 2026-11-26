@@ -10,7 +10,7 @@ module Sebas
       # server.cr 迁入——连接生命周期（listen/handshake/帧循环）与管理命令
       # 职责分离；include mixin，实例变量由宿主 Server 提供（认证入口不变）。
       module AdminCommands
-        Log = ::Sebas::Log.for("sebas.admin.ipc")
+        Log = ::Sebas::Log.for("admin.ipc")
 
         private def authenticated_response(io : TCPSocket, frame : Frame, &block : Frame -> String) : String
           if caller_authenticated?(io)

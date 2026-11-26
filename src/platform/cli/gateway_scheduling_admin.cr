@@ -11,7 +11,7 @@ module Sebas
       # sessions.queue.get/flush + sessions.steer.get + metrics.scheduling。
       # IPC 与 HTTP 双入口共用 handle_scheduling_admin（语义一致）。
       module GatewaySchedulingAdmin
-        Log = Sebas::Log.for("sebas.gateway")
+        Log = Sebas::Log.for("gateway")
 
         # effective snapshot：builtin → gateway.session → gateway overlay →
         # agents.<name>.session → agent overlay（overlay 持久表，热更新不重启）
