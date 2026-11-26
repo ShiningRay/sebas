@@ -70,8 +70,9 @@ end
 ### 5.4 Email 渠道接入方案
 
 **路线裁决（2026-11-26，E.1-4 / #23）**：Gmail 账号**继续走应用专用密码 + IMAP IDLE / SMTP**，不迁 Gmail API。
-依据：单账号个人规模下 IDLE 满足「秒级到分钟级」到达；Gmail API 需 GCP 项目、OAuth 同意屏与
-Pub/Sub 拓扑，凭据面与运维成本都更大；M0 已用真实 Gmail 邮箱跑通收发（#20、PR #230）。
+依据：单账号个人规模下 IDLE 满足「秒级到分钟级」到达；切 API 要么上 `watch` 推送（需 GCP 项目 +
+OAuth 同意屏 + Pub/Sub 拓扑），要么改用 `history.list` 轮询（仍需 GCP + OAuth，只是免 Pub/Sub），
+两条都比现在多一层凭据面与运维；M0 已用真实 Gmail 邮箱跑通收发（#20、PR #230）。
 Gmail API 作为**存档备选**保留，切换条件见本节末。
 
 **接收**（长连接型，见 §5.2）：
@@ -96,16 +97,19 @@ Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3
 本轮不作为必需项。
 
 **主机与端口约束**（当前实现）：`schema` 的 `smtp` 段只有 `port` / `tls`，**没有 `host` 字段**，
-适配器把 `account.platform` 同时当 IMAP 与 SMTP 主机。因此 Gmail 只能填 `platform: imap.gmail.com`：
+适配器把 `account.platform` 同时当 IMAP 与 SMTP 主机（[adapter.cr](../../../src/channels/email/adapter.cr) 的
+`@smtp_host = smtp_host || account.platform`）。Gmail 的**规范 SMTP 主机是 `smtp.gmail.com`**，
+故这里只能依赖非规范组合，实测结果如下：
 
 | 组合 | 结果 |
 |---|---|
-| `imap.gmail.com` + `465`/`implicit` | 可用：imap.gmail.com 同时提供 SMTPS 465，实测能走到 AUTH |
-| `imap.gmail.com` + `587`/`starttls` | **不可用**：587 出示 smtp.gmail.com 证书，TLS 校验失败 |
-| `smtp.gmail.com` 作 platform | 不可用：IMAP 993 连到 smtp.gmail.com 失败 |
+| `imap.gmail.com` + `465`/`implicit` | 可用但**非规范**：该主机的 465 是 SMTPS，实测全链路收发通过（#20、PR #230）；Google 未承诺此行为，可能随策略变更失效 |
+| `imap.gmail.com` + `587`/`starttls` | **不可用**：587 出示 `smtp.gmail.com` 证书，TLS 校验失败（实测） |
+| `smtp.gmail.com` 作 platform | 不可用：IMAP 993 连到 `smtp.gmail.com` 失败 |
 
-新增 `smtp.host` 字段（或把 `examples/config.example.yaml` 的 `465 + implicit` 模板改掉）属实现改动，
-现有模板对 Gmail 虽可用、对 587-only 服务商不适用，落实现时一并处理。
+结论：本轮按「单主机 + 465/implicit」交付，但这是**已知欠账**——正确解是新增 `smtp.host` 字段
+（默认回退到 `platform`），Gmail 配 `imap.gmail.com` + `smtp.host: smtp.gmail.com` + `465/implicit`。
+该改动需同步 `examples/config.example.yaml` 与 loader 校验，列入差距表。
 
 **多账号要点**（渠道笔记 c5）：Gmail 每账号同时 **15 个 IMAP 连接**上限（含全部后台连接——
 **来源为第三方引用，渠道笔记标注未验证**）；每账号独立凭据与连接；统一连接池 + 每账号并发上限，
@@ -130,13 +134,14 @@ Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3
 
 | 机制 | 设计口径 | 实现状态 |
 |---|---|---|
-| IDLE ≤29 分钟重发 | 有 | 已实现（`read_timeout = idle_poll + 1min`，超时后 NOOP 重发） |
+| IDLE 定期重发 | ≤29 分钟 | **偏差**：`read_timeout = idle_poll + 1min` = 30 分钟，静默连接要等读超时才结束 IDLE，实际窗口 **30 分钟**，超出 RFC 2177 建议的 ≤29 分钟；需把超时口径改为 `idle_poll` 本身 |
 | 断线补收、跨重连游标、UIDVALIDITY 重建 | 有 | 已实现（PR #230） |
 | 兜底轮询 5 分钟 | 有 | **未实现** |
 | 假活判定 | 有 | **未实现** |
 | 指数退避 5s→60s | 有 | **未实现**（`@backoff` 固定 5s，不递增） |
+| SMTP 独立主机配置（`smtp.host`） | 本轮补记 | **未实现**：适配器只有 `platform` 一个主机字段，见上文约束段 |
 
-后三项需另开实现工作包；本条（E.1-4）只做路线裁决与文档回写。
+以上五项需另开实现工作包；本条（E.1-4）只做路线裁决与文档回写。
 
 **切换 Gmail API 的触发条件**（满足任一即重开 E.1-4；第 1、3 条要先补齐上文差距表的三项实现，
 否则量不到真实基线）：
@@ -147,11 +152,12 @@ Outlook.com 2024-09-16 起 IMAP/POP/SMTP 密码登录停用（渠道笔记 c2/c3
    多账号并存时按**每账号**计，不因账号数增加而互相挤占；
 4. Google 收紧或取消应用专用密码 / IMAP 访问（政策变更或实测不可用）；
 5. 需要 Gmail 语义能力（`historyId` 增量同步、`threadId`）或受限 scope 合规要求；
-6. GCP 项目、OAuth 凭据与 Pub/Sub 拓扑已就绪，边际成本低于维持 IDLE 兜底。
+6. GCP 项目与 OAuth 凭据已就绪，边际成本低于维持 IDLE 兜底（`watch` 推送另需 Pub/Sub 拓扑）。
 
-切换时清单：GCP 项目 + OAuth 客户端；受限 scope 最小集（`gmail.readonly` + `gmail.send`，
-优先于完整邮箱 `https://mail.google.com/`）；Pub/Sub topic + 订阅 + `users.watch` 续期（7 天）；
-refresh token 入 vault；`receive: gmail-api` 接线与 fail-closed 校验。
+切换时清单（两条子路线二选一，`watch` 推送优先、`history.list` 轮询作降级）：GCP 项目 + OAuth 客户端；
+受限 scope 最小集（`gmail.readonly` + `gmail.send`，优先于完整邮箱 `https://mail.google.com/`）；
+`watch` 路线另需 Pub/Sub topic + 订阅 + `users.watch` 续期（官方上限 7 天）；refresh token 入 vault；
+`receive: gmail-api` 接线与 fail-closed 校验。
 
 ### 5.5 企业微信（WeCom）接入方案
 
