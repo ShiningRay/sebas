@@ -6,6 +6,7 @@ require "../keys/vault"
 require "../keys/win_credential_manager"
 require "../supervisor/supervisor"
 require "./gateway_secrets"
+require "./gateway_telegram"
 require "../../channels/email/adapter"
 require "../../admin/http/server"
 require "../bus/bus"
@@ -54,6 +55,7 @@ module Sebas
     module CLI
       class Gateway
         include GatewayDispatch
+        include GatewayTelegram
         include GatewaySteer
         include GatewayHooks
         include GatewaySchedulingAdmin
@@ -200,6 +202,7 @@ module Sebas
           replay_unfinished               # 崩溃恢复重放先于调度启动（同会话不出现双 turn）
           @engine.resume_interrupted      # 中断 workflow run 续跑（aD57；需 workflows 注册表已载）
           scheduling.recover_dispatch     # 持久待发批次重派（§5.2：sealed/queued 重新入队）
+          confirm_telegram_after_recovery # M3-WP8：replay 后统一补确认 telegram dispatched（窗口 C）
           @steer_dispatch_ready.set(true) # 恢复完成后启用 queued steer 派发（QWvO）
           consume_bus
           if @config_path.empty?
@@ -248,6 +251,9 @@ module Sebas
             @supervisor.register(adapter)
           end
 
+          # Telegram 账号热换（M3-WP8 装配）：增删=监督体启停
+          reapply_telegram_accounts(new_config)
+
           @config = new_config
           restart_required
         end
@@ -269,7 +275,9 @@ module Sebas
         # 重解析（binding 热换不改在途批次归属），turn 在被调度的会话下执行。
         def process_message(message : Bus::InboundMessage, replay : Bool = false, admitted_session : String? = nil) : Nil
           # 重放（崩溃恢复）跳过 intent 排重：已存在 intent 继续 dispatch（send 幂等键防重复投递）
-          return unless replay || @store.record_intent(message.event_id, "message", message.to_json)
+          intent_new = replay || @store.record_intent(message.event_id, "message", message.to_json)
+          confirm_telegram_consumer(message) # M3-WP8 §4.2：消费者确认（含已有 intent 分支，防永卡 dispatched=false）
+          return unless intent_new
           @store.finish_intent(message.event_id, "dispatched")
 
           if admitted_session
