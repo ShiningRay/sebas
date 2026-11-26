@@ -88,7 +88,7 @@
 **M8.1-WP6 email IMAP IDLE 健壮性**（2–3 pd；对应 #239）
 - 目标：把 [spec/05-multi-account.md](../../spec/05-multi-account.md) §5.4 差距表里 IDLE 侧的 5 项补齐，让 E.1-4 的「继续应用专用密码」裁决有真实兜底。
 - 范围：
-  - **IDLE 整体 deadline**：「发出 IDLE → DONE 收尾完成」全程 ≤29 分钟，到 `idle_poll − 收尾期限` 主动 `DONE`；
+  - **IDLE 整体 deadline**：「发出 IDLE → DONE 收尾完成」全程 ≤29 分钟，到 `min(idle_poll, 29 分钟) − 收尾期限` 主动 `DONE`（`idle_poll` 构造参数保留可配置，但不得把 29 分钟上界顶开）；
   - **收尾期限**：与 deadline 分离的独立有界期限（默认 30s）；期限到点未收到标签响应则断开重连，**不在原连接重发 IDLE**；`abort_idle` 的 `rescue ::Exception` 不再静默吞异常；
   - **假活判定**：一个 IDLE 窗口内零响应（含 `OK` 收尾）即断连重连，不等 TCP 超时；
   - **兜底轮询**：独立 watchdog 每 5 分钟用短连接 `SELECT` + 比对 `UIDNEXT`（必要时 `SEARCH UID <last+1>:*`），有新增触发一次补收；短连接不复用 IDLE 连接；
@@ -127,7 +127,10 @@
   - 限流数字、接收形态、排重字段的核实引用补全；
   - 版本号同步：`shard.yml` + `src/version.cr` → v0.6.0。
 - 交付物：文档 + 示例 + 版本号修订。
-- 依赖：M8.2-WP1、M8.1-WP3（期级验收要求「企微 AIBot 长连接跑通」，v0.6.0 不得在该能力缺席时发版；管理面包 M8.2-WP1 不依赖 AIBot，保持原样）。
+- 依赖：M8.2-WP1、M8.1-WP3、M8.1-WP6、M8.1-WP7。
+  - M8.1-WP3：期级验收要求「企微 AIBot 长连接跑通」，v0.6.0 不得在该能力缺席时发版。
+  - M8.1-WP6 / WP7：期级验收同样含 email 两条主线，且 M8 的里程碑口径是「清零后打 tag」——发布包若不等这两包，会出现「版本号已升、发布准备已完成，但期级验收项未过」。
+  - 管理面包 M8.2-WP1 保持原依赖（管理面覆盖企微/飞书/Slack 账号，不涉及 email 两包）。
 - 验收：`ruby tools/check_docs.rb` FAIL=0；新用户按 README 配置示例即可启动；`make release` 全绿。
 - 风险：文档与代码漂移——发布前 Verifier 逐条对照示例配置字段名与代码 schema。[推演]
 
@@ -163,7 +166,7 @@ M8.1-WP6 (email IDLE) ──── 独立，无前置
 M8.1-WP7 (email 配置) ──── 独立，无前置
 ```
 
-边义：`{M8.1-WP2, M8.1-WP4, M8.1-WP5} → M8.2-WP1`；`{M8.2-WP1, M8.1-WP3} → M8.2-WP2`。
+边义：`{M8.1-WP2, M8.1-WP4, M8.1-WP5} → M8.2-WP1`；`{M8.2-WP1, M8.1-WP3, M8.1-WP6, M8.1-WP7} → M8.2-WP2`。
 
 发布包 M8.2-WP2 依赖 `M8.2-WP1` **与** `M8.1-WP3`：期级验收要求企微 AIBot 长连接跑通，而 M8.2-WP1 的依赖链不含 WP3，若不显式加边，v0.6.0 会在 AIBot 缺席时完成发布准备。
 
