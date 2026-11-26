@@ -119,12 +119,14 @@ class SetupActionTest < Minitest::Test
     save = step("Save vcpkg binary cache")
     cache_dir = ".vcpkg-archives"
 
-    [restore, save].each do |entry|
+    # action 类型分开断言：合成一个 (restore|save) 正则时，把恢复步骤误写成
+    # save 也能通过——而那样缓存就永远只会写不会读（CodeRabbit Minor）。
+    {restore => "restore", save => "save"}.each do |entry, kind|
       assert_equal cache_dir, entry.dig("with", "path"),
         "#{entry["name"]} 的 path 必须与实际落盘目录一致"
       assert_includes entry["if"].to_s, "runner.os == 'Windows'"
-      assert_match(%r{\Aactions/cache/(restore|save)@[0-9a-f]{40}\z}, entry["uses"].to_s,
-        "新增 action 必须 SHA 钉版")
+      assert_match(%r{\Aactions/cache/#{kind}@[0-9a-f]{40}\z}, entry["uses"].to_s,
+        "#{entry["name"]} 必须使用 actions/cache/#{kind} 且 SHA 钉版")
     end
     # restore 与 save 必须指向同一目录，否则存进去的读不回来。
     assert_equal restore.dig("with", "path"), save.dig("with", "path")
