@@ -28,6 +28,7 @@ require "./gateway_dispatch"
 require "./gateway_steer"
 require "./gateway_hooks"
 require "./gateway_scheduling_admin"
+require "./gateway_collaboration"
 require "../../tools/executor"
 require "../../orchestration/approvals/approvals"
 require "../../orchestration/fork/fork_manager"
@@ -57,6 +58,7 @@ module Sebas
         include GatewayHooks
         include GatewaySchedulingAdmin
         include GatewaySecrets
+        include GatewayCollaboration
 
         Log = Sebas::Log.for("sebas.gateway")
 
