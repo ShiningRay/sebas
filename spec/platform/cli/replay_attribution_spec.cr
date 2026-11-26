@@ -12,6 +12,9 @@ module Sebas
     it "binding 变更后重放，transcript 仍写 admission 时 session_key" do
       dir = gateway_tmp_dir("replay-attrib")
       config = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:
@@ -53,6 +56,9 @@ module Sebas
       # binding 变更：重启后（新 Gateway 实例）按当前 binding 会解析到 alt——
       # 但 replay 必须仍归属 admission 时的 main 会话
       config2 = ::Sebas::Platform::Config::Loader.from_content(<<-YAML
+        gateway:
+          http: { port: 0 }
+          ipc: { port: 0 }
         channels:
           email:
             accounts:

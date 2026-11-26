@@ -15,8 +15,21 @@ def gateway_tmp_dir(name : String) : Path
   dir
 end
 
+# 随机端口：`port: 0` 让内核分配空闲端口，避开默认 18790/18791。开发机常驻
+# 一个 `sebas gateway` 时，spec 抢默认端口会整片报 Address already in use；
+# 同一台机上并行跑多个 spec 进程也同理。实际端口在 `#run` 之后从
+# `gateway.http.port` / `gateway.ipc.port` 取（listen 会把分配结果写回）。
+# 注意 Crystal heredoc 不含结尾换行，拼接时须显式补 "\n"。
+def gw_random_port_yaml : String
+  <<-YAML
+    gateway:
+      http: { port: 0 }
+      ipc: { port: 0 }
+    YAML
+end
+
 def gw_test_config : ::Sebas::Platform::Config::Config
-  yaml = <<-YAML
+  yaml = gw_random_port_yaml + "\n" + <<-YAML
     channels:
       email:
         accounts:

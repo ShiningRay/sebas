@@ -203,10 +203,13 @@ module Sebas
 
         private def validate_gateway(config : Config, errors : Array(String)) : Nil
           if http = config.gateway.http
-            errors << "gateway.http.port must be 1..65535" unless (1..65535).covers?(http.port)
+            # 0 = 由系统分配空闲端口（测试与并行实例用；listen 后回写实际端口）
+            errors << "gateway.http.port must be 0..65535" unless (0..65535).covers?(http.port)
             errors << "gateway.http.auth must be token, password or tailscale (got '#{http.auth}')" unless {"token", "password", "tailscale"}.includes?(http.auth)
           end
           errors << "gateway.ipc.mode must be auto, unix, tcp or off (got '#{config.gateway.ipc.mode}')" unless {"auto", "unix", "tcp", "off"}.includes?(config.gateway.ipc.mode)
+          # 0 = 系统分配空闲端口（同 http.port）：spec 并行跑、同机起多个 gateway 时用
+          errors << "gateway.ipc.port must be 0..65535" unless (0..65535).covers?(config.gateway.ipc.port)
           # agent 间协作防环上限（#185 WP1 §8.1）：0/负数会让所有投递被拒，先验后换即拦
           max_hops = config.gateway.collaboration.max_hops
           errors << "gateway.collaboration.max_hops must be >= 1 (got #{max_hops})" unless max_hops >= 1
