@@ -243,6 +243,36 @@ runs:
       with:
         arch: x64
 
+    # vcpkg 默认把编好的包放进 %LOCALAPPDATA%\vcpkg\archives，托管 runner 每次
+    # 都是干净机器，这个目录随之清空，于是每个 job 都从源码重建 sqlite3：实测
+    # `Total install time: 39 s`，而 windows job 本身是 CI 的关键路径（168s，
+    # ubuntu 119s），这 39s 直接落在最长那条腿上。
+    #
+    # 复用安全性由 vcpkg 自己保证——按 ABI 哈希匹配，对不上就重建，不会给出
+    # 错误的二进制。缓存命中率因此不需要精确的版本 key。
+    #
+    # 为什么拆成 restore + save 两步：单步 actions/cache 在「主键已存在」时
+    # **不会**再写。若主键固定，镜像升级导致 sqlite3 重新编译后，新包永远存
+    # 不进去——优化会静默退化为每次 39s，且没有任何报错。
+    #
+    # 主键带 run_id 让每轮唯一，新包每次都落盘。同一个 run 里 spec 与
+    # release-build 各有 Windows 实例，release-build 在 spec 之后跑（needs），
+    # 会精确命中 spec 存下的主键、跳过重复写入——同一份二进制包不必存两遍。
+    # save 遇主键冲突只记 warning（action 内部 catch 全部走 logWarning），
+    # 不会把 job 变红。
+    #
+    # 路径用工作区内的相对目录，而不是 %LOCALAPPDATA%：后者写死 C:\Users\<name>
+    # 会在镜像改名时静默失效。绝对路径由安装步骤用 $PWD 拼出来，两处靠契约
+    # 测试锁住一致。
+    - name: Restore vcpkg binary cache
+      id: vcpkg_cache
+      if: runner.os == 'Windows'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: .vcpkg-archives
+        key: vcpkg-archives-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: vcpkg-archives-${{ runner.os }}-
+
     - name: Install SQLite3 (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
@@ -251,6 +281,9 @@ runs:
       # shards directory): the import lib goes to `.build-deps\lib` via LIB, and the
       # DLL lands next to `bin/sebas.exe` so spawned binaries resolve it.
       run: |
+        # 必须与缓存步骤的 path 一致，否则缓存命中了也用不上（改动两处要同步）。
+        $env:VCPKG_DEFAULT_BINARY_CACHE = "$PWD\.vcpkg-archives"
+        New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
         vcpkg install "sqlite3[fts5]:x64-windows"
         $root = $env:VCPKG_INSTALLATION_ROOT
         $deps = "$PWD\.build-deps\lib"
@@ -259,3 +292,16 @@ runs:
         Copy-Item "$root\installed\x64-windows\bin\sqlite3.dll" "$PWD\bin\sqlite3.dll"
         "LIB=$deps;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append
         "PATH=$deps;$PWD\bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    # 装完立刻存，不放到 job 末尾：后面的 spec / build 失败与否都不影响这份
+    # 二进制包的有效性，存下来能让下一个 job 少花 39s。
+    #
+    # cache-hit 为 true 说明这一轮的主键（带 run_id）已存在：rerun，或同一 run
+    # 内 spec 已存过、release-build 精确命中。两种都无需重写（save 在主键冲突时
+    # 只记 warning，不失败）。
+    - name: Save vcpkg binary cache
+      if: runner.os == 'Windows' && steps.vcpkg_cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: .vcpkg-archives
+        key: vcpkg-archives-${{ runner.os }}-${{ github.run_id }}

@@ -1,6 +1,8 @@
 /lib/
 /bin/
 /.shards/
+# Windows CI 的 vcpkg 二进制缓存目录（actions/cache 落盘位置）
+.vcpkg-archives/
 *.dwarf
 *.o
 sebas
