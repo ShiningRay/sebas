@@ -111,6 +111,46 @@ class SetupActionTest < Minitest::Test
     assert status.success?, out
   end
 
+  # vcpkg 的二进制缓存目录写两处：restore/save 的 path 与安装步骤里的
+  # VCPKG_DEFAULT_BINARY_CACHE。任一处改了而另一处没跟上，缓存会命中但用不上
+  # ——CI 仍然是绿的，只是白跑一趟缓存，无声无息。
+  def test_vcpkg_cache_path_matches_the_install_step
+    restore = step("Restore vcpkg binary cache")
+    assert_equal ".vcpkg-archives", restore.dig("with", "path"),
+      "缓存目录写成工作区相对路径，供安装步骤用 $PWD 拼绝对路径"
+    assert_includes restore["if"].to_s, "runner.os == 'Windows'"
+    assert_match(%r{\Aactions/cache/restore@[0-9a-f]{40}\z}, restore["uses"].to_s,
+      "新增 action 必须 SHA 钉版")
+
+    install = step("Install SQLite3 (Windows)")["run"]
+    assert_includes install, '$env:VCPKG_DEFAULT_BINARY_CACHE = "$PWD\.vcpkg-archives"',
+      "安装步骤必须把 vcpkg 的二进制缓存指到同一个目录"
+    # 目录不存在时 vcpkg 会直接失败，所以必须先建。
+    assert_match(/New-Item.*\$env:VCPKG_DEFAULT_BINARY_CACHE/, install,
+      "缓存目录必须先创建再安装")
+  end
+
+  # 主键必须带 run_id，且 restore/save 两步一致。
+  #
+  # 固定主键会让 actions/cache 在「主键已存在」时拒绝再写：镜像升级导致 sqlite3
+  # 重建后，新包永远存不进去，优化静默退化为每轮 39s。这条测试锁住这个坑。
+  # 主键里也不得掺 github.job：同一 run 里 spec 与 release-build 共享一份包更省，
+  # 而 save 的主键冲突只记 warning，不会把 job 变红。
+  def test_vcpkg_cache_key_is_per_run_and_shared_by_restore_and_save
+    restore = step("Restore vcpkg binary cache")
+    save = step("Save vcpkg binary cache")
+    key = "vcpkg-archives-${{ runner.os }}-${{ github.run_id }}"
+
+    assert_equal key, restore.dig("with", "key").to_s
+    assert_equal key, save.dig("with", "key").to_s, "restore 与 save 的主键必须一致"
+    refute_includes key, "github.job", "同 run 内的 job 应共享同一份二进制包"
+    assert_equal "vcpkg-archives-${{ runner.os }}-", restore.dig("with", "restore-keys").to_s,
+      "前缀兜底要能取到上一轮的缓存"
+    assert_includes save["if"].to_s, "steps.vcpkg_cache.outputs.cache-hit != 'true'",
+      "精确命中时不必重复写"
+    assert_match(%r{\Aactions/cache/save@[0-9a-f]{40}\z}, save["uses"].to_s)
+  end
+
   # --- 行为 ---
 
   def env_for(dir, overrides = {})
