@@ -44,6 +44,9 @@
 
 ### Fixed
 
+- 工作包依赖节标题写成「依赖关系」这类变体时，`prose_dependencies` 返回 `nil`，正文与 `Automation.depends_on`、
+  原生 `blocked_by` 的核对被整段跳过且不报警（看着绿灯，实际没校验）。现在 `kind=work_package` 遇到标题不合规
+  直接判 `invalid_plan` 并列出变体标题；非工作包不查，变体节内无 `#N` 引用也不报，避免把说明文字误判成依赖声明。
 - `sebas gateway` 启动失败时静默退出（无输出、退出码 1）。两处叠加：① 各模块日志常量写成
   `Sebas::Log.for("sebas.<layer>")`，在源 `sebas` 下再拼一层得到 `sebas.sebas.<layer>`，而 CLI 只绑定了
   `sebas` 这一个源，`Log::Builder#matches` 按整段前缀匹配，全部子源日志被静默丢弃（配置拒启、IMAP 连接失败、
