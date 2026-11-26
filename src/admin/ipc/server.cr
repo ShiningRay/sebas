@@ -2,6 +2,7 @@ require "json"
 require "socket"
 require "random"
 require "../../platform/store/store"
+require "../../platform/config/reload" # agents.list 读 Config::CURRENT（显式声明依赖）
 require "./protocol"
 require "./admin_commands"
 
@@ -225,6 +226,8 @@ module Sebas
           when "sessions.list"
             keys = @store.session_keys.map { |k| JSON::Any.new(k) }
             io.puts(ok_response(frame.id, {"sessions" => JSON::Any.new(keys)}))
+          when "agents.list"
+            io.puts(ok_response(frame.id, {"agents" => JSON::Any.new(agents_list_entries)}))
           when "sessions.read"
             key = frame.field("session_key").try(&.as_s?) || ""
             rows = @store.transcripts(key).map do |row|
@@ -272,6 +275,24 @@ module Sebas
         setter template_registry
         setter scheduling_admin_handler : (String, ::JSON::Any -> Tuple(Int32, String))?
         getter template_registry : ::Sebas::Agents::AgentRegistry?
+
+        # agents.list 条目（M4x-WP2，#148；提案 agent-category-tags.md §4.2）：
+        # 只读无副作用，数据取自当前 Config.agents（配置真相源，不读 registry
+        # 缓存——热更新后立即可见），按 id 字典序；未分类 category 输出 JSON
+        # null（不是字符串 "null"）。
+        private def agents_list_entries : Array(JSON::Any)
+          config = ::Sebas::Platform::Config::CURRENT.get
+          ids = config.agents.keys
+          ids.sort!
+          ids.map do |id|
+            agent = config.agents[id]
+            JSON::Any.new({
+              "id"       => JSON::Any.new(id),
+              "category" => JSON::Any.new(agent.category),
+              "tags"     => JSON::Any.new(agent.tags.map { |tag| JSON::Any.new(tag) }),
+            } of String => JSON::Any)
+          end
+        end
 
         # token 匹配则本连接视为已认证（写命令 fork/join 的前置条件）。
         # 认证绑定 socket 引用本身（非 object_id——内存地址可复用）。
