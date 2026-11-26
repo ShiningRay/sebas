@@ -3816,3 +3816,86 @@ class SourceRefBulkTest < Minitest::Test
     assert_equal 1, runner.argvs.length
   end
 end
+
+# 快照并发编排（PR3）：顶层读取互不依赖，并发后仍须 fail-closed。
+class SnapshotConcurrencyTest < Minitest::Test
+  include SnapshotHelpers
+
+  # 每次调用都睡一小段，并统计同时在飞的峰值。
+  # 串行实现峰值恒为 1；并发实现必然 ≥ 3。与机器快慢无关。
+  class SleepyRunner
+    attr_reader :peak, :paths
+
+    def initialize(payloads, delay: 0.15)
+      @payloads = payloads
+      @delay = delay
+      @in_flight = 0
+      @peak = 0
+      @paths = []
+      @lock = Mutex.new
+    end
+
+    def json!(*argv)
+      path = argv.find { |arg| arg.start_with?("repos/") } || "graphql"
+      key = @payloads.keys.find { |candidate| path.start_with?(candidate) }
+      raise "未预期的请求：#{argv.join(" ")}" if key.nil?
+
+      @lock.synchronize do
+        @paths << key
+        @in_flight += 1
+        @peak = [@peak, @in_flight].max
+      end
+      sleep @delay
+      JSON.parse(@payloads.fetch(key))
+    ensure
+      @lock.synchronize { @in_flight -= 1 }
+    end
+  end
+
+  # REST issues 接口的形状：milestone/labels 都是对象数组，与 build_issue 一致。
+  def raw_issue(number, body)
+    {"number" => number, "title" => "issue #{number}", "state" => "OPEN",
+     "body" => body, "labels" => [], "milestone" => {"number" => 2},
+     "assignees" => [], "html_url" => "https://github.com/o/r/issues/#{number}"}
+  end
+
+  def payloads(issue_body: nil)
+    {
+      "repos/o/r/milestones" => JSON.generate([milestone(number: 2, order: 4, track: "main", open_issues: 0)]),
+      "repos/o/r/issues" => JSON.generate([raw_issue(1, issue_body || automation)]),
+      "repos/o/r/issues/comments" => JSON.generate([]),
+      "repos/o/r/commits/main" => JSON.generate({"sha" => "abc123"}),
+      "graphql" => JSON.generate({"data" => {"repository" => {
+        "b0" => {"number" => 1, "blockedBy" => {"totalCount" => 0, "nodes" => []}},
+        "pullRequests" => {"pageInfo" => {"hasNextPage" => false}, "nodes" => []}
+      }}})
+    }
+  end
+
+  # 四条顶层读取必须真的并发：串行实现峰值只能是 1。
+  def test_top_level_reads_run_concurrently
+    runner = SleepyRunner.new(payloads)
+    gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
+    snapshot = gateway.snapshot
+
+    assert_operator runner.peak, :>=, 3,
+      "并发峰值只有 #{runner.peak}（#{runner.paths.inspect}），顶层读取仍在串行"
+    assert_equal "abc123", snapshot.main_sha
+    assert_equal 1, snapshot.issues.length
+    assert_equal 1, snapshot.milestones.length
+  end
+
+  # 任一流失败都必须整体失败，不能返回半份快照。
+  def test_stream_failure_fails_closed
+    broken = Class.new(SleepyRunner) do
+      def json!(*argv)
+        raise SebasAgents::CommandError.new("boom", command: argv) if argv.join(" ").include?("commits/main")
+
+        super
+      end
+    end
+    gateway = SebasAgents::GithubGateway.new(broken.new(payloads), repo: "o/r")
+    error = assert_raises(SebasAgents::CommandError) { gateway.snapshot }
+    assert_includes error.message, "boom"
+  end
+end

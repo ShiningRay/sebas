@@ -51,6 +51,7 @@ module SebasAgents
       @author_cache = {}
       @body_cache = {}
       @issue_comment_index = nil
+      @issue_comment_index_lock = Mutex.new
     end
 
     # 认领/暂停所需的写操作：只碰标签，不碰 issue 内容。
@@ -154,21 +155,33 @@ end
     end
 
     def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil)
-      milestones = fetch_milestones
-      issues = fetch_all_issues
-      pull_requests = fetch_pull_requests(proposal_evidence: !proposal_issue.nil?)
-      issues = attach_blocked_by(issues)
+      # 顶层读取互不依赖：milestone / issue 清单 / PR 清单 / main sha 并发发起。
+      # 异常统一由 #value 取出后原样抛出，整体 fail-closed，不产出部分快照。
+      readers = []
+      milestones_thread = spawn_reader(readers) { fetch_milestones }
+      issues_thread = spawn_reader(readers) { fetch_all_issues }
+      pull_requests_thread = spawn_reader(readers) { fetch_pull_requests(proposal_evidence: !proposal_issue.nil?) }
+      main_sha_thread = spawn_reader(readers) { main_sha }
+
+      raw_issues = issues_thread.value
+      # 评论索引只依赖 issue 清单（内容与后续步骤无关），可与 blocked_by 批量并发；
+      # 无 evidence 块时不预热，避免白白多打 4 页请求。
+      index_thread = evidence_blocks?(raw_issues) ? spawn_reader(readers) { issue_comment_index } : nil
+      blocked_thread = spawn_reader(readers) { attach_blocked_by(raw_issues) }
+
+      issues = blocked_thread.value
       issues = close_over_dependencies(issues)
+      index_thread&.value
 
       blocks = issues.filter_map { |issue| JsonBlock.one(issue.body, "evidence", subject: "issue ##{issue.number}") }
       discovered = discover_records(blocks)
       proposal_evidence = proposal_issue ? proposal_decision_evidence(issues, proposal_issue) : empty_proposal_evidence
       Model::Snapshot.new(
         repo: @repo,
-        main_sha: main_sha,
-        milestones: milestones,
+        main_sha: main_sha_thread.value,
+        milestones: milestones_thread.value,
         issues: issues,
-        pull_requests: pull_requests,
+        pull_requests: pull_requests_thread.value,
         maintainers: maintainers,
         source_authors: resolve_authors(blocks),
         gates: discovered["gates"].merge(gate_records),
@@ -177,6 +190,25 @@ end
         source_bodies: resolve_bodies(blocks),
         proposal_evidence: proposal_evidence
       )
+    rescue StandardError
+      # 任一流抛错时其余线程可能仍在跑：先收干净再让异常穿透，
+      # 避免「快照已失败、后台还在写缓存」的竞态。
+      readers.each { |thread| thread.join(10) }
+      raise
+    end
+
+    # 只要有任意一张卡带 evidence 块，评论索引就会派上用场。
+    def evidence_blocks?(issues)
+      issues.any? { |issue| JsonBlock.present?(issue.body, "evidence") }
+    end
+
+    # 并发读取的异常由调用方的 #value 取回并抛出；这里关掉线程自带的
+    # report_on_exception，避免同一个错误既进快照错误又刷屏 stderr。
+    def spawn_reader(collector, &block)
+      thread = Thread.new(&block)
+      thread.report_on_exception = false
+      collector << thread
+      thread
     end
 
     # 只查一个 issue 的完整信息（含 blocked_by）。依赖闭包按需补取走这里。
@@ -414,34 +446,39 @@ end
     # 否则「评论已被删除/超出一页」会变成空正文——而 Evidence 校验对空正文是
     # 放行作者校验的，那等于 fail-open。
     def issue_comment_index
-      @issue_comment_index ||= begin
-        index = {}
-        page = 1
-        loop do
-          batch = @runner.json!("gh", "api",
-            "repos/#{@repo}/issues/comments?per_page=#{PAGE_SIZE}&page=#{page}")
-          unless batch.is_a?(Array)
-            raise CommandError.new("issue comments 分页返回非数组：#{batch.inspect[0, 200]}",
-              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
-          end
-          batch.each do |comment|
-            id = comment.is_a?(Hash) ? comment["id"] : nil
-            unless id.is_a?(Integer)
-              raise CommandError.new("issue 评论缺 id：#{comment.inspect[0, 120]}",
-                command: ["gh", "api", "repos/#{@repo}/issues/comments"])
-            end
-            index[id] = comment
-          end
-          break if batch.length < PAGE_SIZE
-
-          page += 1
-          if page > MAX_PAGES
-            raise CommandError.new("issue comments 分页超过 #{MAX_PAGES} 页：#{@repo}",
-              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
-          end
-        end
-        index
+      # 预热线程与主线程都可能首次进入，加锁避免重复翻页。
+      @issue_comment_index_lock.synchronize do
+        @issue_comment_index ||= build_issue_comment_index
       end
+    end
+
+    def build_issue_comment_index
+      index = {}
+      page = 1
+      loop do
+        batch = @runner.json!("gh", "api",
+          "repos/#{@repo}/issues/comments?per_page=#{PAGE_SIZE}&page=#{page}")
+        unless batch.is_a?(Array)
+          raise CommandError.new("issue comments 分页返回非数组：#{batch.inspect[0, 200]}",
+            command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+        end
+        batch.each do |comment|
+          id = comment.is_a?(Hash) ? comment["id"] : nil
+          unless id.is_a?(Integer)
+            raise CommandError.new("issue 评论缺 id：#{comment.inspect[0, 120]}",
+              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+          end
+          index[id] = comment
+        end
+        break if batch.length < PAGE_SIZE
+
+        page += 1
+        if page > MAX_PAGES
+          raise CommandError.new("issue comments 分页超过 #{MAX_PAGES} 页：#{@repo}",
+            command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+        end
+      end
+      index
     end
 
     def ref_body(ref)
