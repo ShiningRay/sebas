@@ -5,7 +5,7 @@ channels:
   email:
     accounts:
       - id: personal-mailbox
-        platform: imap.example.com    # IMAP/SMTP 主机（Gmail 填 imap.gmail.com）
+        platform: imap.example.com    # IMAP 与 SMTP 主机同一字段（Gmail 填 imap.gmail.com + 465/implicit，见 design.md §5.4）
         receive: imap-idle            # imap-idle | gmail-api（后者未实现，见 design.md §5.4）
         smtp:
           port: 465

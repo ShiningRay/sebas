@@ -43,7 +43,7 @@ channels:
   email:
     accounts:
       - id: personal-gmail            # Account：一个 email 账号
-        platform: imap.gmail.com      # IMAP/SMTP 主机（§5.4）
+        platform: imap.gmail.com      # IMAP 与 SMTP 主机同一字段（smtp 段无 host，见 §5.4）
         receive: imap-idle            # Gmail 与应用专用密码同走 IDLE（#23 裁决，§5.4）
         smtp: { port: 465, tls: implicit }
         credentials:                   # 值经 ${ENV} 展开；敏感值入 keyring（§10.2）
