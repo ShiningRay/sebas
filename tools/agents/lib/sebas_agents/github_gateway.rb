@@ -25,8 +25,9 @@ module SebasAgents
               mergeStateStatus
               url
               isCrossRepository
-              closingIssuesReferences(first: 10) { nodes { number } }
+              closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number } }
               statusCheckRollup { contexts(first: 100) {
+                pageInfo { hasNextPage }
                 nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
               } }
             }
@@ -488,9 +489,34 @@ end
     # - closingIssuesReferences 取 nodes 数组（gh pr list 输出即数组）；
     # - statusCheckRollup 取 contexts.nodes（normalize_checks 已兼容 StatusContext 的
     #   只有 state 无 status 的形状，不能凭空补 COMPLETED）；
-    # - isCrossRepository 直取（#246 review）：仓库名近似会漏掉同名 fork
-    #   （contributor/sebas → ShiningRay/sebas 会被误判 false 保留 fork PR）。
+    # - isCrossRepository 直取且必须为布尔（#246 review round 2）：缺字段或非法值
+    #   会把未知身份当本仓身份放行 fork PR——fail-closed 拒映射；
+    # - 内层连接截断拒绝（#246 review round 2）：contexts/closingIssuesReferences
+    #   超过 first 上限时 hasNextPage=true，静默丢弃会让 verifier 漏判失败检查、
+    #   selection 重复分配关联 issue——宁可拒绝也不给截断面。
     def graphql_pr_to_list_item(node)
+      cross = node["isCrossRepository"]
+      unless cross == true || cross == false
+        raise CommandError.new(
+          "pullRequests 节点缺 isCrossRepository 或非布尔（number=#{node["number"]}）：#{cross.inspect}",
+          command: ["gh", "api", "graphql"]
+        )
+      end
+      inner_truncated = lambda { |path|
+        node.dig(*path, "pageInfo", "hasNextPage") == true
+      }
+      if inner_truncated.call(["statusCheckRollup", "contexts"])
+        raise CommandError.new(
+          "PR ##{node["number"]} 的 statusCheckRollup contexts 超过 100 条被截断，拒绝产出不完整快照",
+          command: ["gh", "api", "graphql"]
+        )
+      end
+      if inner_truncated.call(["closingIssuesReferences"])
+        raise CommandError.new(
+          "PR ##{node["number"]} 的 closingIssuesReferences 超过 10 条被截断，拒绝产出不完整快照",
+          command: ["gh", "api", "graphql"]
+        )
+      end
       {
         "number" => node["number"],
         "headRefName" => node["headRefName"],
@@ -501,7 +527,7 @@ end
         "statusCheckRollup" => Array(node.dig("statusCheckRollup", "contexts", "nodes")),
         "closingIssuesReferences" => Array(node.dig("closingIssuesReferences", "nodes")).map { |n| { "number" => n["number"] } },
         "url" => node["url"],
-        "isCrossRepository" => node["isCrossRepository"] == true
+        "isCrossRepository" => cross
       }
     end
 
