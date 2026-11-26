@@ -56,6 +56,36 @@ module Sebas
     end
   end
 
+  describe "Agent 元数据固化（M4x-WP2，#148）" do
+    it "AgentInstance 携带 category/tags，registry 首建固化、热更新不刷新存量" do
+      dir = Path[Dir.tempdir, "sebas-agent-meta-spec", Random::Secure.hex(4)]
+      FileUtils.mkdir_p(dir / "agents")
+      registry = ::Sebas::Agents::AgentRegistry.new(dir / "agents")
+
+      # 显式元数据：首建时固化进实例
+      writer = registry.get_or_create("writer", category: "writing", tags: ["drafting", "english"])
+      writer.category.should eq("writing")
+      writer.tags.should eq(["drafting", "english"])
+
+      # 缺省：category nil / tags []
+      plain = registry.get_or_create("plain")
+      plain.category.should be_nil
+      plain.tags.should eq([] of String)
+
+      # 首建固化：同 id 再 get_or_create 传新元数据不刷新已存在实例（幂等命中）
+      again = registry.get_or_create("writer", category: "ops", tags: ["oncall"])
+      again.should be(writer)
+      again.category.should eq("writing")
+      again.tags.should eq(["drafting", "english"])
+
+      # 防御性拷贝：调用方后续改动原数组不渗入实例
+      external = ["drafting", "english"]
+      mutated = registry.get_or_create("frozen", tags: external)
+      external << "late-change"
+      mutated.tags.should eq(["drafting", "english"])
+    end
+  end
+
   describe "SKILL.md frontmatter 角色卡挂点（M4.4-WP2）" do
     it "frontmatter role 字段解析（角色卡挂点）" do
       root = skill_dir("research-sprint", "name: research-sprint\nrole: researcher\ndescription: fast research", "sprint instructions")
