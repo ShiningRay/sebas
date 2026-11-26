@@ -13,7 +13,9 @@ module Sebas
       alias SessionPolicyConfig = ::Sebas::Sessions::Scheduling::SessionPolicyConfig
 
       # 渠道类型总表（宏样板的展开源；新增渠道在此登记）
-      CHANNEL_TYPES = %w[email wecom lark]
+      # telegram 为 M3-WP7 扩展点定稿先行登记（m8 提案 §4.1）：schema/绑定校验已生效，
+      # 适配器接线属 M8.1-WP3（接入实现前配置可校验但无收发）。
+      CHANNEL_TYPES = %w[email wecom lark telegram]
 
       class Config
         include YAML::Serializable
@@ -35,16 +37,18 @@ module Sebas
         getter email : EmailChannel?
         getter wecom : WecomChannel?
         getter lark : LarkChannel?
+        getter telegram : TelegramChannel?
 
         def initialize
         end
 
         def account_ids(channel_type : String) : Array(String)
           case channel_type
-          when "email" then email.try(&.accounts.map(&.id)) || [] of String
-          when "wecom" then wecom.try(&.accounts.map(&.id)) || [] of String
-          when "lark"  then lark.try(&.accounts.map(&.id)) || [] of String
-          else              [] of String
+          when "email"    then email.try(&.accounts.map(&.id)) || [] of String
+          when "wecom"    then wecom.try(&.accounts.map(&.id)) || [] of String
+          when "lark"     then lark.try(&.accounts.map(&.id)) || [] of String
+          when "telegram" then telegram.try(&.accounts.map(&.id)) || [] of String
+          else                 [] of String
           end
         end
       end
@@ -85,6 +89,16 @@ module Sebas
         getter platform : String                # feishu.cn | larksuite.com（base_url 必须入账号配置 §5.6）
         getter receive : String = "ws-longconn" # ws-longconn | webhook
         getter credentials : Hash(String, String) = {} of String => String
+      end
+
+      # Telegram（M3-WP7 扩展点定稿，m8 提案 §4.1/§4.3）：bot_token 必填（缺键 YAML
+      # 解析即报）、api_base_url 可选（自建 Bot API server，缺省官方 api.telegram.org）、
+      # token_ref 为 keyring 指针（按 (channel_type, account_id) 命名空间存取）。
+      # 适配器接线属 M8.1-WP3；接入前配置可校验、发送时 Registry 查无适配器 fail-loud。
+      class TelegramAccount < AccountBase
+        getter bot_token : String
+        getter api_base_url : String?
+        getter token_ref : String?
       end
 
       # provider 层配置（#214）：密钥/base_url/protocol 归厂商命名空间；

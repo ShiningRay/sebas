@@ -167,6 +167,109 @@ module Sebas
           Loader.validate(config).should be_empty
         end
 
+        # M3-WP7 扩展点定稿（m8 提案 §4.1）：telegram schema/绑定校验先行，
+        # 适配器接线属 M8.1-WP3。
+        it "accepts a telegram account with bot_token and optional api_base_url" do
+          yaml = <<-YAML
+            channels:
+              telegram:
+                accounts:
+                  - id: personal-bot
+                    bot_token: "123456:ABC-def"
+                    api_base_url: "https://tg.internal.example"
+                    token_ref: "keyring://sebas/telegram/personal-bot"
+            agents:
+              main: { model: deepseek/chat }
+            YAML
+          config = Loader.from_content(yaml)
+          account = config.channels.telegram.try(&.accounts.first)
+          account.try(&.bot_token).should eq("123456:ABC-def")
+          account.try(&.api_base_url).should eq("https://tg.internal.example")
+          account.try(&.token_ref).should eq("keyring://sebas/telegram/personal-bot")
+          Loader.validate(config).should be_empty
+        end
+
+        it "rejects a telegram account missing bot_token at parse time" do
+          yaml = <<-YAML
+            channels:
+              telegram:
+                accounts:
+                  - id: broken-bot
+            agents:
+              main: { model: deepseek/chat }
+            YAML
+          # 非空类型缺键 → YAML 反序列化失败拒载（Crystal 宏报错不含字段名，
+          # 字段级提示由空串用例的 loader 校验承担）
+          expect_raises(ConfigError, /invalid YAML/) do
+            Loader.from_content(yaml)
+          end
+        end
+
+        it "rejects a telegram account with empty bot_token" do
+          yaml = <<-YAML
+            channels:
+              telegram:
+                accounts:
+                  - id: broken-bot
+                    bot_token: "   "
+            agents:
+              main: { model: deepseek/chat }
+            YAML
+          expect_raises(ValidationError, /bot_token must not be empty/) do
+            Loader.from_content(yaml)
+          end
+        end
+
+        it "rejects a telegram account with empty api_base_url" do
+          yaml = <<-YAML
+            channels:
+              telegram:
+                accounts:
+                  - id: broken-bot
+                    bot_token: "123456:ABC"
+                    api_base_url: ""
+            agents:
+              main: { model: deepseek/chat }
+            YAML
+          expect_raises(ValidationError, /api_base_url must not be empty/) do
+            Loader.from_content(yaml)
+          end
+        end
+
+        it "routes bindings to telegram accounts" do
+          yaml = <<-YAML
+            channels:
+              telegram:
+                accounts:
+                  - id: personal-bot
+                    bot_token: "123456:ABC"
+            agents:
+              main: { model: deepseek/chat }
+            bindings:
+              - { channel: telegram, account: personal-bot, agent: main }
+            YAML
+          config = Loader.from_content(yaml)
+          config.channels.account_ids("telegram").should eq(["personal-bot"])
+          Loader.validate(config).should be_empty
+        end
+
+        it "rejects a binding to an unknown telegram account" do
+          yaml = <<-YAML
+            channels:
+              telegram:
+                accounts:
+                  - id: personal-bot
+                    bot_token: "123456:ABC"
+            agents:
+              main: { model: deepseek/chat }
+            bindings:
+              - { channel: telegram, account: nope-bot, agent: main }
+            YAML
+          expect_raises(ValidationError, /does not exist in channel 'telegram'/) do
+            Loader.from_content(yaml)
+          end
+        end
+
         it "loads from a file and rejects a missing path" do
           path = Path[Dir.tempdir, "sebas-spec-config.yaml"]
           File.write(path, VALID_YAML)

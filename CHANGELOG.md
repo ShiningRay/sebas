@@ -7,6 +7,10 @@
 
 ### Added
 
+- **M3-WP7 Telegram 渠道扩展点定稿**：`CHANNEL_TYPES` 登记 `telegram`，配置 schema 新增
+  `channels.telegram.accounts[]`（`bot_token` 必填、`api_base_url`/`token_ref` 可选，loader 逐条校验），
+  绑定路由与账号解析自动生效；`InboundMessage` 补 `message_id`（尾置默认 nil，旧适配器零改动，
+  回放路径随 JSON 保真）。适配器接线属 M8.1-WP3，接入前发送时查无适配器 fail-loud。
 - `sebas version` / `--help` 首行带构建来源的 git 提交：输出 `sebas X.Y.Z (<git rev>)`。rev 由
   `src/version.cr` 的编译期宏**直接解析 `.git` 的 HEAD**取得（覆盖 packed-refs、detached、
   worktree、submodule、bare；不调用 git，故无 shell 与平台差异），无 `.git` 的构建可用
