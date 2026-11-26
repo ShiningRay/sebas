@@ -34,9 +34,13 @@ module Sebas
         end
       end
 
-      # 日志统一写 STDERR：正常输出（help/version）与诊断流分离，拒启原因不会被误当正文
+      # 日志统一写 STDERR：正常输出（help/version）与诊断流分离，拒启原因不会被误当正文。
+      # :nodoc:
+      # 测试注入点：默认 STDERR；改用 sync 派发保证短命进程退出前日志已落盘。
+      class_property log_io : IO = STDERR
+
       private def setup_logging : Nil
-        backend = ::Log::IOBackend.new(io: STDERR)
+        backend = ::Log::IOBackend.new(io: log_io, dispatcher: :sync)
         ::Log.setup_from_env(default_sources: DEFAULT_LOG_SOURCES, default_level: :info, backend: backend)
       end
 
@@ -81,18 +85,20 @@ module Sebas
         0
       end
 
-      # 取 flag 的值：支持多别名（--config / -c），先匹配先得。
-      # 只认「flag 后跟非 flag 值」形态——避免把下一个 flag 误当路径；缺值即报错，
-      # 不静默回退到默认 config.yaml（用户传了参数却跑另一个文件最误导）。
+      # 取 flag 的值：支持多别名（--config / -c），按声明顺序取第一个出现的。
+      # 先逐个校验所有出现的别名 —— 任一缺值即报错，不允许被先命中的别名绕过
+      # （`--config valid.yaml -c` 也必须报错）；「用户传了参数却静默跑另一个
+      # 文件」是最误导的失败模式。
       private def arg_value(args : Array(String), *flags : String) : String?
+        selected = nil
         flags.each do |flag|
           idx = args.index(flag)
           next unless idx
           value = args[idx + 1]?
-          return value if value && !value.starts_with?("-")
-          raise ArgumentError.new("option #{flag} requires a value")
+          raise ArgumentError.new("option #{flag} requires a value") if value.nil? || value.starts_with?("-")
+          selected ||= value
         end
-        nil
+        selected
       end
 
       private def print_help : Nil
