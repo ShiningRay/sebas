@@ -73,12 +73,12 @@ module SebasAgents
       CommandRunner.new(dry_run: !options[:apply])
     end
 
-    def snapshot(options, proposal_issue: nil)
+    def snapshot(options, proposal_issue: nil, verified_pr: nil)
       return load_snapshot(options[:snapshot]) if options[:snapshot]
 
       repo = options[:repo] || default_repo
       gateway = GithubGateway.new(runner(options), repo: repo)
-      gateway.snapshot(proposal_issue: proposal_issue)
+      gateway.snapshot(proposal_issue: proposal_issue, verified_pr: verified_pr)
     end
 
     # 快照是唯一事实源：结构不全就拒绝，绝不把缺失当成「没有工作」。
@@ -449,8 +449,10 @@ module SebasAgents
         report, extra = run_final_verification(options, pr, issue)
         payload = report.to_h.merge(extra).merge("ok" => report.pass?, "pre" => false)
       else
-        report = Verifier.verify_merge(parse_number(pr, "pr"), parse_number(issue, "issue"),
-          snapshot(options), pre: options[:pre])
+        # 目标 PR 的 CI 单独补取：清单已不带 rollup，不补就只能是「未取」。
+        pr_number = parse_number(pr, "pr")
+        report = Verifier.verify_merge(pr_number, parse_number(issue, "issue"),
+          snapshot(options, verified_pr: pr_number), pre: options[:pre])
         payload = report.to_h.merge("ok" => report.pass?, "pre" => options[:pre] ? true : false)
       end
       Output.emit(payload, out: @out)

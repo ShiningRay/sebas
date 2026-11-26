@@ -127,6 +127,13 @@ module SebasAgents
         report.blocker("PR ##{pr_number} 未合并")
       end
       report.blocker("PR ##{pr_number} 未关联 issue ##{issue_number}") unless pr.closing_issues.include?(issue_number)
+      # checks 未取 ≠ CI 通过。快照只对 open PR 与点名 PR 取 rollup，
+      # 其余为 nil；此时任何「无失败/无 pending」的结论都是没有依据的。
+      unless pr.checks_loaded?
+        level = pre ? :blocker : :unverified
+        report.public_send(level,
+          "PR ##{pr_number} 的 CI 检查未随快照取回，无法确认门禁结论")
+      end
       if pr.failing_checks.any?
         report.blocker("PR ##{pr_number} 存在失败检查：#{pr.failing_checks.map { |c| c["name"] }.join("、")}")
       end
