@@ -9,8 +9,8 @@
 | # | 依赖 | 影响的 WP | 就绪时限 |
 |---|---|---|---|
 | 1 | 测试邮箱（应用专用密码开启） | M0-WP4 / EX-W2-06 集成验收 | W1 期间 |
-| 2 | 企微测试企业+自建应用/AIBot 创建+可信 IP 配置（出口 IP 共享注意 §15.2.18 [来源: design.md §15.2]） | M1-WP4 | M1 开工（约 W5/W6）前 |
-| 3 | 飞书自建应用（WS 长连接仅自建应用可用 [来源: design.md §16#11]） | M1-WP5 | 同上 |
+| 2 | 企微测试企业+自建应用/AIBot 创建+可信 IP 配置（出口 IP 共享注意 §15.2.18 [来源: design.md §15.2]）；2026-11-26 起由 #21 承载 | **M8.1-WP2 / M8.1-WP3**（原 M1-WP4） | M8 真机段前 |
+| 3 | 飞书自建应用（WS 长连接仅自建应用可用 [来源: design.md §16#11]）；2026-11-26 起由 #22 承载 | **M8.1-WP4**（原 M1-WP5） | 同上 |
 | 4 | Gmail 路线决策（若走 API：GCP 项目+OAuth 凭据） | M0-WP4 估时分叉 | EX-W2-06 开工前（最迟 W2-D3） |
 | 5 | 调度轨 issue #9 WP1/WP2 已合或 admission/envelope 接口冻结（PR #32 已定型 policy/envelope/Store 单事务 admission；fork 入队为调度输入类型扩展——无渠道入站消息、无 sender/peer，Q5 迁就其接口）。注：WP1（contract+migration+纯函数状态机）已随 185e37b 合入 main，开工条件余 WP2 部分待满足 | M4.1 全期（ForkEnvelope 派发路径） | M4.1 开工前 |
 | 6 | M4 语义/架构两提案文档评审（用户过目：fork-join-semantics.md + fork-join-shadow-clone-architecture.md） | M4.0-WP1 定稿 → M4.0-WP2 吸收回写 | M4.0 期内 |
@@ -19,6 +19,9 @@
 | 9 | 真实只读测试账户：Google Calendar（OAuth 只读 scope）、Microsoft 365 租户（Graph Calendars.Read + Tasks.Read）、一个 CalDAV 服务端（如 Fastmail/Nextcloud 测试账号） | M6.2 真机段 / M6.4 验收 | **M6 开工前两周**（M6-W1 前） |
 | 10 | 承诺与日历语义文档评审（M5.0-WP1 产出 `commitments-calendar-semantics.md`，用户过目） | M5.0-WP2 起全部包 | M5-W1 期内 |
 | 11 | **写权限日历账户**（M7 用，与 E.1#9 的只读账户不通用）：一个专门的 Sebas 日历（Google 或 CalDAV 新建，不复用主日历）+ 该集合写 scope + 一个可清理的撤销验证日历 | M7.1-WP1 真机段 / M7.2 门禁 | **M7 开工前两周**（M7-W1 前） |
+| 12 | Telegram BotFather 注册 2 个 bot（2026-11-26 由 M8 迁入 M3 轨道；尚无独立 issue） | **M3-WP8** | M3-WP8 开工前 |
+| 13 | Slack workspace + 2 个 Socket Mode App | **M8.1-WP5** | M8.1-WP5 开工前 |
+| 14 | 科学上网环境（仅本地实测；CI 走 mock） | M8.1-WP5 验收 | 同上 |
 
 ### E.2 §15.1 未验证项中影响 M0/M1 排期的前置冒烟（逐条挑出）
 
@@ -26,8 +29,8 @@
 |---|---|---|
 | 15.1.7 file_watcher Windows 实测 | ✅ **已完成**（2026-11-18）：watch 须对父目录+路径过滤；原子替换为 Created+Deleted+Renamed 三连，去抖聚合；[smoke-ex-w1-03.md](../review/smoke-ex-w1-03.md) | EX-W1-03（结果回写 design.md §15.1.7） |
 | 15.1.8 `Atomic(Config)` 编译冒烟 | ✅ **已完成**（2026-11-18）：reference type 全方法可用，详注歧义消项；[smoke-ex-w1-03.md](../review/smoke-ex-w1-03.md) | EX-W1-03（结果回写 design.md §15.1.8） |
-| 15.1.6 企微 crypto 官方测试向量 | WP 内验收自带（向量对称测试即消项） | M1-WP4 |
-| 15.1.1 企微 AIBot API 未逐页核对 | **开工首日核对** 0.5–1 pd+demo；不符则回调备选升级（估时内含） | M1-WP4 |
+| 15.1.6 企微 crypto 官方测试向量 | ✅ 已消项（M1-WP4 已交，`spec/channels/wecom_spec.cr` 覆盖；2026-11-26 复核 6 examples 全绿） | M1-WP4 → 装配与真机改由 M8.1-WP2 |
+| 15.1.1 企微 AIBot API 未逐页核对 | **开工首日核对** 0.5–1 pd+demo；不符则回调备选升级（估时内含） | **M8.1-WP3**（原 M1-WP4） |
 | 15.1.9 换 secret 旧 token 失效行为 | 保守做法（TTL 自然过期+失效标记）不依赖该行为，不阻塞 | M1-WP3 |
 | 15.1.2 Gmail IMAP IDLE 不可靠 | M0 单账号以「收到一封」为验收界；稳定性记录不阻塞门禁 | M0-WP4 |
 | 15.1.10 mruby 运行形态与构建 | mrb.cr 84/84 甄别已完成；运行改为每动作子进程。本机新 mruby.exe 链接 blocker 未消项时 WP4~6 仍按降级条款交预研 | M3-WP4 |

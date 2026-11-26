@@ -14,12 +14,15 @@
 | M0 MVP | v0.1.0（已发布） | 17–25 pd | 9 | [plan/wbs/m0-mvp.md](plan/wbs/m0-mvp.md) |
 | M1 多账号+热更新 | v0.1.0（已发布） | 19.5–30 pd | 9 | [plan/wbs/m1-multi-account.md](plan/wbs/m1-multi-account.md) |
 | M2 编排完备 | v0.1.0（已发布） | 12.5–19 pd | 6 | [plan/wbs/m2-orchestration.md](plan/wbs/m2-orchestration.md) |
-| M3 协作+插件层 | v0.1.0（已发布） | 15–24 pd | 6 | [plan/wbs/m3-collab-plugins.md](plan/wbs/m3-collab-plugins.md) |
+| M3 协作+插件层 | v0.1.0（已发布） | 15–24 pd（+5.5–8.5 追加） | 6（+2 追加） | [plan/wbs/m3-collab-plugins.md](plan/wbs/m3-collab-plugins.md) |
 | M4 Fork/Join 影分身 | v0.2.0 | 27.5–44.5 pd | 18 | [plan/wbs/m4-fork-join.md](plan/wbs/m4-fork-join.md) |
 | M5 承诺与提醒闭环 | v0.3.0 | 22–36 pd | 15 | [plan/wbs/m5-commitments.md](plan/wbs/m5-commitments.md) |
 | M6 外部日历只读镜像 | v0.4.0 | 20–34 pd | 9 | [plan/wbs/m6-calendar-mirror.md](plan/wbs/m6-calendar-mirror.md) |
 | M7 受控投影与撤销审计 | v0.5.0 | 6–10 pd | 4 | [plan/wbs/m7-projection.md](plan/wbs/m7-projection.md) |
-| **合计 M0–M7** | — | **139.5–223 pd** | **76** | 28–45 周（含缓冲 W1–W47） |
+| M8 渠道补齐（WeCom + Lark + Slack） | v0.6.0 | 17–28.5 pd | 8 | [plan/wbs/m8-channels.md](plan/wbs/m8-channels.md) |
+| **合计 M0–M8** | — | **162–260 pd** | **86** | 32–52 周口径随范围调整重算，见 B.2 |
+
+> **2026-11-26 范围调整**（Maintainer 裁决）：Telegram 相关任务由 M8 迁入 M3（M3-WP7/WP8 追加包 5.5–8.5 pd，未开工）；企业微信、飞书相关功能与任务由 M1 欠账迁入 M8（M8.1-WP2–WP4，10–16 pd），M8 另含 WP1 扩展点定稿与 Slack WP5。合计按此重算：原 M0–M7 的 139.5–223 pd 加 M3 追加 5.5–8.5 pd 再加 M8 17–28.5 pd = **162–260 pd**；包数 76 + 2 + 8 = 86。
 
 ## 章节索引
 
@@ -40,4 +43,8 @@
 
 ## 状态
 
-本文档为**规划态**：全部任务均为后续获授权执行时的验收标准，本文未执行任何代码工作。M0–M3 已实现并通过门禁（结论见 [B.4–B.7](plan/schedule/gate-results.md)）；M4–M7 已拆成 GitHub issue 但**未开工、无实现证据**——对应的 issue 编号与 milestone 见 [B.9.5 版本计划](plan/schedule/m5-m7.md)。
+本文档为**规划态**：全部任务均为后续获授权执行时的验收标准，本文未执行任何代码工作。
+
+- M0–M3 已实现并通过门禁（结论见 [B.4–B.7](plan/schedule/gate-results.md)）；M3 于 2026-11-26 追加 Telegram 补位包（M3-WP7/WP8，未开工）。
+- M4–M7 已拆成 GitHub issue 但**未开工、无实现证据**——对应的 issue 编号与 milestone 见 [B.9.5 版本计划](plan/schedule/m5-m7.md)。
+- M8 范围于 2026-11-26 重定为「渠道补齐（WeCom + Lark + Slack）」，Telegram 已迁出。
