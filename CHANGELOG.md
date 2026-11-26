@@ -38,6 +38,12 @@
 
 ### Changed
 
+- **`subagent.ask` 自 DSL 白名单移除**（M4x-Comm-WP3）：白名单有、Engine 无执行分支且工具注册表
+  无该工具，工作流会在 run 中途才以 `unknown tool` 失败（前序动作副作用已发生）。现在校验期即报
+  `unknown tool`（fail-closed），且 `load_workflows` 注册前统一过 `Validator.validate`（此前生产
+  装载从不校验，非法工作流注册成功、运行期才失败）；`SubagentManager` 构件保留待求助原语设计复用；
+  「装配类验收须含生产可调用性与端到端可达证据」立为验收口径（implementer-loop §2.3 / roadmap §14），
+  M3 门禁记录加补注不改原结论。
 - 工作包 Automation 新增 `kind=design`：Scribe 设计细化卡不进 Implementer 选卡，也不计为元数据缺口；`tracking` / `manual` 语义不变。Implementer 选卡只认 `kind=work_package`。
 - Gateway 的 `http.port` / `ipc.port` 接受 `0`（内核分配空闲端口，listen 后回写实际端口）；spec 统一改用随机端口，
   本机常驻 `sebas gateway` 或并行跑多个 spec 进程不再撞 18790/18791。

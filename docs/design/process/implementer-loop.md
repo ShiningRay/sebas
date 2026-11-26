@@ -84,7 +84,7 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 不同类型前置分别判断：
 
 - **issue 前置**：必须是 `CLOSED + state_reason=completed`；`not planned` 不算完成。
-- **代码工作包前置**：还须有已合并 PR、merge commit 已进入 `main`、验收证据已回填。
+- **代码工作包前置**：还须有已合并 PR、merge commit 已进入 `main`、验收证据已回填；装配类工作包另须含**生产可调用性与端到端可达证据**——spec 通过不等于生产可达（M3-WP3 教训：构件 spec 验收而生产装配未接线，#187 立此条款；[roadmap §14](../spec/14-roadmap.md) 同步承载）。
 - **纯文档工作包前置**：须有所需评审通过的证据；仅文件存在或仅开 PR 不算完成。
 - **期门禁前置**：按 M-gate 证据与 Go/No-Go 结论判断，不由子卡关闭数量代替。
 - **外部依赖前置**：须有待办 issue 的完成证据或明确的就绪标记；Agent 不猜账号、凭据或接口已经可用。

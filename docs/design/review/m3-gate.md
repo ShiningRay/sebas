@@ -7,6 +7,14 @@
 
 ## §14 M3 验收勾稽（L752 六条）
 
+> **补注（2026-11-26，M4x-Comm-WP3 #187；不改下方任何原始判定与日期）**：
+> 本节各条证据均为 **spec 级**（`crystal spec -e "…"`），spec 通过不等于生产可达。
+> 事后走向：WP1/WP2 的 message_agent 于 #185/#186 补齐生产接线（装配+投递路由）；
+> WP3 的 `SubagentManager` 构件虽经 spec 验收，生产装配从未接线，DSL 白名单面
+> `subagent.ask` 无执行分支——工作流会在 run 中途才以 `unknown tool` 失败。#187
+> 将其自白名单移除（校验期即报），并以「装配类验收须含生产可调用性与端到端可达证据」
+> 立为验收口径（implementer-loop §2.3 / roadmap §14）。下方原始勾稽保留 2026-11-19 口径。
+
 ### 1. max_hops=4 拦截互发死循环 ✅
 
 `crystal spec spec/agents/collaboration_spec.cr -e "blocks agent ping-pong"`

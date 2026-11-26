@@ -17,3 +17,10 @@ M2 六包全部落地；§14 M2 四条验收全过（崩溃重放幂等 / 审批
 ## B.7 M3 门禁结论（2026-11-19）
 
 M3 WP1/2/3 验收全过（max_hops=4 拦截互发死循环 / 并发上限排队不失控 / subagent 崩溃经 ownerTaskId 找回同一子任务），门禁三命令绿。WP4~6（mrb.cr 插件层）按 B.3 预设条款降级为技术预研：mrb.cr 甄别通过（84/84）但本机 Windows 工具链当日无法链接新 mruby.exe（环境级 blocker，恢复路径已列），架构与构件（sebas-stdio gem、build_config 补丁、子进程沙盒解释器方案）已产出——详见 [review/m3-plugin-feasibility.md](../../review/m3-plugin-feasibility.md) 与 [review/m3-gate.md](../../review/m3-gate.md)。M0–M2 全部产品化验收保持有效。
+
+> **补注（2026-11-26，#187；不改上文原始结论与日期）**：本节 M3 第 1 条起的验收证据均为
+> spec 级，spec 通过不等于生产可达。WP1/2 的 message_agent 已由 #185/#186 补生产接线；
+> WP3 的 `SubagentManager` 生产装配从未接线，白名单面 `subagent.ask` 已由 #187 移除
+> （校验期即报 unknown tool）。「装配类验收须含生产可调用性与端到端可达证据」已立为
+> 验收口径（[implementer-loop §2.3](../../process/implementer-loop.md) / [roadmap §14](../../spec/14-roadmap.md)），
+> 防同类缺口再次被门禁合法放行。
