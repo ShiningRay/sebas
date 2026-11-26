@@ -75,6 +75,7 @@ module Sebas
             # 去重最前置：duplicate 不占容量、不建批（重投已排队事件得 duplicate 而非 rejected）
             if @store.session_input?(env.event_id)
               bump("duplicate")
+              confirm_telegram_dispatch(env)
               Log.debug { "admission duplicate (session=#{@session_key} event=#{env.event_id})" }
               return AdmissionReceipt.new(env.event_id, "", "duplicate", nil)
             end
@@ -116,6 +117,7 @@ module Sebas
             unless @store.admit_new_batch(batch, env, 0)
               # 主键守卫兜底（同 session 已互斥，理论不可达）：事务已回滚，零残留
               bump("duplicate")
+              confirm_telegram_dispatch(env)
               Log.debug { "admission duplicate via pk guard (session=#{@session_key} event=#{env.event_id})" }
               return AdmissionReceipt.new(env.event_id, batch.batch_id, "duplicate", nil)
             end
@@ -135,6 +137,15 @@ module Sebas
             bump("admitted")
             AdmissionReceipt.new(env.event_id, batch.batch_id, "accepted", position)
           end
+        end
+
+        # telegram 恢复记录补确认（M3-WP8 提案 §4.2「已有 admission 的恢复记录补确认」）：
+        # duplicate 重投时先查该 event_id 对应 intent 是否已持久化（done/dispatched），
+        # 已持久化才置 telegram_updates.dispatched=true；不存在时保留 false——由调度器
+        # failed 批次重试扩展（#252）的恢复路径处理，不提前确认（避免 record_intent
+        # 失败后无法被扫描恢复）。本操作在 admit 内部完成，不绕过会话串行约束。
+        private def confirm_telegram_dispatch(env : InputEnvelope) : Nil
+          @store.confirm_telegram_dispatch(env.event_id) if env.source == "telegram"
         end
 
         # 批次执行完成回调（执行体在成员 turn 全部落库后调用）：
@@ -274,6 +285,7 @@ module Sebas
             # 首输入建批（批次行 + 输入同一事务，崩溃不留孤儿空批）
             unless @store.admit_new_batch(batch, env, 0)
               bump("duplicate")
+              confirm_telegram_dispatch(env)
               return AdmissionReceipt.new(env.event_id, batch.batch_id, "duplicate", nil)
             end
             @bucket_batch_ids[key] = batch.batch_id # 桶键 ↔ 批次行关联
