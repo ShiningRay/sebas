@@ -1115,6 +1115,50 @@ class SelectionTest < Minitest::Test
     assert_equal "invalid_plan", select(data, record: {"issue" => 99}).action
   end
 
+  # released 记录不占认领位：unclaim 成功后本地仍留着旧 issue 号，
+  # 远端随后认领别的卡时不得报假冲突（否则 next 永久堵死）。
+  def test_released_record_does_not_conflict_with_new_claim
+    data = snapshot(
+      issues: [issue(1, body: automation, status: "In progress")],
+      pull_requests: [{
+        "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
+        "merge_state_status" => "CLEAN", "checks" => [],
+        "closing_issues" => [1], "review_threads" => []
+      }]
+    )
+    action = select(data, record: {"issue" => 99, "phase" => "released"})
+    refute_equal "invalid_plan", action.action, "released 记录不应与远端认领冲突：#{action.reason}"
+  end
+
+  # 反向守卫：仍在持有的 phase 遇到不同认领必须继续判冲突，不能因上一条放宽而漏判。
+  # 必须同时断言原因含「冲突」——否则 claiming/aborted 等会经 resume_claimed /
+  # reconcile_aborted 返回同样 invalid_plan 的动作，把冲突检查的回归掩盖掉。
+  def test_holding_phases_still_conflict_with_other_claim
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    %w[claiming claimed paused aborted].each do |phase|
+      action = select(data, record: {"issue" => 99, "phase" => phase})
+      assert_equal "invalid_plan", action.action, "phase=#{phase} 必须判冲突"
+      assert_includes action.reason, "冲突",
+        "phase=#{phase} 必须因本地记录与远端认领冲突而判定，实际：#{action.reason}"
+    end
+  end
+
+  # released 记录整条降级为「无记录」：远端认领别的卡时不得报假冲突，
+  # 也不得把该记录的 worktree 当作新认领的续做状态。
+  # 注意：降级后若远端确实有认领而本地无记录，会走 resume_claimed 的
+  # 「已认领但缺本地运行记录」fail-closed 分支——那是既有正确行为，不是本缺陷。
+  def test_released_record_is_not_reused_as_resume_state
+    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    action = select(data, record: {"issue" => 99, "phase" => "released", "worktree" => "/tmp/old-99"})
+
+    refute_includes action.reason.to_s, "与远端认领",
+      "released 记录不得与远端认领判假冲突：#{action.reason}"
+    refute_includes action.reason.to_s, "/tmp/old-99",
+      "released 记录的 worktree 不得被当作续做状态"
+    assert_includes action.reason.to_s, "缺本地运行记录",
+      "降级后应走既有的「认领但无本地记录」fail-closed 分支：#{action.reason}"
+  end
+
   def test_handoff_release_when_no_open_issues
     data = snapshot(issues: [], milestones: [
       {"number" => 2, "title" => "M4", "state" => "open", "order" => "4", "track" => "main", "open_issues" => 0, "description" => "order: 4
@@ -3426,5 +3470,349 @@ class EnsureHeadGuardTest < Minitest::Test
       '[{"filename": "a.rb", "patch": "+x"}]', '{"body": "b", "head_sha": "same"}')
     details = gateway.send(:fetch_pr_details, 10, expected_head: "same")
     assert_equal 1, details["files"].length
+  end
+end
+
+# blocked_by 批量拉取（GraphQL 别名）的守卫用例。
+# 逐卡 REST 请求是快照最慢的环节之一；批量后必须保证「读不到」不会被
+# 当成「没有前置」——否则选卡会把被阻塞的卡判成就绪。
+class BlockedByBatchTest < Minitest::Test
+  include SnapshotHelpers
+
+  # 按请求出现顺序吐响应，并记录 argv：批量需要证明真正走了单次 GraphQL。
+  class SeqRunner
+    attr_reader :argvs
+
+    def initialize(responses)
+      @responses = responses
+      @argvs = []
+    end
+
+    def json!(*argv)
+      @argvs << argv
+      JSON.parse(@responses.shift)
+    end
+  end
+
+  def gateway_with(*responses)
+    runner = SeqRunner.new(responses)
+    [SebasAgents::GithubGateway.new(runner, repo: "o/r"), runner]
+  end
+
+  # 一份批量响应：键名 b<index>，值里的 number 是回读编号。
+  def batch_payload(entries)
+    data = entries.each_with_index.to_h do |entry, index|
+      ["b#{index}", {"number" => entry[:number], "blockedBy" => entry[:blocked_by]}]
+    end
+    {"data" => {"repository" => data}}
+  end
+
+  def connection(numbers, total: nil)
+    {"totalCount" => total || numbers.length, "nodes" => numbers.map { |n| {"number" => n} }}
+  end
+
+  # 单次请求覆盖全部卡，且结果按编号正确归位。
+  def test_single_batch_returns_dependencies_per_issue
+    payload = batch_payload([
+      {number: 1, blocked_by: connection([9])},
+      {number: 2, blocked_by: connection([])},
+      {number: 3, blocked_by: connection([1, 2])}
+    ])
+    gateway, runner = gateway_with(JSON.generate(payload))
+    result = gateway.send(:fetch_blocked_by_batch, [1, 2, 3])
+
+    assert_equal({1 => [9], 2 => [], 3 => [1, 2]}, result)
+    assert_equal 1, runner.argvs.length, "三张卡必须合并成一次请求"
+    joined = runner.argvs.first.join(" ")
+    assert_includes joined, "b0: issue(number: 1)"
+    assert_includes joined, "b2: issue(number: 3)"
+  end
+
+  # 超过批量上限时按批切分，不丢卡也不重复。
+  def test_splits_into_batches_beyond_limit
+    numbers = (1..(SebasAgents::GithubGateway::BLOCKED_BY_BATCH + 3)).to_a
+    groups = numbers.each_slice(SebasAgents::GithubGateway::BLOCKED_BY_BATCH).to_a
+    payloads = groups.map do |group|
+      JSON.generate(batch_payload(group.map { |n| {number: n, blocked_by: connection([])} }))
+    end
+    gateway, runner = gateway_with(*payloads)
+    result = gateway.send(:fetch_blocked_by_batch, numbers)
+
+    assert_equal numbers.sort, result.keys.sort
+    assert_equal 2, runner.argvs.length
+    assert result.values.all? { |value| value.empty? }
+  end
+
+  # 别名指向的 issue 不存在/无权访问时节点为 null：必须拒绝，不能跳过。
+  def test_missing_alias_node_rejects
+    payload = {"data" => {"repository" => {
+      "b0" => {"number" => 1, "blockedBy" => connection([])}
+    }}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1, 2])
+    end
+    assert_includes error.message, "缺 issue #2 节点"
+  end
+
+  # blockedBy 连接缺失/为 null：结构非法，不得当空集。
+  def test_missing_connection_rejects
+    payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => nil}}}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "blockedBy 连接结构非法"
+  end
+
+  # totalCount 超出 nodes 数量 = 被 first 截断：拒绝产出不完整依赖图。
+  def test_truncated_dependencies_reject
+    payload = batch_payload([{number: 1, blocked_by: connection([7], total: 150)}])
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "被截断"
+  end
+
+  # totalCount 缺失/为 null/类型非法：to_i 会把它们静默变 0，
+  # 于是空 nodes 看着像「没有前置」——必须显式拒绝。
+  def test_missing_or_invalid_total_count_rejects
+    [nil, "0", 0.0, -1].each do |total|
+      connection = {"totalCount" => total, "nodes" => []}
+      payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => connection}}}}
+      gateway, = gateway_with(JSON.generate(payload))
+      error = assert_raises(SebasAgents::CommandError, "totalCount=#{total.inspect} 必须拒绝") do
+        gateway.send(:fetch_blocked_by_batch, [1])
+      end
+      assert_includes error.message, "totalCount"
+    end
+
+    # 字段整体缺失同样拒绝。
+    payload = {"data" => {"repository" => {"b0" => {"number" => 1, "blockedBy" => {"nodes" => []}}}}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "totalCount"
+  end
+
+  # totalCount=0 + nodes=[] 是合法空结果，不能被上一条守卫误伤。
+  def test_zero_total_with_empty_nodes_is_legal
+    payload = batch_payload([{number: 1, blocked_by: connection([])}])
+    gateway, = gateway_with(JSON.generate(payload))
+    assert_equal({1 => []}, gateway.send(:fetch_blocked_by_batch, [1]))
+  end
+
+  # data.repository 缺失或为 null：结构非法，不得当成「全仓无前置」。
+  def test_missing_repository_rejects
+    [{"data" => {}}, {"data" => {"repository" => nil}}, {}].each do |payload|
+      gateway, = gateway_with(JSON.generate(payload))
+      error = assert_raises(SebasAgents::CommandError, payload.inspect) do
+        gateway.send(:fetch_blocked_by_batch, [1])
+      end
+      assert_includes error.message, "缺 data.repository"
+    end
+  end
+
+  # 返回编号与请求不符：别名错位会让依赖张冠李戴，必须拒绝。
+  def test_alias_mismatch_rejects
+    payload = {"data" => {"repository" => {
+      "b0" => {"number" => 99, "blockedBy" => connection([])}
+    }}}
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "错位"
+  end
+
+  # GraphQL 部分成功（errors + data 并存）同样拒绝：不得消费不完整数据。
+  def test_errors_with_data_rejects
+    payload = batch_payload([{number: 1, blocked_by: connection([])}])
+      .merge("errors" => [{"message" => "partial"}])
+    gateway, = gateway_with(JSON.generate(payload))
+    error = assert_raises(SebasAgents::CommandError) do
+      gateway.send(:fetch_blocked_by_batch, [1])
+    end
+    assert_includes error.message, "批量查询失败"
+  end
+
+  # attach_blocked_by：只对带 Automation 块的卡发请求，其余保持空依赖。
+  def test_attach_only_queries_automation_issues
+    payload = batch_payload([{number: 4, blocked_by: connection([3])}])
+    gateway, runner = gateway_with(JSON.generate(payload))
+    issues = [
+      SebasAgents::Model::Issue.from_hash(issue(4, body: automation)),
+      SebasAgents::Model::Issue.from_hash(issue(5, body: "无自动化块"))
+    ]
+    result = gateway.send(:attach_blocked_by, issues)
+
+    assert_equal [3], result.find { |item| item.number == 4 }.blocked_by
+    assert_empty result.find { |item| item.number == 5 }.blocked_by
+    refute_includes runner.argvs.first.join(" "), "issue(number: 5)",
+      "没有 Automation 块的卡不该进批量查询"
+  end
+
+  # 批量结果写入单卡缓存：之后再取同一张卡不再走网络。
+  def test_attach_seeds_single_card_cache
+    payload = batch_payload([{number: 4, blocked_by: connection([3])}])
+    gateway, runner = gateway_with(JSON.generate(payload))
+    target = SebasAgents::Model::Issue.from_hash(issue(4, body: automation))
+    gateway.send(:attach_blocked_by, [target])
+
+    assert_equal [3], gateway.fetch_blocked_by(4)
+    assert_equal 1, runner.argvs.length, "缓存命中后不应再发单卡请求"
+  end
+end
+
+# evidence source_ref 的全量评论索引（PR2）。
+# 每个 ref 原本 author + body 各一次请求；改全量分页后必须保证
+# 「索引未命中」不会退化成空正文——空正文会让 Evidence 校验只验作者。
+class SourceRefBulkTest < Minitest::Test
+  class SeqRunner
+    attr_reader :argvs
+
+    def initialize(responses)
+      @responses = responses
+      @argvs = []
+    end
+
+    def json!(*argv)
+      @argvs << argv
+      payload = @responses.shift
+      raise "未预期的请求（响应已耗尽）：#{argv.join(" ")}" if payload.nil?
+
+      JSON.parse(payload)
+    end
+  end
+
+  def gateway_with(*responses)
+    runner = SeqRunner.new(responses)
+    [SebasAgents::GithubGateway.new(runner, repo: "o/r"), runner]
+  end
+
+  def comment(id, login: "ShiningRay", body: "LGTM")
+    {"id" => id, "user" => {"login" => login}, "body" => body}
+  end
+
+  def page_of(*comments)
+    JSON.generate(comments)
+  end
+
+  def ref_for(id)
+    "https://github.com/o/r/issues/1#issuecomment-#{id}"
+  end
+
+  # 命中索引：作者与正文都从一次全量分页里取，不发单条请求。
+  def test_hit_uses_index_without_per_ref_requests
+    gateway, runner = gateway_with(page_of(comment(11, body: "登记结论")))
+    assert_equal "登记结论", gateway.send(:ref_body, ref_for(11))
+    assert_equal "ShiningRay", gateway.send(:ref_author, ref_for(11))
+
+    assert_equal 1, runner.argvs.length, "作者与正文必须复用同一份索引"
+    assert_includes runner.argvs.first.join(" "), "issues/comments?per_page=100&page=1"
+  end
+
+  # 多个 ref 命中索引：仍然只请求一次分页。
+  def test_multiple_refs_share_one_index_fetch
+    gateway, runner = gateway_with(page_of(comment(11), comment(12)))
+    gateway.send(:ref_body, ref_for(11))
+    gateway.send(:ref_body, ref_for(12))
+
+    assert_equal 1, runner.argvs.length
+    assert_equal 2, gateway.instance_variable_get(:@issue_comment_index).length
+  end
+
+  # 索引未命中必须回退单条请求，不能返回空正文（否则 Evidence 只验作者 = fail-open）。
+  def test_miss_falls_back_to_single_request
+    gateway, runner = gateway_with(page_of, JSON.generate({"body" => "单条取回的正文"}))
+    assert_equal "单条取回的正文", gateway.send(:ref_body, ref_for(77))
+
+    assert_equal 2, runner.argvs.length
+    assert_includes runner.argvs.last.join(" "), "issues/comments/77"
+  end
+
+  # 索引未命中时作者同样回退单条。
+  def test_miss_author_falls_back
+    gateway, runner = gateway_with(page_of, JSON.generate({"user" => {"login" => "fallback-user"}}))
+    assert_equal "fallback-user", gateway.send(:ref_author, ref_for(88))
+    assert_includes runner.argvs.last.join(" "), "issues/comments/88"
+  end
+
+  # 分页：满页继续翻，短页即止。
+  def test_paginates_until_short_page
+    full = JSON.generate(Array.new(SebasAgents::GithubGateway::PAGE_SIZE) { |i| comment(i + 1) })
+    tail = page_of(comment(999))
+    gateway, runner = gateway_with(full, tail)
+
+    index = gateway.send(:issue_comment_index)
+    assert_equal SebasAgents::GithubGateway::PAGE_SIZE + 1, index.length
+    assert index.key?(999)
+    assert_equal 2, runner.argvs.length
+    assert_includes runner.argvs.last.join(" "), "page=2"
+  end
+
+  # 分页接口返回非数组：拒绝，不当成空索引。
+  def test_non_array_page_rejects
+    gateway, = gateway_with(JSON.generate({"message" => "Not Found"}))
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:issue_comment_index) }
+    assert_includes error.message, "非数组"
+  end
+
+  # 评论缺 id：结构非法，不能静默跳过（跳过会让该 ref 变「未命中」，掩盖数据问题）。
+  def test_comment_without_id_rejects
+    gateway, = gateway_with(page_of({"user" => {"login" => "x"}, "body" => "y"}))
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:issue_comment_index) }
+    assert_includes error.message, "缺 id"
+  end
+
+  # 索引里命中但缺 user.login：拒绝，不能当「无人登记」放过。
+  def test_indexed_comment_without_author_rejects
+    gateway, = gateway_with(page_of({"id" => 11, "body" => "x"}))
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:ref_author, ref_for(11)) }
+    assert_includes error.message, "缺 user.login"
+  end
+
+  # 命中记录缺 body / body 非字符串：拒绝，不能 to_s 成空白当正文。
+  def test_indexed_comment_without_body_rejects
+    [{"id" => 11, "user" => {"login" => "ShiningRay"}},
+     {"id" => 11, "user" => {"login" => "ShiningRay"}, "body" => nil},
+     {"id" => 11, "user" => {"login" => "ShiningRay"}, "body" => 123}].each do |record|
+      gateway, = gateway_with(page_of(record))
+      error = assert_raises(SebasAgents::CommandError, record.inspect) do
+        gateway.send(:ref_body, ref_for(11))
+      end
+      assert_includes error.message, "body"
+    end
+  end
+
+  # 合法的空字符串正文照常放行（评论内容本身可以为空）。
+  def test_indexed_empty_body_is_legal
+    gateway, = gateway_with(page_of(comment(11, body: "")))
+    assert_equal "", gateway.send(:ref_body, ref_for(11))
+  end
+
+  # 无限满页：到上限即拒绝，不无休止翻页。
+  def test_runaway_pagination_rejects
+    full = JSON.generate(Array.new(SebasAgents::GithubGateway::PAGE_SIZE) { |i| comment(i + 1) })
+    responses = Array.new(SebasAgents::GithubGateway::MAX_PAGES, full)
+    gateway, = gateway_with(*responses)
+    error = assert_raises(SebasAgents::CommandError) { gateway.send(:issue_comment_index) }
+    assert_includes error.message, "分页超过"
+  end
+
+  # resolve_bodies / resolve_authors 共用一次索引：49 个 ref 的场景等价于 1 次分页。
+  def test_resolve_wrappers_share_index
+    blocks = [{"source_ref" => ref_for(11)}, {"source_ref" => ref_for(12)}]
+    gateway, runner = gateway_with(page_of(comment(11, body: "a"), comment(12, body: "b")))
+
+    bodies = gateway.send(:resolve_bodies, blocks)
+    authors = gateway.send(:resolve_authors, blocks)
+
+    assert_equal({"https://github.com/o/r/issues/1#issuecomment-11" => "a",
+                  "https://github.com/o/r/issues/1#issuecomment-12" => "b"}, bodies)
+    assert_equal %w[ShiningRay ShiningRay], authors.values
+    assert_equal 1, runner.argvs.length
   end
 end

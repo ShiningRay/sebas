@@ -353,11 +353,11 @@ ruby tools/sebas-process claim 39 --apply      # 写本地运行记录
 - milestone：`gh api repos/<owner>/<repo>/milestones`。
 - issue：`gh issue list/view --json …`，或 REST 分页获取完整字段。
 - 父子关系：`GET /repos/<owner>/<repo>/issues/<n>/sub_issues`。
-- 前置关系：`GET /repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by`。
+- 前置关系：快照组装走 GraphQL 别名批量（每批 50 张卡，`fetch_blocked_by_batch`），依赖闭包按需补取走 `fetch_issue`（REST 单 issue）；单卡的 `fetch_blocked_by` 仍保留 REST 读取，并优先命中批量写入的缓存。批量逐卡校验别名节点存在、连接为对象、`totalCount` 为非负整数且不超 `nodes` 长度，任一不满足即 fail-closed——不把「读不到」当「没有前置」。
 - PR：`gh pr view --json statusCheckRollup,mergeStateStatus,closingIssuesReferences,headRefOid,…`。
 - 未解决 review threads：GraphQL 分页读取 `reviewThreads(first: 100, after: ...) { nodes { isResolved } pageInfo { hasNextPage endCursor } }`，再在本地过滤未解决项；该连接没有 `isResolved` 查询参数。
 
-所有列表处理分页和空值。`gh` 非零退出、JSON 解析失败、缺字段均 fail-closed；凭据只由运行环境注入，不写日志、运行记录或文档。
+所有列表处理分页和空值。evidence 的 `source_ref` 作者与正文从一次全仓 issue 评论分页中取，命中即用、未命中回退单条请求（不得以空正文放行）。`gh` 非零退出、JSON 解析失败、缺字段均 fail-closed；凭据只由运行环境注入，不写日志、运行记录或文档。
 
 ### Harness 适配
 

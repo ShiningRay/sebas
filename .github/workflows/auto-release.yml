@@ -238,10 +238,23 @@ jobs:
             branch="chore/release-v$next"
             git checkout -b "$branch"
             git push origin "$branch"
-            gh pr create \
+            # 先建 PR（不带 --label），标签单独非致命地补——标签缺失不该阻断发版。
+            # 2026-11-26 实测：`gh pr create --label "release"` 在仓库无该标签时直接失败
+            # （could not add label: 'release' not found），PR 建不出来、发版链断在第一步；
+            # 该标签只作可视化标记，无任何 workflow 按它筛选，故降级为 best-effort。
+            # 重跑场景：同分支 PR 已存在时 gh pr create 会失败，退回查询已有 PR 的 URL。
+            pr_url=$(gh pr create \
               --title "chore(release): v$next" \
-              --body "Auto-generated minor release PR. Merge to tag v$next." \
-              --label "release"
+              --body "Auto-generated minor release PR. Merge to tag v$next." 2>/dev/null \
+              || gh pr view "$branch" --json url --jq '.url')
+            if [ -z "$pr_url" ]; then
+              echo "::error::failed to create or locate the release PR for $branch"
+              exit 1
+            fi
+            echo "Release PR: $pr_url"
+            if ! gh pr edit "$pr_url" --add-label "release" 2>/dev/null; then
+              echo "::warning::could not add the 'release' label to PR (label may not exist); PR still created"
+            fi
             gh pr merge --auto --squash "$branch"
             echo "Minor release PR created with auto-merge. Polling for merge..."
 

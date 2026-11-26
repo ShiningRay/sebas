@@ -10,6 +10,12 @@ module SebasAgents
     PAGE_SIZE = 100
     MAX_PAGES = 100
     MAX_DEPENDENCY_FETCH = 300
+    # 原生 blocked_by 单条端点每次约 1.5s（进程 + TLS 握手），逐卡请求是
+    # 快照的主要耗时项之一。改 GraphQL 别名批量后，一批只付一次固定成本。
+    # 50 是实测的安全批量：82 张卡 2 批共 2.1s，单批 query 远低于长度上限。
+    BLOCKED_BY_BATCH = 50
+    # blockedBy 连接的节点上限。超过即拒绝——截断会让依赖判定漏看前置。
+    BLOCKED_BY_PAGE = 100
 
     ALL_PULL_REQUESTS_QUERY = <<-'GRAPHQL'
       query($owner: String!, $name: String!, $cursor: String) {
@@ -44,6 +50,7 @@ module SebasAgents
       @thread_cache = {}
       @author_cache = {}
       @body_cache = {}
+      @issue_comment_index = nil
     end
 
     # 认领/暂停所需的写操作：只碰标签，不碰 issue 内容。
@@ -172,7 +179,7 @@ end
       )
     end
 
-    # 只查一个 issue 的完整信息（含 blocked_by）。用于依赖闭包。
+    # 只查一个 issue 的完整信息（含 blocked_by）。依赖闭包按需补取走这里。
     def fetch_issue(number)
       @issue_cache[number] ||= begin
         raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
@@ -184,6 +191,76 @@ end
       @blocked_cache[number] ||= begin
         raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}/dependencies/blocked_by")
         Array(raw).map { |item| item.fetch("number") }
+      end
+    end
+
+    # 批量拉取 blocked_by：一次 GraphQL 查询带 BLOCKED_BY_BATCH 个别名。
+    # 供 attach_blocked_by 组装快照；单卡读取见 fetch_blocked_by。
+    #
+    # 四条 fail-closed 校验，缺一都可能把「读不到」当成「没有前置」：
+    #   1. 任何别名缺节点（issue 不存在/无权访问）→ 拒绝，不返回部分结果；
+    #   2. blockedBy 连接必须是对象且 nodes 是数组 → 拒绝，不当空集；
+    #   3. totalCount 必须是非负整数且不超 nodes.length（缺失/nil 经 to_i 会变 0，
+    #      把截断读成「无前置」；被 first 截断同样拒绝）；
+    #   4. 回读编号与请求不符（别名错位）→ 拒绝，避免依赖张冠李戴。
+    def fetch_blocked_by_batch(numbers)
+      numbers.each_slice(BLOCKED_BY_BATCH).each_with_object({}) do |group, result|
+        fields = group.each_with_index.map do |number, index|
+          "b#{index}: issue(number: #{number}) { number blockedBy(first: #{BLOCKED_BY_PAGE}) " \
+            "{ totalCount nodes { number } } }"
+        end
+        owner, name = @repo.split("/", 2)
+        args = ["gh", "api", "graphql",
+          "-f", "query=#{blocked_by_query(owner, name, fields)}"]
+        payload = @runner.json!(*args)
+        errors = payload["errors"]
+        unless errors.nil? || (errors.respond_to?(:empty?) && errors.empty?)
+          raise CommandError.new("blocked_by 批量查询失败：#{errors.inspect}", command: args)
+        end
+        data = payload.dig("data", "repository")
+        unless data.is_a?(Hash)
+          raise CommandError.new("blocked_by 批量查询缺 data.repository：#{payload.inspect[0, 160]}",
+            command: args)
+        end
+
+        group.each_with_index do |number, index|
+          node = data["b#{index}"]
+          if node.nil?
+            raise CommandError.new(
+              "blocked_by 批量查询缺 issue ##{number} 节点（不存在或无权访问），" \
+              "拒绝产出不完整依赖图", command: args
+            )
+          end
+          connection = node["blockedBy"]
+          nodes = connection.is_a?(Hash) ? connection["nodes"] : nil
+          unless nodes.is_a?(Array)
+            raise CommandError.new("issue ##{number} 的 blockedBy 连接结构非法：#{connection.inspect[0, 120]}",
+              command: args)
+          end
+          total = connection["totalCount"]
+          # 显式校验而非 to_i：缺失/nil/字符串都会被静默当成 0，
+          # 于是 nodes 为空时看着合法，实际是读坏了。
+          unless total.is_a?(Integer) && total >= 0
+            raise CommandError.new(
+              "issue ##{number} 的 blockedBy.totalCount 缺失或非非负整数：#{total.inspect}，" \
+              "拒绝把残缺响应当成无前置", command: args
+            )
+          end
+          if total > nodes.length
+            raise CommandError.new(
+              "issue ##{number} 的 blockedBy 超过 #{BLOCKED_BY_PAGE} 条被截断，拒绝产出不完整依赖图",
+              command: args
+            )
+          end
+          # 回读的编号必须与请求一致：别名错位会让依赖张冠李戴。
+          reported = node["number"]
+          unless reported.to_i == number
+            raise CommandError.new("blocked_by 批量结果错位：请求 ##{number}，返回 ##{reported}",
+              command: args)
+          end
+
+          result[number] = nodes.map { |item| item.fetch("number").to_i }
+        end
       end
     end
 
@@ -328,11 +405,53 @@ end
       end
     end
 
+    # 全仓 issue 评论的本地索引：key 是评论 database id。
+    #
+    # 每个 source_ref 原本要两次独立请求（author + body），49 个引用就是 98 次；
+    # 而本仓评论总数只有 4 页。一次全量分页把这段从 210.6s 降到 2.2s。
+    #
+    # 索引仅供命中，不作为缺失的兜底：ref 不在索引里必须回退单条请求，
+    # 否则「评论已被删除/超出一页」会变成空正文——而 Evidence 校验对空正文是
+    # 放行作者校验的，那等于 fail-open。
+    def issue_comment_index
+      @issue_comment_index ||= begin
+        index = {}
+        page = 1
+        loop do
+          batch = @runner.json!("gh", "api",
+            "repos/#{@repo}/issues/comments?per_page=#{PAGE_SIZE}&page=#{page}")
+          unless batch.is_a?(Array)
+            raise CommandError.new("issue comments 分页返回非数组：#{batch.inspect[0, 200]}",
+              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+          end
+          batch.each do |comment|
+            id = comment.is_a?(Hash) ? comment["id"] : nil
+            unless id.is_a?(Integer)
+              raise CommandError.new("issue 评论缺 id：#{comment.inspect[0, 120]}",
+                command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+            end
+            index[id] = comment
+          end
+          break if batch.length < PAGE_SIZE
+
+          page += 1
+          if page > MAX_PAGES
+            raise CommandError.new("issue comments 分页超过 #{MAX_PAGES} 页：#{@repo}",
+              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+          end
+        end
+        index
+      end
+    end
+
     def ref_body(ref)
       @body_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
             (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
-          fetch_body("repos/#{@repo}/issues/comments/#{match[2]}")
+          comment = indexed_comment(match[2])
+          # 未命中必须回退单条：评论可能超出分页范围或已被删除，
+          # 空正文会让 Evidence 校验退化成「只验作者」。
+          comment.nil? ? fetch_body("repos/#{@repo}/issues/comments/#{match[2]}") : indexed_body(comment, match[2])
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_body("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -347,7 +466,7 @@ end
       @author_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
             (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
-          fetch_login("repos/#{@repo}/issues/comments/#{match[2]}")
+          indexed_author(match[2]) || fetch_login("repos/#{@repo}/issues/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_login("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -360,6 +479,36 @@ end
 
     private
 
+    # 全量索引命中则直接返回，未命中返回 nil 交给调用方回退单条请求。
+    def indexed_comment(id)
+      issue_comment_index[id.to_i]
+    end
+
+    def indexed_author(id)
+      comment = indexed_comment(id)
+      return nil if comment.nil?
+
+      login = comment.dig("user", "login")
+      # 索引里存在但缺作者：结构非法，不能当「无人登记」放过去。
+      raise CommandError.new("issue 评论 #{id} 缺 user.login：#{comment.inspect[0, 120]}",
+        command: ["gh", "api", "repos/#{@repo}/issues/comments"]) if login.to_s.empty?
+
+      login
+    end
+
+    # 命中记录的正文必须是字符串：缺失时 to_s 会静默变 ""，
+    # 而空正文会让 Evidence 校验只验作者——那正是本索引要防的 fail-open。
+    # 合法的空字符串正文照常放行（评论内容本身可以为空）。
+    def indexed_body(comment, id)
+      body = comment["body"]
+      unless body.is_a?(String)
+        raise CommandError.new("issue 评论 #{id} 的 body 缺失或非字符串：#{body.inspect}",
+          command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+      end
+
+      body
+    end
+
     def fetch_login(path)
       @runner.json!("gh", "api", path).dig("user", "login")
     end
@@ -370,10 +519,15 @@ end
     end
 
     def attach_blocked_by(issues)
+      target = issues.select { |issue| JsonBlock.present?(issue.body, "automation") }
+      bulk = fetch_blocked_by_batch(target.map(&:number))
+      # 批量结果同时写进单卡缓存：之后 fetch_blocked_by 读同一张卡直接命中。
+      bulk.each { |number, blocked| @blocked_cache[number] = blocked }
+
       issues.map do |issue|
         next issue unless JsonBlock.present?(issue.body, "automation")
 
-        issue.with(blocked_by: fetch_blocked_by(issue.number))
+        issue.with(blocked_by: bulk.fetch(issue.number))
       end
     rescue CommandError => e
       raise CommandError.new("读取 blocked_by 失败；不把错误当成空依赖：#{e.message}",
@@ -580,6 +734,12 @@ end
     end
 
     private
+
+    # GraphQL 查询外壳：别名列表由调用方拼；owner/name 作为字面量嵌入，
+    # 避免再占两个变量位（本查询没有游标，不需要变量化）。
+    def blocked_by_query(owner, name, fields)
+      %(query { repository(owner: "#{owner}", name: "#{name}") { #{fields.join(" ")} } })
+    end
 
     def read_pr_detail(number)
       @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}",
