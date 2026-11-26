@@ -72,19 +72,36 @@ Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。实现�
 
 三个陷阱：
 
-- 带 `#` 的 URL 片段会被当依赖：`…/issues/190#issuecomment-717…` 读出 `190`。这类链接别进依赖节。
+- **数字型 URL 片段会被当依赖**：`https://example.com/doc#123` 读出 `123`。
+  `…/issues/190#issuecomment-717…` 这类片段不是数字，读不出编号，但仍别把外部链接放进依赖节。
 - 引用短语会吞掉同行后文：`详见 #35 后：#218 完成` 读不出 `218`。引用说明用括号收尾
   （`（见 #35）`），也不要把它排在真实前置之前。
-- 原生 `blocked_by` 只能走 `POST` / `DELETE /repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by`，
-  `issue_id` 传前置 issue 的 database id；用 `PATCH` 改 issue 上的 `blocked_by` 会被静默忽略。
+- 原生 `blocked_by` 只能走依赖专用端点；用 `PATCH` 改 issue 上的 `blocked_by` 会被静默忽略
+  （返回 200，回读仍为空）。增删都要传前置 issue 的 database id（不是 issue 编号）：
 
-建卡后单卡自检（依赖未满足时预期 `blocked`，不该是 `invalid`）：
+  ```sh
+  # 新增：body 传 issue_id
+  gh api -X POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<前置的 database id>
+  # 删除：database id 作为路径参数
+  gh api -X DELETE repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by/<前置的 database id>
+  ```
+
+建卡后单卡自检（默认 dry-run，不写远端）：
 
 ```sh
-ruby tools/sebas-process claim <新卡号>   # 默认 dry-run，不写远端
+ruby tools/sebas-process claim <新卡号>
 ```
 
-`status=blocked` 且 reason 指向真实前置 → 三方一致；`status=invalid` → 仍有分叉，按上文逐条修。
+读结果的边界：
+
+- `status=ready` → 三方一致且前置已满足，可开工。
+- `status=blocked` 且 reason 指向真实前置（`前置 #N 仍 open`）→ 三方一致，只是前置没完成。
+  **但 `blocked` 不代表正文核对过**：依赖节标题写成「依赖关系」这类变体时，
+  `prose_dependencies` 返回 `nil`，正文声明被整段跳过，照样可能报 `blocked`。
+  标题写法只能靠人眼确认，工具不会替你发现。
+- `status=invalid` → 有分叉，但未必是依赖：`external` 未进 `depends_on`、`depends_on` 写成
+  `"#N"`、缺 Automation 块、`blocked_by` 与 `depends_on` 不一致都会报 `invalid`。
+  按 reason 逐条核对，不要一律当成三方不一致。
 
 ### 4. 记忆库管理
 
