@@ -122,9 +122,9 @@ channels:
 #### 扩展点定稿（M3-WP7，2026-11-26 自 M8.1-WP1 迁槽；Telegram 侧先行落地）
 
 > 逐条盘点既有抽象对 Telegram 接入的覆盖情况；**不重写抽象，只补必要字段**。
-> 落地件：`CHANNEL_TYPES` 登记 `telegram`、`TelegramAccount`（`bot_token` 必填、
+> 落地件（PR #236 / 5e48db5）：`CHANNEL_TYPES` 登记 `telegram`、`TelegramAccount`（`bot_token` 必填、
 > `api_base_url`/`token_ref` 可选）与 loader 校验、`InboundMessage.message_id`。
-> 适配器接线不在本卡范围（属 M8.1-WP3）：接入前配置可校验、发送时
+> 适配器接线不在本卡范围（属 M3-WP8）：接入前配置可校验、发送时
 > `Channels::Registry` 查无适配器 fail-loud。
 
 | 扩展点 | Telegram 所需 | 判定 |
@@ -135,10 +135,10 @@ channels:
 | `InboundMessage.message_id` | `message.message_id`（排重与回复定位；`update_id` 归排重层） | **需新增**——已补 `message_id : String? = nil`（尾置默认，旧适配器五参构造零改动；回放路径随 JSON 保真） |
 | `OutboundMessage` | 无独立 record：`send(peer, content, idempotency_key)` 即覆盖（`chat_id`=peer；客户端幂等键见 §4.4） | 已覆盖 |
 | 配置 `channels.telegram.accounts[]` | `bot_token` 必填（缺键 YAML 解析即报、空串由 loader 校验拒绝）、`api_base_url` 可选（自建 Bot API server）、`token_ref` keyring 指针 | **需新增**——已登记 `telegram` 并落地校验 |
-| TokenProvider / 限流桶 / 监督骨架 | 长期凭据无 refresh（§4.3）；token bucket 按 `(account_id, chat_id)`；fiber-per-account 监督（§5.1） | 已覆盖——沿用既有骨架，接入属 M8.1-WP3 |
+| TokenProvider / 限流桶 / 监督骨架 | 长期凭据无 refresh（§4.3）；token bucket 按 `(account_id, chat_id)`；fiber-per-account 监督（§5.1） | 已覆盖——沿用既有骨架，接入属 M3-WP8 |
 | Binding 路由 | `bindings[].channel: telegram` 校验与 `account_ids` 解析 | 已覆盖——`CHANNEL_TYPES` 登记后自动生效 |
 
-Slack 侧字段（`team_id`/`channel`/`ts`、`app_token`/`bot_token`）在同卡范围之外，接入前按同法盘点（M8.1-WP2）。
+Slack 侧字段（`team_id`/`channel`/`ts`、`app_token`/`bot_token`）不在本卡范围，接入前按同法盘点（现 M8.1-WP1 / #235）。
 
 #### Slack ACK 后崩溃恢复
 
