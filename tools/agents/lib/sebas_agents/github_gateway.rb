@@ -191,9 +191,18 @@ end
         proposal_evidence: proposal_evidence
       )
     rescue StandardError
-      # 任一流抛错时其余线程可能仍在跑：先收干净再让异常穿透，
+      # 任一流抛错时其余线程可能仍在跑：先收干净再让原始异常穿透，
       # 避免「快照已失败、后台还在写缓存」的竞态。
-      readers.each { |thread| thread.join(10) }
+      #
+      # Thread#join 会把该线程的异常原样重新抛出：必须逐个 rescue 掉。
+      # 否则一个已失败的兄弟线程会中断循环（后面的线程没等到），
+      # 甚至用它自己的异常顶替调用方本该看到的原始失败。
+      readers.each do |thread|
+        thread.join(10)
+      rescue StandardError
+        # 兄弟流的失败不是本次结论；原始异常由下面的 raise 负责。
+        nil
+      end
       raise
     end
 
