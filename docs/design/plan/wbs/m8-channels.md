@@ -1,8 +1,8 @@
-# development-plan M8 · 渠道补齐（WeCom + Lark + Slack）（17–28.5 pd）
+# development-plan M8 · 渠道补齐（WeCom + Lark + Slack + email 健壮性）（20–33.5 pd）
 
 > 导航：[设计总览](../../design.md) ｜ [文档索引](../../README.md) ｜ [计划总览](../../development-plan.md) ｜ 上一节：[M7](m7-projection.md)
 
-### M8 · 渠道补齐（WeCom + Lark + Slack）——估时合计 17–28.5 pd（2026-11-23 追加，2026-11-26 重定范围，v0.6.0）
+### M8 · 渠道补齐（WeCom + Lark + Slack + email 健壮性）——估时合计 20–33.5 pd（2026-11-23 追加，2026-11-26 重定范围，v0.6.0）
 
 > 依据：[proposals/m8-channel-expansion-slack-telegram.md](../../proposals/m8-channel-expansion-slack-telegram.md)（本文档只做工作包、依赖、估时与验收；**不新造设计决策**——语义有变更回写提案与 design.md，不在本计划内定）。
 > **2026-11-26 范围调整（Maintainer 裁决）**：①企业微信、飞书相关功能与任务迁入本 milestone——M1-WP4/WP5 只交过协议层与 spec，生产装配从未发生（`spawn_adapters` 仅遍历 email），真实账号集成验收一直挂 E.1 未闭环；②Telegram 相关任务迁出至 milestone `M3 · Telegram 渠道补位`（见 [m3-collab-plugins.md](m3-collab-plugins.md) 追加包 M3-WP7/WP8）。期名由「渠道扩展」改为「渠道补齐」。
@@ -85,6 +85,31 @@
   - **ACK 后、入总线前强杀进程**：用 fault-injection 在 ACK 帧发出后立即 `kill -9`，重启后从持久化记录恢复该事件并入总线（不依赖 Slack 重推，因为 Slack 已收到 ACK）——验证「先落库再 ACK」顺序真的挡住了静默丢失窗口。
 - 风险：Crystal `HTTP::WebSocket` 客户端长连接稳定性——若发现 keepalive 不足，退化为「心跳超时后主动断线重连」。[推演]
 
+**M8.1-WP6 email IMAP IDLE 健壮性**（2–3 pd；对应 #239）
+- 目标：把 `docs/design/spec/05-multi-account.md` §5.4 差距表里 IDLE 侧的 5 项补齐，让 E.1-4 的「继续应用专用密码」裁决有真实兜底。
+- 范围：
+  - **IDLE 整体 deadline**：「发出 IDLE → DONE 收尾完成」全程 ≤29 分钟，到 `idle_poll − 收尾期限` 主动发 `DONE`；
+  - **收尾期限**：与 deadline 分离的独立有界期限（默认 30s）；期限到点未收到标签响应则断开重连，**不在原连接重发 IDLE**；`abort_idle` 的 `rescue ::Exception` 不再静默吞异常；
+  - **假活判定**：一个 IDLE 窗口内零响应（含 `OK` 收尾）即断连重连，不等 TCP 超时；
+  - **兜底轮询**：独立 watchdog 每 5 分钟用短连接 `SELECT` + 比对 `UIDNEXT`（必要时 `SEARCH UID <last+1>:*`），有新增触发一次补收；短连接不复用 IDLE 连接；
+  - **指数退避**：5s → 10s → 20s → 40s → 60s 封顶，±20% 抖动，成功 `SELECT` 后重置。
+- 交付物：`src/channels/email/` 与 `imap_client.cr` 改造 + 5 类时序 spec（deadline / 收尾期限 / 假活 / 轮询 / 退避）。
+- 依赖：无前置（改动全在 email 适配器内部，不依赖 M8.1-WP1 扩展点）。
+- 验收：fake server 场景逐条断言上界（deadline 窗口内必退出、收尾期限到点必断连、轮询 ≤5 分钟触发且不重复投递、退避递增至 60s 封顶并在成功后重置）；既有 email 用例零回退；`crystal spec` / `crystal tool format --check` / `ameba` 全绿。
+- 风险：fake IMAP server 现以短读超时轮询 DONE，加 deadline 后需同步改测试夹具；真实 Gmail 的长稳仍无法在 CI 覆盖（§15.1.2 未实测）。[推演]
+
+**M8.1-WP7 email 配置域收口**（1–2 pd；对应 #240）
+- 目标：补 `smtp.host` 独立主机字段，并为 `receive: gmail-api` 补 fail-closed 校验。
+- 范围：
+  - `SmtpConfig` 增加可选 `host`，缺省回退 `account.platform`（既有配置零改动可加载）；`EmailChannelAdapter` 的 `@smtp_host` 取 `smtp.host || platform`；
+  - `starttls` / `implicit` 都按实际连接主机名校验证书，不因回退放宽；
+  - `examples/config.example.yaml` 与 §3.4 示例给出 Gmail 的 `imap.gmail.com` + `smtp.host: smtp.gmail.com` 组合；
+  - `receive: gmail-api` 在实现前由 loader 拒绝并提示改 `imap-idle`（或按 Maintainer 裁决改 warn，须在卡面注明取哪条）。
+- 交付物：`schema.cr` / `loader.cr` / `adapter.cr` 改动 + 示例配置 + 「示例配置可被 loader 通过」的 spec。
+- 依赖：无前置。
+- 验收：无 `host` 时行为与现状一致；配 `host` 时 SMTP 拨号连 `host`；`starttls` 主机名不匹配以 typed error 失败；`receive: gmail-api` 被拒或按裁决告警；`crystal spec` / format / ameba 全绿。
+- 风险：`smtp.host` 新增字段要确认不破坏现网 `config.yaml`（gitignored，需人工回归一次真实邮箱）。[推演]
+
 **M8.2-WP1 管理面与运维闭环**（1.5–2 pd；对应 #143）
 - 目标：WeCom/Lark/Slack 账号纳入 TUI/HTTP 双入口管理。
 - 范围：`accounts.create/list/disable/enable/rotate-credential` 对四渠道生效；健康上报（连接状态、最近 event 时刻、限流水位）经管理面可查（沿用 §5.1 第 5 项职责）；`sebas channels probe` 自检命令。
@@ -123,10 +148,14 @@ M8.0-WP1 ──> M8.1-WP1 ──┬──> M8.1-WP2 (企微回调) ──> M8.1-
                         ├──> M8.1-WP4 (飞书 WS)
                         └──> M8.1-WP5 (Slack) ──────┐
                                                      ├──> M8.2-WP1 ──> M8.2-WP2
+M8.1-WP6 (email IDLE) ──────────────────────────────┤
+M8.1-WP7 (email 配置) ──────────────────────────────┘
 #21 ─────────────────────> M8.1-WP2 / WP3 真机段
 #22 ─────────────────────> M8.1-WP4 真机段
 E.1#1 / E.1#3 ───────────> M8.1-WP5
 ```
+
+M8.1-WP6 / WP7 无前置，改动都在 email 适配器与配置层，不依赖 M8.1-WP1 扩展点；两者彼此平行。
 
 跨期依赖：M8 开工需 M5–M7 主线已收尾（v0.5.0 已发），且 M4x 并行轨无阻断。Telegram 两张卡已迁至 M3 轨道，不再属本图。
 
@@ -140,13 +169,21 @@ E.1#1 / E.1#3 ───────────> M8.1-WP5
 | M8.1-WP3 企微 AIBot | 3 | 5 |
 | M8.1-WP4 飞书 WS | 4 | 6 |
 | M8.1-WP5 Slack | 3 | 4.5 |
+| M8.1-WP6 email IDLE | 2 | 3 |
+| M8.1-WP7 email 配置 | 1 | 2 |
 | M8.2-WP1 | 1.5 | 2 |
 | M8.2-WP2 | 1.5 | 2.5 |
-| **合计** | **17** | **27** |
+| **合计** | **20** | **32** |
 
-**卡片对应（2026-11-26 复核）**：M8.0-WP1 → #139（`kind=design`，Scribe 执行）；M8.1-WP1 → #235；M8.1-WP2 → #232；M8.1-WP3 → #233；M8.1-WP4 → #234；M8.1-WP5 → #141；M8.2-WP1 → #143；M8.2-WP2 → #144。八张卡均带 Automation 块与原生 blocked_by，`M8.1-WP1` 为其余四个实现包的共同前置。
+**卡片对应（2026-11-26 复核）**：M8.0-WP1 → #139（`kind=design`，Scribe 执行）；M8.1-WP1 → #235；M8.1-WP2 → #232；M8.1-WP3 → #233；M8.1-WP4 → #234；M8.1-WP5 → #141；M8.1-WP6 → #239；M8.1-WP7 → #240；M8.2-WP1 → #143；M8.2-WP2 → #144。十张卡均带 Automation 块与原生 blocked_by，`M8.1-WP1` 为企微/飞书/Slack 四个实现包的共同前置；email 两包无前置。
 
-原表（Slack + Telegram 两渠道）为 10.0–15.0 pd。迁出 Telegram（2.5–3.5 pd）后剩 7.5–11.5 pd；迁入企微回调 + AIBot + 飞书（10–16 pd）后为 17–27 pd。逐包复算下限 0.5+0.5+3+3+4+3+1.5+1.5 = **17**，上限 1+1+5+5+6+4.5+2+2.5 = **27**。对外口径 **17–28.5 pd** = 下限不另加缓冲、上限再加 1.5 pd 缓冲（评审与真机段的不确定性集中在上限侧）。
+**估时复算**：原表（Slack + Telegram 两渠道）10.0–15.0 pd；迁出 Telegram（2.5–3.5 pd）剩 7.5–11.5 pd；迁入企微回调 + AIBot + 飞书（10–16 pd）后为 17–27 pd。
+
+2026-11-26 追加 email 两包（3–5 pd，源于 E.1-4 裁决后的实现缺口复核）后逐包复算：
+
+- 下限：0.5+0.5+3+3+4+3+2+1+1.5+1.5 = **20**
+- 上限：1+1+5+5+6+4.5+3+2+2+2.5 = **32**
+- 对外口径 **20–33.5 pd** = 下限不另加缓冲、上限再加 1.5 pd 缓冲（评审与真机段的不确定性集中在上限侧）
 
 ## 版本计划
 

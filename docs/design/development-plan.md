@@ -19,10 +19,12 @@
 | M5 承诺与提醒闭环 | v0.3.0 | 22–36 pd | 15 | [plan/wbs/m5-commitments.md](plan/wbs/m5-commitments.md) |
 | M6 外部日历只读镜像 | v0.4.0 | 20–34 pd | 9 | [plan/wbs/m6-calendar-mirror.md](plan/wbs/m6-calendar-mirror.md) |
 | M7 受控投影与撤销审计 | v0.5.0 | 6–10 pd | 4 | [plan/wbs/m7-projection.md](plan/wbs/m7-projection.md) |
-| M8 渠道补齐（WeCom + Lark + Slack） | v0.6.0 | 17–28.5 pd | 8 | [plan/wbs/m8-channels.md](plan/wbs/m8-channels.md) |
-| **合计 M0–M8** | — | **162–260 pd** | **86** | 32–52 周口径随范围调整重算，见 B.2 |
+| M8 渠道补齐（WeCom + Lark + Slack + email 健壮性） | v0.6.0 | 20–33.5 pd | 10 | [plan/wbs/m8-channels.md](plan/wbs/m8-channels.md) |
+| **合计 M0–M8** | — | **165–265.5 pd** | **88** | 32–52 周口径随范围调整重算，见 B.2 |
 
-> **2026-11-26 范围调整**（Maintainer 裁决）：Telegram 相关任务由 M8 迁入 M3（M3-WP7/WP8 追加包 5.5–8.5 pd，未开工）；企业微信、飞书相关功能与任务由 M1 欠账迁入 M8（M8.1-WP2–WP4，10–16 pd），M8 另含 WP1 扩展点定稿与 Slack WP5。合计按此重算：原 M0–M7 的 139.5–223 pd 加 M3 追加 5.5–8.5 pd 再加 M8 17–28.5 pd = **162–260 pd**；包数 76 + 2 + 8 = 86。
+> **2026-11-26 范围调整**（Maintainer 裁决）：Telegram 相关任务由 M8 迁入 M3（M3-WP7/WP8 追加包 5.5–8.5 pd，未开工）；企业微信、飞书相关功能与任务由 M1 欠账迁入 M8（M8.1-WP2–WP4，10–16 pd），M8 另含 WP1 扩展点定稿与 Slack WP5。
+>
+> **2026-11-26 追加**：email 两包 M8.1-WP6/WP7（3–5 pd）源于 E.1-4 裁决后的实现缺口复核。合计按此重算：原 M0–M7 的 139.5–223 pd 加 M3 追加 5.5–8.5 pd 再加 M8 20–33.5 pd = **165–265.5 pd**；包数 76 + 2 + 10 = 88。
 
 ## 章节索引
 

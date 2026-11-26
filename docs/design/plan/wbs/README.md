@@ -14,9 +14,9 @@
 | M5 | [持久意图、唤醒与提醒闭环](m5-commitments.md) | 133 | 22–36 pd | v0.3.0；九态生命周期、提醒纪律、cron 归位 |
 | M6 | [外部日历/TODO 只读镜像与变化驱动重估](m6-calendar-mirror.md) | 87 | 20–34 pd | v0.4.0；三 provider 适配器、同步元数据、变化只触发评估 |
 | M7 | [受控投影与撤销审计](m7-projection.md) | 42 | 6–10 pd | v0.5.0；写路径启停、整批撤销、审计 |
-| M8 | [渠道补齐（WeCom + Lark + Slack）](m8-channels.md) | — | 17–28.5 pd | v0.6.0；企微回调/AIBot 长连接 + 飞书 WS + Slack Socket Mode 多账号收发 |
+| M8 | [渠道补齐（WeCom + Lark + Slack + email 健壮性）](m8-channels.md) | — | 20–33.5 pd | v0.6.0；企微回调/AIBot 长连接 + 飞书 WS + Slack Socket Mode 多账号收发 + email IDLE 健壮性 |
 
-合计 162–260 pd（M0–M8 全程序），逐周排期见 [B.2](../schedule/weekly.md)，依赖图见 [B.1](../schedule/dag.md)。
+合计 165–265.5 pd（M0–M8 全程序），逐周排期见 [B.2](../schedule/weekly.md)，依赖图见 [B.1](../schedule/dag.md)。
 
 ## 期与版本的对应
 
