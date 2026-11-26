@@ -456,14 +456,14 @@ describe "agent category/tags (M4x-WP1, #147)" do
   it "rejects invalid category with agents.<name>.category message" do
     errors = validation_errors(agent_yaml("Worker_1", [] of String))
     errors.join("\n").should contain(
-      "agents.main.category must match ^[a-z0-9][a-z0-9-]*$ and be 1..64 chars (got 'Worker_1')")
+      "agents.main.category must be lowercase [a-z0-9][a-z0-9-]* of 1..64 chars (got 'Worker_1')")
   end
 
   it "rejects invalid tag entry with agents.<name>.tags[i] message" do
     errors = validation_errors(agent_yaml(nil, ["ok-tag", "-bad"]))
     joined = errors.join("\n")
     joined.should contain(
-      "agents.main.tags[1] must match ^[a-z0-9][a-z0-9-]*$ and be 1..64 chars (got '-bad')")
+      "agents.main.tags[1] must be lowercase [a-z0-9][a-z0-9-]* of 1..64 chars (got '-bad')")
     joined.should_not contain("tags[0]")
   end
 
@@ -474,6 +474,30 @@ describe "agent category/tags (M4x-WP1, #147)" do
 
   it "rejects overlong category beyond 64 chars" do
     errors = validation_errors(agent_yaml("a" * 65, [] of String))
-    errors.join("\n").should contain("agents.main.category must match")
+    errors.join("\n").should contain("agents.main.category must be lowercase")
+  end
+end
+
+describe "agent category/tags trailing newline (M4x-WP1 review)" do
+  it "rejects values with trailing newline (PCRE2 $ pitfall, strict Az anchoring)" do
+    yaml = <<-YAML
+      agents:
+        main:
+          model: deepseek/chat
+          category: |
+            worker
+      bindings: []
+      gateway:
+        http: { bind: 127.0.0.1, port: 18790, auth: token }
+        ipc: { mode: auto, port: 18791 }
+        data_dir: data
+      YAML
+    errors = begin
+      Sebas::Platform::Config::Loader.from_content(yaml)
+      [] of String
+    rescue ex : Sebas::Platform::Config::ValidationError
+      ex.errors
+    end
+    errors.join("\n").should contain("agents.main.category must be lowercase")
   end
 end

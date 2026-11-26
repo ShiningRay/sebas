@@ -127,8 +127,9 @@ module Sebas
         end
 
         # category/tags 词法（M4x-WP1，#147）：小写字母或数字开头，之后小写字母/
-        # 数字/连字符；长度 1..64。常量放模块级供 spec 对齐。
-        AGENT_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+        # 数字/连字符；长度 1..64。\A\z 严格锚定整串（PCRE2 的 $ 允许末尾换行前
+        # 匹配，YAML block scalar 带尾换行的值会漏过 $）。常量放模块级供 spec 对齐。
+        AGENT_CATEGORY_PATTERN = /\A[a-z0-9][a-z0-9-]*\z/
 
         private def agent_category_valid?(value : String) : Bool
           (1..64).covers?(value.size) && value.matches?(AGENT_CATEGORY_PATTERN)
@@ -150,13 +151,13 @@ module Sebas
             # 不静默去重（重复=配置歧义，先验后换阶段必须显式拒绝）
             if category = agent.category
               unless agent_category_valid?(category)
-                errors << "agents.#{name}.category must match ^[a-z0-9][a-z0-9-]*$ and be 1..64 chars (got '#{category}')"
+                errors << "agents.#{name}.category must be lowercase [a-z0-9][a-z0-9-]* of 1..64 chars (got '#{category}')"
               end
             end
             seen_tags = Set(String).new
             agent.tags.each_with_index do |tag, i|
               unless agent_category_valid?(tag)
-                errors << "agents.#{name}.tags[#{i}] must match ^[a-z0-9][a-z0-9-]*$ and be 1..64 chars (got '#{tag}')"
+                errors << "agents.#{name}.tags[#{i}] must be lowercase [a-z0-9][a-z0-9-]* of 1..64 chars (got '#{tag}')"
               end
               errors << "agents.#{name}.tags[#{i}] '#{tag}' duplicates an earlier tag" unless seen_tags.add?(tag)
             end
