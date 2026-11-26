@@ -65,7 +65,7 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 `docs/design/proposals/` 文档）。它由 Scribe 执行，不进 Implementer 选卡，也不触发开工三闸；
 文档 PR 合入只代表设计快照入库，设计定稿与实现排期仍是 Maintainer 的独立裁决。
 
-硬依赖以 WP 的「依赖」字段为权威。由该字段生成或逐条核对 Automation，再与 GitHub 原生 `blocked_by` 核对 issue 编号部分；三者不一致即 `invalid_plan`。B.1 DAG 图只用于排期展示，不作为另一套独立真值。首版只做一致性检查，不自动改依赖关系。
+硬依赖以 WP 的「依赖」字段为权威。由该字段生成或逐条核对 Automation，再与 GitHub 原生 `blocked_by` 核对 issue 编号部分；三者不一致即 `invalid_plan`。B.1 DAG 图只用于排期展示，不作为另一套独立真值。首版只做一致性检查，不自动改依赖关系。建卡时依赖节怎么写见 [scribe.md](scribe.md) 的「依赖字段格式约定」。
 
 流程标签只剩暂停与元数据两类（`ruby tools/setup_process_labels.rb --apply` 创建）：
 `needs:human`（等待人工决策）、`agent:resume`（允许恢复）、`metadata:invalid`（禁止自动开工）。

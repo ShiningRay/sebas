@@ -52,6 +52,64 @@ Scribe 仅在收到 Maintainer 明确排期指令后执行机械落地。实现�
 不创建实现子卡、不指令 Implementer 开工。
 需要改变版本、范围、依赖、容量或提前开工时，Scribe 停止并交回 Maintainer 裁决。
 
+#### 依赖字段格式约定
+
+正文「依赖」节是三方核对的一方（另两方是 `Automation.depends_on` 与原生 `blocked_by`），
+任一方不一致都会让 `next` 返回 `invalid_plan`。建卡按四条写：
+
+1. **节标题文字必须精确**为「依赖」或「前置依赖」（约定用 `## 依赖`）。写成「依赖关系」
+   「依赖（前置）」等变体时解析器取不到该节，正文核对会静默跳过——看着绿灯，实际没校验。
+2. **真实前置写 `#N`**，一行一条，例如 `- 前置：#218 完成（阶段 1 交付后才可开工）`。
+   行内可并列多个（`#218、#220`），也可换成子列表逐行列出；`#N` 是正文侧唯一可识别的写法，
+   光写裸数字（`depends_on: [218]`）读不出来。
+3. **只放真实前置**。Proposal 编号、已合并 PR 编号、注释链接等背景引用一律写进「关联」节，
+   并标注「前置事实（非前置）」。依赖节里出现任何未进 `depends_on` 的编号都判分叉。
+4. **依赖节里不插小节标题**。扫描到下一个标题即停（带「依赖」「前置依赖」字样者除外），
+   `### 外部依赖` 之类的子标题会让其下编号全部读不到；前置统一写成列表项。
+
+`Automation.depends_on` 用裸整数（`218`）、`gate:<名称>`、`external:<编号>`，写成 `"#218"`
+会判依赖格式非法；正文侧只对整数前置（写成 `#N`）双向核对，`gate:` 与 `external:` 无需在正文重复。
+
+三个陷阱：
+
+- **数字型 URL 片段会被当依赖**：`https://example.com/doc#123` 读出 `123`。
+  `…/issues/190#issuecomment-717…` 这类片段不是数字，读不出编号，但仍别把外部链接放进依赖节。
+- 引用短语会吞掉同行后文：`详见 #35 后：#218 完成` 读不出 `218`。引用说明用括号收尾
+  （`（见 #35）`），也不要把它排在真实前置之前。
+- 原生 `blocked_by` 只能走依赖专用端点；用 `PATCH` 改 issue 上的 `blocked_by` 会被静默忽略
+  （返回 200，回读仍为空）。增删都要传前置 issue 的 database id（不是 issue 编号）：
+
+  ```sh
+  # 新增：body 传 issue_id
+  gh api -X POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<前置的 database id>
+  # 删除：database id 作为路径参数
+  gh api -X DELETE repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by/<前置的 database id>
+  ```
+
+建卡后单卡自检（默认 dry-run，不写远端）：
+
+```sh
+ruby tools/sebas-process claim <新卡号>
+```
+
+读结果的边界：
+
+**先说两条限制。** ① `claim` 只做单卡检查，**不是开工许可**：卡挂没挂 milestone 它只分两种情况——
+挂了就放行（不比较 milestone 的排期顺序，后续主线的卡也会返回 `ready`），
+没挂则仅当该卡是独立小修（`type=Task` + `kind=work_package` + `depends_on=[]`）时放行。
+能不能开工仍由 `next` 决定。
+② `claim` 的任何 `status` 都不能证明正文核对过：标题写成「依赖关系」这类变体时
+`prose_dependencies` 返回 `nil`，正文声明被整段跳过——`ready`、`blocked`、`invalid` 都可能在
+正文有分叉时照常返回。开头的第 1 条规则只能靠人眼确认，工具不会替你发现。
+
+逐个状态的含义：
+
+- `status=ready` → `depends_on` 与 `blocked_by` 一致、前置已满足，单卡检查通过。
+- `status=blocked` 且 reason 指向真实前置（`前置 #N 仍 open`）→ 已声明的依赖一致，只是前置没完成。
+- `status=invalid` → 有分叉，但未必是依赖：`external` 未进 `depends_on`、`depends_on` 写成
+  `"#N"`、缺 Automation 块、`blocked_by` 与 `depends_on` 不一致都会报 `invalid`。
+  按 reason 逐条核对，不要一律当成三方不一致。
+
 ### 4. 记忆库管理
 
 遵循 respire 记忆工作流（`rsrs prompt` 全文）：
