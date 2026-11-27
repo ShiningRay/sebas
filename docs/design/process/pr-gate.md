@@ -101,8 +101,8 @@ concurrency:
 被下一次 push 顶掉。按 PR 量级换算，加速合并会放大这个比例。
 
 **边界一：待跑位只有一个。** GitHub 每个并发组只保留一个 running + 一个 pending，
-第三个进入时 pending 被替换。所以本改动只保证「合并队列串行时每张卡都能拿到成功 CI」，
-不保证绕过队列的连续人工合并不丢 Evidence。
+第三个进入时 pending 被替换。所以本改动**不能**承诺「每张合并提交都拿到成功 CI」；
+它只保证后续的 main 运行不再取消正在跑的那一轮。
 
 **边界二：排队中的提交也可能被顶掉。** 上一轮 main CI 还在跑时，下一张卡的合并提交
 可以进入 pending；再来一次 main push（含手动 `workflow_dispatch` 选 main）就替换掉
@@ -110,3 +110,7 @@ concurrency:
 等它。要真正闭合这条路径，串行单位必须限制「同一时刻只有一个 main 运行」，或对少了
 成功 CI 的提交补跑。这是合并队列本体（[parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）
 的职责，本改动不覆盖。
+
+**边界三：测试失败是另一回事。** CI 跑完但结论为 `failure` 时，Evidence 同样停在
+`false`。本改动只消除「被取消」这一类，不改变失败语义——失败要靠修代码重跑，
+不是并发配置能解决的。
