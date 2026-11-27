@@ -75,17 +75,18 @@ GitHub 文档写明「依赖失败 job 的 job 会被 skipped 且可能不阻塞
 
 `docs` 与 `verify` 不进等待链：它们数秒完成，文档与锚点的反馈早给更有用。
 
-## 并发分组：PR 可取消，main 必须跑完
+## 并发语义：PR 可取消，main 必须跑完
 
-`ci.yml` 的 `concurrency` 按事件分流（#221 合并队列的前置）：
+`ci.yml` 的 `concurrency` 组名沿用 `ci-<ref>`。PR 事件的 ref 是 `refs/pull/<n>/merge`，
+`push:main` 与 `workflow_dispatch` 都是 `refs/heads/main`，天然分属两组，组名不必按事件改写。
+
+要按事件区分的是**取消语义**：
 
 ```yaml
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
-
-两侧的理由相反，不能统一：
 
 - **PR 侧要取消。** 门闸最长等 15 分钟。同一 PR 新推送不取消旧轮，队列会堆积空等。
 - **main 侧不能取消。** [evidence-register.yml](../../../.github/workflows/evidence-register.yml)
@@ -100,6 +101,3 @@ concurrency:
 被替换。所以本改动只保证「合并队列串行时的每张卡都能拿到成功 CI」，不保证绕过队列
 的连续人工合并不丢 Evidence——那要靠合并队列的串行单位（等 Evidence 升级完再合下一张，
 见 [parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）。
-
-`workflow_dispatch` 与 `push:main` 同组：手动全量重跑同属 main 证据链，应排队而非顶掉。
-

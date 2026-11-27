@@ -7,7 +7,7 @@
 
 ### Added
 
-- **CI 并发分组按事件分流**（#221 合并队列硬前置）：`ci.yml` 的 `concurrency.group` 改为 `ci-<event>-<ref>`，`cancel-in-progress` 只在 `pull_request` 事件为 true。main 侧不再互相取消——`evidence-register.yml` 只在 CI 结论为 `success` 时升级 Evidence，被顶掉的 main CI 会让该卡停在 `merged_into_main: false`、后继卡永久 blocked（实测 main 侧 100 次 run 有 5 次 cancelled，其中 2 次是跑了 30 / 53 分钟后被下一次 push 顶掉）。PR 侧语义不变；`workflow_dispatch` 与 `push:main` 同组排队。
+- **CI 并发语义按事件区分**（[#221](https://github.com/ShiningRay/sebas/issues/221)）：`ci.yml` 的 `cancel-in-progress` 改为只在 `pull_request` 事件为 true。main 侧不再互相取消——被顶掉的 main CI 会让 Evidence 停在 `merged_into_main: false`、后继卡永久 blocked。理由与边界见 [pr-gate.md](docs/design/process/pr-gate.md)。
 - **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：
   - `capacity` 配置：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限，缺键即 1（行为与单卡一致）；仅接受正整数，显式 null/浮点等非法值 fail-closed。
   - 路由与认领：快照承载 `capacity`；routing/claim/resume 判定按容量计数，超容量 invalid；容量内多卡的续做路由对准本地记录持有的卡。

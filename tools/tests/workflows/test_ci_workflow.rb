@@ -206,21 +206,25 @@ class CiWorkflowTest < Minitest::Test
     assert triggers.key?("workflow_dispatch")
   end
 
-  # 并发组必须按事件分流（#221）：PR 侧继续取消前一轮，main 侧不得取消。
+  # 并发语义两个方向互为反例，且都只能靠断言钉住：
   #
-  # PR 侧：门闸最长等 15 分钟，同一 PR 的新推送若不取消旧轮，队列会堆积大量空等。
-  # main 侧：Evidence 升级只认 CI 结论 success；若下一次 push 顶掉正在跑的 main CI，
-  # 那一轮的 Evidence 停在 merged_into_main=false，后继卡永久 blocked。
-  # 这两个方向互为反例，任何一边退化都不会让本测试以外的东西报错——所以两条都钉住。
-  def test_concurrency_cancels_superseded_runs
+  # PR 侧必须取消：门闸最长等 15 分钟，同一 PR 的新推送不取消旧轮会让队列堆积空等。
+  # main 侧不能取消：Evidence 升级只认 CI 结论 success；下一次 push 顶掉正在跑的
+  # main CI，那一轮的 Evidence 就停在 merged_into_main=false，后继卡永久 blocked。
+  def test_concurrency_cancels_only_pull_requests
     concurrency = workflow["concurrency"]
-    assert_match(/github\.event_name/, concurrency["group"].to_s,
-      "并发组必须按事件分流，否则 push:main 与 pull_request 共用一组")
+
+    # 组名沿用 ci-<ref>：PR 的 ref 是 refs/pull/<n>/merge，main 的 ref 是
+    # refs/heads/main，两者天然分属不同组，不需要按事件改写组名。
     assert_includes concurrency["group"], "github.ref"
 
-    cancel = concurrency["cancel-in-progress"]
-    assert_match(/github\.event_name\s*==\s*'pull_request'/, cancel.to_s,
-      "取消必须限定在 pull_request 事件上，main 侧要跑完以升级 Evidence")
+    cancel = concurrency["cancel-in-progress"].to_s
+    assert_includes cancel, "github.event_name",
+      "取消条件必须按事件判定；写成裸 true 会让 main 侧也互相取消"
+    assert_includes cancel, "pull_request",
+      "取消只允许发生在 pull_request 事件上"
+    refute_includes cancel, "push",
+      "cancel-in-progress 不能包含 push 侧条件（main 必须跑完以升级 Evidence）"
   end
 
   # 「等出现」的宽限必须小于主等待上限，否则它不会先触发，
