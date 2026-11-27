@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **M4x Agent 分类与标签**：`AgentConfig` 新增 `category`/`tags`（词法 `[a-z0-9][a-z0-9-]*` 1..64，loader 先验后换逐条校验，重复标签报错不去重）；`AgentInstance` 首建时固化元数据（热更新不刷新存量实例，避免人格/标签漂移）；IPC 新增 `agents.list` 只读命令（读当前 `Config.agents` 真相源，按 id 字典序，未分类输出 JSON `null`）（[#261](https://github.com/ShiningRay/sebas/pull/261)）。
+
 ## [0.2.0] - 2026-11-26
 
 ### Added
