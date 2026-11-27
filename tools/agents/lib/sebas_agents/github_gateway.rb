@@ -1017,7 +1017,8 @@ end
 
     # 在途租约容量上限（recovery §5 / Q3）：.github/agents.yml 的 `capacity` 键。
     # 缺键即 1——任何机器上的行为都与单卡容量一致；显式配置才提升。
-    # 非法值（非正整数）fail-closed 报错，不静默回落默认。
+    # 仅接受正整数：显式 null、浮点、字符串等非法原始值在转换前直接
+    # fail-closed（Integer 对浮点会截断、对数字字符串会放行，均不合法）。
     def capacity
       @capacity ||= begin
         path = File.join(Dir.pwd, ".github", "agents.yml")
@@ -1025,19 +1026,14 @@ end
 
         require "yaml"
         data = YAML.safe_load_file(path)
-        raw = data && data["capacity"]
-        if raw.nil?
-          1
-        else
-          begin
-            value = Integer(raw)
-          rescue ArgumentError, TypeError
-            raise CommandError.new(".github/agents.yml 的 capacity 必须是正整数：#{raw.inspect}", command: ["read", path])
-          end
-          raise CommandError.new(".github/agents.yml 的 capacity 必须是正整数：#{raw.inspect}", command: ["read", path]) unless value >= 1
+        return 1 unless data && data.key?("capacity")
 
-          value
+        raw = data["capacity"]
+        unless raw.is_a?(Integer) && raw >= 1
+          raise CommandError.new(".github/agents.yml 的 capacity 必须是正整数：#{raw.inspect}", command: ["read", path])
         end
+
+        raw
       end
     end
 

@@ -7,7 +7,13 @@
 
 ### Added
 
-- **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限（缺键即 1，行为与单卡一致；非法值 fail-closed）；快照承载 `capacity`，routing/claim 判定按容量计数（超容量 invalid，容量内多卡续做路由对准本地记录持有的卡）；异机在途租约在容量未满时不阻塞新候选、不误续跑他人 PR（F6）；`plan` 输出 `capacity`/`capacity_used`；迁移窗口（v1 记录仍活动）有效容量钳回 1（Q10=B）；试点 docs-only 双卡豁免仅在容量 1 时生效。
+- **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：
+  - `capacity` 配置：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限，缺键即 1（行为与单卡一致）；仅接受正整数，显式 null/浮点等非法值 fail-closed。
+  - 路由与认领：快照承载 `capacity`；routing/claim/resume 判定按容量计数，超容量 invalid；容量内多卡的续做路由对准本地记录持有的卡。
+  - 异机租约（F6）：容量未满时不阻塞新候选、不误续跑他人 PR；容量已满且在途卡缺本地记录（F7）routing 即刻 invalid。
+  - `plan` 输出：新增 `capacity`（快照容量）与 `capacity_used`（在途卡数）。
+  - 迁移窗口：v1 记录仍活动时有效容量钳回 1（Q10=B）；默认记录损坏不吞异常，命令 fail-closed 拒绝。
+  - 试点豁免：docs-only 双卡豁免仅在容量 1 时生效（试点上限两张语义不变）。
 - **流程工具 per-issue 租约与运行记录迁移**（M4x-Parallel-WP2，[#220](https://github.com/ShiningRay/sebas/issues/220)）：`claim --apply` 发带 `<!-- sebas-lease -->` marker 的协调评论作租约凭据（comment id 即 lease_id，作者须 `.github/agents.yml` `coordinators:` 白名单；写入序 claiming→评论→标签+回读→claimed，失败按 lease_id 对账恢复不双开）；Automation 可选 `scope` 路径前缀预算（前缀互相包含即冲突，缺 scope 独占容量，本期容量恒 1 待命）；`.sebas-agent/run.json` 迁移至 `runs/<issue>.json` schema 2（非活动自动搬、活动 fail-closed 待人工、迁移期容量 1）；unclaim 释放租约先置 released（F12 幂等）。
 - **流程工具 plan 子命令**（M4x-Parallel-WP1，[#218](https://github.com/ShiningRay/sebas/issues/218)）：`sebas-process plan` 只读多候选视图——与 `next` 同快照同策略同评估结果，输出全部就绪候选（`issue/title/order/scope_conflict/selected`，capacity 固定 1）、带枚举码的排除集（`depends_on_unmet/has_pr/needs_human/already_in_progress` 等）与 `verifier_queue_depth`（待验收 PR 数，验收背压可观察，[Proposal §7](docs/design/proposals/parallel-implementers.md)）；首选与 `next` 恒等，不改任何写行为。
 - **M3-WP4 插件层产品化**：每动作裁剪 mruby 子进程 runner（合成 prelude+plugin.rb 程序、stdin 单行 request、NDJSON 帧协议、watchdog 超时 kill、崩溃隔离、结构化错误）；`on_action`/`on_hook` 声明式 DSL 与 `capability` 同步 host-call（帧字段闭集、manifest 双重授权、未声明/未注册/重复注册拒绝）；manifest fail-closed 校验（id/SemVer/api_version/钩子闭集/超时上限）；`plugins:` 配置段接入 gateway（`plugin.<id>.<action>` 进宿主工具面，生命周期动作不进）；沙箱解释器 gembox 扩展 `sebas_read` 与自研 `mruby-sebas-json`（`mruby-sandbox` workflow 构建发布 + 插件验收 spec 注解释器直跑）（[#16](https://github.com/ShiningRay/sebas/issues/16)）。

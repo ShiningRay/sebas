@@ -91,16 +91,14 @@ module SebasAgents
     end
 
     # 迁移窗口内是否仍钳制容量：legacy run.json 存在且其记录非 released。
-    # 文件缺失或读不出来（损坏等）都不钳制——真正的迁移路径会对损坏记录
-    # 独立 fail-closed，这里只回答「活动遗留是否还在」。
+    # 文件缺失不钳制；损坏/非法记录不吞异常——读取失败直接抛错拒绝命令
+    # （fail-closed），不得把「读不出来」当成「不钳制」放行容量提升。
     def migration_capacity_clamp?
       path = RunRecord::DEFAULT_PATH
       return false unless File.exist?(path)
 
       data = RunRecord.new(path: path).load
       data && data["phase"].to_s != "released"
-    rescue InvalidPlan, JSON::ParserError
-      false
     end
 
     # 快照是唯一事实源：结构不全就拒绝，绝不把缺失当成「没有工作」。
@@ -641,8 +639,12 @@ end
       unless issue.working?
         raise InvalidPlan, "##{issue.number} 远端 status 不是执行中（当前 #{issue.status || "未设置"}），不能按在途续跑"
       end
-      other = snap.in_progress_issues.find { |item| item.number != issue.number }
-      raise InvalidPlan, "存在另一张活动认领 ##{other.number}" if other
+      # 容量口径（recovery §5 / Q3）：活动认领数超过有效容量才拒绝；
+      # 容量 1 时与原单卡守卫语义一致。
+      others = snap.in_progress_issues.reject { |item| item.number == issue.number }
+      if others.length >= snap.capacity
+        raise InvalidPlan, "已有 #{others.length} 张活动认领（#{others.map(&:number).join("、")}），达到容量 #{snap.capacity}"
+      end
       raise InvalidPlan, "##{issue.number} 已关闭" unless issue.open?
 
       payload = {

@@ -276,14 +276,19 @@ module SebasAgents
           source_bodies: hash["source_bodies"] || {},
           # Proposal 裁决单独存真实作者、正文与父对象，缺省视为不可核验。
           proposal_evidence: hash["proposal_evidence"] || {},
-          capacity: parse_capacity(hash["capacity"])
+          capacity: parse_capacity(hash, hash["capacity"])
         )
       end
 
-      # 容量只接受正整数：缺失/非法一律回落默认 1（快照 JSON 路径的旧 fixture
-      # 无此键仍可读）；显式非法值在 gateway 读取侧已 fail-closed，这里兜底。
-      def self.parse_capacity(raw)
-        return DEFAULT_CAPACITY unless raw.is_a?(Integer) && raw >= 1
+      # 容量仅缺字段时回落默认 1（旧快照 fixture 无此键仍可读）；字段显式
+      # 存在但不是正整数（含显式 null、浮点）一律 InvalidPlan——非法容量
+      # 静默降级会让「以为提了容量」的配置假生效，比拒绝更危险。
+      def self.parse_capacity(hash, raw)
+        return DEFAULT_CAPACITY unless hash.key?("capacity")
+
+        unless raw.is_a?(Integer) && raw >= 1
+          raise InvalidPlan, "快照 capacity 必须是正整数：#{raw.inspect}"
+        end
 
         raw
       end

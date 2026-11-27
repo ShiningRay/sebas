@@ -115,6 +115,17 @@ module SebasAgents
           return Routing.new(observed: observed, milestones: milestones, action: nil)
         end
 
+        # 容量已满且在途卡无本地记录：异机租约占着容量（F6「不接管，占着
+        # 容量」），本 coordinator 没有可续做对象——报 wait。不判 F7 invalid：
+        # 快照只有 status 事实，不足证明「GitHub 侧无有效凭据」；凭据对账
+        # 在 claim 的租约预检做。
+        if claimed && (record.nil? || record.empty?)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: action("wait", observed,
+              "在途认领 #{in_progress.map(&:number).join("、")} 非本 coordinator 持有（无本地记录），容量 #{snapshot.capacity} 已满，等待其收口",
+              issue: claimed.number))
+        end
+
         own_pr = own_pull_request(snapshot, record, claimed)
         if own_pr && own_pr.unresolved_threads.empty? && own_pr.merge_state_status == "CLEAN"
           # 合并仍需人工/独立验收放行；这里只报告可合并，不自动 squash。
