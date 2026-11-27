@@ -239,12 +239,14 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
    `审查已完成：CodeRabbit conclusion=`。两者都取自**同一次** run，
    合并前置第 6 条的 success 也必须是这一次。
 
-   这一步目前要人工核对，`verify merge --pre` 的快照不含 check run 的完成时刻：
+   这一步目前要人工核对，`verify merge --pre` 的快照不含 check run 的完成时刻。
+   先把下面两处换成当前 PR 编号与仓库（`<pr>`、`<owner>/<repo>`）：
 
    ```sh
-   pr=288; run=$(gh pr checks $pr --json name,link --jq '.[]|select(.name=="await-review")|.link' | sed 's#.*/runs/##; s#/job/.*##')
-   gh api "repos/{owner}/{repo}/actions/runs/$run/jobs" --jq '.jobs[]|select(.name=="await-review")|"gate=\(.completed_at)"'
-   gh api "repos/{owner}/{repo}/commits/$(gh pr view $pr --json headRefOid --jq .headRefOid)/check-runs" \
+   pr=<pr>; repo=<owner>/<repo>
+   run=$(gh pr checks "$pr" --json name,link --jq '.[]|select(.name=="await-review")|.link' | sed 's#.*/runs/##; s#/job/.*##')
+   gh api "repos/$repo/actions/runs/$run/jobs" --jq '.jobs[]|select(.name=="await-review")|"gate=\(.completed_at)"'
+   gh api "repos/$repo/commits/$(gh pr view "$pr" --json headRefOid --jq .headRefOid)/check-runs" \
      --jq '.check_runs[]|select(.name=="CodeRabbit")|"rabbit=\(.completed_at)"'
    gh run view "$run" --log | grep "审查已完成"
    ```
