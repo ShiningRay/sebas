@@ -74,17 +74,22 @@ module SebasAgents
         raise InvalidPlan, "运行记录 schema 不支持（#{data["schema"].inspect}）：#{legacy_path}"
       end
 
+      # aborted 是认领未确认的异常态（续篇 F3/F4）：须先对账（status_written、
+      # 凭据归属），不得随迁移静默解除容量钳制——故迁移守卫在 ACTIVE_PHASES
+      # 之外单列 aborted；只有 released 等静默态自动搬迁。不改全局
+      # ACTIVE_PHASES，避免波及 active_records 的路由口径。
+      migration_blocking_phases = ACTIVE_PHASES + %w[aborted]
       issue = data["issue"]
       target = issue ? File.join(runs_dir, "#{issue}.json") : nil
       if target.nil? || File.exist?(target)
         # 无 issue 的孤儿记录或同卡 v2 已在：活动态不吞更新，静默态保留待人工。
-        if ACTIVE_PHASES.include?(data["phase"])
+        if migration_blocking_phases.include?(data["phase"])
           raise InvalidPlan, "v1 活动运行记录（phase=#{data["phase"].inspect}）与既有 v2 记录并存，需人工确认后才能搬迁：#{legacy_path}"
         end
         return false
       end
 
-      if ACTIVE_PHASES.include?(data["phase"])
+      if migration_blocking_phases.include?(data["phase"])
         raise InvalidPlan,
           "v1 活动运行记录（phase=#{data["phase"].inspect}）缺 base_sha/lease_id/scope 等 v2 字段，" \
           "须人工确认归属后才能搬迁：请核对远端认领并手工搬至 #{target}（或删除记录重新认领）"
