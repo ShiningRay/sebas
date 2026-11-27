@@ -1544,9 +1544,11 @@ end
           next            读取 GitHub，输出单一动作（默认只读）
           plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 逐租约动作（#218/#221）
           queue           只读合并队列：队首 PR 与它在合并链上的下一步（#221）
-          heartbeat <issue> --pid <worker pid> [--ttl <秒>]
-                          写存活心跳（F5）；--apply 才写，--pid 是 worker 自己的 pid
-                          （别用 shell 的 $$）。--ttl 只附过期判定，不写进记录。
+          heartbeat <issue> [--pid <worker pid>] [--ttl <秒>] [--apply]
+                          写存活心跳（F5）。--apply 才写，且此时 --pid 必填：
+                          它必须是 worker 自己的 pid（别用 shell 的 $$）。
+                          只读模式不给 --pid 也能用：--ttl <秒> 返回是否已过期；
+                          写入结果不附过期判定。
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed

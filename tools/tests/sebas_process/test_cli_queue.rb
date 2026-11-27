@@ -185,8 +185,10 @@ class QueueCommandTest < Minitest::Test
   def test_help_documents_heartbeat_pid_requirement
     status, out, = run_cli(["help"])
     assert_equal 0, status
-    assert_includes out, "heartbeat <issue> --pid"
-    assert_includes out, "--pid 是 worker 自己的 pid"
+    assert_includes out, "heartbeat <issue> [--pid"
+    assert_includes out, "--apply 才写，且此时 --pid 必填"
+    # 只读模式不要求 pid：说明必须写清，否则读者会以为连查询也要 pid
+    assert_includes out, "只读模式不给 --pid 也能用"
   end
 
 end
