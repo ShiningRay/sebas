@@ -235,15 +235,47 @@ class AwaitReviewTest < Minitest::Test
     assert_includes @out.string, "审查已完成"
   end
 
-  # 单次 gh 调用必须有硬超时：gh 默认无请求超时，挂住会拖到 job 被杀，
-  # 而 job 被杀 = 下游 spec/ameba skipped = 可能不阻塞合并。
+  # 单次外部命令必须有硬超时，且超时必须真的杀得掉子进程。
+  # 实测 Ruby 3.4.13：Timeout 包住 capture3 那种写法给 1s 超时仍跑满 6.01s
+  # （capture3 在 ensure 里 join 子进程），所以断言实现用的是 popen2e + 进程组。
   def test_gh_call_has_hard_timeout
     assert_kind_of Integer, AwaitReview::GH_CALL_TIMEOUT_SECONDS
     assert_operator AwaitReview::GH_CALL_TIMEOUT_SECONDS, :<=, 120
     assert_operator AwaitReview::GH_CALL_TIMEOUT_SECONDS, :>, 0
+
     source = File.read(File.expand_path("await_review.rb", __dir__), encoding: "UTF-8")
-    assert_includes source, "Timeout.timeout(GH_CALL_TIMEOUT_SECONDS)",
-      "gh 调用必须包在 Timeout 里"
+    assert_includes source, "Timeout.timeout(GH_CALL_TIMEOUT_SECONDS)"
+    assert_includes source, "pgroup: true", "必须用独立进程组，才能整组终止"
+  end
+
+  # 超时终止必须真的生效：用会被杀掉的真实子进程（sleep）驱动生产代码路径，
+  # 而不是在测试里复制一份实现。断言「1s 上限、<5s 返回」——若回归成
+  # capture3 那套写法，这里会等满 sleep 时长而失败。
+  def test_hanging_command_is_actually_killed
+    stop_sleeping
+    stub_timeout = 1
+    original = AwaitReview::GH_CALL_TIMEOUT_SECONDS
+    silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, stub_timeout) }
+
+    started = Time.now
+    error = assert_raises(RuntimeError) do
+      AwaitReview.gh_json_with("sh", "-c", "sleep 10")
+    end
+    elapsed = Time.now - started
+
+    assert_includes error.message, "超时"
+    assert_operator elapsed, :<, 5,
+      "超时必须杀掉子进程；实测 #{elapsed.round(2)}s 说明仍在等 sleep 10 自然退出"
+  ensure
+    silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, original) } if original
+  end
+
+  def silence_warnings
+    verbose = $VERBOSE
+    $VERBOSE = nil
+    yield
+  ensure
+    $VERBOSE = verbose
   end
 
   # app 为 null 的 check run 不能让脚本崩溃（旧实现用 dig 会 TypeError）。

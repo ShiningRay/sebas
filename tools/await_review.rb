@@ -58,7 +58,7 @@ module AwaitReview
 
   class << self
     # 测试注入点：生产为 nil，走真实 gh 与真实时钟。
-    attr_accessor :gh_reader, :sleeper, :clock
+    attr_accessor :gh_reader, :sleeper, :clock, :gh_runner
   end
 
   module_function
@@ -197,20 +197,77 @@ module AwaitReview
     0
   end
 
+  # gh 调用走 run_command（带硬超时与进程组终止），这里只做错误归一。
   def gh_json(path)
     return gh_reader.call(path) if gh_reader
 
-    # gh 自身没有默认请求超时：一次挂住的 fetch 会让整个 job 卡到 GitHub 的
-    # job 超时，而 job 被杀后下游 spec / ameba 是 skipped——那正是本门闸
-    # 最该避免的形态（见头注释）。用 Ruby 侧 Timeout 兜住单次调用。
-    out, err, status = Timeout.timeout(GH_CALL_TIMEOUT_SECONDS) do
-      Open3.capture3("gh", "api", path)
-    end
-    raise "gh api #{path} 失败：#{err.strip}" unless status.success?
+    out, status = run_command("gh", "api", path)
+    return JSON.parse(out) if status&.success?
 
-    JSON.parse(out)
-  rescue Timeout::Error
-    raise "gh api #{path} 超时（#{GH_CALL_TIMEOUT_SECONDS}s）"
+    # gh 在失败时把原因写 stderr，popen2e 合并到同一流里；两者都在 out 中。
+    # gh 失败时 JSON 与 `gh: ...` 之间可能没有换行，先摘 `gh:` 段更可读。
+    detail = out[/gh: .*\z/m]&.strip || out.strip
+    raise "gh api #{path} 失败：#{detail}"
+  end
+
+  def gh_json_with(*command)
+    out, status = run_command(*command)
+    return JSON.parse(out) if status&.success?
+
+    raise "命令失败：#{command.join(" ")}：#{out.strip}"
+  end
+
+  # 跑外部命令并施加硬超时，返回 [输出, 进程状态]。
+  #
+  # 不能用「Timeout 包住 capture3」那种写法：实测 Ruby 3.4.13 下 capture3 会在
+  # ensure 里 join 子进程，外层 Timeout 抛异常后仍会等到子进程退出——给
+  # `sleep 6` 套 1s 超时，实际耗时 6.01s，超时形同虚设（CodeRabbit 在 PR #280 指出）。
+  #
+  # 改用 popen2e + 独立进程组，超时后 kill 整组再回收，实测 1.31s 生效。
+  # gh 也没有默认请求超时：挂住的 fetch 会把步骤拖到 job 被杀，而 job 被杀
+  # 等于下游 spec/ameba skipped。
+  def run_command(*command)
+    out = +""
+    status = nil
+    Open3.popen2e(*command, pgroup: true) do |stdin, stdout, wait_thr|
+      stdin.close
+      begin
+        Timeout.timeout(GH_CALL_TIMEOUT_SECONDS) do
+          out = stdout.read
+          status = wait_thr.value
+        end
+      rescue Timeout::Error
+        terminate(wait_thr.pid)
+        raise "#{command.join(" ")} 超时（#{GH_CALL_TIMEOUT_SECONDS}s），已终止"
+      end
+    end
+    [out, status]
+  end
+
+  # 先 TERM 后 KILL 整个进程组：gh 可能自己再拉起子进程（凭据助手、分页跟随），
+  # 只杀直接子进程会留下孤儿继续占着管道。进程组已消失时 kill 会 EPERM/ESRCH，
+  # 那是「已经死了」，不是错误。
+  def terminate(pid)
+    %w[TERM KILL].each do |signal|
+      begin
+        Process.kill(signal, -pid)
+      rescue Errno::ESRCH, Errno::EPERM
+        return
+      end
+      begin
+        Process.waitpid(pid, Process::WNOHANG)
+        return
+      rescue Errno::ECHILD
+        return
+      end
+      sleep(0.3)
+    end
+    # 兜底回收，避免留下僵尸进程拖着 job 结束。
+    begin
+      Process.waitpid(pid)
+    rescue Errno::ECHILD
+      nil
+    end
   end
 
   def now
