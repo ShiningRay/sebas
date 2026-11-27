@@ -67,6 +67,21 @@ module SebasAgents
       unless missing.empty?
         raise InvalidPlan, "租约评论 #{comment["id"]} 凭据缺字段：#{missing.join('、')}"
       end
+      unknown = credential.keys.reject { |key| CREDENTIAL_FIELDS.include?(key) }
+      unless unknown.empty?
+        raise InvalidPlan, "租约评论 #{comment["id"]} 凭据含未知字段（闭集）：#{unknown.join('、')}"
+      end
+      unless credential["lease_id"].is_a?(String) && !credential["lease_id"].empty? &&
+             credential["issue"].is_a?(Integer) &&
+             credential["branch"].is_a?(String) && !credential["branch"].empty? &&
+             credential["coordinator_id"].is_a?(String) && !credential["coordinator_id"].empty? &&
+             credential["host"].is_a?(String) && !credential["host"].empty? &&
+             credential["claimed_at"].is_a?(String) && !credential["claimed_at"].empty?
+        raise InvalidPlan, "租约评论 #{comment["id"]} 凭据字段类型/取值非法"
+      end
+      unless %w[active released].include?(credential["state"])
+        raise InvalidPlan, "租约评论 #{comment["id"]} state 非法：#{credential["state"].inspect}"
+      end
 
       {id: comment["id"], login: comment.dig("user", "login").to_s, credential: credential}
     end

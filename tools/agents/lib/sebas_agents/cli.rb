@@ -119,14 +119,15 @@ module SebasAgents
     end
 
     def record_for(options)
-      unless options[:record]
-        # 启动搬迁（Q10=B）：非活动 v1 自动搬到 runs/<issue>.json；
-        # 活动 v1 缺 v2 字段，fail-closed 要求人工确认（raise InvalidPlan）。
-        RunRecord.migrate_legacy!(RunRecord::DEFAULT_PATH)
-        active = RunRecord.scan_active
-        return active if active
-      end
-      RunRecord.new(path: options[:record]).load
+      explicit = RunRecord.new(path: options[:record]) if options[:record]
+      return explicit.load if explicit
+
+      # 读路径不迁移（CR-0）；活动记录扫描 runs/（迁移期容量 1），
+      # 无活动记录时回落 v1 路径双读（迁移窗口）。
+      active = RunRecord.scan_active
+      return active if active
+
+      RunRecord.new(path: RunRecord::DEFAULT_PATH).load
     end
 
     def run_next(argv)
@@ -181,7 +182,8 @@ end
       raise UsageError, "issue ##{number} 不在快照内" unless issue
 
       # 启动搬迁（Q10=B）：v1 记录先走迁移，活动记录 fail-closed 要求人工确认。
-      RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) unless options[:record]
+      # 仅写路径（--apply）触发；next/plan/claim --dry-run 只读不迁移（CR-0）。
+      RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) if options[:apply] && !options[:record]
 
       result = claimability(issue, snap)
       payload = {
@@ -201,15 +203,17 @@ end
 
         # 租约唯一性预检（F9）：state != released 的租约评论已存在即拒绝——
         # 重复认领判定的两种归宿（§5.2 + 续篇 F1/F4）：
-        # - 本地记录处于 claiming/aborted 且分支与凭据一致 → 恢复路径：
-        #   复用既有凭据继续走认领流程（不重发评论、不双开）；
+        # - 本地记录处于 claiming/aborted，且凭据身份能对上（lease_id 或评论
+        #   id 与记录一致）→ 恢复路径：复用既有凭据继续认领（不重发、不双开）；
         # - 否则（无本地归属/已释放）→ 有主凭据即拒绝，fail-closed。
         prior = record.load
-        existing = Lease.active_lease(gateway.issue_comments(issue.number), author_whitelist: whitelist)
+        comments = gateway.issue_comments(issue.number)
+        existing = Lease.active_lease(comments, author_whitelist: whitelist)
         adopted = nil
         if existing
           recoverable = prior && %w[claiming aborted].include?(prior["phase"]) &&
-                        prior["branch"] == existing["branch"]
+                        prior["branch"] == existing["branch"] &&
+                        lease_identity_matches?(prior, existing, comments)
           unless recoverable
             payload["ok"] = false
             payload["claim"] = "refused"
@@ -238,30 +242,39 @@ end
           "claimed_at" => claimed_at
         })
 
-        # 发租约评论：先按生成的 lease_id 检索既有评论（评论已发出而 id 未
-        # 落盘的崩溃窗口），找到就复用；没有才发。随后把评论 id 补记为租约 id。
-        reused = Lease.find_by_lease_id(gateway.issue_comments(issue.number), generated_lease_id,
-          author_whitelist: whitelist)
-        if reused
-          comment_id, _credential = reused
-        else
-          body = Lease.comment_body(
-            lease_id: generated_lease_id, issue: issue.number, branch: "feat/#{issue.number}",
-            base_sha: snap.main_sha, coordinator_id: payload["run_record"]["coordinator_id"],
-            host: payload["run_record"]["host"], claimed_at: claimed_at
-          )
-          posted = gateway.create_comment(issue.number, body, allow_write: true)
-          comment_id = posted.is_a?(Hash) ? posted["id"] : nil
-        end
-        payload["run_record"] = record.save(payload["run_record"].merge("lease_id" => comment_id || generated_lease_id))
-
-        # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
-        # 任何一步出错都要落 aborted，不能让记录停在 claiming。
-        written = false
+        # 逐步留痕（CR-2/CR-3）：每步成功即更新对应标志，失败落 aborted 时
+        # 能精确说明远端推进到了哪一步。
+        record_saved = true
+        comment_created = false
+        status_written = false
+        label_written = false
+        confirmed = false
         begin
+          # 发租约评论：先按生成的 lease_id 检索既有评论（评论已发出而 id 未
+          # 落盘的崩溃窗口），找到就复用；没有才发。随后把评论 id 补记为租约 id。
+          reused = Lease.find_by_lease_id(gateway.issue_comments(issue.number), generated_lease_id,
+            author_whitelist: whitelist)
+          if reused
+            comment_created = true
+            comment_id, _credential = reused
+          else
+            body = Lease.comment_body(
+              lease_id: generated_lease_id, issue: issue.number, branch: "feat/#{issue.number}",
+              base_sha: snap.main_sha, coordinator_id: payload["run_record"]["coordinator_id"],
+              host: payload["run_record"]["host"], claimed_at: claimed_at
+            )
+            posted = gateway.create_comment(issue.number, body, allow_write: true)
+            comment_id = posted.is_a?(Hash) ? posted["id"] : nil
+            comment_created = true
+          end
+          payload["run_record"] = record.save(payload["run_record"].merge("lease_id" => comment_id || generated_lease_id))
+
           gateway.set_status(issue.number, Model::STATUS_IN_PROGRESS, allow_write: true)
+          status_written = true
           gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
-          written = true
+          label_written = true
+
+          # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
           confirmed = gateway.status?(issue.number, Model::STATUS_IN_PROGRESS) &&
                       gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) &&
                       lease_readback_confirmed?(gateway, issue.number, whitelist, payload["run_record"])
@@ -277,35 +290,53 @@ end
           # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有被推进。
           # lease_id 保留在记录里：恢复按它对账凭据（续篇 F1–F4），而不是重发评论。
           payload["run_record"] = record.save(
-            payload["run_record"].merge("phase" => "aborted", "status_written" => written,
-                                        "label_written" => written)
+            payload["run_record"].merge("phase" => "aborted", "status_written" => status_written,
+                                        "label_written" => label_written)
           )
           payload["ok"] = false
           payload["claim"] = "claim_aborted"
           payload["reasons"] ||= []
-          payload["reasons"] << if written
-            "写入后回读未确认（status/label/租约评论任一未确认）；远端状态未知，恢复前需人工核对或按 lease_id 对账"
-          else
-            "写入 status=#{Model::STATUS_IN_PROGRESS} 失败，未产生远端变更"
-          end
+          payload["reasons"] << "认领步骤未全部确认：" \
+            "record=#{record_saved} comment=#{comment_created} status=#{status_written} " \
+            "label=#{label_written} readback=#{confirmed}；远端可能已推进，恢复按 lease_id 对账"
         end
       end
       Output.emit(payload, out: @out)
       payload["ok"] ? EXIT_OK : EXIT_REFUSED
     end
 
-    # 释放租约凭据（F12）：state 置 released 并回读唯一性（F9 判据不变）。
-    # 凭据缺失（迁移窗口内的 v1 记录）不阻断释放；对账不上 → aborted 人工核对。
+    # 租约身份对账（CR-1）：记录里的 lease_id 必须能绑定到该凭据——
+    # 要么等于凭据 body 的 lease_id，要么等于承载该凭据的评论 id。
+    # 只比 phase+branch 不能区分同卡的多份历史租约。
+    def lease_identity_matches?(record, credential, comments)
+      lease_id = record["lease_id"].to_s
+      return false if lease_id.empty?
+
+      credential["lease_id"].to_s == lease_id ||
+        comments.any? do |comment|
+          comment["id"].to_s == lease_id && comment["body"].to_s.include?(credential["lease_id"].to_s)
+        end
+    end
+
+    # 释放租约凭据（F12 + CR-4）：本地记录缺失或缺 lease_id 时也必须核对
+    # 远端租约——认领成功后丢本地记录，卡上凭据仍要置 released。
+    # state 置 released 并回读唯一性（F9 判据不变）；对账不上 → aborted。
     def release_lease_comment!(gateway, issue_number, record, payload)
       lease_id = record && record["lease_id"]
-      return payload unless lease_id
+      comments = gateway.issue_comments(issue_number)
 
-      found = Lease.find_by_lease_id(gateway.issue_comments(issue_number), lease_id,
+      found = lease_id && Lease.find_by_lease_id(comments, lease_id,
         author_whitelist: gateway.coordinators)
       unless found
-        payload["reasons"] = ["租约凭据 #{lease_id.inspect} 未能对账（可能被删改），需人工核对"]
-        payload["status"] = "aborted"
-        return payload
+        # 记录 lease_id 对不上账：退回「按卡扫描有效凭据」——有则按凭据释放，
+        # 无则确认卡上确实没有凭据（可能从未认领或已释放），放行收尾。
+        credential = Lease.active_lease(comments, author_whitelist: gateway.coordinators)
+        if credential
+          lease_id = credential["lease_id"]
+          found = [credential["lease_id"], credential]
+        else
+          return payload
+        end
       end
       comment_id, credential = found
       unless credential["state"] == Lease::STATE_RELEASED
@@ -326,8 +357,9 @@ end
       payload
     end
 
-    # 租约回读确认（Q1=B）：评论存在、state=active、作者在白名单。
-    # 任一不满足即视为未确认——恢复按 lease_id 对账，而不是重发评论（F4）。
+    # 租约回读确认（Q1=B + CR-5）：回读必须绑定到**当前有效凭据**——
+    # 记录里的 lease_id 要么等于有效凭据 body 的 lease_id，要么等于承载
+    # 有效凭据的那条评论的 id。已释放评论的 id 不算数（state 非 active）。
     def lease_readback_confirmed?(gateway, number, whitelist, record)
       lease_id = record["lease_id"].to_s
       return false if lease_id.empty?
@@ -336,10 +368,12 @@ end
       credential = Lease.active_lease(comments, author_whitelist: whitelist)
       return false unless credential
 
-      # 记录里 lease_id 的两种合法形态都能对账（Q1=B）：
-      # 生成期 uuid（凭据 body）或发评论后补记的评论 id。
       credential["lease_id"] == lease_id ||
-        comments.any? { |comment| comment["id"].to_s == lease_id }
+        comments.any? do |comment|
+          comment["id"].to_s == lease_id &&
+            comment["body"].to_s.include?(%Q{"lease_id": "#{credential["lease_id"]}"}) &&
+            comment["body"].to_s.include?('"state": "active"')
+        end
     rescue InvalidPlan
       # 多份凭据/作者越权/凭据被篡改：fail-closed，交恢复路径人工核对
       false
@@ -379,8 +413,13 @@ end
 
       other = snap.in_progress_issues.find { |item| item.number != issue.number }
       if other
-        return Model::Evaluation.new(status: "invalid",
-          reasons: ["已有活动认领 ##{other.number}，全仓同时只允许一张"])
+        # 试点豁免（M4x-Parallel-WP2，#220 §8 阶段 2）：两张 docs-only 工作包
+        # 卡可由 coordinator 并行持有——所有权由各自 per-issue lease 管理，
+        # scope 冲突由预算判定；其余仍全仓同时只允许一张。
+        unless pilot_docs_pair?(issue, other, snap)
+          return Model::Evaluation.new(status: "invalid",
+            reasons: ["已有活动认领 ##{other.number}，全仓同时只允许一张"])
+        end
       end
 
       open_pr = snap.pull_requests.select(&:open?).find { |pr| pr.closing_issues.include?(issue.number) }
@@ -410,6 +449,28 @@ end
       end
 
       nil
+    end
+
+    # 试点并行判定（M4x-WP2，#220 §8 阶段 2）：两张卡都是 docs-only 工作包
+    # （kind=work_package 且 scope 全在 docs/ 下）时允许 coordinator 并行持有，
+    # 所有权由各自 lease 凭据管理；任一卡不是 docs-only → 不豁免。
+    def pilot_docs_pair?(issue, other, snap)
+      docs_only_work_package?(issue) && docs_only_card?(other)
+    rescue InvalidPlan
+      false
+    end
+
+    def docs_only_card?(card)
+      automation = Policy::Dependencies.automation_for(card)
+      return false unless automation
+      return false if %w[tracking manual design].include?(automation["kind"])
+
+      scope = automation["scope"]
+      scope.is_a?(Array) && !scope.empty? && scope.all? { |prefix| prefix.start_with?("docs/") }
+    end
+
+    def docs_only_work_package?(issue)
+      docs_only_card?(issue)
     end
 
     def parse_number(value, label)
@@ -459,6 +520,8 @@ end
       if options[:apply]
         repo = claim_write_repo(snap, options)
         gateway = GithubGateway.new(runner(options), repo: repo)
+        # 启动搬迁（Q10=B）：写路径才触发迁移（CR-0 只读路径不迁移）。
+        RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) unless options[:record]
         # 已完成的卡保持 Done：写回 Todo 会抹掉终态，让看板重新出现待办。
         unless issue.status?(Model::STATUS_DONE)
           gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
@@ -471,9 +534,18 @@ end
         end
         record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
         current = record.load
-        # 释放租约凭据（F12）：state 先置 released 并回读唯一性；核对不了 fail-closed。
-        release_lease_comment!(gateway, issue.number, current, payload) if current
+        # 释放租约凭据（F12 + CR-4）：本地记录缺失/缺 lease_id 也要核对远端
+        # 租约——认领成功后丢本地记录时，卡上凭据仍必须置 released。
+        release_lease_comment!(gateway, issue.number, current, payload)
         if payload["status"] == "aborted"
+          Output.emit(payload, out: @out)
+          return EXIT_REFUSED
+        end
+        # 人类可读信号同步摘除（CR-6）：凭据已释放，卡上不得残留执行中标签。
+        gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+        unless gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) == false
+          payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍在，需人工核对"
+          payload["status"] = "aborted"
           Output.emit(payload, out: @out)
           return EXIT_REFUSED
         end
@@ -518,7 +590,9 @@ end
         "action" => "resume_issue"
       }
       if options[:apply]
-        payload["run_record"] = RunRecord.new(issue: record["issue"]).save(record.merge("phase" => "claimed"))
+        # CR-7：显式 --record 优先，避免自定路径与默认 runs/ 分叉出两份记录。
+        record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: record["issue"])
+        payload["run_record"] = record.save(record.merge("phase" => "claimed"))
       end
       Output.emit(payload, out: @out)
       EXIT_OK

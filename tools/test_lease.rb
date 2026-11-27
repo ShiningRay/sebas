@@ -279,7 +279,6 @@ class FakeGhStore
       end
       issue_number = Regexp.last_match(1).to_i
       list = @comments.select { |item| item[:issue_number] == issue_number }
-      $stderr.puts "FAKE-GET issue=#{issue_number} count=#{@comments_get_count} list=#{list.length} store=#{@comments.map { |c| [c['id'], c[:issue_number]].inspect }.join(',')}"
       return JSON.generate(list)
     end
     # 读单卡（label_present?）
@@ -380,6 +379,8 @@ class CoordinatorClaimTest < Minitest::Test
   end
 
   # 验收第 3 条：coordinator 串行认领两张 docs 卡，各自独立写 lease，两次回读均确认。
+  # 注：fixture 为静态快照，卡 11 的 status 不随认领变化——试点豁免（docs-only 对）
+  # 语义由 claim_blocker 单测路径覆盖，这里验证 lease 写入、独立凭据与回读链路。
   def test_coordinator_serial_dual_claim_writes_independent_leases
     with_pilot_repo do |snap|
       store = FakeGhStore.new
@@ -450,5 +451,73 @@ class CoordinatorClaimTest < Minitest::Test
       status = cli.run(["claim", "12", "--snapshot", snap, "--apply"])
       assert_equal 1, status
     end
+  end
+end
+
+# 试点豁免（§8 阶段 2）：两张 docs-only 工作包卡可并行；claim --dry-run 验证
+# claim_blocker 的「已有活动认领」判定放行 docs-only 对、拒绝非 docs 对。
+class PilotExemptionTest < Minitest::Test
+  def docs_issue(number, status: nil)
+    automation = {"schema" => 1, "kind" => "work_package", "order" => [4, 6, 1],
+                  "depends_on" => [], "external" => [], "scope" => ["docs/"]}
+    body = "## 目标\n测试\n\n```json automation\n#{JSON.pretty_generate(automation)}\n```\n"
+    {"number" => number, "title" => "docs card #{number}", "state" => "OPEN",
+     "state_reason" => nil, "body" => body, "labels" => [], "milestone" => 1,
+     "status" => status, "blocked_by" => []}
+  end
+
+  def code_issue(number, status: nil)
+    body = "## 目标\n测试\n\n```json automation\n" +
+      JSON.pretty_generate({"schema" => 1, "kind" => "work_package", "order" => [4, 6, 2],
+                            "depends_on" => [], "external" => []}) + "\n```\n"
+    {"number" => number, "title" => "code card #{number}", "state" => "OPEN",
+     "state_reason" => nil, "body" => body, "labels" => [], "milestone" => 1,
+     "status" => status, "blocked_by" => []}
+  end
+
+  def milestone(number:, order:, track:, open_issues:)
+    {"number" => number, "title" => "M#{number}", "state" => "open", "order" => order,
+     "track" => track, "open_issues" => open_issues,
+     "description" => "order: #{order}\ntrack: #{track}\n"}
+  end
+
+  def snapshot(issues:)
+    {"repo" => "o/r", "main_sha" => "deadbeef",
+     "milestones" => [milestone(number: 1, order: "4x", track: "parallel", open_issues: issues.length)],
+     "issues" => issues, "pull_requests" => [], "maintainers" => ["ShiningRay"],
+     "source_authors" => {}, "gates" => {}, "externals" => {}, "trusted_bots" => [],
+     "source_bodies" => {}}
+  end
+
+  def run_dry(data, number)
+    Dir.mktmpdir do |dir|
+      Dir.chdir(dir) do
+        FileUtils.mkdir_p(".github")
+        File.write(".github/agents.yml", "coordinators:\n  - ShiningRay\n", encoding: "UTF-8")
+        snap = File.join(dir, "snapshot.json")
+        File.write(snap, JSON.generate(data), encoding: "UTF-8")
+        cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+        cli.define_singleton_method(:runner) { |_options| Class.new(SebasAgents::CommandRunner).new(dry_run: false) }
+        cli.instance_variable_set(:@out, StringIO.new)
+        status = cli.run(["claim", number.to_s, "--snapshot", snap])
+        payload = JSON.parse(cli.instance_variable_get(:@out).string)
+        [status, payload]
+      end
+    end
+  end
+
+  def test_docs_only_pair_is_exempt_from_single_active_check
+    data = snapshot(issues: [docs_issue(11, status: "In progress"), docs_issue(12)])
+    status, payload = run_dry(data, 12)
+    assert_equal 0, status
+    assert_equal true, payload["ok"], payload["reasons"].inspect
+  end
+
+  def test_non_docs_pair_is_refused
+    data = snapshot(issues: [code_issue(11, status: "In progress"), code_issue(12)])
+    status, payload = run_dry(data, 12)
+    assert_equal 1, status
+    assert_equal false, payload["ok"]
+    assert_includes payload["reasons"].join, "已有活动认领"
   end
 end

@@ -74,6 +74,9 @@ module SebasAgents
 
       data = JSON.parse(File.read(legacy_path, encoding: "UTF-8"))
       raise InvalidPlan, "v1 运行记录不是合法 JSON：#{legacy_path}" if data.nil?
+      if ![LEGACY_SCHEMA, SCHEMA].include?(data["schema"])
+        raise InvalidPlan, "运行记录 schema 不支持（#{data["schema"].inspect}）：#{legacy_path}"
+      end
 
       issue = data["issue"]
       target = issue ? File.join(runs_dir, "#{issue}.json") : nil
@@ -107,18 +110,27 @@ module SebasAgents
 
     # 双读（迁移窗口）：per-issue（runs/）路径强制 schema 2；显式路径与 v1
     # 遗留路径容忍 schema 1（迁移窗口内的旧记录原样可读，写入恒为 v2）。
+    # 未知 schema（如 99）一律拒绝——不把不支持的记录格式静默当旧版读。
     def load
       if File.exist?(@path)
         data = JSON.parse(File.read(@path, encoding: "UTF-8"))
-        if data["schema"] != SCHEMA && File.dirname(@path) == RUNS_DIR
+        if File.dirname(@path) == RUNS_DIR && data["schema"] != SCHEMA
           raise InvalidPlan, "runs/ 下的运行记录 schema 必须是 #{SCHEMA}（got #{data["schema"].inspect}）：#{path}"
+        end
+        unless [LEGACY_SCHEMA, SCHEMA].include?(data["schema"])
+          raise InvalidPlan, "运行记录 schema 不支持（#{data["schema"].inspect}）：#{path}"
         end
 
         return data
       end
       return nil unless File.exist?(@legacy_path)
 
-      JSON.parse(File.read(@legacy_path, encoding: "UTF-8"))
+      data = JSON.parse(File.read(@legacy_path, encoding: "UTF-8"))
+      unless [LEGACY_SCHEMA, SCHEMA].include?(data["schema"])
+        raise InvalidPlan, "运行记录 schema 不支持（#{data["schema"].inspect}）：#{@legacy_path}"
+      end
+
+      data
     rescue JSON::ParserError => e
       raise InvalidPlan, "运行记录不是合法 JSON：#{e.message}"
     end
