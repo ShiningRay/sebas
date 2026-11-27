@@ -47,21 +47,10 @@ docs-check:
 	ruby tools/check_docs.rb
 
 # Agent 流程工具：策略层单测 + 文档示例与实现一致性。均不访问网络。
+# 测试清单由 tools/tests/ 的目录结构推导（tools/tests/run.rb），
+# 新增测试文件不需要再改本目标，也不会因为漏改而静默不跑。
 agents-check:
-	ruby tools/test_sebas_process.rb
-	ruby tools/test_sebas_process_regressions.rb
-	ruby tools/test_docs_examples.rb
-	ruby tools/test_oneline_sheet.rb
-	ruby tools/test_backfill_script.rb
-	ruby tools/test_ruby_version_guard.rb
-	ruby tools/test_evidence_register.rb
-	ruby tools/test_anchors_extract.rb
-	ruby tools/test_verify_workflow.rb
-	ruby tools/test_verify_reports.rb
-	ruby tools/test_coderabbit_config.rb
-	ruby tools/test_setup_action.rb
-	ruby tools/test_await_review.rb
-	ruby tools/test_ci_workflow.rb
+	ruby tools/tests/run.rb
 
 # ameba 是 development dependency；未构建时先构建，再运行
 lint: lint-build

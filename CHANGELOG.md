@@ -7,6 +7,7 @@
 
 ### Added
 
+- **CI 并发语义按事件区分**（[#221](https://github.com/ShiningRay/sebas/issues/221)）：`ci.yml` 的 `cancel-in-progress` 改为只在 `pull_request` 事件为 true。main 侧不再互相取消——被顶掉的 main CI 会让 Evidence 停在 `merged_into_main: false`、后继卡永久 blocked。理由与边界见 [pr-gate.md](docs/design/process/pr-gate.md)。
 - **插件沙箱与 22 钩子（M3-WP5）**（[#17](https://github.com/ShiningRay/sebas/issues/17)）：
   - 钩子契约：§12.11 22 钩子闭集目录 + payload schema 机读权威（键集闭/枚举/可空/结构化错误/深度封顶；敏感 hook 需 manifest `hooks.sensitive`）。
   - 派发语义：gate/transform 同步链（deny fail-closed、替换重过 schema）、observe 隔离、priority 稳定序、按 fiber 链隔离的递归深度、预算 outcome 化（链中耗尽判 deny）、idempotency memo。

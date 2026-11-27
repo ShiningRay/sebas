@@ -1,0 +1,54 @@
+# frozen_string_literal: true
+
+# oneline.md 的每一行必须与 RolePrompts::ONELINE 完全一致，避免速查表与工具漂移。
+
+require_relative "../support/boot"
+require_relative "../../agents/lib/sebas_agents"
+
+class OnelineSheetTest < Minitest::Test
+  SHEET = RepoPaths.join("docs", "design", "process", "oneline.md")
+
+  def sheet
+    @sheet ||= File.read(SHEET, encoding: "UTF-8")
+  end
+
+  def fenced_lines
+    sheet.scan(/^```text\n(.+?)^```$/m).map { |match| match.first.strip }
+  end
+
+  def test_every_role_has_exactly_one_line
+    assert_equal SebasAgents::RolePrompts::ROLES.length, fenced_lines.length
+  end
+
+  def test_sheet_matches_tool_output
+    expected = SebasAgents::RolePrompts::ROLES.map { |role| SebasAgents::RolePrompts.oneline(role) }
+    assert_equal expected, fenced_lines
+  end
+
+  def test_each_line_names_its_role
+    SebasAgents::RolePrompts::ROLES.each_with_index do |role, index|
+      label = role.split("-").map(&:capitalize).join(" ")
+      assert_includes fenced_lines[index], label, "第 #{index + 1} 行应属于 #{label}"
+    end
+  end
+
+  def test_each_line_has_a_command
+    fenced_lines.each do |line|
+      assert_includes line, "ruby tools/sebas-process", "每行必须给出入口命令"
+    end
+  end
+
+  def test_scribe_requires_human_decisions_before_scheduling
+    prompt = SebasAgents::RolePrompts.oneline("scribe")
+    assert_includes prompt, "Maintainer 明确 accepted-design 才算定稿"
+    assert_includes prompt, "未定稿收到实现排期请求时回报缺设计裁决，不创建实现工作包"
+    assert_includes prompt, "定稿后仅在 Maintainer 明确排期指令且含 Proposal、归宿和范围"
+    assert_includes prompt, "版本目标/order/track"
+    assert_includes prompt, "backlog 不拆卡"
+    assert_includes prompt, "不自行定稿、排期或直接指令 Implementer 开工"
+  end
+
+  def test_sheet_documents_the_generator
+    assert_includes sheet, "roles --one-line"
+  end
+end

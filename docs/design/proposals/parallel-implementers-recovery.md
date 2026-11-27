@@ -96,7 +96,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 
 ### 8.1 纯函数测试
 
-固定快照，minitest，沿用 `tools/test_sebas_process.rb` 的做法。
+固定快照，minitest，沿用 `tools/tests/sebas_process/` 的做法。
 
 1. 容量为 1 且快照里没有暂停卡时，`plan` 的首选候选与 `next` 的 `claim_issue` 恒等，对现有全部选卡用例成立。有暂停卡的快照单列，两者的差异只允许出现在 Q9 的暂停语义上。
 2. 容量为 N：候选按 `order` 稳定排序；`order` 重复与依赖成环仍 `invalid_plan`。
