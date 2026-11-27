@@ -54,11 +54,21 @@ module Sebas
       getter timeout_ms : Int64?
       getter config_schema : JSON::Any?
 
+      # hook 派发优先级（M3-WP5，#17；§12.11：数值大者优先，缺省 0）。
+      # 键为已声明的 hook 名；独立字段而非 hooks 数组元素对象化，保持
+      # WP4 既有 manifest 形状向后兼容。
+      getter hook_priorities : Hash(String, Int64)?
+
       # 宿主支持的插件 API 主版本（§12.6：api_version 为主版本兼容契约）。
       SUPPORTED_API_MAJOR = "1"
 
       # 单值长度上限（§12.6：id 1..64；其余名称同口径防滥用）
       NAME_MAX = 64
+
+      # 某 hook 的派发优先级：未声明为 0（§12.11 稳定排序的次级键是插件 ID）。
+      def hook_priority(hook : String) : Int64
+        (@hook_priorities.try(&.[hook]?) || 0i64)
+      end
 
       def actions_list : Array(String)
         @actions || [] of String
@@ -158,6 +168,16 @@ module Sebas
         hooks_list.each_with_index do |hook, i|
           unless KNOWN_HOOKS.includes?(hook)
             raise ManifestError.new("manifest hooks[#{i}] '#{hook}' is not in the first-version hook catalog (§12.11)")
+          end
+        end
+        if priorities = @hook_priorities
+          priorities.each do |hook, priority|
+            unless hooks_list.includes?(hook)
+              raise ManifestError.new("manifest hook_priorities key '#{hook}' is not a declared hook")
+            end
+            unless (-100_000..100_000).covers?(priority)
+              raise ManifestError.new("manifest hook_priorities['#{hook}'] must be within ±100000 (got #{priority})")
+            end
           end
         end
       end

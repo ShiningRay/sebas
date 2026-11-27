@@ -2,6 +2,7 @@ require "process"
 require "json"
 require "atomic"
 require "../log"
+require "../platform/process_tree"
 require "./manifest"
 require "./protocol"
 require "./prelude"
@@ -11,18 +12,41 @@ require "./prelude"
 # request → 帧循环（registered / capability_call 应答 / 恰好一个 result）→
 # 结构化 CallOutcome。
 #
-# 隔离与校验边界（本 WP）：
+# 隔离与校验边界（M3-WP4 本 WP）：
 # - 插件崩溃/超时/协议违规只影响该次调用，以结构化错误返回，不炸宿主；
 # - watchdog 到点 kill 子进程（真超时拦截，可行性报告：进程内 eval 不可中断，
 #   子进程形态成立的前提）；
 # - stdout 帧字段闭集、单帧/总量上限、结果唯一性、request_id 匹配全部校验；
 # - capability 未在 manifest 声明 → 宿主直接回结构化错误，不调用 driver。
-# 资源配额细化（allocf/OS 限制/进程树清理）与 22 hook 注入点归 M3-WP5。
+#
+# M3-WP5（#17）追加（§12.4 ②④）：
+# - 进程树清理：watchdog 超时/协议违规/正常终态后 ProcessTree.kill_tree
+#   幂等清扫后代进程（POSIX pgrep 树遍历；Windows Job Object）；
+# - 迟到输出丢弃：终态帧之后到达的 stdout 一律排水丢弃，不再参与解析
+#   （防 duplicate_result 误报，也防管道阻塞）；
+# - OS 资源约束：limits（memory_mb/cpu_seconds）——POSIX 以 ulimit 包装
+#   spawn（-v 虚存 / -t CPU 秒）；Windows 走 Job Object 内存上限。
 module Sebas
   module Plugins
     # 宿主装配错误（解释器不可执行、路径缺失等）：这是配置错误，应当场
     # 响亮报错而不是伪装成插件失败（fail-fast 与插件崩溃隔离相区分）。
     class RunnerError < ::Exception; end
+
+    # OS 级资源约束（§12.4 ②）：nil 即不设限（行为与 WP4 一致）。
+    record ResourceLimits,
+      memory_mb : Int64?,
+      cpu_seconds : Int32? do
+      def self.from_config(memory_mb : Int64?, cpu_seconds : Int32?) : ResourceLimits
+        limits = new(memory_mb, cpu_seconds)
+        if l = limits.memory_mb
+          raise RunnerError.new("plugins limits.memory_mb must be positive (got #{l})") unless l > 0
+        end
+        if s = limits.cpu_seconds
+          raise RunnerError.new("plugins limits.cpu_seconds must be positive (got #{s})") unless s > 0
+        end
+        limits
+      end
+    end
 
     # 单次调用结果：ok=true 时 value 为 JSON-like 结果；否则带结构化错误码。
     record CallOutcome,
@@ -49,6 +73,7 @@ module Sebas
       # 例：["mruby"] / ["ruby", "spec/plugins/support/stub_interpreter.rb"]
       getter interpreter : Array(String)
       property global_timeout_ms : Int64
+      getter limits : ResourceLimits?
 
       # capability driver 装配点（gateway 接线；(plugin, capability, params)
       # → JSON-like 结果，抛异常即失败）。未装配而插件声明调用 = 装配缺口，
@@ -56,7 +81,8 @@ module Sebas
       setter capability_handler : (LoadedPlugin, String, JSON::Any -> JSON::Any)?
       getter capability_handler : (LoadedPlugin, String, JSON::Any -> JSON::Any)?
 
-      def initialize(@interpreter : Array(String), @global_timeout_ms : Int64 = 10_000i64)
+      def initialize(@interpreter : Array(String), @global_timeout_ms : Int64 = 10_000i64,
+                     @limits : ResourceLimits? = nil)
       end
 
       def call(plugin : LoadedPlugin, request : Protocol::Request) : CallOutcome
@@ -84,14 +110,50 @@ module Sebas
                              program_path : Path, started : Time::Instant) : CallOutcome
         command = interpreter.first?
         raise RunnerError.new("interpreter command is empty") unless command
-        process = Process.new(command, interpreter[1..] + [program_path.to_s],
+        command, args = spawn_command(program_path)
+        process = Process.new(command, args,
           input: Process::Redirect::Pipe,
           output: Process::Redirect::Pipe,
           error: Process::Redirect::Pipe)
+      rescue ex : RunnerError
+        raise ex
       rescue ex : ::Exception
         raise RunnerError.new("failed to spawn plugin interpreter #{interpreter.inspect}: #{ex.message}")
       else
+        {% if flag?(:windows) %}
+          # Job Object 指派 + 内存上限（§12.4 ②；FFI 细节见
+          # platform/process_tree_ffi_windows.cr）
+          begin
+            Platform::ProcessTree::JobObject.set_memory_limit(limits.memory_mb.not_nil! * 1024 * 1024) if limits && limits.memory_mb
+            Platform::ProcessTree::JobObject.assign(process.pid.to_u32)
+          rescue ex
+            Log.warn { "job object assign failed (pid=#{process.pid}): #{ex.message}" }
+          end
+        {% end %}
         exchange_frames(process, plugin, request, started)
+      end
+
+      # spawn 命令合成：limits 存在时 POSIX 以 ulimit 包装（-v 虚存 KB /
+      # -t CPU 秒），`exec "$0" "$@"` 保持解释器为直接子进程语义；Windows
+      # 资源上限由 Job Object 承载，不改命令形状。
+      private def spawn_command(program_path : Path) : Tuple(String, Array(String))
+        args = interpreter[1..] + [program_path.to_s]
+        limits = @limits
+        return {interpreter[0], args} unless limits
+        {% if flag?(:unix) %}
+          directives = [] of String
+          if mb = limits.memory_mb
+            directives << "ulimit -v #{mb * 1024}"
+          end
+          if sec = limits.cpu_seconds
+            directives << "ulimit -t #{sec}"
+          end
+          return {interpreter[0], args} if directives.empty?
+          script = directives.join(" && ") + "; exec \"$0\" \"$@\""
+          {"/bin/sh", ["-c", script, interpreter[0]] + args}
+        {% elsif flag?(:windows) %}
+          {interpreter[0], args}
+        {% end %}
       end
 
       # 帧循环主体。所有异常就地转结构化 CallOutcome——插件任何失败模式
@@ -115,6 +177,9 @@ module Sebas
           when finished.receive
           when timeout(timeout_ms.milliseconds)
             timed_out.set(true)
+            # 进程树终止（M3-WP5 §12.4 ④）：先清后代再杀根，防孤儿逃逸；
+            # 再对直接子进程兜底 terminate。
+            Platform::ProcessTree.kill_tree(process.pid.to_i32)
             process.terminate(graceful: false) rescue nil
           end
         end
@@ -182,6 +247,13 @@ module Sebas
           # 管道被 watchdog kill / 进程崩溃打断：就地消化，走下方终态判定
         end
         finished.send(nil)
+        # 终态一律进程树清扫 + 排水（M3-WP5 §12.4 ④）：必须在 wait 之前——
+        # 解释器退出后后代被 init 收养，pgrep -P 就再也找不到它们。成功路径
+        # 的 kill_tree 对已退出/无后代进程是 no-op；超时/违规路径它承担真正
+        # 的树终止。排水丢弃迟到输出，防 wait 前子进程写满管道阻塞。
+        early_kill = timed_out.get || !violation.nil?
+        Platform::ProcessTree.kill_tree(process.pid.to_i32)
+        drain_late_output(process) if early_kill
         begin
           status = process.wait
           exit_code = status.exit_code?
@@ -220,6 +292,21 @@ module Sebas
       rescue ex : ::Exception
         Log.error(exception: ex) { "capability dispatch failed: plugin=#{plugin.id} capability=#{frame.capability}" }
         CallOutcome.error("capability_failed", (ex.message || "capability failed")[0, 500], 0)
+      end
+
+      # 迟到输出排水：终态帧后读到 EOF 为止，内容按行丢弃（总量计数仍走
+      # 上限口径，但不触发违规——丢弃即语义）。
+      private def drain_late_output(process : Process) : Nil
+        late_bytes = 0
+        while line = process.output.gets
+          late_bytes += line.bytesize
+          if late_bytes > Protocol::MAX_STDOUT_TOTAL
+            Log.warn { "late output exceeded #{Protocol::MAX_STDOUT_TOTAL} bytes; rest discarded silently" }
+            break
+          end
+        end
+      rescue
+        # 管道随子进程退出关闭：EOF/IOError 均为正常结束
       end
 
       private def timed_out_outcome(duration : Int64, timeout_ms : Int64, stderr : String?) : CallOutcome

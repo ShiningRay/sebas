@@ -60,6 +60,19 @@ module Sebas
           sebas_register($sebas_hooks, name, blk)
         end
 
+        # gate/transform 的 deny 短路（M3-WP5，#17；§12.11 示例 DSL）：
+        # 抛结构化错误（code=hook_deny，message 为 "deny_code: reason"），
+        # 宿主按 deny 裁决处理——gate 停链，transform fail-closed。
+        def deny!(code, reason)
+          raise SebasPluginError.new("hook_deny", code.to_s + ": " + reason.to_s)
+        end
+
+        # transform 的修改语法糖（§12.11 示例 DSL）：返回替换后的完整
+        # payload——宿主按裸返回值语义重过 payload schema 校验。
+        def modify!(value)
+          value
+        end
+
         def capability(name, params)
           $sebas_call_seq += 1
           call_id = $sebas_call_seq.to_s

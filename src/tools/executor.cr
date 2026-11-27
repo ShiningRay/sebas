@@ -3,6 +3,7 @@ require "./registry"
 require "./file_write"
 require "../channels/registry"
 require "../platform/store/store"
+require "../plugins/hook_bus"
 
 # 工具执行器（M0-WP6，A6）：注册表查找 → replay 语义门 → 执行 → 错误转值。
 # 发消息类工具必须带幂等键（§7.3，Pi §7.5）：崩溃恢复重放不重发。
@@ -11,22 +12,95 @@ module Sebas
     class Executor
       Log = Sebas::Log.for("tools.executor")
 
-      def initialize(@registry : Registry, @channels : Channels::Registry)
+      # hook_before 返回结构：denied=true 表示拒绝执行（reason 携带结构化
+      # 原因），args 为替换后（或原样）参数
+      record HookBefore, denied : Bool, args : JSON::Any, reason : String
+
+      # hook 门面（M3-WP5，#17）：未装配 = disabled，注入点零开销直通
+      setter hook_bus : ::Sebas::Plugins::HookBus
+
+      def initialize(@registry : Registry, @channels : Channels::Registry,
+                     hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled)
+        @hook_bus = hook_bus
       end
 
+      # 工具域三 hook（§12.11）：call.before（gate+transform，deny 拒执行、
+      # params 替换过重校验）→ 执行 → call.after（observe，失败隔离）→
+      # result.transform（替换 output 文本；deny fail-closed 转错误结果）。
+      # hook 异常绝不逃出 run——注入点自身按 observe 隔离口径兜底。
       def run(name : String, args : JSON::Any, ctx : ToolContext) : ToolResult
         tool = @registry.find(name)
         return ToolResult.error("unknown tool: #{name}") unless tool
         Log.info { "tool #{name} args=#{Registry.redact(args)} ctx=#{ctx.session_key}" }
+        hooked = hook_before(tool, args, ctx)
+        return ToolResult.error("tool hook denied: #{hooked.reason}") if hooked.denied
+        args = hooked.args
         deny_result, approval_reason = irreversible_gate?(tool, args, ctx)
         return deny_result if deny_result
         result = tool.run(args, ctx)
         record_side_effect(tool, args, ctx, result, approval_reason)
+        result = hook_result(tool, ctx, result)
+        hook_after(tool, ctx, result)
         result
       rescue ex : ::Exception
         # typed rescue 转值：工具错误不炸进程（autobot registry.cr 先例）
         Log.error(exception: ex) { "tool #{name} crashed" }
         ToolResult.error("tool crashed: #{ex.message}")
+      end
+
+      # tool.call.before（gate+transform，§12.11）：deny（显式/异常/非法
+      # payload，fail-closed）→ args nil；替换 params 已在 dispatcher 重过
+      # payload schema。
+      private def hook_before(tool : Tool, args : JSON::Any, ctx : ToolContext) : HookBefore
+        payload = tool_payload(tool.name, args, ctx)
+        verdict = @hook_bus.gate("tool.call.before", hook_context(ctx), payload)
+        if verdict.denied
+          return HookBefore.new(true, args, "#{verdict.code}: #{verdict.reason}")
+        end
+        replaced = verdict.payload.try(&.as_h?).try(&.[]?("params"))
+        HookBefore.new(false, replaced || args, "")
+      rescue ex
+        Log.warn { "tool.call.before hook failed for #{tool.name}: #{ex.message} (deny fail-closed)" }
+        HookBefore.new(true, args, "hook_failed: #{(ex.message || "hook failed")[0, 200]}")
+      end
+
+      private def hook_after(tool : Tool, ctx : ToolContext, result : ToolResult) : Nil
+        status = result.ok? ? "success" : (result.error.to_s.includes?("crashed") ? "exception" : "error")
+        payload = JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "tool_id", tool.name
+            json.field "request_id", ctx.event_id
+            json.field "session_key", ctx.session_key
+            json.field "status", status
+            json.field "duration_ms", 0
+            json.field "result_summary", (result.ok? ? result.output : result.error.to_s)[0, 200]
+          end
+        end)
+        @hook_bus.observe("tool.call.after", hook_context(ctx), payload)
+      rescue ex
+        Log.warn { "tool.call.after hook skipped for #{tool.name}: #{ex.message} (observe isolation)" }
+      end
+
+      # result.transform（§12.11「可替换受限文本结果」）：仅替换成功结果的
+      # output 文本；deny fail-closed 转错误结果，不返回未校验的文本。
+      private def hook_result(tool : Tool, ctx : ToolContext, result : ToolResult) : ToolResult
+        return result unless result.ok?
+        payload = JSON.parse(%({"tool_id": #{tool.name.inspect}, "request_id": #{ctx.event_id.inspect}, "text": #{result.output.inspect}}))
+        verdict = @hook_bus.transform("tool.result.transform", hook_context(ctx), payload)
+        return ToolResult.error("result transform denied: #{verdict.reason}") if verdict.denied
+        replaced = verdict.payload.try(&.as_h?).try(&.[]?("text")).try(&.as_s?)
+        replaced ? ToolResult.success(replaced, result.digest) : result
+      rescue ex
+        Log.warn { "tool.result.transform hook failed for #{tool.name}: #{ex.message} (deny fail-closed)" }
+        ToolResult.error("result transform failed: #{ex.message}")
+      end
+
+      private def tool_payload(tool_id : String, args : JSON::Any, ctx : ToolContext) : JSON::Any
+        JSON.parse(%({"tool_id": #{tool_id.inspect},"request_id": #{ctx.event_id.inspect},"session_key": #{ctx.session_key.inspect},"params": #{args.to_json}}))
+      end
+
+      private def hook_context(ctx : ToolContext) : JSON::Any
+        JSON.parse(%({"session_key": #{ctx.session_key.inspect}, "account_id": #{ctx.account_id.inspect}}))
       end
 
       # 副作用台账入账（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：执行

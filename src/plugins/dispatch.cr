@@ -69,6 +69,32 @@ module Sebas
         outcomes
       end
 
+      # 单订阅者 hook 派发（M3-WP5，#17）：HookDispatcher 按订阅链逐个调用。
+      # 校验该插件 manifest 声明了此 hook（授权上限），未声明即越权拒绝——
+      # 订阅链来自 manifest，正常不会触发；此处是纵深防御。
+      def call_plugin_for_hook(plugin_id : String, hook : String, context : JSON::Any,
+                               payload : JSON::Any, idempotency_key : String? = nil) : CallOutcome
+        plugin = registry.plugin(plugin_id)
+        return CallOutcome.error("plugin_missing", "plugin #{plugin_id} is not loaded", 0) unless plugin
+        unless plugin.manifest.declares_hook?(hook)
+          return CallOutcome.error("hook_not_declared",
+            "plugin #{plugin_id} does not declare hook '#{hook}' in manifest", 0)
+        end
+        runner.call(plugin, Protocol::Request.new(
+          request_id: Random::Secure.hex(8),
+          plugin_id: plugin_id,
+          action: hook,
+          context: context,
+          payload: payload,
+          config: config_for(plugin_id),
+          idempotency_key: idempotency_key,
+        ))
+      rescue ex : RunnerError
+        raise ex
+      rescue ex : ::Exception
+        CallOutcome.error("hook_dispatch_failed", (ex.message || "hook dispatch failed")[0, 500], 0)
+      end
+
       # gateway 工具装配：manifest.tool_actions（生命周期动作除外）逐个
       # 注册为 plugin.<id>.<action> 工具（§12.10：默认 risk high、不可重放）。
       def register_tools_into(tool_registry : ::Sebas::Tools::Registry) : Array(String)

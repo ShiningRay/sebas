@@ -3,3 +3,7 @@ module Sebas
   module Plugins
   end
 end
+
+require "./hooks"
+require "./hook_dispatcher"
+require "./hook_bus"
