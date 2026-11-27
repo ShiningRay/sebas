@@ -157,14 +157,14 @@
 
 | # | from → to | 触发条件 | 拒绝条件 |
 |---|---|---|---|
-| T01 | 创建 → dormant | 有未来关注时间或暂候条件 | outcome 或 source 为空 |
+| T01 | 创建 → dormant | 有未来关注时间或暂候条件，且关注时间不晚于硬截止 | outcome 或 source 为空；关注时间晚于硬截止（必然逾期，拒绝并提示调整关注时间或截止） |
 | T02 | 创建 → needs_clarification | 跟进依据缺失（关注时间/可观察条件无法给出）且可给出最晚澄清时间。outcome 始终必填：缺失即捕获失败不入库 | 跟进依据完整（应入 T01/T03/T04） |
 | T03 | 创建 → waiting_condition | 等待外部条件且条件可观察 | 条件不可观察（须转 needs_clarification） |
 | T04 | 创建 → ready | 立即可行动且无未来关注时间 | — |
 | T05 | dormant → ready | 关注时间到达或暂候条件满足 | followup_policy 静默窗口内且有未决通知 |
 | T06 | dormant → cancelled | 用户显式取消 | 已 completed——completed 不可撤销，重开需新开 Commitment 并以 ExternalLink 关联旧卡（不引用 T19） |
-| T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready | 补全后仍缺必填项 |
-| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限约束**继续有效**，到期仍未补全走 T09 | 已过 clarify_by 且仍缺字段（走 T09） |
+| T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready。补全后的关注时间不得晚于硬截止（同 T01 拒绝条件，提示调整） | 补全后仍缺必填项；关注时间晚于硬截止 |
+| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限约束**继续有效**，到期仍未补全走 T09 | 已过 clarify_by 且仍缺字段（走 T09）；暂缓后的关注时间晚于硬截止（同 T01 拒绝） |
 | T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动）；补全前不得经任何路径进入 ready | 缺失字段已补全 |
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
@@ -284,6 +284,6 @@
 | 验收项 | 本文位置 |
 |---|---|
 | 十对象字段表（含 owner/来源/权限/完成条件/跟进策略） | §2.1–§2.11 |
-| 9 态×触发/拒绝矩阵无空格 | §3.2（T01–T26 覆盖九态全部进出） |
+| 9 态×触发/拒绝矩阵无空格 | §3.2（T01–T28 覆盖九态全部进出） |
 | needs_clarification 必含缺失字段 + 最晚澄清时间 | §3.3 |
 | 四条不变式各配可反驳判定式 | §4.1–§4.4 |
