@@ -61,7 +61,7 @@ GitHub 文档写明「依赖失败 job 的 job 会被 skipped 且可能不阻塞
 - 等待步骤**不带** `continue-on-error`（否则判定被吞成 success）。
 
 两条互为条件：少了任一条，矩阵被 skip 就会变成事实上的放行。
-改动任一处都要检查另一处，`tools/test_ci_workflow.rb` 有对应断言。
+改动任一处都要检查另一处，`tools/tests/workflows/test_ci_workflow.rb` 有对应断言。
 
 ## 超时分层
 

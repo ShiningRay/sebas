@@ -89,7 +89,7 @@ Crystal 三平台隔离、单文件体量三项、文档不用行号锚、workfl
 因此**遇到与仓库约定冲突的意见**（例如建议改成与 `crystal tool format` 不一致的格式，
 或要求文档使用行号锚），优先判断是配置没覆盖到，而不是逐条反驳——配置漏项应按
 [#116](https://github.com/ShiningRay/sebas/issues/116) 的方式补进 `.coderabbit.yaml`，
-用测试（`tools/test_coderabbit_config.rb`）锁住关键结构。
+用测试（`tools/tests/workflows/test_coderabbit_config.rb`）锁住关键结构。
 
 ### 3. CI 修复
 

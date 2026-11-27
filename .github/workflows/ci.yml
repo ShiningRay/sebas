@@ -314,8 +314,9 @@ jobs:
             || { echo "::error::已装 Ruby $have，低于 .ruby-version 要求的 $want_minor"; exit 1; }
           echo "Ruby $have ok（pin $want）"
 
+      # docs 域：check_docs 的锚点/体量回归 + 文档示例一致性。
       - name: Test the docs checker itself
-        run: ruby tools/test_check_docs.rb
+        run: ruby tools/tests/run.rb docs
 
       - name: Check docs links, anchors and size
         run: ruby tools/check_docs.rb
@@ -331,20 +332,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ruby tools/check_proposal_paths.rb
 
+      # 测试清单由 tools/tests/ 目录推导，新增文件不必同步改这里。
+      # workflows 域留在 verify job 跑（与 verify.yml 契约测试同批），避免重复执行；
+      # legacy 域兜住尚未迁移的 tools/test_*.rb，防并行合流的新测试静默失跑。
       - name: Test agent process tools
-        run: |
-          ruby tools/test_sebas_process.rb
-          ruby tools/test_sebas_process_regressions.rb
-          ruby tools/test_docs_examples.rb
-          ruby tools/test_oneline_sheet.rb
-          ruby tools/test_accept_proposal.rb
-          ruby tools/test_backfill_script.rb
-          ruby tools/test_ruby_version_guard.rb
-          ruby tools/test_evidence_register.rb
-          ruby tools/test_digest.rb
-          ruby tools/test_check_proposal_paths.rb
-          ruby tools/test_await_review.rb
-          ruby tools/test_ci_workflow.rb
+        run: ruby tools/tests/run.rb docs evidence legacy process sebas_process
 
       - name: Smoke test agent CLI
         run: |
@@ -398,16 +390,11 @@ jobs:
           echo "$best/bin" >> "$GITHUB_PATH"
           echo "selected Ruby $best_version from $best"
 
-      - name: Test the anchors extractor itself
-        run: ruby tools/test_anchors_extract.rb
-
-      # verify.yml 的安全属性（脚本取自 base）靠契约测试固定：
-      # 若有人把 base.sha 改成 head.sha，仅靠人工 review 很容易漏过。
-      - name: Test the PR verify workflow
-        run: |
-          ruby tools/test_verify_workflow.rb
-          ruby tools/test_verify_reports.rb
-          ruby tools/test_setup_action.rb
+      # workflows 域：锚点抽取器 + verify.yml 契约 + setup action + coderabbit 配置。
+      # verify.yml 的安全属性（脚本取自 base）靠这里固定：若有人把 base.sha 改成
+      # head.sha，仅靠人工 review 很容易漏过。
+      - name: Test the PR verify workflow and contract tests
+        run: ruby tools/tests/run.rb workflows
 
       # 全量 docs 跑 verify docs：不限改动文件，防止旧文档劣化。
       # acceptable 级（存档行号锚）不算失败；blocker/must_fix 让退出码非 0。
