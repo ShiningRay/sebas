@@ -82,6 +82,12 @@ accepted」就能把新 head 直接合掉——Evidence 是 issue 级的，不�
 | `evidence` | 不做写：Evidence 升级由 workflows 完成，重跑 `queue` 看是否已解锁 |
 | `release` | 不做写：`unclaim` 是收口动作，需 PR 已合并 + issue completed |
 
+**验收串行**（#221 §4 / Proposal §7.4，Q7/Q8=A）：独立 Verifier 的核验与终验由
+coordinator **按队列队首逐张发起**，不并行。理由：核验与终验虽只读，但「有条件通过」
+仍要回流 Maintainer，并行收益被人工环节吃掉；实际容量上限等于 Verifier 吞吐。
+`verifier_queue_depth` 是这条约束的可观察量——它只数 `merge_ready` 的 PR（已 CLEAN、
+thread 清零，就等核验与合并），不是 open PR 数。
+
 **串行单位**由 `evidence` 这一步表达：只要有本机记录处于「PR 已合并、Evidence 未升级」，
 `queue` 直接以 `step=evidence` 报队首，不给出任何可合并项。持续等到 `merged_into_main`
 为 `true` 才回到正常队列——这就是「等 Evidence 升级完再处理下一张」的落地。
