@@ -35,5 +35,6 @@
 | 插件 | `plugins.list / get / validate / install / enable / disable / activate / rollback / uninstall`；安装/升级传本地包路径，新增 capability 必须显式确认；卸载前执行引用检查（§12.7~§12.10） |
 | 系统 | `system.health`（进程、SQLite、fiber 概况） |
 | 配置 | `config.reload`（触发 §11.2 先验后换管线，返回接受/拒绝与原因）；`config.status`（当前配置摘要哈希、最近 reload 结果、restart 类待生效项） |
+| TUI 对话（M6.5，[tui-conversational-console.md](../proposals/tui-conversational-console.md)） | `tui.input {peer, content}`（写命令，需认证；入站消息走完整 binding → scheduler → pool）；`tui.output {peer, content, event_id}`（推送帧，adapter.send 触发）；`transcript.appended {session_key, role, content, created_at}`（推送帧，append_transcript 触发）；`approval.requested/decided {id, tool, args_summary, run_id, deadline}`（推送帧，Approvals::Center 触发） |
 
-契约版本化：协议带版本号与 caps 协商（NDJSON 首帧 hello 已有此机制；HTTP 走 `/api/v1/` 前缀）。
+契约版本化：协议带版本号与 caps 协商（NDJSON 首帧 hello 已有此机制；HTTP 走 `/api/v1/` 前缀）。TUI 对话帧在 IPC caps 中追加 `tui.subscribe`。
