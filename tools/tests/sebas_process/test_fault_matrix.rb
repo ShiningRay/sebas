@@ -154,6 +154,19 @@ class FaultMatrixTest < Minitest::Test
     assert_equal "merge_ready", result.next_action, "队列追加的 CHANGELOG.md 不是越界"
   end
 
+  # 解析不出路径的条目不能被剔除过滤器当成队列自有文件删掉——
+  # `[].all?` 恒真会删掉它，剩下的空清单被当成「零变更」放行。
+  def test_unparsable_entry_survives_queue_owned_filter
+    snapshot = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      prs: [pr(files: [{"filename" => "src/x.cr"}, {}])],
+      capacity: 2
+    )
+    result = view(snapshot, [{"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "needs_human", result.next_action, "解析不出路径的条目必须仍判不可判定"
+    assert_includes result.excluded.first["reason"], "解析不出路径"
+  end
+
   # scope 外的**其他**文件仍然算越界：剔除只针对队列自有路径。
   def test_foreign_file_still_counts_outside_queue_owned
     snapshot = snap(

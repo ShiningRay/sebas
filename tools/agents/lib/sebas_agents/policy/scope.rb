@@ -108,7 +108,11 @@ module SebasAgents
         return files unless files.is_a?(Array)
 
         files.reject do |file|
-          candidate_paths(file).all? { |path| QUEUE_OWNED_PATHS.include?(path) }
+          paths = candidate_paths(file)
+          # 空候选路径必须留下——`[].all?` 恒真，会把它当队列自有文件删掉，
+          # 于是 `violations([])` 返回 nil（零变更）静默放行。留下它，
+          # violations 会按「解析不出路径」拒绝。
+          !paths.empty? && paths.all? { |path| QUEUE_OWNED_PATHS.include?(path) }
         end
       end
 
