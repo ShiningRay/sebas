@@ -205,7 +205,9 @@ def run_plan(argv)
   payload = {
     "ok" => view.invalid_reason.nil?,
     "capacity" => snap.capacity,
+    # 背压可观察（#221 §2）：used/limit 并存，便于直接算剩余槽位。
     "capacity_used" => snap.in_progress_issues.length,
+    "capacity_limit" => snap.capacity,
     "verifier_queue_depth" => snap.pull_requests.count(&:open?),
     "next_action" => view.next_action,
     "next_issue" => view.next_issue,
@@ -244,6 +246,8 @@ end
         "ok" => true,
         "dry_run" => !options[:apply],
         "capacity" => snap.capacity,
+        "capacity_used" => snap.in_progress_issues.length,
+        "capacity_limit" => snap.capacity,
         "verifier_queue_depth" => snap.pull_requests.count(&:open?),
         "observed_main" => snap.main_sha,
         "changelog_loaded" => !changelog.nil?,
