@@ -101,8 +101,14 @@ commit 脱身。
 | 提交落在 `(started_at, completed_at]` 窗口内 | 读没读到不确定，**保守重跑** |
 | 提交晚于 `completed_at` | 必然没读到，重跑 |
 | head 上只有进行中的 run | 有界等待（最多 150s）它结束，再按上面三行判 |
-| 等待超时 / 取不到 `started_at` / 取不到 `submitted_at` / 查不到 run | warning 交人工，不静默放行 |
+| 等待超时 / 查不到 run | warning 交人工，不动 |
+| 取不到 `started_at`（`submitted_at` 与 `run_attempt` 有效） | warning，**按未读保守重跑**（受 `run_attempt` 上限约束） |
+| 取不到 `submitted_at` | warning 交人工，不重跑——无从判断先后 |
 | 目标 run 已是第 3 次运行（`run_attempt >= 3`），或取不到 `run_attempt` | 不再自动重跑，warning 交人工 |
+
+`started_at` 缺失与 `submitted_at` 缺失的处置不同：前者只是判不了先后，
+保守重跑仍可能救回这一轮；后者缺的是比较的一端，重跑也只是盲猜，
+所以交人工。
 
 判据用 `started_at` 而不是 `completed_at`：job 的完成时刻晚于门闸内部
 `fetch_reviews` 的那一刻，拿它当「读过了」的凭据会把窗口内提交的 review
