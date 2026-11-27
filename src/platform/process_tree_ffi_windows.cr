@@ -33,8 +33,8 @@
             per_process_user_time_limit : Int64
             per_job_user_time_limit : Int64
             limit_flags : UInt32
-            minimum_working_set_size : LibC::SIZE_T
-            maximum_working_set_size : LibC::SIZE_T
+            minimum_working_set_size : LibC::SizeT
+            maximum_working_set_size : LibC::SizeT
             active_process_limit : UInt32
             affinitized_processes : Pointer(Void)
             process_priority_class : UInt32
@@ -44,10 +44,10 @@
           struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
             basic_limit_information : JOBOBJECT_BASIC_LIMIT_INFORMATION
             io_info : IO_COUNTERS
-            process_memory_limit : LibC::SIZE_T
-            job_memory_limit : LibC::SIZE_T
-            peak_process_memory_used : LibC::SIZE_T
-            peak_job_memory_used : LibC::SIZE_T
+            process_memory_limit : LibC::SizeT
+            job_memory_limit : LibC::SizeT
+            peak_process_memory_used : LibC::SizeT
+            peak_job_memory_used : LibC::SizeT
           end
 
           fun create_job_object_w(lp_job_attributes : Void*, lp_name : Void*) : Void*
@@ -89,7 +89,7 @@
             info = LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION.new
             info.basic_limit_information.limit_flags =
               JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-            info.process_memory_limit = LibC::SIZE_T.new(bytes)
+            info.process_memory_limit = LibC::SizeT.new(bytes)
             ok = LibJob.set_information_job_object(h, JobObjectExtendedLimitInformationClass,
               pointerof(info), sizeof(LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32)
             Log.warn { "SetInformationJobObject memory limit failed" } unless ok != 0
