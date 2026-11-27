@@ -75,7 +75,8 @@
    生成窗口只决定「哪些实例被展开」，不参与 slot 取值。
 5. **缺口与歧义 occurrence**：
    - **生成**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。缺口实例 slot 统一为 `gap:<wall>@<tz>`（§4.4，与来源和窗口无关；如 `gap:2026-03-08T02:30:00@America/New_York`）。
-   - **用户选择——改时间/换时区**：原 gap slot 置一条 `skipped` 墓碑行（保留原墙钟，占住 slot）；新解实例以 `inst:<新utc>` 另起一行转 `pending`，并记录 `resolves_slot`（指向被其墓碑化的 gap slot，见 §4.6 对账）——墓碑使重叠窗口重展开命中既有 slot 而不再复活用户已处理的原缺口。**两步写入必须同一事务**（`BEGIN` → 墓碑 UPDATE → pending INSERT → `COMMIT`，任一步失败 `ROLLBACK`）：若允许分开提交，进程在两步之间退出会留下「墓碑已写、新行未建」的中间态——重展开命中墓碑不再生成，`resolves_slot` 行又不存在，用户选择的提醒将静默丢失。
+   - **用户选择——改时间/换时区**：原 gap slot 置一条 `skipped` 墓碑行（保留原墙钟，占住 slot）；新解实例以 `inst:<新utc>` 另起一行转 `pending`，并记录 `resolves_slot`（指向被其墓碑化的 gap slot，见 §4.6 对账）——墓碑使重叠窗口重展开命中既有 slot 而不再复活用户已处理的原缺口。
+   - **墓碑与新行必须同一事务**（`BEGIN` → 墓碑 UPDATE → pending INSERT → `COMMIT`，任一步失败 `ROLLBACK`）：若允许分开提交，进程在两步之间退出会留下「墓碑已写、新行未建」的中间态——重展开命中墓碑不再生成，`resolves_slot` 行又不存在，用户选择的提醒将静默丢失。
    - **用户选择——跳过**：本行直接置 `skipped` 并保留原墙钟（`due_at` 保持空，不伪造 UTC 时刻）。
 6. **tzdata 变化对已持久化 occurrence 的失效与对账**（保证同一墙钟实例最多一次唤醒）：
    - **展开时记录来源墙钟**：所有有效实例行写入 `source_wall` + `source_tz`（展开器手握墙钟值，落列即可）——使任一行都可独立重解析，不依赖 slot 反推；
