@@ -31,9 +31,10 @@
 | 编排 | `workflows.list / create / update / delete / enable`；`runs.list / get / replay`（账本回放）；`runs.cancel` |
 | 审批 | `approvals.list / approve / deny`（含 pending 队列、超时策略展示） |
 | 事件流 | `events.subscribe`（SSE / NDJSON 推送，按域过滤） |
-| 会话 | `sessions.list / read`（只读查看，转录归档） |
+| 会话 | `sessions.list / read`（只读查看，转录归档；list 合并生命周期与 transcript 来源，read 返回 transcript id 游标并支持 `after_cursor` 对账）；`sessions.ensure {session_key, peer}`（TUI 写命令，预登记空历史会话，见 TUI 提案 §2） |
 | 插件 | `plugins.list / get / validate / install / enable / disable / activate / rollback / uninstall`；安装/升级传本地包路径，新增 capability 必须显式确认；卸载前执行引用检查（§12.7~§12.10） |
 | 系统 | `system.health`（进程、SQLite、fiber 概况） |
 | 配置 | `config.reload`（触发 §11.2 先验后换管线，返回接受/拒绝与原因）；`config.status`（当前配置摘要哈希、最近 reload 结果、restart 类待生效项） |
+| TUI 对话（M6.5，[tui-conversational-console.md](../proposals/tui-conversational-console.md)） | `tui.input {client_submission_id, session_key, peer, content}`（认证写命令；固定会话并持久去重）；`tui.submissions.get {peer, client_submission_id}`（找回提交状态）；`tui.admission {event_id, client_submission_id, session_key, status, reason}`（最终接受/拒绝）；`tui.output`、`transcript.appended`（持久 cursor 对账）；`approval.requested/decided`（提示，权威状态走 `approvals.pending`） |
 
-契约版本化：协议带版本号与 caps 协商（NDJSON 首帧 hello 已有此机制；HTTP 走 `/api/v1/` 前缀）。
+契约版本化：协议带版本号与 caps 协商（NDJSON 首帧 hello 已有此机制；HTTP 走 `/api/v1/` 前缀）。TUI 对话帧在 IPC caps 中追加 `tui.subscribe`。
