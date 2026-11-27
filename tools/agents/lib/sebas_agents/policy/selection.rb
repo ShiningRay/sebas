@@ -8,7 +8,8 @@ module SebasAgents
     # - `select_action`：单一动作（§4 输出契约），excluded 只含 issue/reason；
     # - `plan`（M4x-Parallel-WP1，#218）：只读多候选视图，返回全部就绪候选
     #   与带枚举码的排除集（reason=枚举码，detail=与 next 一致的人类可读
-    #   原因），capacity 固定 1。首选恒等由「共用同一评估结果」构造保证。
+    #   原因），容量取快照的 capacity（缺省 1）。首选恒等由「共用同一评估
+    #   结果」构造保证。
     module Selection
       require "set"
 
@@ -44,15 +45,24 @@ module SebasAgents
         record = nil if record && record["phase"].to_s == "released"
 
         in_progress = snapshot.in_progress_issues
-        if in_progress.length > 1
+        # 容量（recovery §5 / Q3）：执行中卡数超过快照容量即冲突。容量 1 时
+        # 语义与单卡不变；容量 >1 允许多卡并行，所有权由各自 lease 凭据管理。
+        if in_progress.length > snapshot.capacity
           return Routing.new(observed: observed, milestones: milestones,
-            action: invalid(observed, "存在 #{in_progress.length} 张执行中 issue（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}"))
+            action: invalid(observed, "存在 #{in_progress.length} 张执行中 issue，超过容量 #{snapshot.capacity}（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}"))
         end
 
         claimed = in_progress.first
-        if claimed && record && record["issue"] && record["issue"].to_i != claimed.number
-          return Routing.new(observed: observed, milestones: milestones,
-            action: invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突"))
+        # 本地记录必须与某张执行中卡对得上：容量 1 时等价于与首卡比较（原语义）；
+        # 容量 >1 时在途多卡中找本 coordinator 持有的那张，续做路由以它为目标。
+        if claimed && record && record["issue"]
+          owned = in_progress.find { |item| item.number == record["issue"].to_i }
+          if owned
+            claimed = owned
+          else
+            return Routing.new(observed: observed, milestones: milestones,
+              action: invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 #{in_progress.map(&:number).join("、")} 冲突"))
+          end
         end
 
         # aborted 表示认领未被确认：必须在任何恢复分支之前对账。
@@ -95,6 +105,25 @@ module SebasAgents
             action: action("needs_human", observed,
               "## #{pending_pause.number} 处于 #{Model::HUMAN_LABEL}，等待 Maintainer 加 #{Model::RESUME_LABEL}",
               issue: pending_pause.number, milestone: pending_pause.milestone))
+        end
+
+        # 容量未满且在途卡不归本 coordinator（无本地记录的异机租约，续篇 F6）：
+        # 不接管、不续跑他人 PR——落到 milestone 评估，让本 coordinator 认领
+        # 其余就绪卡。容量已满或本地持有时保持原续做路由（容量 1 语义不变）。
+        if claimed && !(record && record["issue"].to_i == claimed.number) &&
+           in_progress.length < snapshot.capacity
+          return Routing.new(observed: observed, milestones: milestones, action: nil)
+        end
+
+        # 容量已满且在途卡无本地记录：异机租约占着容量（F6「不接管，占着
+        # 容量」），本 coordinator 没有可续做对象——报 wait。不判 F7 invalid：
+        # 快照只有 status 事实，不足证明「GitHub 侧无有效凭据」；凭据对账
+        # 在 claim 的租约预检做。
+        if claimed && (record.nil? || record.empty?)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: action("wait", observed,
+              "在途认领 #{in_progress.map(&:number).join("、")} 非本 coordinator 持有（无本地记录），容量 #{snapshot.capacity} 已满，等待其收口",
+              issue: claimed.number))
         end
 
         own_pr = own_pull_request(snapshot, record, claimed)
