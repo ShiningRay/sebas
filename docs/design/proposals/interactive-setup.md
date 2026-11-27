@@ -64,7 +64,7 @@ Detect → Provider → Model → Agent → Channel → Binding
 约束：
 
 - provider ID 使用稳定小写标识；它同时是 YAML key 与 vault namespace，创建后不随显示名变化。
-- 远程带 key 端点必须 HTTPS；只有环回允许 HTTP，复用 provider transport guard。
+- 远程带 key 端点必须 HTTPS；只有环回允许 HTTP，复用 provider transport guard。连通性检查默认不跟随重定向；未来若支持跟随，每一跳都必须重新执行守卫，未通过检查的 HTTP 跳不得携带 API key。
 - 连通性检查失败不丢答案；用户可重试、编辑或明确选择「保存但未实测」。未实测状态必须进入完成摘要，不能显示绿色成功。
 
 ### 3.3 Model：模型标识
@@ -159,9 +159,11 @@ Provider 秘密写 `("provider", provider_id, "api_key")`。配置内 `api_key` 
 3. 已有文件先保留原始字节与权限用于回滚；正式配置用同目录 temp + fsync + atomic rename 发布。
 4. 多文件提交有明确顺序和提交标记；失败时恢复旧配置、旧 persona 与旧 vault 值，删除本次新建文件。回滚失败必须报告残留路径，不能声称已清理。
 5. 进程在提交中断时，下次 `sebas setup` 检测 staging/commit marker，提示「恢复上次状态 / 放弃草稿」，不自动覆盖。
-6. 最终再次从**正式路径** `Loader.load`，并用同一 data_dir 打开 vault 验证 provider key 可读；全部成功才打印 Ready。
+6. 最终再次从**正式路径** `Loader.load`，并用同一 data_dir 打开 vault 验证 provider key 可读且等于本次提交的值；全部成功才打印 Ready。
 
-并发保护：对配置路径使用排他 setup 锁；检测到配置或 vault 在问答期间被外部修改时，提交前失败并要求重新 Review，不基于旧快照覆盖。
+并发保护：对**规范化后的 data_dir** 使用排他 setup 锁，而不是只锁配置路径；同一 vault 被多个配置路径引用时仍互斥。锁覆盖启动快照、提交前检测、配置与 vault 发布、失败回滚及最终验证的完整临界区，并向用户显示等待/占用状态。若进程在持有锁期间崩溃，恢复流程先核验 commit marker 和锁所有权，不盲目接管。检测到配置或 vault 在问答期间被外部修改时，提交前失败并要求重新 Review，不基于旧快照覆盖。
+
+回滚采用 compare-and-restore：只有当前 vault 值仍等于**本次写入值**时才恢复本次保存的旧值；若已被其他持有者修改，报告回滚冲突并保留当前值，绝不把他人的新 key 覆盖掉。正式配置与 persona 的回滚也先比较当前内容是否仍是本次发布内容；存在外部变化时同样保留并报告。最终 Ready 前必须逐项确认本次 vault 值仍匹配，不能用「任意 key 可读」代替。
 
 ## 6. 键盘与可访问性
 

@@ -10,9 +10,9 @@
 
 **M4x-Setup-WP1 配置写入核心与凭据事务**（1–1.5 pd）
 - 目标：建立可被交互与非交互入口共用的 setup application service。
-- 范围：非秘密答案 schema；YAML AST/结构化合并，保留无关配置；provider 与 vault 共用命名空间；staging、原子配置发布、提交标记、排他锁、并发修改检测、回滚与恢复；Loader/Provider/Binding 复用校验。
+- 范围：非秘密答案 schema；YAML AST/结构化合并，保留无关配置；provider 与 vault 共用命名空间；staging、原子配置发布、提交标记、data_dir 级排他锁、并发修改检测、compare-and-restore 回滚与恢复；Loader/Provider/Binding 复用校验。
 - 交付物：setup service + 文件/ vault 故障注入 spec + 无秘密快照。
-- 依赖：无代码级前置；TUI 配置生成项在 WP4 前不得发布为可用。
+- 依赖：无代码级前置；TUI 配置生成项须等 M6.5-WP4 提供 `channel_type=tui` 的生产装配，M4x-Setup-WP4 不属于首期内部门禁。
 - 验收：已有合法配置可复用，非法配置不覆盖；任一写入阶段失败能回滚或报告确切残留；取消/EOF 不改正式文件；provider key 可由 gateway 从同一 vault 回读。
 - 风险：YAML 注释与格式保留不能靠字符串拼接承诺；首版至少保证未知字段和值语义不丢，格式保留另按库能力实测。[推演]
 
