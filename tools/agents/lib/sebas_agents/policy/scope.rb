@@ -119,20 +119,24 @@ module SebasAgents
       # 越界检测（§6 §F14）：PR 变更文件必须落在租约 scope 内。
       # scope 是调度预算、不是沙箱——这里只做事后检测，越界即停本卡。
       #
-      # 缺失一律 fail-closed：PR 未带 files（快照未取）或租约缺 scope 时
-      # 都返回「不可判定」，调用方按越界处理。理由与 §6.2 同：安全边界不押在
-      # 「没看到就等于没违规」上。
+      # **租约缺 scope 不算越界**：Q4=A 给缺 scope 的语义是「独占容量」——
+      # 它由认领侧（blocking_lease）承担，表现为不许开新卡。把同一件事再当成
+      # 越界，等于让存量缺 scope 的租约永久 needs_human：既没机会开新卡，也
+      # 不能合并已有 PR，比串行还退。§6 只把「事后检测」限定为「worker 干了
+      # scope 外的事」，缺声明不是干错事。
+      #
+      # 清单自身的缺失与畸形**一律先拒**，与 scope 无关：`violations(nil, nil)`
+      # 或 `violations({}, nil)` 若因缺 scope 直接返回 nil，非法输入就被静默放行。
+      # 校验顺序是「先看输入形状，再看能不能判」，不是反过来。
       # 返回 nil（未越界）或错误描述字符串。
       def violations(files, lease_scope)
-        return "租约未声明 scope，无法判定越界" if lease_scope.nil?
         return "PR 变更文件清单未取回，无法判定越界" if files.nil?
         # 非数组同样是「取回的形状不对」：Array("x") 会变成 ["x"]、Array({}) 变
         # 空数组，后者会被当成「零变更」静默放行。显式拒绝，交由调用方 fail-closed。
         return "PR 变更文件清单不是数组（#{files.class}），无法判定越界" unless files.is_a?(Array)
-
         outside = []
         unparsable = 0
-        Array(files).each do |file|
+        files.each do |file|
           paths = candidate_paths(file)
           if paths.empty?
             # 解析不出路径就等于「无从判定」——按越界计，不放行。
@@ -142,12 +146,18 @@ module SebasAgents
           # 重命名条目要查两个路径：原路径也可能落在 scope 外（搬走别人的
           # 文件同样是越界），只查新路径会漏。
           paths.each do |path|
-            outside << path unless lease_scope.any? { |prefix| path.start_with?(prefix) }
+            outside << path unless lease_scope.nil? || lease_scope.any? { |prefix| path.start_with?(prefix) }
           end
         end
+        # 解析不出路径与 scope 无关：先判它，缺 scope 也不能把畸形条目放过。
+        if outside.empty? && unparsable.positive?
+          return "PR 变更条目有 #{unparsable} 条解析不出路径，无法判定越界"
+        end
+        # 形状已校验、条目也都能解析，缺 scope 到此才算「无从比较」。
+        return nil if lease_scope.nil?
+
         outside.uniq!
-        return nil if outside.empty? && unparsable.zero?
-        return "PR 变更条目有 #{unparsable} 条解析不出路径，无法判定越界" if outside.empty?
+        return nil if outside.empty?
 
         text = "变更文件不在 scope 内：#{outside.first(5).join("、")}" \
           "#{outside.length > 5 ? " 等 #{outside.length} 个" : ""}"
