@@ -14,7 +14,7 @@
 各期分册（一期一文件，含全部 `M*-WP*` 包）：
 
 - [wbs/m0-mvp.md](wbs/m0-mvp.md) · [wbs/m1-multi-account.md](wbs/m1-multi-account.md) · [wbs/m2-orchestration.md](wbs/m2-orchestration.md) · [wbs/m3-collab-plugins.md](wbs/m3-collab-plugins.md)
-- [wbs/m4-fork-join.md](wbs/m4-fork-join.md) · [wbs/m5-commitments.md](wbs/m5-commitments.md) · [wbs/m6-calendar-mirror.md](wbs/m6-calendar-mirror.md) · [wbs/m7-projection.md](wbs/m7-projection.md)
+- [wbs/m4-fork-join.md](wbs/m4-fork-join.md) · [wbs/m4x-platform.md](wbs/m4x-platform.md) · [wbs/m5-commitments.md](wbs/m5-commitments.md) · [wbs/m6-calendar-mirror.md](wbs/m6-calendar-mirror.md) · [wbs/m7-projection.md](wbs/m7-projection.md) · [wbs/m8-channels.md](wbs/m8-channels.md)
 
 ## B 节：排期与门禁
 

@@ -13,6 +13,7 @@
 - 范围：非秘密答案 schema；YAML AST/结构化合并，保留无关配置；provider 与 vault 共用命名空间；staging、原子配置发布、提交标记、data_dir 级排他锁、并发修改检测、compare-and-restore 回滚与恢复；Loader/Provider/Binding 复用校验。
 - 交付物：setup service + 文件/ vault 故障注入 spec + 无秘密快照。
 - 依赖：无代码级前置；TUI 配置生成项须等 M6.5-WP4 提供 `channel_type=tui` 的生产装配，M4x-Setup-WP4 不属于首期内部门禁。
+- **#274 路径接线约束**：M5.0-WP3 交付前，setup 继续使用显式 `--config` 及提案 §2 的过渡约定；resolver 就绪后，WP2/WP3 必须复用它，不另写默认 home 推导。此项不改变 M4x 的 milestone 或提前授权开工。
 - 验收：已有合法配置可复用，非法配置不覆盖；任一写入阶段失败能回滚或报告确切残留；取消/EOF 不改正式文件；provider key 可由 gateway 从同一 vault 回读。
 - 风险：YAML 注释与格式保留不能靠字符串拼接承诺；首版至少保证未知字段和值语义不丢，格式保留另按库能力实测。[推演]
 

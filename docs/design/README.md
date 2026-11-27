@@ -28,10 +28,13 @@
 - `plan/schedule/`：B.1 DAG、B.2 逐周排期、B.3 门禁、B.4–B.7 门禁结论、B.8 M4 排期、B.9 M5–M7 排期与版本计划。
 - 顶层四篇：首迭代、覆盖矩阵、外部依赖。
 
-## 提案 `proposals/`（10 篇）
+## 提案 `proposals/`（15 篇）
 
 | 文件 | 行数 | 主题 |
 |---|---|---|
+| [sebas-home.md](proposals/sebas-home.md) | 109 | `~/.sebas` / `SEBAS_HOME` 应用根目录与测试主目录隔离（#274 accepted-design，M5 待实现） |
+| [interactive-setup.md](proposals/interactive-setup.md) | 228 | 交互式初始化：Provider + Agent + 本地 TUI 首次配置（#145） |
+| [tui-conversational-console.md](proposals/tui-conversational-console.md) | — | 对话式 TUI：本地 channel、控制命令与审批交互（M6.5） |
 | [fork-join-semantics.md](proposals/fork-join-semantics.md) | 391 | fork/join 影分身语义 |
 | [parallel-implementers.md](proposals/parallel-implementers.md) | 385 | 多任务并行开发：每卡独立租约与集中合并收口（#190 定稿候选，未定稿） |
 | [commitments-calendar-integration.md](proposals/commitments-calendar-integration.md) | 338 | 承诺与日历整合：Calendar 作为持久意图与时间上下文层（M5–M7 输入） |

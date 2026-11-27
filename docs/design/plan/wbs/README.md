@@ -11,13 +11,13 @@
 | M2 | [编排完备](m2-orchestration.md) | 53 | 12.5–19 pd | 崩溃重放幂等、审批超时 deny、预算熔断 |
 | M3 | [协作 + 插件脚本层](m3-collab-plugins.md) | — | 15–24 pd（+3.5–5 追加） | max_hops 防环、并发上限、mruby 插件层；追加包为 Telegram 补位 |
 | M4 | [Fork/Join 影分身 + Agent 团队 + 会话治理](m4-fork-join.md) | 151 | 27.5–44.5 pd | fork/join 语义、会话元数据与休眠归档 |
-| M5 | [持久意图、唤醒与提醒闭环](m5-commitments.md) | 133 | 22–36 pd | v0.3.0；九态生命周期、提醒纪律、cron 归位 |
+| M5 | [持久意图、唤醒与提醒闭环 + 应用根目录](m5-commitments.md) | — | 23–38 pd | v0.3.0；九态生命周期、提醒纪律、cron 归位、`~/.sebas` / `SEBAS_HOME` |
 | M6 | [外部日历/TODO 只读镜像与变化驱动重估](m6-calendar-mirror.md) | 87 | 20–34 pd | v0.4.0；三 provider 适配器、同步元数据、变化只触发评估 |
 | M7 | [受控投影与撤销审计](m7-projection.md) | 42 | 6–10 pd | v0.5.0；写路径启停、整批撤销、审计 |
 | M8 | [渠道补齐（WeCom + Lark + Slack + email 健壮性）](m8-channels.md) | — | 20–33.5 pd | v0.6.0；企微回调/AIBot 长连接 + 飞书 WS + Slack Socket Mode 多账号收发 + email IDLE 健壮性 |
 | M4x | [插件与平台演进（并行轨）](m4x-platform.md) | — | 按卡估算 | 平台能力扩展；交互式初始化 #145 已细化 |
 
-合计 163–261.5 pd（M0–M8 全程序），逐周排期见 [B.2](../schedule/weekly.md)，依赖图见 [B.1](../schedule/dag.md)。
+合计 164–263.5 pd（M0–M8 全程序，不含 M6.5 TUI 追加；含 M5.0-WP3 路径包 1–2 pd），逐周排期见 [B.2](../schedule/weekly.md)，依赖图见 [B.1](../schedule/dag.md)。
 
 ## 期与版本的对应
 
@@ -26,7 +26,7 @@
 | M0–M3 | v0.1.0（已发布） | 已完成，门禁结论见 [B.4–B.7](../schedule/gate-results.md) |
 | M3 追加 | 待定 | `M3 · Telegram 渠道补位`（2026-11-26 由 M8 迁入，order: 3） |
 | M4 | v0.2.0 | #2 v0.2.0（Fork/Join 影分身） |
-| M5 | v0.3.0 | #3 v0.3.0（承诺与提醒闭环） |
+| M5 | v0.3.0 | #3 v0.3.0（承诺与提醒闭环 + `~/.sebas` 路径约定） |
 | M6 | v0.4.0 | #4 v0.4.0（外部日历只读镜像与重估） |
 | M7 | v0.5.0 | #5 v0.5.0（受控投影与撤销审计） |
 | M8 | v0.6.0 | M8 v0.6.0（渠道补齐 WeCom + Lark + Slack） |

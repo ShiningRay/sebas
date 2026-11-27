@@ -2,7 +2,7 @@
 
 > 状态：**Proposal**（2026-11-27 细化，待评审）。
 > Tracking：[#145](https://github.com/ShiningRay/sebas/issues/145)。
-> 关联：[对话式 TUI 提案](tui-conversational-console.md)、[spec §10](../spec/10-security.md)。
+> 关联：[对话式 TUI 提案](tui-conversational-console.md)、[应用根目录提案](sebas-home.md)、[spec §10](../spec/10-security.md)。
 > 本文定义终端初始化体验、事务边界和运行时可验证契约；实现 WBS 见 [plan/wbs/m4x-platform.md](../plan/wbs/m4x-platform.md)。
 
 ## 1. 目标与边界
@@ -28,6 +28,8 @@ sebas setup --non-interactive --input answers.json
 
 - 默认是逐屏问答；`Esc` 返回上一步，`Ctrl-C` / EOF 取消，未确认不写正式配置。
 - `--config` 决定正式配置路径；相对 `gateway.data_dir` 与 vault 路径以该文件所在目录为基准，与 gateway 一致。
+- 待 #274 的路径 resolver 落地后，省略 `--config` 时使用同一解析结果 `<home>/config.yaml`；省略 `data_dir` 时使用 `<home>/data`。`setup` 不另写根目录推导规则。
+- 在此之前仍使用本文示例的显式 `--config config.yaml` 与相对 `data`；不得把尚未实现的新默认目录当作现有行为。
 - 草稿只保存非秘密答案、当前步骤与 schema 版本；秘密只短暂留在进程内存。默认不把草稿写入 home 或临时目录；用户显式选择「稍后继续」时才写 `--resume` 指定的安全路径，权限 `0600`。
 - 非交互 JSON 走相同问题模型和校验器；缺字段、额外字段、秘密值或 EOF 均明确失败。秘密经独立受保护输入或既有 vault 条目注入，**answers.json 禁止秘密**。
 - 不自动启动常驻 gateway、不打开公网端口、不安装系统服务。最后一步可由用户选择「现在启动本地 gateway 并打开 TUI」，默认仅打印命令。
@@ -115,8 +117,8 @@ Agent      main, model deepseek-chat
 Persona    agents/main/SOUL.md
 Channel    TUI account=local, default peer=operator
 Binding    tui/local/* -> main
-Config     ./config.yaml
-Data       ./data
+Config     ~/.sebas/config.yaml        # #274 落地后；当前见 §2 的显式路径约定
+Data       ~/.sebas/data               # YAML 显式 data_dir 仍优先
 Checks     schema passed; provider request not run
 
 [Confirm and save]  [Edit]  [Cancel]
