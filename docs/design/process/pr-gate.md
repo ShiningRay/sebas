@@ -130,13 +130,21 @@ concurrency:
 补登记不能把失败洗成通过（脚本 `merged_into_main?` 用 `git merge-base --is-ancestor`
 证实，且缺 `success` 的 CI 时 `resolve_checks_url` 会失败）。
 
-**超过 30 天或 50 次上限时**，第 1 条失效，只剩两条出路，都由 Maintainer 决定：
+**超过 30 天或 50 次上限时**，第 1 条失效。剩下三条路，都由 Maintainer 决定：
 
-- **走第 2 条补登记**：要求该 merge commit 另有可查的成功 CI；否则脚本必然拒绝，
+- **临时分支重跑**：从该 merge commit 拉一个临时分支（如 `recovery/<sha前8位>`）推上去，
+  触发一次新的 CI run。若测试本身可通过，新 run 成功即产生「head_sha = merge commit」的
+  成功记录；随后走第 2 条补登记，`resolve_checks_url` 在 `url` 为空的分支里用
+  `actions/runs?head_sha=<merge_commit_sha>` 查成功 run，能直接命中。用完删分支。
+  依据是 `tools/evidence_register.rb` 的两段实现：dispatch 路径按 `head_sha` 查 run，
+  `merged_into_main?` 用 `git merge-base --is-ancestor` 证实该 sha 属于 main。
+- **走第 2 条补登记**：要求该 merge commit 已有可查的成功 CI；否则脚本必然拒绝，
   不能降格放行。
-- **人工裁决该卡为不可自动解锁**：在 issue 上记 `needs:human` 并写明原因，由 Maintainer
+- **人工裁决该卡不可自动解锁**：在 issue 上记 `needs:human` 并写明原因，由 Maintainer
   决定是重新实现（新分支新 PR，旧卡关闭为 not planned）还是维持阻塞。下游卡随之
   停在 `blocked`，这是正确语义，不是故障。
+
+测试确实失败时，任何一条都不能把失败洗成通过——必须先修代码并重新合并。
 
 角色归属：这类残留目前没有自动巡检，需要人发现。合并队列落地后由 coordinator 的
 串行单位兜住（等 Evidence 升级完再合下一张，超时转人工，见
