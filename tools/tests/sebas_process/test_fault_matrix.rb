@@ -53,6 +53,14 @@ class FaultMatrixTest < Minitest::Test
     refute_nil scope.violations([{"filename" => "src/x"}], nil)
   end
 
+  # 非数组输入不能被 Array() 静默折成空数组：{} 会变成 [] = 零变更 = 放行。
+  def test_non_array_files_fail_closed
+    scope = SebasAgents::Policy::Scope
+    refute_nil scope.violations({}, ["src/"])
+    refute_nil scope.violations("src/a.cr", ["src/"])
+    refute_nil scope.violations(42, ["src/"])
+  end
+
   # 解析不出路径的条目不能静默跳过：无从判定即按越界计。
   def test_unparsable_entry_fails_closed
     scope = SebasAgents::Policy::Scope
@@ -190,18 +198,47 @@ class FaultMatrixTest < Minitest::Test
     end
   end
 
-  # 心跳写入用跨进程锁：已存在锁文件时放弃本次写入，不覆盖别人。
-  def test_heartbeat_skips_when_lock_held
+  # 活跃持有者（pid 存活）→ 跳过本次写入，且不删别人的锁。
+  def test_heartbeat_skips_when_lock_held_by_live_process
     Dir.mktmpdir do |dir|
       path = File.join(dir, "1.json")
       original = {"schema" => 2, "issue" => 1, "phase" => "claimed"}
       File.write(path, JSON.generate(original), encoding: "UTF-8")
-      File.write("#{path}.lock", "12345")
+      # 用当前进程 pid：一定存活
+      File.write("#{path}.lock", Process.pid.to_s)
 
       result = SebasAgents::RunRecord.new(path: path).heartbeat!(now: Time.utc(2026, 1, 1))
-      assert_nil result, "锁被占用时跳过心跳"
+      assert_nil result, "锁被活跃进程持有时跳过心跳"
       assert_equal original, JSON.parse(File.read(path))
       assert File.exist?("#{path}.lock"), "别人持有的锁不能被删"
+    end
+  end
+
+  # 残留锁（持有者已退出）→ 接管并完成心跳。否则一次崩溃就让心跳永久失效。
+  def test_heartbeat_takes_over_stale_lock
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({"schema" => 2, "issue" => 1, "phase" => "claimed"}), encoding: "UTF-8")
+      # 几乎不可能存在的 pid
+      File.write("#{path}.lock", "999999")
+
+      stamp = Time.utc(2026, 1, 1)
+      data = SebasAgents::RunRecord.new(path: path).heartbeat!(now: stamp)
+      refute_nil data, "残留锁必须能被接管"
+      assert_equal stamp.iso8601, JSON.parse(File.read(path))["last_heartbeat_at"]
+      refute File.exist?("#{path}.lock")
+    end
+  end
+
+  # 读不到 pid（刚创建、还没写入）→ 按活跃处理，保守不删。
+  def test_heartbeat_treats_empty_lock_pid_as_active
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({"schema" => 2, "issue" => 1, "phase" => "claimed"}), encoding: "UTF-8")
+      File.write("#{path}.lock", "")
+
+      assert_nil SebasAgents::RunRecord.new(path: path).heartbeat!(now: Time.utc(2026, 1, 1))
+      assert File.exist?("#{path}.lock")
     end
   end
 

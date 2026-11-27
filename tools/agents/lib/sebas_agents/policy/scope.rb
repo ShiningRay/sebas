@@ -107,6 +107,9 @@ module SebasAgents
       def violations(files, lease_scope)
         return "租约未声明 scope，无法判定越界" if lease_scope.nil?
         return "PR 变更文件清单未取回，无法判定越界" if files.nil?
+        # 非数组同样是「取回的形状不对」：Array("x") 会变成 ["x"]、Array({}) 变
+        # 空数组，后者会被当成「零变更」静默放行。显式拒绝，交由调用方 fail-closed。
+        return "PR 变更文件清单不是数组（#{files.class}），无法判定越界" unless files.is_a?(Array)
 
         outside = []
         unparsable = 0

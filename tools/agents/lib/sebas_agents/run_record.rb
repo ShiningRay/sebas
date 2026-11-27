@@ -188,20 +188,61 @@ module SebasAgents
     private
 
     # 跨进程独占锁：锁文件用 O_CREAT|O_EXCL 创建，内容写 pid 便于排查。
-    # 已有锁就**跳过**本次写入（不等待、不抢锁）：心跳不是关键路径。
+    #
+    # 三种结局：
+    #   - 拿到锁 → 执行 → 释放
+    #   - 有锁且持有者进程仍活着 → 跳过本次心跳（不等待、不抢锁）
+    #   - 有锁但 pid 已不存在（崩溃残留）→ 接管：删掉再创建，只重试一次
+    #
+    # 残留锁必须能被接管，否则一次崩溃就让这张卡的心跳永久失效，F5 判据
+    # 变成「永远不过期」，恰好是最危险的反向失效。接管只看 pid 是否存活，
+    # 因此它防的是「同机进程已退出」，不防跨机同名 pid——那由 host 字段判。
     def with_record_lock(path)
       lock = "#{path}.lock"
       FileUtils.mkdir_p(File.dirname(lock))
-      handle = File.open(lock, File::CREAT | File::EXCL | File::WRONLY)
-      handle.write(Process.pid.to_s)
-      handle.close
+      handle = acquire_lock(lock)
+      return nil unless handle
+
       begin
+        handle.write(Process.pid.to_s)
+        handle.close
         yield
       ensure
+        # 正常路径与异常路径都清锁：写 pid / close 失败会留下半成品锁，
+        # 那会挡住后续所有心跳。
         FileUtils.rm_f(lock)
       end
+    end
+
+    # 返回已打开的锁句柄；拿不到（活跃持有者）返回 nil。
+    # 写 pid / 关闭失败时自己删锁再抛：否则半成品锁会挡住后续所有心跳。
+    def acquire_lock(lock)
+      handle = File.open(lock, File::CREAT | File::EXCL | File::WRONLY)
+      handle
     rescue Errno::EEXIST
-      nil
+      return nil unless stale_lock?(lock)
+
+      FileUtils.rm_f(lock)
+      begin
+        File.open(lock, File::CREAT | File::EXCL | File::WRONLY)
+      rescue Errno::EEXIST
+        nil
+      end
+    end
+
+    # 残留判定：读得到 pid 且该进程已不存在 → 残留；读不到 pid 或进程仍在 → 活跃。
+    # 「读不到 pid」按活跃处理（保守）：锁刚创建、还没写入 pid 的窗口里删它
+    # 会破坏别人的互斥。
+    def stale_lock?(lock)
+      pid = File.read(lock, encoding: "UTF-8").strip
+      return false if pid.empty?
+
+      Process.kill(0, Integer(pid, 10))
+      false
+    rescue Errno::ESRCH
+      true
+    rescue ArgumentError, Errno::ENOENT, Errno::EACCES
+      false
     end
 
     def read_v2(path)
