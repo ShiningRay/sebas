@@ -197,7 +197,8 @@ end
         externals: discovered["externals"].merge(external_records),
         trusted_bots: trusted_bots,
         source_bodies: resolve_bodies(blocks),
-        proposal_evidence: proposal_evidence
+        proposal_evidence: proposal_evidence,
+        capacity: capacity
       )
     rescue StandardError
       # 任一流抛错时其余线程可能仍在跑：先收干净再让原始异常穿透，
@@ -1013,6 +1014,32 @@ end
     end
 
     public
+
+    # 在途租约容量上限（recovery §5 / Q3）：.github/agents.yml 的 `capacity` 键。
+    # 缺键即 1——任何机器上的行为都与单卡容量一致；显式配置才提升。
+    # 非法值（非正整数）fail-closed 报错，不静默回落默认。
+    def capacity
+      @capacity ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return 1 unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        raw = data && data["capacity"]
+        if raw.nil?
+          1
+        else
+          begin
+            value = Integer(raw)
+          rescue ArgumentError, TypeError
+            raise CommandError.new(".github/agents.yml 的 capacity 必须是正整数：#{raw.inspect}", command: ["read", path])
+          end
+          raise CommandError.new(".github/agents.yml 的 capacity 必须是正整数：#{raw.inspect}", command: ["read", path]) unless value >= 1
+
+          value
+        end
+      end
+    end
 
     # 授权可发/改租约评论的 coordinator 身份（M4x-WP2，#220 §5.2）。
     # 缺省为空：未显式授权时任何租约凭据都判作者越权，仍是 fail-closed。

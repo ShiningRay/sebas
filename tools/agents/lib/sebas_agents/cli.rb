@@ -77,11 +77,30 @@ module SebasAgents
     end
 
     def snapshot(options, proposal_issue: nil, verified_pr: nil)
-      return load_snapshot(options[:snapshot]) if options[:snapshot]
+      snap = load_snapshot(options[:snapshot]) if options[:snapshot]
+      unless snap
+        repo = options[:repo] || default_repo
+        gateway = GithubGateway.new(runner(options), repo: repo)
+        snap = gateway.snapshot(proposal_issue: proposal_issue, verified_pr: verified_pr)
+      end
+      # 迁移期容量钳制（Q10=B：迁移期容量恒 1）：v1 记录仍有活动（非 released）
+      # 时有效容量回落 1，与单卡行为一致；released 遗留记录不构成约束。
+      # 只影响路由与认领判定，不改快照事实源本身。
+      snap = snap.with(capacity: 1) if migration_capacity_clamp?
+      snap
+    end
 
-      repo = options[:repo] || default_repo
-      gateway = GithubGateway.new(runner(options), repo: repo)
-      gateway.snapshot(proposal_issue: proposal_issue, verified_pr: verified_pr)
+    # 迁移窗口内是否仍钳制容量：legacy run.json 存在且其记录非 released。
+    # 文件缺失或读不出来（损坏等）都不钳制——真正的迁移路径会对损坏记录
+    # 独立 fail-closed，这里只回答「活动遗留是否还在」。
+    def migration_capacity_clamp?
+      path = RunRecord::DEFAULT_PATH
+      return false unless File.exist?(path)
+
+      data = RunRecord.new(path: path).load
+      data && data["phase"].to_s != "released"
+    rescue InvalidPlan, JSON::ParserError
+      false
     end
 
     # 快照是唯一事实源：结构不全就拒绝，绝不把缺失当成「没有工作」。
@@ -158,8 +177,9 @@ module SebasAgents
 
 
 # plan（M4x-Parallel-WP1，#218）：只读多候选视图——与 next 同快照同策略，
-# 返回全部就绪候选（capacity 固定 1）、带枚举码的排除集与验证背压
-# （待验收 PR 数）。不改任何写行为；exit 0 正常 / 1 invalid_plan。
+# 返回全部就绪候选（容量取快照 capacity，缺省 1；迁移窗口钳回 1）、带枚举
+# 码的排除集与验证背压（待验收 PR 数）。不改任何写行为；exit 0 正常 / 1
+# invalid_plan。
 def run_plan(argv)
   options, = Argv.parse(argv)
   snap = snapshot(options)
@@ -175,7 +195,8 @@ def run_plan(argv)
   end
   payload = {
     "ok" => view.invalid_reason.nil?,
-    "capacity" => 1,
+    "capacity" => snap.capacity,
+    "capacity_used" => snap.in_progress_issues.length,
     "verifier_queue_depth" => snap.pull_requests.count(&:open?),
     "next_action" => view.next_action,
     "next_issue" => view.next_issue,
@@ -196,13 +217,14 @@ end
       options, (number,) = Argv.parse(argv, required: ["issue"])
       # 先校验数字，再去访问 GitHub：参数错不该触发网络或仓库探测。
       target = parse_number(number, "issue")
+      # 启动搬迁（Q10=B）：v1 记录先走迁移，活动记录 fail-closed 要求人工确认。
+      # 仅写路径（--apply）触发；next/plan/claim --dry-run 只读不迁移（CR-0）。
+      # 迁移先于快照：迁移窗口容量钳制（migration_capacity_clamp?）据此看到
+      # 迁移后的状态，apply 认领不受已搬走的遗留记录误钳。
+      RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) if options[:apply] && !options[:record]
       snap = snapshot(options)
       issue = snap.issue(target)
       raise UsageError, "issue ##{number} 不在快照内" unless issue
-
-      # 启动搬迁（Q10=B）：v1 记录先走迁移，活动记录 fail-closed 要求人工确认。
-      # 仅写路径（--apply）触发；next/plan/claim --dry-run 只读不迁移（CR-0）。
-      RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) if options[:apply] && !options[:record]
 
       result = claimability(issue, snap)
       payload = {
@@ -430,14 +452,19 @@ end
       reasons << "##{issue.number} 标为 #{Model::INVALID_LABEL}" if issue.label?(Model::INVALID_LABEL)
       return Model::Evaluation.new(status: "invalid", reasons: reasons) unless reasons.empty?
 
-      other = snap.in_progress_issues.find { |item| item.number != issue.number }
-      if other
-        # 试点豁免（M4x-Parallel-WP2，#220 §8 阶段 2）：两张 docs-only 工作包
-        # 卡可由 coordinator 并行持有——所有权由各自 per-issue lease 管理，
-        # scope 冲突由预算判定；其余仍全仓同时只允许一张。
-        unless pilot_docs_pair?(issue, other, snap)
+      others = snap.in_progress_issues.reject { |item| item.number == issue.number }
+      if others.length >= snap.capacity
+        if snap.capacity == 1 && others.length == 1
+          # 试点豁免（M4x-Parallel-WP2，#220 §8 阶段 2）：两张 docs-only 工作包
+          # 卡可由 coordinator 并行持有——所有权由各自 per-issue lease 管理，
+          # scope 冲突由预算判定；其余仍全仓同时只允许一张。
           return Model::Evaluation.new(status: "invalid",
-            reasons: ["已有活动认领 ##{other.number}，全仓同时只允许一张"])
+            reasons: ["已有活动认领 ##{others.first.number}，全仓同时只允许一张"]) unless pilot_docs_pair?(issue, others.first, snap)
+        else
+          # 容量 >1（recovery §5 / Q3，.github/agents.yml `capacity` 键）：
+          # 在途卡数达到容量即拒绝；试点豁免仅在容量 1 的单卡试点下生效。
+          return Model::Evaluation.new(status: "invalid",
+            reasons: ["已有 #{others.length} 张活动认领（#{others.map(&:number).join("、")}），达到容量 #{snap.capacity}"])
         end
       end
 

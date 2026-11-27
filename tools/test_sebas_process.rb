@@ -78,10 +78,12 @@ module SnapshotHelpers
   end
 
   def snapshot(issues:, milestones: nil, pull_requests: [], maintainers: ["ShiningRay"],
-    source_authors: nil, gates: {}, externals: {}, trusted_bots: [], source_bodies: {})
+    source_authors: nil, gates: {}, externals: {}, trusted_bots: [], source_bodies: {},
+    capacity: nil)
     {
       "repo" => "o/r",
       "main_sha" => "deadbeef",
+      "capacity" => capacity, # nil → Snapshot.from_hash 回落默认 1
       "milestones" => milestones || [
         milestone(number: 2, order: "4", track: "main", open_issues: issues.length),
         milestone(number: 1, order: "4x", track: "parallel", open_issues: 5)
@@ -993,6 +995,62 @@ class SelectionTest < Minitest::Test
       issue(2, body: automation, status: "In progress")
     ])
     assert_equal "invalid_plan", select(data).action
+  end
+
+  # 容量 >1（recovery §5 / Q3）：执行中卡数在容量内不再是 invalid；
+  # 续做路由对准本地记录持有的那张卡，而不是固定首卡。
+  def test_multiple_in_progress_allowed_within_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress")
+    ], capacity: 2)
+    action = select(data, record: {"issue" => 2, "phase" => "claimed"})
+    assert_equal "resume_issue", action.action
+    assert_equal 2, action.issue
+  end
+
+  def test_capacity_exceeded_is_invalid
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress"),
+      issue(3, body: automation, status: "In progress")
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "超过容量 2"
+  end
+
+  def test_record_not_matching_any_in_progress_is_invalid
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress")
+    ], capacity: 2)
+    action = select(data, record: {"issue" => 99, "phase" => "claimed"})
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "冲突"
+  end
+
+  # 异机租约（续篇 F6）：容量未满且在途卡无本地记录时不接管、不续跑
+  # 他人 PR——落到 milestone 评估给出新卡。
+  def test_foreign_claim_falls_through_to_claim_when_capacity_available
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 2, action.issue
+  end
+
+  # 容量 1（缺省）时保持原语义：在途卡无本地记录 → F7 invalid。
+  def test_foreign_claim_still_reports_missing_record_at_default_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ])
+    action = select(data)
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "缺本地运行记录"
   end
 
   def test_own_pull_request_resumes_before_new_card
@@ -1935,6 +1993,55 @@ class ReleaseTest < Minitest::Test
     refute SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.1 (abc) extra")
     refute SebasAgents::Release.smoke_output_matches?("0.1.1", "sebas 0.1.00")
     refute SebasAgents::Release.smoke_output_matches?("0.1.1", "")
+  end
+end
+
+# .github/agents.yml 的 `capacity` 键（recovery §5 / Q3）：缺键即 1——
+# 行为与单卡容量一致；正整数生效；非法值 fail-closed，不静默回落默认。
+class CapacityConfigTest < Minitest::Test
+  def write_config(dir, content)
+    gh_dir = File.join(dir, ".github")
+    Dir.mkdir(gh_dir) unless Dir.exist?(gh_dir)
+    File.write(File.join(gh_dir, "agents.yml"), content, encoding: "UTF-8")
+  end
+
+  def read_capacity(dir)
+    gateway = SebasAgents::GithubGateway.new(nil, repo: "o/r")
+    Dir.chdir(dir) { gateway.capacity }
+  end
+
+  def test_capacity_defaults_to_one_without_key
+    Dir.mktmpdir do |dir|
+      write_config(dir, "maintainers:\n  - ShiningRay\n")
+      assert_equal 1, read_capacity(dir)
+    end
+  end
+
+  def test_capacity_reads_explicit_value
+    Dir.mktmpdir do |dir|
+      write_config(dir, "maintainers:\n  - ShiningRay\ncapacity: 2\n")
+      assert_equal 2, read_capacity(dir)
+    end
+  end
+
+  def test_capacity_missing_file_defaults_to_one
+    Dir.mktmpdir do |dir|
+      assert_equal 1, read_capacity(dir)
+    end
+  end
+
+  def test_capacity_rejects_non_integer
+    Dir.mktmpdir do |dir|
+      write_config(dir, "maintainers:\n  - ShiningRay\ncapacity: many\n")
+      assert_raises(SebasAgents::CommandError) { read_capacity(dir) }
+    end
+  end
+
+  def test_capacity_rejects_non_positive
+    Dir.mktmpdir do |dir|
+      write_config(dir, "maintainers:\n  - ShiningRay\ncapacity: 0\n")
+      assert_raises(SebasAgents::CommandError) { read_capacity(dir) }
+    end
   end
 end
 
@@ -4376,6 +4483,84 @@ class PlanCommandTest < Minitest::Test
       assert_nil payload["candidates"].first["scope_conflict"]
       assert_equal "deadbeef", payload["observed_main"]
       assert payload["excluded"].all? { |row| row.key?("reason") && row.key?("detail") }
+    end
+  end
+
+  # 容量配置（recovery §5 / Q3）：快照 capacity 贯穿到 plan 输出，
+  # capacity_used 为在途卡数；异机在途卡不再把整个视图打成 wait。
+  def test_cli_plan_emits_capacity_fields_from_snapshot
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["plan", "--snapshot", snap])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert_equal 2, payload["capacity"]
+      assert_equal 1, payload["capacity_used"]
+      assert_equal "claim_issue", payload["next_action"]
+    end
+  end
+
+  # 迁移期容量恒 1（Q10=B）：v1 遗留记录仍活动时有效容量钳回 1；
+  # released 遗留不构成约束。钳制只影响判定输出，不改快照文件。
+  def test_plan_capacity_clamped_during_migration_window
+    data = snapshot(issues: [issue(1, body: automation)], capacity: 2)
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      sebas_dir = File.join(dir, ".sebas-agent")
+      Dir.mkdir(sebas_dir)
+      legacy = File.join(sebas_dir, "run.json")
+
+      File.write(legacy, JSON.generate({"issue" => 9, "phase" => "claimed", "schema" => 1}), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        status, out, = run_cli(["plan", "--snapshot", snap])
+        assert_equal 0, status
+        assert_equal 1, JSON.parse(out)["capacity"]
+      end
+
+      File.write(legacy, JSON.generate({"issue" => 9, "phase" => "released", "schema" => 1}), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        status, out, = run_cli(["plan", "--snapshot", snap])
+        assert_equal 0, status
+        assert_equal 2, JSON.parse(out)["capacity"]
+      end
+    end
+  end
+
+  # 容量 >1：在途卡未达容量时第二张可认领；容量 1 保持全仓单卡语义。
+  def test_claim_allows_second_card_within_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["claim", "2", "--snapshot", path, "--record", File.join(dir, "run.json")])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert payload["ok"]
+      assert_equal "ready", payload["status"]
+    end
+  end
+
+  def test_claim_refuses_when_capacity_exhausted
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]), status: "In progress"),
+      issue(3, body: automation(order: [4, 3]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["claim", "3", "--snapshot", path, "--record", File.join(dir, "run.json")])
+      assert_equal 1, status
+      assert_includes JSON.parse(out)["reasons"].join, "达到容量 2"
     end
   end
 

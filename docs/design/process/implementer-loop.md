@@ -9,7 +9,7 @@
 
 首版坚持以下不变量：
 
-1. **同一时刻只有一张活动工作卡、一个活动 PR、一个写入 worktree。**Verifier 和 Reviewer 的只读独立核验不属于另一个 Implementer。
+1. **同一时刻在途工作卡不超过配置容量（`capacity`，缺省 1），每卡一个分支、一个 PR、一个写入 worktree。**容量 1 时即单卡语义；提升只能由 Maintainer 经 `.github/agents.yml` 的 `capacity` 键显式配置（[Proposal recovery §5](../proposals/parallel-implementers-recovery.md)）。Verifier 和 Reviewer 的只读独立核验不属于另一个 Implementer。
 2. **GitHub 是当前事实源，本地运行记录只保存执行上下文。**每次选择都重新读取 milestone、issue、依赖和 PR，不使用本地游标猜下一张卡。
 3. **父子关系不等于依赖。**sub-issue 只表达分组；`blocked_by`、期门禁和外部依赖分别核验。
 4. **缺少元数据不等于没有依赖。**数据不完整、冲突或成环时 fail-closed，交 Maintainer 处理。
@@ -69,7 +69,7 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 流程标签只剩暂停与元数据两类（`ruby tools/setup_process_labels.rb --apply` 创建）：
 `needs:human`（等待人工决策）、`agent:resume`（允许恢复）、`metadata:invalid`（禁止自动开工）。
-`agent:in-progress` 已废弃：活动工作卡由 `status=In progress` 标识，全仓最多一张的约束不变。
+`agent:in-progress` 已废弃：活动工作卡由 `status=In progress` 标识，在途卡数不超过 `capacity`（缺省 1，见 §1 不变量 1）的约束不变。
 普通 assignee 只表示责任人，不能充当 Agent 认领锁。
 
 认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地记录（`phase=claiming`），
@@ -338,7 +338,7 @@ evaluation = SebasAgents::Policy::Dependencies.evaluate(issue, snapshot)
 
 ```sh
 ruby tools/sebas-process next                  # 读取 GitHub，输出单一动作
-ruby tools/sebas-process plan                  # 只读多候选视图：与 next 同策略同路由，返回全部就绪候选（capacity=1、首选恒等、含验收背压），不改写行为（#218；契约详见 quickstart Implementer）
+ruby tools/sebas-process plan                  # 只读多候选视图：与 next 同策略同路由，返回全部就绪候选（capacity 取 .github/agents.yml 的 capacity 键，缺省 1；输出 capacity/capacity_used、首选恒等、含验收背压），不改写行为（#218；契约详见 quickstart Implementer）
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
 ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（M4x-WP2，#220）：协调评论为凭据，lease_id 对账恢复；详见 quickstart 租约与迁移节
 ```

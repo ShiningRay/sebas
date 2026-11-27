@@ -254,8 +254,12 @@ module SebasAgents
     # gates / externals 为 subject → Evidence 块，供依赖判定读取。
     # trusted_bots 为 .github/agents.yml 授权的 bot 身份（如 "github-actions[bot]"），
     # 供 Evidence 的 workflow 登记路径校验；人类 Maintainer 仍走 maintainers。
+    # capacity 为在途租约上限（recovery §5 / Q3）：缺省 1，与单卡容量行为一致。
     Snapshot = Data.define(:repo, :main_sha, :milestones, :issues, :pull_requests, :maintainers,
-      :source_authors, :gates, :externals, :trusted_bots, :source_bodies, :proposal_evidence) do
+      :source_authors, :gates, :externals, :trusted_bots, :source_bodies, :proposal_evidence,
+      :capacity) do
+      DEFAULT_CAPACITY = 1
+
       def self.from_hash(hash)
         new(
           repo: hash.fetch("repo", ""),
@@ -271,8 +275,17 @@ module SebasAgents
           # source_ref → 被引用评论正文。用于校验「登记内容」而非仅「作者身份」。
           source_bodies: hash["source_bodies"] || {},
           # Proposal 裁决单独存真实作者、正文与父对象，缺省视为不可核验。
-          proposal_evidence: hash["proposal_evidence"] || {}
+          proposal_evidence: hash["proposal_evidence"] || {},
+          capacity: parse_capacity(hash["capacity"])
         )
+      end
+
+      # 容量只接受正整数：缺失/非法一律回落默认 1（快照 JSON 路径的旧 fixture
+      # 无此键仍可读）；显式非法值在 gateway 读取侧已 fail-closed，这里兜底。
+      def self.parse_capacity(raw)
+        return DEFAULT_CAPACITY unless raw.is_a?(Integer) && raw >= 1
+
+        raw
       end
 
       def issue(number)
