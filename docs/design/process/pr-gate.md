@@ -19,13 +19,16 @@
 | check run `status=completed` 且 `conclusion=success` | 进入整改判定 |
 | PR 是 draft（`.coderabbit.yaml` 的 `drafts=false`，本就不审） | 放行 + warning |
 | 5 分钟内 check run 始终没出现（不在审查范围） | 放行 + warning |
-| 出现后 15 分钟内仍未完成 | 放行 + warning |
+| 脚本启动后 15 分钟内仍未完成 | 放行 + warning |
 | 结论为 failure / cancelled / timed_out / skipped | 放行 + warning |
 | 连续 3 次读 check-runs 失败 | 放行 + warning |
 
 两个时间窗分开口径：「审查方压根不审这个 PR」（path_filters 全排除、App 未启用）
-与「审查跑得慢」是两件事。实测 check run 创建延迟 18-23s、偶发 113s，故给 5 分钟宽限；
-出现之后按 15 分钟等结论。
+与「审查跑得慢」是两件事。实测 check run 创建延迟 18-23s、偶发 113s，故给 5 分钟宽限。
+
+注意主上限的起点是**脚本启动**，不是 check run 出现（`deadline = start + timeout`
+只算一次）。所以出现得越晚，留给审查的时间越短：第 270s 出现就只有 630s。
+这是刻意的——总等待必须受 20 分钟的 job 超时约束，不能因为出现晚就无限延长。
 
 这段 fail-open 的理由：它只回答「审查有没有跑完」，不判质量。卡住 PR 的代价
 （draft 永远等不到、审查方被卸载、接口抖动）远大于「这一轮矩阵白跑」。

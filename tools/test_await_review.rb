@@ -358,8 +358,19 @@ class AwaitReviewTest < Minitest::Test
 
   # --- 审查提出整改时挡住矩阵 ---
 
-  def review(commit: "a" * 40, body: "")
-    {"commit_id" => commit, "body" => body, "state" => "COMMENTED"}
+  # 默认 author 写成审查方：门闸只认 app_slug 对应的作者（防伪造）。
+  def review(commit: "a" * 40, body: "", author: "coderabbitai[bot]")
+    {
+      "commit_id" => commit,
+      "body" => body,
+      "state" => "COMMENTED",
+      "user" => {"login" => author}
+    }
+  end
+
+  # 伪造者：正文写得一模一样，但作者是别人。
+  def forged_review(count: 9, author: "mallory")
+    review(body: "**Actionable comments posted: #{count}**", author: author)
   end
 
   def actionable_review(count: 2, commit: "a" * 40)
@@ -403,6 +414,42 @@ class AwaitReviewTest < Minitest::Test
 
     assert_equal 0, run_with([success_run], reviews: [stale])
     assert_includes @out.string, "未提出需整改项"
+  end
+
+  # 安全：任何人都能发一条正文含 `Actionable comments posted: 99` 的 review，
+  # 若不过滤作者，PR 作者自己就能把门闸永久卡红（CWE-345）。
+  def test_forged_review_from_other_author_is_ignored
+    stop_sleeping
+
+    code = run_with([success_run], reviews: [forged_review(count: 99, author: "mallory")])
+    assert_equal 0, code
+    assert_includes @out.string, "未提出需整改项"
+  end
+
+  # 作者名带不带 [bot] 后缀都要认得出（GitHub App 身份写成 `<slug>[bot]`）。
+  def test_bot_suffix_is_normalized
+    assert AwaitReview.trusted_review_author?(
+      {"user" => {"login" => "coderabbitai[bot]"}}, "coderabbitai"
+    )
+    refute AwaitReview.trusted_review_author?(
+      {"user" => {"login" => "shiningray"}}, "coderabbitai"
+    )
+    refute AwaitReview.trusted_review_author?({"user" => nil}, "coderabbitai")
+  end
+
+  # reviews 必须翻页：接口按时间正序、单页 100 条，当前 head 的 review 可能在后页。
+  # 只看首页会把「有整改」误判成「无整改」并放行。
+  def test_reviews_are_paginated
+    source = File.read(File.expand_path("await_review.rb", __dir__), encoding: "UTF-8")
+    fetch = source[/def fetch_reviews\(.*?\n  end\n/m]
+    refute_nil fetch, "应能定位 fetch_reviews"
+    assert_includes fetch, "paginate: true", "fetch_reviews 必须翻页"
+  end
+
+  # 找旧评论失败时不能当成「没贴过」：那会重复发评论。
+  def test_find_comment_raises_on_bad_shape
+    AwaitReview.gh_reader = ->(_path) { {"not" => "an array"} }
+    assert_raises(RuntimeError) { AwaitReview.find_comment("o/r", "1") }
   end
 
   # 审查没跑成时不读 actionable：那是 fail-open 的领地。
@@ -454,17 +501,35 @@ class AwaitReviewTest < Minitest::Test
     AwaitReview.gh_writer = nil
   end
 
+  # 禁用评论时必须走完整个整改分支再断言「没写」。
+  # 否则 check-run 队列已被前一次调用耗尽，第二次会连读 3 次失败直接 fail-open，
+  # guard_actionable 根本没执行——删掉 GATE_COMMENT 判断这条仍会绿（假绿灯）。
   def test_comment_is_skipped_when_disabled
     stop_sleeping
     writes = []
     AwaitReview.gh_writer = ->(method, path, payload) { writes << [method, path, payload] }
 
-    code = run_with([success_run], reviews: [actionable_review])
-    assert_equal 1, code
+    # 每次调用都重新供一轮完整响应：check run success + 整改 review。
+    # 必须也覆盖 /comments（找旧评论），否则 find_comment 抛错、
+    # post_block_comment 的 rescue 直接跳过，断言测不到「该发而未发」。
+    with_reviews = lambda do |path|
+      next [actionable_review] if path.include?("/reviews")
+      next [{"id" => 1, "body" => AwaitReview::COMMENT_MARKER}] if path.include?("/comments")
+      next({"draft" => false}) if path.match?(%r{/pulls/\d+\z})
+
+      success_run
+    end
+
+    AwaitReview.gh_reader = with_reviews
+    assert_equal 1, AwaitReview.run(env: env, out: @out), "默认应判整改"
     refute_empty writes, "默认应发评论"
 
     writes.clear
-    AwaitReview.run(env: env("GATE_COMMENT" => "false"), out: @out)
+    @out = StringIO.new
+    AwaitReview.gh_reader = with_reviews
+    assert_equal 1, AwaitReview.run(env: env("GATE_COMMENT" => "false"), out: @out),
+      "禁用评论不影响判定结果"
+    assert_includes @out.string, "需整改项"
     assert_empty writes, "GATE_COMMENT=false 时不该贴评论"
   ensure
     AwaitReview.gh_writer = nil

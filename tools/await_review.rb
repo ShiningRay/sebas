@@ -97,10 +97,13 @@ module AwaitReview
       return pass_open(out, "读 PR ##{pr_number} 状态失败（#{e.message}）")
     end
 
+    app_slug = presence(env["REVIEW_APP_SLUG"]) || DEFAULT_APP_SLUG
+    check_name = presence(env["REVIEW_CHECK_NAME"]) || DEFAULT_CHECK_NAME
+
     verdict = await(
       repo: repo, sha: sha,
-      app_slug: presence(env["REVIEW_APP_SLUG"]) || DEFAULT_APP_SLUG,
-      check_name: presence(env["REVIEW_CHECK_NAME"]) || DEFAULT_CHECK_NAME,
+      app_slug: app_slug,
+      check_name: check_name,
       timeout: integer(env["REVIEW_TIMEOUT_SECONDS"], DEFAULT_TIMEOUT_SECONDS),
       interval: integer(env["REVIEW_POLL_SECONDS"], DEFAULT_POLL_SECONDS),
       appear_timeout: integer(env["REVIEW_APPEAR_SECONDS"], DEFAULT_APPEAR_SECONDS),
@@ -110,8 +113,8 @@ module AwaitReview
     # 此时去读 actionable 既读不到什么，也没资格挡住 PR。
     return 0 unless verdict == :reviewed
 
-    guard_actionable(repo: repo, pr_number: pr_number, sha: sha, out: out,
-      comment: env["GATE_COMMENT"] != "false")
+    guard_actionable(repo: repo, pr_number: pr_number, sha: sha, app_slug: app_slug,
+      out: out, comment: env["GATE_COMMENT"] != "false")
   end
 
   def await(repo:, sha:, app_slug:, check_name:, timeout:, interval:, appear_timeout:, out:)
@@ -190,8 +193,8 @@ module AwaitReview
   # 判定「这次审查有没有必须整改的条目」，有则挡住矩阵（返回 1）。
   #
   # 只看当前 head 上的 review：旧 commit 的意见不该挡住已经修过的新 commit。
-  def guard_actionable(repo:, pr_number:, sha:, out:, comment:)
-    reviews = fetch_reviews(repo, pr_number, sha)
+  def guard_actionable(repo:, pr_number:, sha:, app_slug:, out:, comment:)
+    reviews = fetch_reviews(repo, pr_number, sha, app_slug: app_slug)
     return pass_open(out, "读不到 #{sha[0, 8]} 上的 review，无法判断是否需整改") if reviews.nil?
 
     actionable = reviews.sum { |review| actionable_count(review) }
@@ -206,17 +209,37 @@ module AwaitReview
   end
 
   # nil 表示读取失败（区别于「读到空列表」）。
-  # 结构校验必须显式：Array(hash) 会把 Hash 拆成键值对数组，后续在字符串上取
-  # review["commit_id"] 抛 no implicit conversion，被 rescue 吞成「读取失败」——
-  # 看着像网络问题，实际是接口形状变了。
-  def fetch_reviews(repo, pr_number, sha)
-    data = gh_json("repos/#{repo}/pulls/#{pr_number}/reviews?per_page=100")
+  #
+  # 三个必要条件，缺一都可能误判：
+  #   1. 必须翻页：接口按时间正序、单页最多 100 条。只看第一页时，当前 head 的
+  #      review 可能落在第 101 条之后，过滤出空数组就被当成「无整改项」放行。
+  #   2. 只认审查方作者：任何人（含 PR 作者）都能发一条正文含
+  #      `Actionable comments posted: 99` 的 review，把门闸永久卡红
+  #      （CWE-345，Authorization Bypass）。
+  #   3. 结构校验显式：Array(hash) 会把 Hash 拆成键值对数组，后续在字符串上取
+  #      review["commit_id"] 抛 no implicit conversion，被 rescue 吞成「读取失败」。
+  def fetch_reviews(repo, pr_number, sha, app_slug:)
+    data = gh_json("repos/#{repo}/pulls/#{pr_number}/reviews?per_page=100", paginate: true)
     raise "reviews 不是数组：#{data.class}" unless data.is_a?(Array)
 
-    data.select { |review| review.is_a?(Hash) && review["commit_id"].to_s == sha }
+    data.select do |review|
+      review.is_a?(Hash) &&
+        review["commit_id"].to_s == sha &&
+        trusted_review_author?(review, app_slug)
+    end
   rescue StandardError => e
     warn "读取 review 失败：#{e.message}"
     nil
+  end
+
+  # review 的作者必须是我们等的那家审查方。GitHub 把 App 身份写成
+  # `<slug>[bot]`，比对时去掉 `[bot]` 后缀再与 app.slug 比较。
+  def trusted_review_author?(review, app_slug)
+    user = review["user"]
+    login = user.is_a?(Hash) ? user["login"].to_s.downcase : ""
+    return false if login.empty?
+
+    login.delete_suffix("[bot]") == app_slug.to_s.downcase
   end
 
   # review 正文没有该文案 = 这条 review 没有 actionable 项。
@@ -259,14 +282,15 @@ module AwaitReview
   #
   # 必须翻页：`per_page=100` 只取第一页，PR 评论过百（CodeRabbit 每轮都写、
   # verify 也写）时旧评论会落到第二页，于是每次重跑都误判「没贴过」并再发一条。
-  # gh api 的 --paginate 会把多页数组拼成一个 JSON 数组返回。
+  #
+  # 读取失败或响应形状异常必须抛出，不能返回 nil：post_block_comment 把 nil
+  # 当作「没有旧评论」而走 POST，结果是旧评论还在、又新增一条。抛出去由
+  # post_block_comment 的 rescue 记 warning 并跳过本轮评论，退出码不受影响。
   def find_comment(repo, pr_number)
     data = gh_json("repos/#{repo}/issues/#{pr_number}/comments?per_page=100", paginate: true)
-    return nil unless data.is_a?(Array)
+    raise "comments 不是数组：#{data.class}" unless data.is_a?(Array)
 
     data.reverse.find { |c| c.is_a?(Hash) && c["body"].to_s.start_with?(COMMENT_MARKER) }&.fetch("id", nil)
-  rescue StandardError
-    nil
   end
 
   def gh_api_write(method, path, payload)
