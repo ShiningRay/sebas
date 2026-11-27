@@ -6,6 +6,7 @@ module SebasAgents
   # 纯值对象：全部由 JSON 快照构造，不含网络或文件副作用。
   module Model
     RESUME_LABEL = "agent:resume"
+    IN_PROGRESS_LABEL = "agent:in-progress"
     HUMAN_LABEL = "needs:human"
     INVALID_LABEL = "metadata:invalid"
 
