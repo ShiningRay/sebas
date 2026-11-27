@@ -310,10 +310,11 @@ end
     assert_equal [%w[git push origin main]], runner.calls
   end
   # 容量 >1：在途卡未达容量时第二张可认领；容量 1 保持全仓单卡语义。
+  # Q4=A 强制：两张卡都要声明互不重叠的 scope，否则缺 scope 独占容量。
   def test_claim_allows_second_card_within_capacity
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
-      issue(2, body: automation(order: [4, 2]))
+      issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+      issue(2, body: automation(order: [4, 2], scope: ["src/keys/"]))
     ], capacity: 2)
     Dir.mktmpdir do |dir|
       path = File.join(dir, "snapshot.json")
@@ -328,9 +329,9 @@ end
 
   def test_claim_refuses_when_capacity_exhausted
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
-      issue(2, body: automation(order: [4, 2]), status: "In progress"),
-      issue(3, body: automation(order: [4, 3]))
+      issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+      issue(2, body: automation(order: [4, 2], scope: ["src/keys/"]), status: "In progress"),
+      issue(3, body: automation(order: [4, 3], scope: ["docs/"]))
     ], capacity: 2)
     Dir.mktmpdir do |dir|
       path = File.join(dir, "snapshot.json")

@@ -17,6 +17,15 @@
 - 决定 milestone 内容量置换——塞进一张新卡就要换出一张等量的卡
 - 排期批准后创建工作包并挂 milestone（status=Todo）；禁止把 Proposal 直接交给 Implementer 开工
 
+### 并行容量与合并队列
+
+- 在途租约上限由 `.github/agents.yml` 的 `capacity` 键决定，缺键即 1；提升后
+  `plan` 与 `claim` 都按新容量判定（迁移窗口内仍钳回 1）。
+- 提升容量前先确认要并行的卡都写了 `scope`：缺 scope 的卡独占容量，等于没提。
+- 合并由 `queue --apply` 逐张推进；Evidence 升级是异步的，串行单位到升级完成。
+  卡住（verify 不通过、CHANGELOG 未就绪、Evidence 超时）时停下来由 Maintainer 裁决，
+  不要让 coordinator 自行重试。
+
 ### 指令格式
 
 设计阶段可写：`接受 #N 的方向，先由 Scribe 提交定稿候选，不排实现。`

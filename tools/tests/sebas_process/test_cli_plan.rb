@@ -74,11 +74,13 @@ class PlanCommandTest < Minitest::Test
     assert_equal [2], view.ready.map(&:number)
   end
 
-  def test_needs_human_pauses_plan_with_enum_code
+  # Q9：needs:human 只作用于本卡。没有其他就绪卡时 plan 报 blocked（不是全局
+  # needs_human），暂停卡以枚举码 needs_human 出现在 excluded 里。
+  def test_needs_human_card_excluded_with_enum_code
     data = snapshot(issues: [issue(1, body: automation(order: [4, 1]), labels: ["needs:human"])])
     view = plan(data)
     assert_equal [], view.ready
-    assert_equal "needs_human", view.next_action
+    assert_equal "blocked", view.next_action
     row = view.excluded.find { |entry| entry["issue"] == 1 }
     refute_nil row
     assert_equal "needs_human", row["code"]
@@ -170,9 +172,10 @@ class PlanCommandTest < Minitest::Test
   # 容量配置（recovery §5 / Q3）：快照 capacity 贯穿到 plan 输出，
   # capacity_used 为在途卡数；异机在途卡不再把整个视图打成 wait。
   def test_cli_plan_emits_capacity_fields_from_snapshot
+    # Q4=A 强制：容量 >1 时两卡都要声明 scope 且不重叠，否则缺 scope 独占容量。
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
-      issue(2, body: automation(order: [4, 2]))
+      issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+      issue(2, body: automation(order: [4, 2], scope: ["src/keys/"]))
     ], capacity: 2)
     Dir.mktmpdir do |dir|
       snap = File.join(dir, "s.json")

@@ -9,7 +9,12 @@
 
 首版坚持以下不变量：
 
-1. **同一时刻在途工作卡不超过配置容量（`capacity`，缺省 1），每卡一个分支、一个 PR、一个写入 worktree。**容量 1 时即单卡语义；提升只能由 Maintainer 经 `.github/agents.yml` 的 `capacity` 键显式配置（[Proposal recovery §5](../proposals/parallel-implementers-recovery.md)）。Verifier 和 Reviewer 的只读独立核验不属于另一个 Implementer。
+1. **同一时刻在途工作卡不超过配置容量（`capacity`，缺省 1），每卡一个分支、一个 PR、
+   一个写入 worktree。** 容量 1 时即单卡语义；提升只能由 Maintainer 经
+   `.github/agents.yml` 的 `capacity` 键显式配置
+   （[Proposal recovery §5](../proposals/parallel-implementers-recovery.md)）。
+   Verifier 和 Reviewer 的只读独立核验不属于另一个 Implementer。
+   在途多卡时每张卡各自求值动作（§3.6.1）：等 CI 的那张不拖住另一张，`needs:human` 只停本卡。
 2. **GitHub 是当前事实源，本地运行记录只保存执行上下文。**每次选择都重新读取 milestone、issue、依赖和 PR，不使用本地游标猜下一张卡。
 3. **父子关系不等于依赖。**sub-issue 只表达分组；`blocked_by`、期门禁和外部依赖分别核验。
 4. **缺少元数据不等于没有依赖。**数据不完整、冲突或成环时 fail-closed，交 Maintainer 处理。
@@ -273,6 +278,11 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 `--pre` 之所以要查 Evidence 与 thread，是因为这两项在合并前就已确定，且无法在合并后补救——带着未验收结论合并，事后再核验只能发现错误，不能撤销。第三方审阅（`CodeRabbit`）的进行中状态不参与「未完成检查」判定，见 [implementer.md](implementer.md) §2。
 
+### 3.6.1 逐租约动作与合并队列
+
+多租约下 `next` / `plan` 对每张在途卡分别求值，`merge_ready` 进合并队列——详见
+[merge-queue.md](merge-queue.md)。
+
 ### 3.7 卡面契约的时效
 
 工作包卡创建时，契约声明只引**已合入 main** 的文本路径。引用未合并文档时必须显式标注「待合入，开工前以最新合并版为准」。Scribe 对账周期性扫描 OPEN 卡，回填已过时的契约声明（例如「文档未合入 main」在 PR 合并后即失效）。
@@ -286,6 +296,7 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 | `resume_issue` | 续做已认领但尚无 PR 的卡 | 是，沿用原 worktree |
 | `resume_pr` | 修复或推进自己的在途 PR | 按需 |
 | `claim_issue` | 认领一张新的就绪卡 | 认领成功后启动 |
+| `merge_ready` | 在途 PR 已 CLEAN 且 thread 清零，进合并队列 | 否（队列推进） |
 | `wait` | 等 CI、review 或其他正常异步事件 | 否 |
 | `blocked` | 当前没有就绪卡；列出前置与依赖原因，并在 `metadata_gaps` 列出挂不到 active milestone 的工作包 | 否 |
 | `needs_human` | 需要 Maintainer 决策或外部输入 | 否 |

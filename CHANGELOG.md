@@ -7,6 +7,12 @@
 
 ### Added
 
+- **代码卡并行与合并队列**（M4x-Parallel-WP3，[#221](https://github.com/ShiningRay/sebas/issues/221)）：
+  - 逐租约动作：`next`/`plan` 对每张在途卡分别求值（归属校验 → 失败检查/thread/BEHIND → wait → `merge_ready`），`wait` 不占算力、`needs:human` 只停本卡；`plan` 输出 `leases`。
+  - scope 冲突预算生效：前缀互相包含即冲突，缺 scope 独占容量；`plan` 与 `claim` 同口径（`claim` 不再能绕过预算）。共享文件靠声明进 scope 进入预算。
+  - 合并队列：`queue` 只读规划队首与链上步骤（`verify_pre → changelog → merge → evidence → release`），`queue --apply` 只推进一步「合并」；`gh pr merge --squash --match-head-commit` 绑定已核验 head，base 三次核对。
+  - CHANGELOG 改由队列追加：PR 正文 marker 块携带条目，按 `(#PR)` 引用幂等识别；`scribe.md` §5 同步修订。
+  - 写守卫新增 `:merge_pr` / `:update_branch` 两条独立意图，形态完整匹配才放行（多余参数如 `--admin` 一律拦）。
 - **CI 并发语义按事件区分**（[#221](https://github.com/ShiningRay/sebas/issues/221)）：`ci.yml` 的 `cancel-in-progress` 改为只在 `pull_request` 事件为 true。main 侧不再互相取消——被顶掉的 main CI 会让 Evidence 停在 `merged_into_main: false`、后继卡永久 blocked。理由与边界见 [pr-gate.md](docs/design/process/pr-gate.md)。
 - **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：
   - `capacity` 配置：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限，缺键即 1（行为与单卡一致）；仅接受正整数，显式 null/浮点等非法值 fail-closed。
