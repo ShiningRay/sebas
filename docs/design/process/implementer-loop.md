@@ -332,15 +332,13 @@ action = SebasAgents::Policy::Selection.select_action(snapshot, record: run_reco
 
 # 单卡依赖判定：Ready / Blocked / Invalid
 evaluation = SebasAgents::Policy::Dependencies.evaluate(issue, snapshot)
-
-# PR 分类：resume_pr / wait
-action = SebasAgents::Policy::Selection.select_action(snapshot, record: run_record)
 ```
 
 命令入口：
 
 ```sh
 ruby tools/sebas-process next                  # 读取 GitHub，输出单一动作
+ruby tools/sebas-process plan                  # 只读多候选视图：与 next 同策略同路由，返回全部就绪候选（capacity=1、首选恒等、含验收背压），不改写行为（#218；契约详见 quickstart Implementer）
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
 ruby tools/sebas-process claim 39 --apply      # 写本地运行记录
 ```
