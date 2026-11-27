@@ -3,6 +3,7 @@ require "./manifest"
 require "./protocol"
 require "./registry"
 require "./runner"
+require "./tool"
 
 # 精确派发服务（M3-WP4，#16；design.md §12.2）：宿主侧的派发闸。
 #
