@@ -181,7 +181,7 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 | T01 | 创建 → dormant | 有未来关注时间或暂候条件；**仅当存在硬截止时**才要求关注时间不晚于硬截止，无硬截止时该比较不适用 | outcome 或 source 为空；存在硬截止且关注时间晚于硬截止（必然逾期，拒绝并提示调整关注时间或截止） |
 | T02 | 创建 → needs_clarification | 跟进依据缺失（关注时间/可观察条件无法给出）且可给出最晚澄清时间。outcome 始终必填：缺失即捕获失败不入库 | 跟进依据完整（应入 T01/T03/T04） |
 | T03 | 创建 → waiting_condition | 等待外部条件且条件可观察 | 条件不可观察（须转 needs_clarification） |
-| T04 | 创建 → ready | 立即可行动且无未来关注时间 | — |
+| T04 | 创建 → ready | 立即可行动且无未来关注时间 | outcome 或 source 为空；存在未来关注时间（应走 T01）；存在硬截止且等待可观察条件（应走 T03） |
 | T05 | dormant → ready | 关注时间到达或暂候条件满足 | 源自 needs_clarification 且字段未补全（T08 暂缓路径）——补全前不得 ready，clarify_by 到期走取消。静默窗口属通知发送逻辑（提醒纪律），不阻止状态转移 |
 | T06 | dormant → cancelled | 用户显式取消 | 已 completed——completed 不可撤销，重开需新开 Commitment 并以 ExternalLink 关联旧卡（不引用 T19） |
 | T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready。补全后的关注时间不得晚于硬截止（同 T01 拒绝条件，提示调整） | 补全后仍缺必填项；关注时间晚于硬截止 |
