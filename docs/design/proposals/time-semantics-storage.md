@@ -187,11 +187,19 @@ WHEN NEW.state IN ('scheduled','sent','seen')
     AND d.state IN ('scheduled','sent','seen')
     AND d.id IS NOT NEW.supersedes                   -- NULL 安全比较（!= 遇 NULL 结果为 NULL，会漏检）
     AND NOT EXISTS (SELECT 1 FROM notification_deliveries s
-                    WHERE s.supersedes = d.id)
+                    WHERE s.supersedes = d.id
+                      AND s.id IS NOT NEW.id)        -- 排除 NEW 自身的旧引用：BEFORE UPDATE 时存储里的
+                                                     -- 本行仍是旧值（如旧 supersedes 仍指向 d），
+                                                     -- 不排除会把 d 误判为「已有替代者」而漏检
 )
 BEGIN
   SELECT RAISE(ABORT, '不变式 1：同一意图已存在未决投递（scheduled/sent/seen 且无替代者）');
 END;
+
+-- Delivery 状态对账迁移规则（与上两触发器一致；完整状态机表归 M5.2-WP3）：
+-- `unknown → sent` 仅当该投递**无替代者**时允许（投递结果确认的事实回填）；
+-- 已被替代（存在 B.supersedes=A）的 unknown 行不得转 sent/scheduled/seen——
+-- 其收口走 superseded（B 承接投递职责）；触发器对这类迁移 RAISE ABORT 与本规则一致。
 CREATE INDEX IF NOT EXISTS idx_deliveries_reminder ON notification_deliveries (reminder_id, state);
 
 -- wake_schedules：唤醒定义（提案 §5.3 职责分离：不承载长期目标）
