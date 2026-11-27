@@ -52,19 +52,47 @@ class AwaitReviewRerunWorkflowTest < Minitest::Test
 
   # 取首个匹配，与 tools/await_review.rb 的 ACTIONABLE_PATTERN 同口径。
   # review 正文可能引用示例文本（本仓库文档与测试就含该文案），取最大值会把
-  # 示例当结论。这条断言钉住 grep 的 -m1 与后续数字抽取。
+  # 示例当结论。
+  #
+  # `head -n1` 不可省：grep 的 -m1 限的是**行数**，同一行出现两个标记时两行都
+  # 会输出（实测 `Actionable comments posted: 1 and ...: 99` 得 2 行），
+  # 后面写进 $GITHUB_OUTPUT 就是多行值，GitHub 解析失败、步骤红掉。
   def test_first_actionable_marker_wins
-    assert_includes text, "grep -oEm1 'Actionable comments posted:", "必须只取首个匹配"
+    assert_includes text, "| head -n1", "同一行多个标记时也必须只留一个"
+    refute_includes text, "grep -oEm1", "-m1 限行不限匹配，不能替代 head -n1"
     refute_includes text, "sort -n", "取最大值会把正文里的示例当结论"
     refute_includes text, "tail -1", "取最大值会把正文里的示例当结论"
+    assert_includes text, "tr -cd '0-9'", "数字抽取要能消掉多行输入"
   end
 
   # 查询失败与找不到 run 都必须降级为 warning 并以 0 退出：`set -e` 下让赋值
   # 命令非零退会直接终止步骤，补漏 job 变红就淹没了真正的门闸结论。
   def test_query_failures_degrade_to_warning
-    assert_includes text, '|| true)"', "head sha 读取必须兜住失败"
-    assert_includes text, "if ! run_id=", "run 查询失败必须走独立 warning 分支"
+    assert_includes text, '|| true)"', "读事件字段必须兜住失败"
+    assert_includes text, "if ! listing=", "run 查询失败必须走独立 warning 分支"
     assert_includes text, "查询 $sha 的 CI run 失败", "查询失败要有明确 warning"
+  end
+
+  # 只有进行中的 run 时不能直接结束：这条 review 没人重判。要等它结束再判
+  # 「门闸是否已经读过这条 review」。
+  def test_waits_for_running_run_instead_of_skipping
+    assert_includes text, "只有进行中的 run", "必须识别出「只有进行中」的情形"
+    assert_includes text, "等它结束", "必须有等待"
+    assert_includes text, "在等待窗口内未完成", "等不到要降级为 warning"
+  end
+
+  # 重跑要有明确的先决条件：门闸在 review 提交之前就判完了。否则默认已读到，
+  # 不必多烧一轮。取不到门闸时刻时按「没读到」处理，宁严勿松。
+  def test_only_reruns_when_the_gate_completed_before_the_review
+    assert_includes text, "gate_at=", "必须查门闸完成时刻"
+    assert_includes text, "submitted=", "必须查 review 提交时刻"
+    assert_includes text, "视为已读到，不重跑", "门闸晚于 review 时不该重跑"
+  end
+
+  # 防循环：同一 run 重跑有上限，超了交人工，不能空转烧 runner。
+  def test_rerun_is_bounded
+    assert_includes text, "run_attempt", "上限要按 run_attempt 记"
+    assert_includes text, "不再自动重跑", "超过上限必须停手并 warning"
   end
 
   def test_closed_pull_requests_are_skipped

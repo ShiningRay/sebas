@@ -34,6 +34,11 @@ name: Await review rerun
 #   （否则任何人都能伪造一条 `Actionable comments posted: 99` 反复烧 runner，
 #   与 CWE-345 同型）；
 # - 取 review 正文里**首个**匹配，不取最大值：正文可能引用示例文本；
+#   用 `head -n1` 而非 `grep -m1`——后者限行不限匹配，同一行两个标记会输出两行，
+#   写进 $GITHUB_OUTPUT 就是多行值，步骤红掉；
+# - 只在「门闸完成时刻早于 review 提交时刻」时重跑，其余情形视为已读到；
+# - 只有进行中的 run 时有界等待（最多 150s），等不到交人工；
+# - 同一 run 的重跑上限按 run_attempt 记（>=3 停手），防空转；
 # - rerun 不产生新的 review 事件，不会自我循环；
 # - 任何查询/重跑失败一律降级为 warning：补漏动作不该盖过门闸本身的结论。
 
@@ -75,11 +80,17 @@ jobs:
           # 展开进 shell 变量既有长度上限也会引入注入面。
           #
           # 取**首个**匹配，与 tools/await_review.rb 的 ACTIONABLE_PATTERN 同口径。
-          # 正文里可能引用示例文本（本仓库的文档与测试就含该文案），取最大值
-          # 会把示例当结论；首个值才是审查方自己的判定。
+          # 正文里可能引用示例文本（本仓库的文档与测试就含该文案），首个值才是
+          # 审查方自己的判定。
+          #
+          # `head -n1` 不可省：grep 的 -m1 限的是**行数**，同一行出现两个标记时
+          # 两行都会输出（实测）。多了那一行，后面 `echo "count=..." >> $GITHUB_OUTPUT`
+          # 就是多行值，GitHub 解析失败，整个步骤红掉。
+          # `tr -cd '0-9'` 只留数字，避免再依赖一次正则的收尾形状。
           count="$(jq -r '.review.body // ""' "$EVENT_PATH" \
-            | grep -oEm1 'Actionable comments posted:[[:space:]]*[0-9]+' \
-            | grep -oE '[0-9]+$' || true)"
+            | grep -oE 'Actionable comments posted:[[:space:]]*[0-9]+' \
+            | head -n1 \
+            | tr -cd '0-9' || true)"
 
           if [ -z "$count" ]; then
             echo "该 review 没有 actionable 文案，无需重判"
@@ -103,32 +114,76 @@ jobs:
           # 每步都显式兜住失败：`set -e` 下让赋值命令非零退出会直接终止步骤，
           # 后面的 warning 分支根本不会执行，补漏 job 就变红了。
           sha="$(jq -r '.pull_request.head.sha' "$EVENT_PATH" 2>/dev/null || true)"
+          submitted="$(jq -r '.review.submitted_at // ""' "$EVENT_PATH" 2>/dev/null || true)"
           if [ -z "$sha" ]; then
             echo "::warning::事件里读不到 head sha，跳过重判"
             exit 0
           fi
 
-          # 取该 head 上最近一次已完成的 pull_request run。
-          # **不能假设进行中的 run 会读到这条 review**：门闸 job 早已判完，
+          # 列出该 head 上的 ci.yml pull_request run。
+          # **不能假设进行中的 run 会读到这条 review**：门闸 job 可能早已判完，
           # `spec` / `ameba` 是在它之后才起跑的，矩阵本身不读 review。
-          # 只取已完成的：进行中的 run 不允许 rerun（接口 403），而它若还没
-          # 跑到门闸，稍后自然会读到这条 review。
-          if ! run_id="$(gh api \
+          if ! listing="$(gh api \
             "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=pull_request&per_page=20" \
-            --jq '[.workflow_runs[] | select(.status == "completed")] | first | .id // ""' 2>/dev/null)"; then
+            --jq '.workflow_runs[] | "\(.id) \(.status) \(.run_attempt)"' 2>/dev/null)"; then
             echo "::warning::查询 $sha 的 CI run 失败，跳过重判"
             exit 0
           fi
 
-          if [ -z "$run_id" ]; then
-            echo "::warning::$sha 上没有已完成的 CI run，跳过重判"
+          completed_id="$(printf '%s\n' "$listing" | awk '$2 == "completed" { print $1; exit }')"
+          running_id="$(printf '%s\n' "$listing" | awk '$2 != "completed" { print $1; exit }')"
+
+          # 只有进行中的 run：有界等待它结束。直接跳过的代价是这一轮 review
+          # 无人重判；而它若确实还没跑到门闸，稍后自然会读到——这两种可能
+          # 只能等它结束再分辨。等不到就 warning 交人工，不含糊放行。
+          if [ -z "$completed_id" ] && [ -n "$running_id" ]; then
+            echo "该 head 只有进行中的 run ${running_id}，等它结束（最多 150s）"
+            state="unknown"
+            for _ in $(seq 1 30); do
+              state="$(gh api "repos/$REPO/actions/runs/$running_id" \
+                --jq '.status' 2>/dev/null || true)"
+              [ "$state" = "completed" ] && break
+              sleep 5
+            done
+            if [ "$state" != "completed" ]; then
+              echo "::warning::run $running_id 在等待窗口内未完成，需人工确认 $sha 上的 review 已被读到"
+              exit 0
+            fi
+            completed_id="$running_id"
+          fi
+
+          if [ -z "$completed_id" ]; then
+            echo "::warning::$sha 上没有 CI run，跳过重判"
             exit 0
           fi
 
-          if gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null 2>&1; then
-            echo "已重跑 CI run $run_id（head $sha），门闸将重新读取 review"
+          # 该 run 的门闸是否在 review 提交**之前**就判完了？是则肯定没读到，
+          # 需要重跑；否则默认已读到，不必再烧一轮。取不到门闸完成时刻时按
+          # 「没读到」处理——宁可多烧一轮，也不让整改意见被静默吞掉；
+          # 下面的防循环上限会兜住这个偏保守的默认值。
+          gate_at="$(gh api "repos/$REPO/actions/runs/$completed_id/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name == "await-review") | .completed_at // empty] | first // ""' 2>/dev/null || true)"
+          if [ -n "$gate_at" ] && [ -n "$submitted" ] && [[ ! "$gate_at" < "$submitted" ]]; then
+            echo "门闸 $gate_at 不早于 review ${submitted}，视为已读到，不重跑"
+            exit 0
+          fi
+          echo "门闸 ${gate_at:-读取失败} 早于 review ${submitted:-读取失败}，需重判"
+
+          # 防循环：rerun 不产生新的 review 事件，正常不会自循环。上限按
+          # run_attempt 记（首次运行为 1，每 rerun 一次加 1），留在第 3 次之前，
+          # 即同一 head 最多自动重跑 2 轮；再多就交人工，不再空转。
+          # attempt 单独查：走过等待分支时 listing 是等待前的快照，已过期。
+          attempt="$(gh api "repos/$REPO/actions/runs/$completed_id" \
+            --jq '.run_attempt' 2>/dev/null || true)"
+          if [ "${attempt:-1}" -ge 3 ]; then
+            echo "::warning::run $completed_id 已是第 ${attempt} 次运行，不再自动重跑，需人工确认 $sha"
+            exit 0
+          fi
+
+          if gh api -X POST "repos/$REPO/actions/runs/$completed_id/rerun" >/dev/null 2>&1; then
+            echo "已重跑 CI run ${completed_id}（head ${sha}），门闸将重新读取 review"
           else
             # 典型原因：fork PR 的 token 只读、run 已被清理。
             # 不失败——重判是补漏，不是门禁本身；让这里红只会淹没真正的门闸结论。
-            echo "::warning::重跑 CI run $run_id 失败，需人工确认 $sha 上的 review 是否已处理"
+            echo "::warning::重跑 CI run $completed_id 失败，需人工确认 $sha 上的 review 是否已处理"
           fi

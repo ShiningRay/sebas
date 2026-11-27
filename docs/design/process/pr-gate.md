@@ -93,24 +93,41 @@ commit 脱身。
 按 head sha 找到该 head 上最近一次已完成的 `ci.yml` run 并 `rerun`，
 让门闸在同一个 sha 上重新读 review。
 
+重跑不是无条件触发的：
+
+| 观察到的状态 | 动作 |
+|---|---|
+| head 上有已完成的 run，且其 `await-review` 完成时刻**早于** review 提交时刻 | 重跑那个 run |
+| head 上有已完成的 run，但门闸完成时刻不早于 review 提交 | 视为已读到，不重跑 |
+| head 上只有进行中的 run | 有界等待（最多 150s）它结束，再按上面两行判 |
+| 等待超时 / 查不到门闸时刻 / 查不到 run | warning 交人工，不静默放行 |
+| 目标 run 已是第 3 次运行（`run_attempt >= 3`） | 不再自动重跑，warning 交人工 |
+
+「门闸完成时刻早于 review」是重跑的唯一充分条件：门闸判完那一刻读到的
+review 列表里没有这条，这条就必然没被读过。反过来门闸晚于 review，
+说明它读到了，再跑一遍只是多烧 runner。
+
 边界：
 
 - 只对基线审查方（`coderabbitai[bot]`）的 review 生效。别人发的 review 不触发
   任何动作，否则任何人都能伪造一条 `Actionable comments posted: 99` 反复烧
   runner（与 CWE-345 同型）。
 - 取 review 正文里**首个**匹配，不取最大值：正文可能引用示例文本
-  （本仓库的文档与测试就含该文案）。首个值才是审查方自己的判定。
+  （本仓库的文档与测试就含该文案）。用 `head -n1` 而不是 `grep -m1`——
+  后者限的是**行数**，同一行出现两个标记时会输出两行，写进 `$GITHUB_OUTPUT`
+  就是多行值，步骤直接红掉。
 - N=0 或无该文案时不重跑：无整改项本来就不该多烧一轮。
 - 重跑落在同一 head 上（按 `head_sha=` 查 run），不换 sha。
-- 只重跑已完成的 run：进行中的 run 不允许 rerun（接口 403）。
+- 只对已完成的 run 调 rerun（进行中的 run 不允许，接口 403）；进行中的
+  情形走上面的有界等待。
 - 查询与重跑失败一律降级为 warning：重判是补漏、不是门禁本身，
   让它红会淹没真正的门闸结论。
 - concurrency 分组与主 CI 的 `ci-<ref>` 分开，避免抢槽位。
 
 **这条补漏不是兜底保证，只是缩小窗口。** 它依赖『review 事件一定能触达』，
-而 runner 排队、API 抖动、fork PR 的只读 token 都会让 rerun 落空。
-所以判定「本轮审完了没有」仍以 head 上有没有本轮 review 记录为准
-（见 [implementer.md](implementer.md) §2 与合并前置第 6、7 条）。
+而 runner 排队、API 抖动、fork PR 的只读 token、以及等待窗口内 run 没跑完
+都会让 rerun 落空。所以判定「本轮审完了没有」仍以 head 上有没有本轮 review
+记录为准（见 [implementer.md](implementer.md) §2 与合并前置第 6、7 条）。
 
 ## 为什么门闸可以红（与早期口径相反）
 
