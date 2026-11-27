@@ -17,14 +17,16 @@
 | M3 协作+插件层 | v0.1.0（已发布） | 15–24 pd（+3.5–5 追加） | 6（+2 追加） | [plan/wbs/m3-collab-plugins.md](plan/wbs/m3-collab-plugins.md) |
 | M4 Fork/Join 影分身 | v0.2.0 | 27.5–44.5 pd | 18 | [plan/wbs/m4-fork-join.md](plan/wbs/m4-fork-join.md) |
 | M5 承诺与提醒闭环 | v0.3.0 | 22–36 pd | 15 | [plan/wbs/m5-commitments.md](plan/wbs/m5-commitments.md) |
-| M6 外部日历只读镜像 | v0.4.0 | 20–34 pd | 9 | [plan/wbs/m6-calendar-mirror.md](plan/wbs/m6-calendar-mirror.md) |
+| M6 外部日历只读镜像 + 对话式 TUI | v0.4.0 | 26–43 pd | 16 | [plan/wbs/m6-calendar-mirror.md](plan/wbs/m6-calendar-mirror.md) |
 | M7 受控投影与撤销审计 | v0.5.0 | 6–10 pd | 4 | [plan/wbs/m7-projection.md](plan/wbs/m7-projection.md) |
 | M8 渠道补齐（WeCom + Lark + Slack + email 健壮性） | v0.6.0 | 20–33.5 pd | 10 | [plan/wbs/m8-channels.md](plan/wbs/m8-channels.md) |
-| **合计 M0–M8** | — | **163–261.5 pd** | **88** | 33–53 周口径随范围调整重算，见 B.2 |
+| **合计 M0–M8** | — | **169–270 pd** | **95** | 34–54 周，M6.5 已纳入单人串行口径，见 B.2 |
 
 > **2026-11-26 范围调整**（Maintainer 裁决）：Telegram 相关任务由 M8 迁入 M3（M3-WP7/WP8 追加包 **3.5–5 pd**，未开工；提案 §4.2 的「调度器 failed 批次重试扩展」无估时无 issue，不计入）；企业微信、飞书相关功能与任务由 M1 欠账迁入 M8（M8.1-WP2–WP4，10–16 pd），M8 另含 WP1 扩展点定稿与 Slack WP5。
 >
-> 合计按此重算：原 M0–M7 的 139.5–223 pd 加 M3 追加 3.5–5 pd 再加 M8 17–28.5 pd = **160–256.5 pd**；包数 76 + 2 + 8 = 86。
+> **2026-11-27 范围调整**（Maintainer 裁决）：M6 追加 M6.5「对话式 TUI」7 包 **6–9 pd**（提案 [tui-conversational-console.md](proposals/tui-conversational-console.md)）；M6 期名扩为「外部日历只读镜像与重估 + 对话式 TUI」。
+>
+> 合计按规模表逐行重算：M0 17–25 + M1 19.5–30 + M2 12.5–19 + M3 含追加 18.5–29 + M4 27.5–44.5 + M5 22–36 + M6 26–43 + M7 6–10 + M8 20–33.5 = **169–270 pd**；包数 9 + 9 + 6 + 8 + 18 + 15 + 16 + 4 + 10 = **95**。
 
 ## 章节索引
 
@@ -52,3 +54,4 @@
 - **M4**：M4.0–M4.4 代码与文档工作包已全部完成并经 PR 合入 main，milestone 仅剩 1 张 manual 卡（#19 E.1 父卡，待 Gmail 裁决收口后关闭）；v0.2.0 发版待该卡清零。
 - **M5–M7** 已拆成 GitHub issue 但**未开工、无实现证据**——对应的 issue 编号与 milestone 见 [B.9.5 版本计划](plan/schedule/m5-m7.md)。
 - M8 范围于 2026-11-26 重定为「渠道补齐（WeCom + Lark + Slack）」，Telegram 已迁出。
+- **M6 范围于 2026-11-27 扩充**：追加 M6.5「对话式 TUI」7 包（M6.5-WP1–WP7），期名扩为「外部日历只读镜像与重估 + 对话式 TUI」。提案 [tui-conversational-console.md](proposals/tui-conversational-console.md)。
