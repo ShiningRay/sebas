@@ -248,8 +248,8 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 - supersedes 关联**不影响** §4.2 的同键计数——计数只看 sent_at；
 - 未发送的前条（scheduled）被后条替代：前条置 superseded（无 sent_at），
   后条正常发送 → 同键 sent 计数 = 1，**不违反**（属「未发送替代」）；
-- 同键两条都曾发送（sent_at 均非空）→ 违反 **§4.1** 的同键未决计数
-  （已发送的合计为 2，且无 supersedes 可救）——重复发送按 §4.1 判定。
+- 同键两条都曾发送（sent_at 均非空）→ 直接违反**本判定式**
+  （同键 sent_at 非空计数 = 2 > 1；supersedes 关联不能改变已发生两次发送的事实）。
 
 ### 4.3 Delivery 状态不等于完成
 
