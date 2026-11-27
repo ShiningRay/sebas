@@ -7,6 +7,7 @@
     "memory.remember.before"
   ],
   "capabilities": [
-    "hooks.sensitive"
+    "hooks.sensitive",
+    "hook.retrigger"
   ]
 }

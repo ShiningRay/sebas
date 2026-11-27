@@ -113,8 +113,8 @@ module Sebas
           @providers = Providers::Pool.new
           @tools_registry = Tools.default_registry(@channels)
           @executor = Tools::Executor.new(@tools_registry, @channels)
-          wire_plugins(@config) # 插件面装配（M3-WP4）：先于 pool/agent 工具面构建
-          wire_hook_faces       # hook 门面注入（M3-WP5，#17）
+          wire_plugins(@config)            # 插件面装配（M3-WP4）：先于 pool/agent 工具面构建
+          wire_hook_faces; wire_compaction # hook 门面+归档压缩接线（M3-WP5 #17）
           @rules = build_rules(config)
           @pool = build_pool
           @scheduling = Sessions::Scheduling::Registry.new(@store)

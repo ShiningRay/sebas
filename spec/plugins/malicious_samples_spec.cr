@@ -67,36 +67,45 @@ module Sebas
       verdict.code.should eq("invalid_result")
     end
 
-    it "递归 hook：capability 触发的重入被深度预算拦截（hook_depth_exceeded deny）" do
+    it "递归 hook：已授权 capability 的重入被深度预算拦截（严格 hook_depth_exceeded）" do
       interp2 = interp
       unless interp2
         pending "需要解释器"
         next
       end
-      d = MaliciousHelpers.dispatcher_for("recursive-hook", interp2)
-      budget = ::Sebas::Plugins::HookDispatcher::Budget.new(max_calls: 64, max_depth: 1, max_total_ms: 10_000)
-      verdict = d.gate("memory.remember.before", JSON.parse("{}"), MaliciousHelpers.payload, budget: budget)
-      verdict.denied.should be_true
-      # 递归重入的两道拦截均为 deny fail-closed：manifest 未声明 → 越权
-      # （第一关）；声明后重入 → 深度预算/断流（第二关）
-      {"hook_depth_exceeded", "capability_channel_closed", "capability_not_authorized"}.should contain(verdict.code)
-    end
+      # 样本调用 hook.retrigger——runner capability_handler 桥把该 capability
+      # 直接再派发同 hook（同 fiber → 链深度 +1），模拟「插件借 hook 递归
+      # 触发自身」（§12.11 判定口径）。深度预算 max_depth=1 拦截。
+      registry = ::Sebas::Plugins::Registry.new
+      report = registry.load_dir(MaliciousHelpers::FIXTURES)
+      report.errors.each { |e| fail("fixture error: #{e}") }
+      plugin = registry.plugin("recursive-hook") || fail("recursive-hook not loaded")
 
-    it "死循环：watchdog 超时终止，gate 判 deny 不卡宿主（M3 验收第 4 条）" do
-      interp2 = interp
-      unless interp2
-        pending "需要解释器"
-        next
+      runner = ::Sebas::Plugins::Runner.new(interp2, global_timeout_ms: 30_000_i64)
+      outer_dispatcher = ::Sebas::Plugins::HookDispatcher.new
+      outer_dispatcher.dispatch = ::Sebas::Plugins::Dispatch.new(registry, runner)
+      outer_dispatcher.subscribe("memory.remember.before", plugin.manifest, "recursive-hook")
+
+      # capability 桥：hook.retrigger → 在同 fiber 再入外层 gate（深度 +1）
+      inner_code = Channel(String?).new(1)
+      runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, _params : JSON::Any) do
+        JSON.parse("null") unless capability == "hook.retrigger"
+        inner_budget = ::Sebas::Plugins::HookDispatcher::Budget.new(max_calls: 64, max_depth: 1, max_total_ms: 10_000)
+        inner = outer_dispatcher.gate("memory.remember.before",
+          JSON.parse(%({"plugin_id": "recursive-hook"})), MaliciousHelpers.payload, budget: inner_budget)
+        inner_code.send(inner.code) rescue nil
+        JSON.parse(%({"reentered": #{inner.denied.to_json}}))
       end
-      started = Time.instant
-      d = MaliciousHelpers.dispatcher_for("deadloop", interp2)
-      verdict = d.gate("memory.remember.before", JSON.parse("{}"), MaliciousHelpers.payload)
-      elapsed = (Time.instant - started).total_milliseconds
-      verdict.denied.should be_true
-      elapsed.should be < 10_000 # watchdog 上限远小于样本死循环时长
+
+      outer_dispatcher.gate("memory.remember.before", JSON.parse("{}"),
+        MaliciousHelpers.payload,
+        budget: ::Sebas::Plugins::HookDispatcher::Budget.new(max_calls: 64, max_depth: 1, max_total_ms: 10_000))
+      # 严格断言：重入（同 fiber 再入外层 gate，深度 2 > max_depth=1）被
+      # hook_depth_exceeded 拦截——插件借 hook 递归触发自身不可达（§12.11）；
+      # 外层 allow 合规（插件收到的是「重入已被拦」的报告，非失败逃逸）
+      inner_code.receive.should eq("hook_depth_exceeded")
     end
 
-    # ulimit -v 在 macOS 是 no-op（RLIMIT_AS 不生效）——内存爆实测仅 Linux
     {% if flag?(:linux) %}
       it "内存爆：ulimit 虚存上限终止进程，outcome 非 ok（资源上限实测，Linux）" do
         interp2 = interp

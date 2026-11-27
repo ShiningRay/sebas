@@ -65,6 +65,28 @@
         module JobObject
           Log = Sebas::Log.for("platform.job_object")
 
+          # 调用级 Job 的共享同步所有者（M3-WP5 review）：watchdog fiber 与
+          # 主 fiber 都可能触发终止——Atomic(Bool) 保证 terminate_and_close
+          # 恰好执行一次；已关闭后的后续调用直接返回（句柄值可能已被系统
+          # 复用，双重 close 会误关他者）。
+          class JobHandle
+            @closed = Atomic(Bool).new(false)
+
+            def initialize(@job : Void*)
+            end
+
+            def job : Void*
+              @job
+            end
+
+            # 终止并关闭；幂等——恰一次执行，其余调用返回 nil（未持有时）。
+            # 返回 Bool = 本次调用实际执行了终止。
+            def terminate_and_close_once? : Bool
+              return false if @closed.swap(true).value
+              JobObject.terminate_and_close(@job)
+            end
+          end
+
           # 创建调用级 Job：可带每进程内存上限（字节）。失败抛错——调用方
           # （runner）回收刚 spawn 的进程并返回装配错误。
           def self.create(memory_bytes : UInt64?) : Void*
@@ -97,7 +119,8 @@
           end
 
           # 终止调用级 Job 内全部进程（本调用的进程树，含后代与收养态），
-          # 随后关闭句柄。
+          # 随后关闭句柄。经 JobHandle 调用——直接持裸句柄调用只限
+          # create/assign 失败的同步回收路径（句柄尚未共享）。
           def self.terminate_and_close(job : Void*) : Bool
             ok = LibJob.terminate_job_object(job, 1_u32) != 0
             LibJob.close_handle(job)

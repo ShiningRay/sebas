@@ -125,23 +125,26 @@ module Sebas
           # 的进程树，不伤并发活动调用。指派/创建失败即终止回收，不进入帧
           # 循环（无隔离的插件进程不受控）。
           memory_mb = limits.try(&.memory_mb)
-          job = begin
-            Platform::ProcessTree::JobObject.create(memory_mb.try { |mb| mb.to_u64 * 1024 * 1024 })
+          handle = begin
+            Platform::ProcessTree::JobObject::JobHandle.new(
+              Platform::ProcessTree::JobObject.create(memory_mb.try { |mb| mb.to_u64 * 1024 * 1024 }))
           rescue ex
             Platform::ProcessTree.kill_tree(process.pid.to_i32)
             process.terminate(graceful: false) rescue nil
             raise RunnerError.new("job object create failed (pid=#{process.pid}): #{ex.message}")
           end
-          unless Platform::ProcessTree::JobObject.assign(job, process.pid.to_u32)
-            Platform::ProcessTree::JobObject.terminate_and_close(job)
+          unless Platform::ProcessTree::JobObject.assign(handle.job, process.pid.to_u32)
+            handle.terminate_and_close_once? # 同步回收路径：句柄尚未共享
             Platform::ProcessTree.kill_tree(process.pid.to_i32)
             process.terminate(graceful: false) rescue nil
             raise RunnerError.new("job object assign failed (pid=#{process.pid}); plugin process recycled")
           end
+          # exchange_frames 内部（watchdog fiber 超时路径）与本 ensure（正常
+          # 终态路径）共用同一 JobHandle：恰好一次终止+关闭，双重调用幂等
           begin
-            return exchange_frames(process, plugin, request, started, job: job)
+            return exchange_frames(process, plugin, request, started, job: handle)
           ensure
-            Platform::ProcessTree::JobObject.terminate_and_close(job)
+            handle.terminate_and_close_once?
           end
         {% end %}
         exchange_frames(process, plugin, request, started)
@@ -173,8 +176,7 @@ module Sebas
       # 帧循环主体。所有异常就地转结构化 CallOutcome——插件任何失败模式
       # （崩溃/超时/协议违规/宿主应答异常）都不逃出本次调用。
       private def exchange_frames(process : Process, plugin : LoadedPlugin,
-                                  request : Protocol::Request, started : Time::Instant,
-                                  job : Void*? = nil) : CallOutcome
+                                  request : Protocol::Request, started : Time::Instant) : CallOutcome
         duration = -> { (Time.instant - started).total_milliseconds.to_i64 }
         diagnostics = StderrDrainer.new(process.error)
         diagnostics.drain
@@ -193,9 +195,7 @@ module Sebas
             timed_out.set(true)
             # 进程树终止（M3-WP5 §12.4 ④）：Windows 走调用级 Job（覆盖全部
             # 后代）；POSIX 先清后代再杀根，防孤儿逃逸；再对直接子进程兜底。
-            {% if flag?(:windows) %}
-              Platform::ProcessTree::JobObject.terminate_and_close(job) if job
-            {% else %}
+            {% unless flag?(:windows) %}
               Platform::ProcessTree.kill_tree(process.pid.to_i32)
             {% end %}
             process.terminate(graceful: false) rescue nil

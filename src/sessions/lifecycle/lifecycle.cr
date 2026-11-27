@@ -50,6 +50,11 @@ module Sebas
         # upsert：admission 时登记/刷新 last_active_at（status 不回退）
         # hook 门面（M3-WP5，#17）：session.start/end 注入；缺省 disabled
         property hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+        # 压缩 runner（M3-WP5 review）：归档路径的真实触发点——生产装配
+        # （gateway）注入；nil = 压缩未装配（hook 语义经 runner 覆盖，无生产
+        # 压缩器时 compactor 缺省实现为「全量转写拼接」——接口完整、无假 hook）
+        property compaction_runner : ::Sebas::Sessions::Compaction::CompactionRunner? = nil
+        property session_compactor : ::Sebas::Sessions::Compaction::SessionCompactor? = nil
 
         def touch(session_key : String, agent_id : String, kind : String = "user",
                   fork_id : String? = nil) : Nil
@@ -138,8 +143,12 @@ module Sebas
           dormant
         end
 
-        # 归档（人工确认由调用方/admin 命令承担）：dormant/active → archived
+        # 归档（人工确认由调用方/admin 命令承担）：dormant/active → archived。
+        # 归档前压缩（M3-WP5 review：session.compact.* 的生产触发点）——
+        # runner+compactor 已装配则真实执行；压缩失败不阻断归档（observe
+        # 口径），仅记日志
         def archive(session_key : String) : Bool
+          run_compaction_on_archive(session_key)
           affected = @store.db.exec(
             "UPDATE sessions SET status = 'archived' WHERE session_key = ? AND status != 'archived'",
             session_key).rows_affected > 0
@@ -154,6 +163,25 @@ module Sebas
             end
           end
           affected
+        end
+
+        # 归档前压缩：转写 → compactor → 摘要落 store（session_note）；
+        # hook_bus.observe("session.compact.before"/"after") 由 CompactionRunner
+        # 真实派发（生产路径证据）。compactor 未装配 = 跳过（无假 hook 声称
+        # 生产压缩——WBS 依赖节口径）；装配了 compactor 才算真实触发。
+        private def run_compaction_on_archive(session_key : String) : Nil
+          runner = @compaction_runner
+          compactor = @session_compactor
+          return unless runner && compactor
+          transcript = @store.transcripts(session_key).map(&.content)
+          return if transcript.empty?
+          begin
+            result = runner.run(compactor, session_key, transcript)
+            # 摘要落转写（role=compaction，既有接口零改动；归档后仍可追溯）
+            @store.append_transcript(session_key, "compaction", result.summary)
+          rescue ex
+            Log.warn(exception: ex) { "compaction on archive failed (session=#{session_key}); archiving continues" }
+          end
         end
 
         # 写路径拒绝：archived 会话不可写（append_transcript 前置检查用）

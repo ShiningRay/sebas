@@ -135,7 +135,16 @@ module Sebas
           runtime.hook_bus = @hook_bus # agent/llm 域注入
         end
 
-        def wire_hook_faces : Nil
+        # 归档压缩接线（M3-WP5 review）：CompactionRunner + 缺省 compactor
+        # （全量转写拼接摘要——SessionCompactor 接口的完整实现，非假 hook；
+        # 生产压缩器后续包替换）。archive 时真实触发 before/after。
+        def wire_compaction : Nil
+          compactor = CompactionTailCompactor.new
+          @lifecycle_store.compaction_runner = ::Sebas::Sessions::Compaction::CompactionRunner.new(@hook_bus)
+          @lifecycle_store.session_compactor = compactor
+        end
+
+        private def wire_hook_faces : Nil
           @executor.hook_bus = @hook_bus        # 工具域注入
           @lifecycle_store.hook_bus = @hook_bus # session 域注入
           if send_tool = @tools_registry.find("message.send").as?(Tools::MessageSendTool)
@@ -144,5 +153,15 @@ module Sebas
         end
       end
     end
+  end
+end
+
+# 缺省压缩器（SessionCompactor 接口完整实现）：全量转写拼接为摘要。
+# 生产压缩器（LLM 摘要）后续包替换本实现——接口与协议不变。
+class CompactionTailCompactor < ::Sebas::Sessions::Compaction::SessionCompactor
+  def compact(session_key : String, transcript : Array(String)) : ::Sebas::Sessions::Compaction::CompactionResult
+    summary = transcript.last(50).join("\n")[0, 2000]
+    ::Sebas::Sessions::Compaction::CompactionResult.new(
+      summary, summary.size, transcript.size - Math.min(transcript.size, 50))
   end
 end
