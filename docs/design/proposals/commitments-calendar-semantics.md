@@ -29,7 +29,7 @@
 | source | text | ✓ | 用户原话 / 来源消息 / 外部对象链接 |
 | owner | text | ✓ | 持有者 |
 | state | enum(§3 九态) | ✓ | 生命周期状态 |
-| due_at | timestamptz | — | 硬截止（UTC） |
+| due_at | timestamptz | — | 硬截止（UTC）。关注时间不得晚于 due_at（T01 拒绝口径） |
 | prepare_window | interval | — | 截止前准备窗口 |
 | due_wall / due_tz | date / text | — | 原墙钟截止 + IANA 时区（与 due_at 互斥使用场景见提案 §4.2） |
 | completion_condition | text | — | 可观察完成条件 |
@@ -53,6 +53,9 @@
 | result | enum | ✓ | silent / notified / action_required / condition_met / condition_failed |
 | next_action | enum | — | reschedule / escalate / none |
 
+验收维度（owner/来源/权限/完成条件/跟进策略）：Checkpoint 经 commitment_id **继承**所属
+Commitment 的这些维度，不自带——评估以 Commitment 的跟进策略与完成条件为准。
+
 ### 2.3 Reminder（提醒意图）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -72,7 +75,7 @@
 | plan_version | integer | ✓ | 投递时的计划版本（不变式 2 判定依据） |
 | channel | text | ✓ | 渠道 |
 | state | enum | ✓ | scheduled / sent / seen / actioned / superseded / expired / unknown |
-| supersedes | uuid | — | 被本条实际替代的 Delivery id。置 superseded 时**可空**：无替代者的撤销（T09 澄清超时、条件失效放弃）无需替代关系；仅当新投递实际替代旧投递内容时才记录关联（不变式 2/伴随规则据此对账） |
+| supersedes | uuid | — | 被本条实际替代的 Delivery id。**state=superseded 不强制填写**：无替代者的撤销（T09 澄清超时、条件失效放弃、用户取消无后续投递）直接置 superseded 而不填 supersedes；仅当新投递实际替代旧投递内容时才记录关联（不变式 2 据此区分「重复发送」与「未发送替代」） |
 | sent_at | timestamptz | — | 实际发送时刻（投递历史事实；置 sent 时写入，后续 state 变迁不得清除） |
 
 ### 2.5 Task / WorkItem（可执行工作）
@@ -86,6 +89,9 @@
 | estimate / remaining | interval | — | 预计 / 剩余时长 |
 | source | text | ✓ | 来源（capture / user / external） |
 | state | enum | ✓ | todo / doing / done / dropped |
+
+验收维度：Task 自带 source 与 owner；完成条件 = state=done 且（关联 Commitment 时）
+其 completion_condition 满足；跟进策略继承关联的 Commitment（独立任务无跟进）。
 
 ### 2.6 Event（外部或内部时间承诺）
 
@@ -113,6 +119,9 @@
 | task_id | uuid | ✓ | 所属任务 |
 | projected_start / projected_end | timestamptz | ✓ | 临时预计时段（不生成外部事件） |
 
+验收维度：Projection 为临时预计，**不适用** owner/权限/完成条件/跟进策略——
+不构成承诺，可随时重建或丢弃。
+
 ### 2.9 ActualTime / Run（实际执行与证据）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -121,6 +130,8 @@
 | started_at / ended_at | timestamptz | — | 实际时段 |
 | outcome | enum | ✓ | done / partial / unknown / failed |
 | cost | json | — | 成本与证据（token、产物链接） |
+
+验收维度：owner 与来源继承所属任务；完成条件不适用（Run 是执行记录）；跟进策略不适用。
 
 ### 2.10 ExternalLink（外部关联）
 
@@ -161,11 +172,11 @@
 | T02 | 创建 → needs_clarification | 跟进依据缺失（关注时间/可观察条件无法给出）且可给出最晚澄清时间。outcome 始终必填：缺失即捕获失败不入库 | 跟进依据完整（应入 T01/T03/T04） |
 | T03 | 创建 → waiting_condition | 等待外部条件且条件可观察 | 条件不可观察（须转 needs_clarification） |
 | T04 | 创建 → ready | 立即可行动且无未来关注时间 | — |
-| T05 | dormant → ready | 关注时间到达或暂候条件满足 | followup_policy 静默窗口内且有未决通知 |
+| T05 | dormant → ready | 关注时间到达或暂候条件满足 | followup_policy 静默窗口内且有未决通知；源自 needs_clarification 且字段未补全（T08 暂缓路径）——补全前不得 ready，clarify_by 到期走取消 |
 | T06 | dormant → cancelled | 用户显式取消 | 已 completed——completed 不可撤销，重开需新开 Commitment 并以 ExternalLink 关联旧卡（不引用 T19） |
 | T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready。补全后的关注时间不得晚于硬截止（同 T01 拒绝条件，提示调整） | 补全后仍缺必填项；关注时间晚于硬截止 |
-| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限约束**继续有效**，到期仍未补全走 T09 | 已过 clarify_by 且仍缺字段（走 T09）；暂缓后的关注时间晚于硬截止（同 T01 拒绝） |
-| T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动）；补全前不得经任何路径进入 ready | 缺失字段已补全 |
+| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限约束**继续有效**——到期仍未补全走 T09 取消（暂缓不豁免期限） | 已过 clarify_by 且仍缺字段（走 T09）；暂缓后的关注时间晚于硬截止（同 T01 拒绝） |
+| T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动）；补全前不得经任何路径进入 ready。到期判定以 clarify_by 时刻为准：到期后的补全不豁免取消（补全内容保留为记录） | 到期前已补全（应走 T07） |
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
 | T12 | waiting_condition → cancelled | 条件永久失效或用户取消 | — |
@@ -223,22 +234,20 @@
 ### 4.2 同因、同计划版本不重推
 
 ```
-∀ d1, d2 ∈ Delivery:
-  d1.commitment_id = d2.commitment_id
-  AND d1.trigger_reason = d2.trigger_reason
-  AND d1.plan_version = d2.plan_version
-  AND (d1.created_at, d1.id) < (d2.created_at, d2.id)   -- 先后顺序含同刻并列时按 id 决胜
-  AND d1.sent_at IS NOT NULL AND d2.sent_at IS NOT NULL -- 两条都曾实际发送（历史事实，state 变迁不清除）
-  ⇒ d2.supersedes = d1.id                               -- 重复发送必须以显式替代关联收口
+∀ (commitment_id, trigger_reason, plan_version) = key:
+  count(Delivery d WHERE d 的 key 匹配 AND d.sent_at IS NOT NULL) ≤ 1
 ```
 
-- 曾发送（sent_at 非空）即认定已送达用户：后条再发送必须显式替代前条。
-- 未发送的前条被后条替代（supersedes = 前条 id）**不算**重复发送——那是
-  失效撤销/内容更新的正常路径，与「同因重推」区分处理。
-- 计划版本变更（plan_version 不同）产生的新投递不违反。
+即：同一键**至多一条**投递曾实际发送（sent_at 非空 = 历史事实，state 后续
+变迁不清除）。反驳反例：同键存在两条 sent_at 非空的 Delivery 即违反——
+后条以 supersedes 关联前条也救不回来（发送已发生）。
 
-反驳反例：同 (commitment, trigger_reason, plan_version) 且两条 sent_at 均非空、
-后条未以 supersedes 关联前条即违反。
+配套规则（区分「重复发送」与「未发送替代」）：
+
+- 未发送的前条（scheduled）被后条替代：前条置 superseded（supersedes 可空），
+  后条正常发送——**不违反**。
+- 前条已发送、后条为更新内容：后条发送前必须以 supersedes 关联前条；若后条
+  在未关联的情况下发送即违反上式。
 
 ### 4.3 Delivery 状态不等于完成
 
