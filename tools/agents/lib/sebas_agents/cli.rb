@@ -575,12 +575,15 @@ end
           return EXIT_REFUSED
         end
         # 人类可读信号同步摘除（CR-6）：凭据已释放，卡上不得残留执行中标签。
-        gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
-        unless gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) == false
-          payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍在，需人工核对"
-          payload["status"] = "aborted"
-          Output.emit(payload, out: @out)
-          return EXIT_REFUSED
+        # 迁移窗口内的旧认领可能本就没打标签——缺席即无需摘除。
+        if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+          gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+          if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+            payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍在，需人工核对"
+            payload["status"] = "aborted"
+            Output.emit(payload, out: @out)
+            return EXIT_REFUSED
+          end
         end
         # 只更新属于本 issue 的记录：传错 --record 时不能把别张卡的记录改脏。
         record.save(current.merge("phase" => "released")) if current && current["issue"].to_i == issue.number
