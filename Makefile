@@ -60,6 +60,8 @@ agents-check:
 	ruby tools/test_verify_reports.rb
 	ruby tools/test_coderabbit_config.rb
 	ruby tools/test_setup_action.rb
+	ruby tools/test_await_review.rb
+	ruby tools/test_ci_workflow.rb
 
 # ameba 是 development dependency；未构建时先构建，再运行
 lint: lint-build

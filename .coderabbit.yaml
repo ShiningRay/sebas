@@ -5,7 +5,15 @@
 #       docs/design/process/implementer-loop.md（验收契约）。
 #
 # 注意：本文件只影响 review 的**提示质量**，不构成门禁。
-# 真正的门禁是 CI 四个必检 + `verify merge --pre`。
+# 真正的门禁是 CI 五项必检（spec×3 / ameba / verify）+ `verify merge --pre`。
+#
+# 顺序约定：CI 的 `await-review` 门闸会等本 App 在 PR head 上的 check run 收尾，
+# 三平台矩阵才起跑（见 docs/design/process/development-workflow.md §4）。
+# 因此这里的行为会直接影响 PR 的等待时间：
+#   - `reviews.auto_review.drafts: false` —— draft PR 永远等不到审查，
+#     门闸靠 fail-open 放行（tools/await_review.rb 先判 draft 再等）。
+#   - 若把某项检查从 App 侧配成 skip，对应 PR 会等到超时才放行。
+#   - `path_filters` 把改动全排除时同样不会产生 check run，走超时放行。
 version: 2
 
 language: zh-CN

@@ -31,6 +31,12 @@ CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + verify + releas
 `verify anchors`（文档声称的 `file:line` 内容是否对得上源码），入口详见
 `docs/design/process/quickstart.md` 的 Verifier 节。
 
+PR 上的顺序是**先 review 再跑矩阵**：`ci.yml` 的 `await-review` 门闸等 CodeRabbit
+的 check run 收尾，spec 与 ameba 才起跑（省一轮白烧的三平台）。门闸 fail-open——
+draft、超时、审查中断都放行并打 warning，且 job 恒为 success（下游被 skip 可能不阻塞
+合并，等于放走真门禁）。详见
+[development-workflow.md §4](docs/design/process/development-workflow.md)。
+
 ## 目录结构
 
 ```

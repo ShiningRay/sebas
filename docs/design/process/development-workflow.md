@@ -203,7 +203,8 @@ issue 开工（status: Todo → In progress，tools/sebas-process claim）
   → 实现，在对应 feat/… / fix/… / docs/… 分支
   → 提 PR，body 写 "Fixes #<issue号>"
   → status 推进到 In review（tools/sebas-process mark-review）
-  → PR 过 CI + CodeRabbit review，thread 全 resolve
+  → PR 过 CodeRabbit review（门闸 await-review 收尾后矩阵才起跑）
+  → CI 全绿 + thread 全 resolve
   → squash 合并进 main
   → GitHub 识别 Fixes #n 自动关闭 issue（status 自动变 Done）
   → 回 issue 的「证据」节填写实际验证结果
@@ -220,11 +221,46 @@ issue 开工（status: Todo → In progress，tools/sebas-process claim）
 
 - squash-only（`allow_merge_commit=false`，`allow_squash_merge=true`）
 - `delete_branch_on_merge=true`
-- 必检 contexts：`spec / ubuntu-latest`、`spec / macos-latest`、`spec / windows-latest`、`ameba`
+- 必检 contexts：`spec / ubuntu-latest`、`spec / macos-latest`、`spec / windows-latest`、`ameba`、`verify`
 - `strict=true`（要求 PR 与 main 同步）
 - `enforce_admins=true`（admin 也逃不过保护）
 - `required_approving_review_count=0`（不需要人工 approve）
 - `required_conversation_resolution=true`（所有 review thread 必须 resolve）
+
+### 顺序：先 review，再跑 CI
+
+三平台矩阵与 ameba 都排在 `await-review` 门闸之后（`ci.yml` 的 `needs`），
+即 PR 的 head commit 上 CodeRabbit 的 check run 走完，才起跑矩阵。
+
+动机是成本：矩阵常 1-2 分钟就绿，审查要 5-7 分钟（实测 PR #230/#231/#237/#238）。
+并行时实现方按绿灯推进、收到意见再推 commit，一整轮三平台白烧。
+
+门闸由 [tools/await_review.rb](../../../tools/await_review.rb) 实现，规则是 **fail-open**：
+
+| 情形 | 处理 |
+|---|---|
+| 审查 check run `status=completed` 且 `conclusion=success` | 正常放行 |
+| PR 是 draft（`.coderabbit.yaml` 的 `drafts=false`，本就不审） | 放行 + warning |
+| 5 分钟内 check run 始终没出现（不在审查范围） | 放行 + warning |
+| 出现后 15 分钟内仍未完成 | 放行 + warning |
+| 审查结论为 failure / cancelled / timed_out / skipped | 放行 + warning |
+| 连续 3 次读 check-runs 失败 | 放行 + warning |
+
+两个时间窗分开口径：「审查方压根不审这个 PR」（path_filters 全排除、App 未启用）
+与「审查跑得慢」是两件事。实测 check run 创建延迟 18–23s、偶发 113s，故给 5 分钟宽限；
+出现之后按 15 分钟等结论。
+
+fail-open 的理由：这是**顺序门闸**，不是校验器，不判定任何质量结论。
+卡住 PR 的代价（draft 永远等不到、审查方被卸载、接口抖动）远大于「这一轮矩阵白跑」。
+质量门禁仍由 spec / ameba / verify 承担。与 tools/** 的 fail-closed 纪律不冲突——
+那条针对的是授权与身份校验。
+
+门闸 job 的每个步骤都带 `continue-on-error`，让 job 恒为 success。
+这不是偷懒，而是堵一个真漏洞：GitHub 文档写明「依赖失败 job 的 job 会被 skipped
+且可能不阻塞合并」。若门闸把自己搞红，spec / ameba 会跟着 skip，PR 反而能在没有 spec
+的情况下合入——省 runner 的门闸顺手放走了一个真门禁。宁可退化成「照常跑矩阵」。
+
+`docs` 与 `verify` 不进等待链：它们数秒完成，文档与锚点的反馈早给更有用。
 
 ### 合并自动化层级
 
