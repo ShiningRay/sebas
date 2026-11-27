@@ -144,6 +144,9 @@ module Sebas
 
     # 内置工具：发消息（Effectful + 强制幂等键，M0 验收第 3 条）
     class MessageSendTool < Tool
+      # hook 门面（M3-WP5，#17）：gateway 装配后注入；缺省 disabled 零开销
+      property hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+
       def initialize(@channels : Channels::Registry)
         super("message.send", "Send a message to a peer via a channel account (requires idempotency_key)",
           ReplaySemantics::Effectful, Risk::High, SideEffect::NetWrite)
@@ -176,7 +179,35 @@ module Sebas
 
       private def deliver(adapter : Channels::ChannelAdapter, peer : String, content : String,
                           memo_key : String, ctx : ToolContext) : ToolResult
-        result = adapter.send(peer, content)
+        # message.sending（M3-WP5，#17 §12.11 gate+transform）：可 deny/修改
+        # 文本与附件元数据；不得替换账号/收件人（payload 只读键）。
+        # idempotency_key 用 send memo 键——投递重放时裁决随之复用。
+        payload = JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "channel", adapter.channel_type
+            json.field "account_id", adapter.account_id
+            json.field "peer", peer
+            json.field "content", content
+            json.field "attachments", [] of String
+          end
+        end)
+        verdict = hook_bus.gate("message.sending", JSON.parse("{}"), payload, idempotency_key: memo_key)
+        return ToolResult.interrupted("message hook denied: #{verdict.code}: #{verdict.reason}") if verdict.denied
+        replaced = verdict.payload.try(&.as_h?).try(&.[]?("content")).try(&.as_s?)
+        result = adapter.send(peer, replaced || content)
+        # message.sent（observe）：渠道返回投递结果后通知，不保证已读
+        sent = JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "status", result.ok? ? "success" : "error"
+            json.field "message_id", result.message_id
+            json.field "error_code", result.ok? ? nil : (result.error || "send_failed")[0, 64]
+          end
+        end)
+        begin
+          hook_bus.observe("message.sent", JSON.parse("{}"), sent)
+        rescue ex
+          Log.warn { "message.sent hook skipped: #{ex.message} (observe isolation)" }
+        end
         if result.ok?
           ctx.store.memo_replace(memo_key, "done:#{result.message_id || "sent"}")
           ToolResult.success("sent via #{adapter.channel_type}/#{adapter.account_id}")

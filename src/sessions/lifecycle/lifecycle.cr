@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "../../plugins/hook_bus"
 require "file_utils"
 
 # 会话生命周期治理（M4.4-WP3，Q8 拆分第二块；提案 M4 门槛）：
@@ -47,10 +48,14 @@ module Sebas
         end
 
         # upsert：admission 时登记/刷新 last_active_at（status 不回退）
+        # hook 门面（M3-WP5，#17）：session.start/end 注入；缺省 disabled
+        property hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+
         def touch(session_key : String, agent_id : String, kind : String = "user",
                   fork_id : String? = nil) : Nil
           # 纳秒精度：默认 to_rfc3339 无小数秒，同秒相等会使 < 阈值判定失效
           now = ::Time.utc.to_rfc3339(fraction_digits: 9)
+          existed = get(session_key)
           @store.db.exec(
             "INSERT INTO sessions (session_key, agent_id, kind, fork_id, status, last_active_at, created_at) " \
             "VALUES (?, ?, ?, ?, 'active', ?, ?) " \
@@ -59,6 +64,12 @@ module Sebas
             "fork_id = COALESCE(excluded.fork_id, sessions.fork_id)",
             session_key, agent_id, kind, fork_id, now, now
           )
+          # session.start（M3-WP5，#17 §12.11）：新会话上下文建立后仅通知；
+          # 仅通知、不得在每次消息时误触发——仅 INSERT（非 conflict update）触发
+          if existed.nil?
+            hook_bus.observe("session.start", ::JSON.parse("{}"),
+              ::JSON.parse(%({"session_key": #{session_key.inspect}})))
+          end
         end
 
         def get(session_key : String) : SessionRow?
@@ -125,9 +136,16 @@ module Sebas
 
         # 归档（人工确认由调用方/admin 命令承担）：dormant/active → archived
         def archive(session_key : String) : Bool
-          @store.db.exec(
+          affected = @store.db.exec(
             "UPDATE sessions SET status = 'archived' WHERE session_key = ? AND status != 'archived'",
             session_key).rows_affected > 0
+          if affected
+            # session.end（M3-WP5，#17 §12.11）：归档为明确会话边界，带 reason；
+            # observe 隔离，失败不阻断归档
+            hook_bus.observe("session.end", ::JSON.parse("{}"),
+              ::JSON.parse(%({"session_key": #{session_key.inspect}, "reason": "archived"})))
+          end
+          affected
         end
 
         # 写路径拒绝：archived 会话不可写（append_transcript 前置检查用）

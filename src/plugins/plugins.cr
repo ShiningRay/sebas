@@ -7,3 +7,4 @@ end
 require "./hooks"
 require "./hook_dispatcher"
 require "./hook_bus"
+require "./capabilities"

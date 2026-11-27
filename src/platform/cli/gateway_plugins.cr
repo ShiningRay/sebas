@@ -23,12 +23,16 @@ module Sebas
         @plugin_dispatch : ::Sebas::Plugins::Dispatch? = nil
         @plugin_tool_names : Array(String) = [] of String
 
+        # hook 门面（M3-WP5，#17）：gateway.start/stop 及各子系统注入点共用
+        @hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+
         private def wire_plugins(config : Config::Config) : Nil
           tools = @tools_registry || (Log.error { "plugins face wired before tool surface build" }; return)
           # 工具面同步：先摘旧名单再挂新名单（registry.unregister 语义）
           @plugin_tool_names.each { |name| tools.unregister(name) }
           @plugin_tool_names = [] of String
           @plugin_dispatch = nil
+          @hook_bus = ::Sebas::Plugins::HookBus.disabled
 
           dir = config.plugins.dir
           unless dir
@@ -49,11 +53,80 @@ module Sebas
           dispatch = ::Sebas::Plugins::Dispatch.new(registry, runner)
           @plugin_dispatch = dispatch
           @plugin_tool_names = dispatch.register_tools_into(tools)
+
+          # hook 订阅链装配（M3-WP5，#17）：逐插件逐 hook 订阅；敏感批准缺失/
+          # 重复/未知钩子按单插件单订阅 fail-logged 跳过，不炸 gateway 装配
+          hook_dispatcher = ::Sebas::Plugins::HookDispatcher.new
+          hook_dispatcher.dispatch = dispatch
+          registry.ids.each do |id|
+            plugin = registry.plugin(id)
+            next unless plugin
+            plugin.manifest.hooks_list.each do |hook|
+              # ameba:disable Style/RedundantBegin — 块内 inline rescue 必须显式 begin
+              begin
+                hook_dispatcher.subscribe(hook, plugin.manifest, id)
+              rescue ex
+                Log.error { "hook subscription rejected: plugin=#{id} hook=#{hook} (#{ex.message})" }
+              end
+            end
+          end
+          @hook_bus = ::Sebas::Plugins::HookBus.new(hook_dispatcher)
+
+          # capability driver 装配（M3-WP5，#17 §12.4 ③ §12.10）：双重白名单
+          # 第二关——manifest 声明之外还须宿主登记 driver；受控 memory.backend
+          # 提供 remember 写路径并承载 memory.remember 双 hook 注入点
+          caps = ::Sebas::Plugins::CapabilityDispatcher.new
+          caps.hook_bus = @hook_bus
+          memory_driver = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new(@hook_bus)
+          caps.register("memory_driver.write") do |plugin_id, params, context|
+            memory_driver.write(plugin_id, params, context)
+          end
+          runner.capability_handler = ->(plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, params : JSON::Any) do
+            # scope 注入（§12.10）：身份由宿主合成，插件传参仅 params
+            caps.dispatch(plugin.id, capability, params,
+              JSON.parse(%({"plugin_id": #{plugin.id.inspect}})))
+          end
           Log.info { "plugins loaded: #{report.loaded.join(",")} (tools: #{@plugin_tool_names.size})" }
         rescue ex : ::Exception
           Log.error(exception: ex) { "plugins face wiring failed: #{ex.message}" }
           @plugin_dispatch = nil
           @plugin_tool_names = [] of String
+        end
+
+        # gateway 生命周期 hook 触发（M3-WP5，#17）：单行门面，保 gateway.cr
+        # 400 行体量闸（GatewayDispatch 拆分回归 spec）
+        def fire_gateway_start : Nil
+          @hook_bus.observe("gateway.start", JSON.parse("{}"), JSON.parse("{}"))
+        end
+
+        def fire_gateway_stop : Nil
+          @hook_bus.observe("gateway.stop", JSON.parse("{}"), JSON.parse("{}"))
+        end
+
+        # message.received（渠道验真/去重/解析完成后、路由前 observe）
+        def observe_message_received(message : ::Sebas::Platform::Bus::InboundMessage) : Nil
+          received = JSON.parse(JSON.build do |json|
+            json.object do
+              json.field "channel", message.channel_type
+              json.field "account_id", message.account_id
+              json.field "peer", message.peer
+              json.field "message_id", message.event_id
+              json.field "size", message.content.bytesize
+            end
+          end)
+          @hook_bus.observe("message.received", JSON.parse("{}"), received)
+        end
+
+        def inject_runtime_hooks(runtime : ::Sebas::Agents::AgentRuntime) : Nil
+          runtime.hook_bus = @hook_bus # agent/llm 域注入
+        end
+
+        def wire_hook_faces : Nil
+          @executor.hook_bus = @hook_bus        # 工具域注入
+          @lifecycle_store.hook_bus = @hook_bus # session 域注入
+          if send_tool = @tools_registry.find("message.send").as?(Tools::MessageSendTool)
+            send_tool.hook_bus = @hook_bus # 消息域注入
+          end
         end
       end
     end

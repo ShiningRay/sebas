@@ -15,6 +15,7 @@ require "../../agents/pool"
 require "../../agents/agents"
 require "../../agents/reception/reception"
 require "../../sessions/lifecycle/lifecycle"
+require "../../sessions/compaction/compactor"
 require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
@@ -114,6 +115,7 @@ module Sebas
           @tools_registry = Tools.default_registry(@channels)
           @executor = Tools::Executor.new(@tools_registry, @channels)
           wire_plugins(@config) # 插件面装配（M3-WP4）：先于 pool/agent 工具面构建
+          wire_hook_faces       # hook 门面注入（M3-WP5，#17）
           @rules = build_rules(config)
           @pool = build_pool
           @scheduling = Sessions::Scheduling::Registry.new(@store)
@@ -172,6 +174,7 @@ module Sebas
           raise Store::StoreError.new("engine fork factory: no main agent") unless cfg
           @provider_factory.call(cfg, nil)           end
           @engine = Orchestration::Engine.new(@store, @executor, "engine", nil, fork_factory)
+          @engine.hook_bus = @hook_bus # task 域 hook 注入（M3-WP5，#17）
           @triggers = Orchestration::TriggerManager.new(@engine, @bus)
           load_workflows(@engine)
           @ipc.lifecycle_store = @lifecycle_store # 管理面注入（M4.4-WP4）
@@ -195,6 +198,7 @@ module Sebas
           scheduling.recover_dispatch     # 持久待发批次重派（§5.2：sealed/queued 重新入队）
           confirm_telegram_after_recovery # M3-WP8：replay 后统一补确认 telegram dispatched（窗口 C）
           @steer_dispatch_ready.set(true) # 恢复完成后启用 queued steer 派发（QWvO）
+          fire_gateway_start              # gateway.start hook（M3-WP5，#17）
           consume_bus
           if @config_path.empty?
             Log.info { "gateway running (data_dir=#{@data_dir}; config reload disabled: no config path)" }
@@ -245,14 +249,14 @@ module Sebas
           # Telegram 账号热换（M3-WP8 装配）：增删=监督体启停
           reapply_telegram_accounts(new_config)
 
-          wire_plugins(new_config) # 插件面热更新（M3-WP4 数据类）：每动作新进程，重扫即生效
+          wire_plugins(new_config); wire_hook_faces # 插件面热更新（M3-WP4 数据类）：重扫即生效，hook 门面随之刷新（M3-WP5 #17）
 
           @config = new_config
           restart_required
         end
 
         def shutdown : Nil
-          @stopping_scan.set(true) # 扫描协程先退（在 scheduling/store 关闭前，CodeRabbit）
+          fire_gateway_stop; @stopping_scan.set(true) # gateway.stop hook（M3-WP5 #17）+ 扫描协程先退（CodeRabbit）
           @reload_manager.try(&.stop_watching)
           @http.close
           @supervisor.stop_all
@@ -267,6 +271,9 @@ module Sebas
         # admitted_session：批次派发路径传入 admission 时确定的会话键——路由不再
         # 重解析（binding 热换不改在途批次归属），turn 在被调度的会话下执行。
         def process_message(message : Bus::InboundMessage, replay : Bool = false, admitted_session : String? = nil) : Nil
+          # message.received（M3-WP5，#17 §12.11）：渠道验真/去重/解析完成后、
+          # 路由前 observe（只读，失败不阻断接收——HookBus 内部隔离）
+          observe_message_received(message) # message.received hook（M3-WP5，#17）
           # 重放（崩溃恢复）跳过 intent 排重：已存在 intent 继续 dispatch（send 幂等键防重复投递）
           intent_new = replay || @store.record_intent(message.event_id, "message", message.to_json)
           confirm_telegram_consumer(message) # M3-WP8 §4.2：消费者确认（含已有 intent 分支，防永卡 dispatched=false）
@@ -365,6 +372,7 @@ module Sebas
             @steer_center.drain(session, turn_id, generation)
           end
           runtime = Agents::AgentRuntime.new(@store, @approvals, drain)
+          inject_runtime_hooks(runtime) # agent/llm 域 hook 注入（M3-WP5，#17）
           turn_id = "turn:#{event_id}"
           lease = @steer_registry.register(session_key, turn_id)
           turn_ctx = Agents::TurnContext.new(session_key, lease.turn_id, lease.generation)

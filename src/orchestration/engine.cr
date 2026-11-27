@@ -1,4 +1,5 @@
 require "json"
+require "../plugins/hook_bus"
 require "../platform/store/store"
 require "../tools/executor"
 require "./ledger"
@@ -12,6 +13,8 @@ require "../log"
 module Sebas
   module Orchestration
     class Engine
+      # hook 门面（M3-WP5，#17）：task×2 注入；缺省 disabled 零开销
+      property hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
       Log = Sebas::Log.for("orchestration.engine")
 
       getter store : ::Sebas::Platform::Store::Store
@@ -42,6 +45,11 @@ module Sebas
                     {workflow: workflow.id, session: ctx_session}.to_json
                   end
         task = @store.create_task(run_id, "run", payload: payload)
+        # task.start（M3-WP5，#17 §12.11）：持久 workflow 创建并落库后；
+        # 重放语义：phase 重放经 memo 幂等跳过，不重复创建任务
+        hook_bus.observe("task.start", JSON.parse("{}"),
+          JSON.parse(%({"run_id": #{run_id.inspect}, "workflow_id": #{workflow.id.inspect}})),
+          idempotency_key: "task.start:#{run_id}")
         spawn_run(task.id, workflow, trigger_event_id, ctx_session)
         run_id
       end
@@ -66,6 +74,9 @@ module Sebas
         end
         @store.finish_intent(run_id, "dispatched")
         task = @store.create_task(run_id, "run", payload: %({"workflow": "#{workflow.id}"}))
+        hook_bus.observe("task.start", JSON.parse("{}"),
+          JSON.parse(%({"run_id": #{run_id.inspect}, "workflow_id": #{workflow.id.inspect}})),
+          idempotency_key: "task.start:#{run_id}")
         execute_phases(task.id, workflow, ctx_session)
       end
 
@@ -242,11 +253,16 @@ module Sebas
             @store.memo_replace(memo_key, "failed:#{result.error}")
             @store.fail_task(run_id, "action #{action.id} failed: #{result.error}")
             @ledger.try(&.append(run_id, "action.failed", %({"id": "#{action.id}", "error": #{result.error.inspect}})))
+            # task.end（observe）：终态不得被改变，失败原因结构化（code 必带）
+            hook_bus.observe("task.end", JSON.parse("{}"),
+              JSON.parse(%({"task_id": #{run_id.inspect},"status": "failed","error": {"code": "action_failed","message": #{("action #{action.id} failed: #{result.error}").inspect}}})))
             return Tools::ToolResult.error("run #{run_id} failed at #{action.id}: #{result.error}")
           end
         end
         @store.complete_task(run_id, %({"workflow": "#{workflow.id}", "actions": #{workflow.actions.size}}))
         @ledger.try(&.append(run_id, "run.done", %({"workflow": "#{workflow.id}"})))
+        hook_bus.observe("task.end", JSON.parse("{}"),
+          JSON.parse(%({"task_id": #{run_id.inspect}, "status": "done"})))
         Tools::ToolResult.success("run #{run_id} completed")
       end
     end
