@@ -82,7 +82,6 @@ jobs:
           test "$(echo '{"ok":true,"nums":[1,2,3]}' | $MRUBY -e "v = JSON.parse(sebas_read); sebas_print JSON.generate({\"ok\" => v[\"ok\"], \"n\" => v[\"nums\"][1]})")" = '{"ok":true,"n":2}'
           echo "ALL SMOKE CHECKS PASSED"
       - name: Setup Crystal for plugin e2e
-        shell: pwsh
         uses: ./sebas/.github/actions/setup
       - name: Install shards
         shell: pwsh
