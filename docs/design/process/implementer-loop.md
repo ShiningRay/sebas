@@ -317,7 +317,11 @@ ruby tools/sebas-process plan                  # 只读多候选视图：就绪�
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
 ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（#220）：协调评论为凭据，按 lease_id 对账恢复
 ruby tools/sebas-process queue                 # 只读合并队列：队首与链上步骤（#221）
+ruby tools/sebas-process heartbeat 39 --apply  # 写存活心跳（F5）：长任务期间定期调用
 ```
+
+心跳只由 worker 自己写：coordinator 代写等于把「我读过它的记录」当成「它还活着」，
+F5 就永远判不出来。判失联看两个证据——心跳过期 **且** 本机 pid 不存在。
 
 `policy/` 不执行网络、Git 或模型调用；所有副作用集中在 CLI 与 `CommandRunner`，
 并在每个写入点后回读确认。

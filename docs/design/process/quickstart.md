@@ -200,6 +200,14 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
   在无在途租约时认领。共享文件（`CHANGELOG.md`、`src/store/schema.cr`、
   `.github/workflows/`）要改就写进自己的 scope，于是改同一文件的卡自然不并行。
   `plan` 与 `claim` 用同一判定，人工 `claim` 不是绕过预算的后门。
+- **心跳（F5）**：`heartbeat <issue> --apply --pid <worker pid>` 写 `last_heartbeat_at`
+  与 worker 的 pid；`--ttl <秒>` 只附带过期判定，不写进记录（阈值属全局策略）。
+  `--pid` 在 `--apply` 时必填且必须为正整数：本命令的 pid 写完即退出，用它会让仍在跑
+  的长任务被判成已死；0 会被归一为 nil（`kill(0, 0)` 探测当前进程组）。写入在锁内复核 `lease_id` 与 `phase`，不符则拒绝（卡可能已被重新认领）。
+  coordinator 判失联看两个证据：**心跳过期** 且 **本机 pid 不存在**；只有一个成立
+  不接管——长跑的 worker 可能暂时没写心跳，pid 也可能被复用。证据不足（缺 pid、缺 host、
+  旧记录无心跳字段）时给 `wait` 并由人决定：确认原 worker 已停后 `resume <issue>
+  --apply` 显式续跑。跨机租约不接管（F6）。
 - **故障排查**：认领 aborted → 看 run 记录 `label_written` 与卡上租约评论；
   有标签无凭据（F7）、双凭据（F9）均 invalid_plan，交 Maintainer。
 
@@ -213,7 +221,8 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 `scope_conflict` / `metadata_invalid`，`detail` 为与 `next` 一致的原因文本）、
 `capacity`（快照容量，缺省 1；迁移窗口钳回 1）、`capacity_used`
 （在途卡数）与 `capacity_limit`（同 `capacity`）、
-`verifier_queue_depth`（open PR 数，验证背压可观察）、`next_action`/`next_issue`
+`verifier_queue_depth`（待独立核验的 `merge_ready` 数——只数已 CLEAN、thread 清零、
+就等核验与合并的 PR；`wait`/`needs_human` 的卡还没到验收这一步）、`next_action`/`next_issue`
 （与 `next` 恒等的首选）。退出码 0 正常、1 `invalid_plan`、2 参数错误。
 不改任何写行为；本 coordinator 持有的在途卡走续做路由，异机在途卡在
 容量未满时不阻塞新候选。

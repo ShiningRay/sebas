@@ -16,6 +16,7 @@ module SebasAgents
   module MergeQueue
     # 链上步骤，按执行顺序。queue_step 返回其中一项。
     STEPS = %w[
+      update_branch
       verify_pre
       changelog
       merge
@@ -123,6 +124,19 @@ module SebasAgents
       (rows[0...insert_at] + payload + rows[insert_at..].to_a).join
     end
 
+    # 验收背压（#221 §4 / Proposal §7.4）：待验收的 PR 数量。
+    #
+    # 口径不是「open PR 数」——那只反映有多少 PR 存在，不反映有多少**在等
+    # 独立核验**。这里只数队列真正要处理的那部分：租约动作是 `merge_ready`
+    # 的 PR（已 CLEAN、thread 清零，就等核验与合并）。`wait`/`needs_human`
+    # 的卡还没到验收这一步，算进去会让背压指标虚高、掩盖真实排队。
+    #
+    # 为什么单独给方法而不是在调用方写 `count`：`plan` 与 `queue` 两处都要，
+    # 口径必须同源，否则「一个说 3 一个说 5」。
+    def verifier_queue_depth(leases)
+      Array(leases).count { |lease| lease.action == "merge_ready" && lease.pr }
+    end
+
     # 规划合并队列。
     #
     # leases 为逐租约动作表（Policy::Selection::LeaseAction）；只取 merge_ready。
@@ -132,7 +146,12 @@ module SebasAgents
     # pending_evidence 为本机记录里「PR 已合并但 Evidence 尚未升级」的 issue 列表
     # （由调用方从本地记录与快照算出）。非空时整队阻塞：串行单位是
     # 「合并 → 等 Evidence 升级 → 下一张」，前一张没升级就不许后一张合。
-    def plan(leases, snapshot, changelog: nil, pending_evidence: [])
+    #
+    # `verified_heads` 是「本机记录里这张卡的 PR 上一次通过 verify merge --pre
+    # 的 head」，由调用方从运行记录读（`verified_head` 字段）。队列据此判断
+    # 「当前 head 是否已核验」——没有它，`update_branch` 改完 head 后只要 CI
+    # 绿、Evidence 仍是 accepted，队列就会直接给 merge，把旧结论用到新 head 上。
+    def plan(leases, snapshot, changelog: nil, pending_evidence: [], verified_heads: {})
       blocking = Array(pending_evidence)
       unless blocking.empty?
         head = blocking.first
@@ -146,7 +165,8 @@ module SebasAgents
         pr = snapshot.pull_request(lease.pr.to_i)
         body = pr&.body
         pending_entries = changelog_entries(body)
-        step, blocked = next_step(pr, pending_entries, changelog)
+        step, blocked = next_step(pr, pending_entries, changelog,
+          verified_head: verified_heads[lease.issue.to_i])
         QueueEntry.new(
           issue: lease.issue,
           pr: pr&.number || lease.pr,
@@ -168,7 +188,7 @@ module SebasAgents
 
     # 单张 PR 的下一步。顺序与 §7.2 的链一致：核对归属 → verify --pre →
     # CHANGELOG 追加 → 合并 → 等 Evidence 升级 → 释放租约。
-    def next_step(pr, pending_entries, changelog)
+    def next_step(pr, pending_entries, changelog, verified_head: nil)
       return ["verify_pre", "PR 不在快照内或已不是 open，先重新取快照"] if pr.nil?
 
       unless pr.open?
@@ -177,17 +197,47 @@ module SebasAgents
         return ["verify_pre", "PR 已关闭但未合并，需人工裁决"]
       end
 
-      if pr.base.to_s != "" && pr.base != "main"
-        return ["verify_pre", "PR 目标分支是 #{pr.base.inspect}，只允许 main"]
+      # base 必须明确是 main：缺失不等于「未取到故放行」（与 scope.files 同口径）。
+      unless pr.base == "main"
+        return ["verify_pre", "PR 目标分支是 #{pr.base.inspect}（只允许 main；缺失即不可判定）"]
       end
       if pr.failing_checks.any?
         return ["verify_pre", "存在失败检查：#{pr.failing_checks.map { |c| c["name"] }.compact.join("、")}"]
       end
+      if pr.unresolved_threads.any?
+        return ["verify_pre", "有 #{pr.unresolved_threads.length} 条未解决 review thread"]
+      end
+
+      # BEHIND 必须先 update-branch 再核验（#221 §3）：main 前进后 PR 的 CI 与
+      # 独立核验跑的都是旧 base，直接合并等于把未在新 base 上验证过的结论合进去。
+      # `gh pr update-branch` 会改写 head，所以这一步之后必须重跑 `verify merge --pre`
+      # 与独立核验——新 head 在下一轮快照里自然落到 verify_pre，不复用旧结论。
+      if pr.merge_state_status == "BEHIND"
+        return ["update_branch", "PR ##{pr.number} 落后于 main，先 gh pr update-branch，之后必须重跑 verify merge --pre 与独立核验"]
+      end
+
       if pr.pending_checks.any?
         return ["verify_pre", "仍有未完成的检查"]
       end
-      if pr.unresolved_threads.any?
-        return ["verify_pre", "有 #{pr.unresolved_threads.length} 条未解决 review thread"]
+
+      # 只有 CLEAN 才能合并。BEHIND 已在上方分流；DIRTY（有冲突）、BLOCKED
+      # （缺必需审批或分支保护未满足）、UNKNOWN（GitHub 还在算）都不能当成
+      # 「可合并」——放过去等于让 `queue --apply` 去碰一个必然失败的合并。
+      unless pr.merge_state_status == "CLEAN"
+        return ["verify_pre",
+          "PR ##{pr.number} 的合并状态是 #{pr.merge_state_status.inspect}，只有 CLEAN 才可合并" \
+          "（DIRTY=有冲突需先解决；BLOCKED=缺审批或分支保护未满足）"]
+      end
+
+      # head 必须已有核验记录。这是 update_branch / changelog 追加的直接后果：
+      # 两者都改 head，旧 head 上的 `verify merge --pre` 结论随之作废。没有这道
+      # 判定，「CI 全绿 + Evidence 仍 accepted」就能把新 head 直接合并——
+      # 而 Evidence 是 issue 级的，不绑定 head，拦不住这件事。
+      #
+      # 无核验记录（nil）同样不放行：合并前必须有一次针对这个 head 的核验。
+      if verified_head.nil? || verified_head != pr.head_sha
+        detail = verified_head.nil? ? "尚无核验记录" : "已核验的是 #{verified_head[0, 8]}，当前是 #{pr.head_sha[0, 8]}"
+        return ["verify_pre", "PR ##{pr.number} 的 head 需要重新核验（#{detail}）：跑 verify merge --pre 与独立核验"]
       end
 
       # 「先 verify 再追加 CHANGELOG」：追加会改 head，追加之后的提交必须重新核验，

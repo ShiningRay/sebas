@@ -13,7 +13,8 @@
 | 条件 | 动作 | 说明 |
 |---|---|---|
 | PR 关联多卡 / 目标不是 main / 分支与租约不符 | `invalid_plan` | 归属校验排在一切动作之前，fail-closed |
-| 失败检查 / 未解决 thread / BEHIND | `resume_pr` | 与单卡时一致 |
+| 失败检查 / 未解决 thread | `resume_pr` | 与单卡时一致 |
+| BEHIND | `merge_ready` | **不是** `resume_pr`：sync main 是合并队列的 `update_branch` 步骤，归队列就保证「update 后必重核验」；判成 `resume_pr` 会让队列看不到这张 PR（队列只收 `merge_ready`），update 永远不执行 |
 | 检查未完成 | `wait` | 本卡等，**释放算力**：容量有空位就补位认领 |
 | CLEAN 且 thread 清零 | `merge_ready` | 进合并队列；仍需 `--pre` 与独立核验 |
 | 本卡带 `needs:human` | `needs_human` | 只停本卡，不阻塞其他租约（Q9） |
@@ -47,18 +48,26 @@
 
 ```sh
 ruby tools/sebas-process queue              # 只读：entries / head / step / blocked_by
-ruby tools/sebas-process queue --apply      # 推进队首一步（只做「合并」这一步）
+ruby tools/sebas-process queue --apply      # 推进队首一步（update-branch / 追加 CHANGELOG / 合并）
 ```
 
 ### 3.1 链上步骤
 
-顺序固定为 **verify_pre → changelog → merge → evidence → release**：
+顺序固定为 **update_branch → verify_pre → changelog → merge → evidence → release**：
 
 | 步骤 | 判定 | 为什么在这一步 |
 |---|---|---|
-| `verify_pre` | 归属、目标分支、失败检查、未完成检查、未解决 thread | `verify merge --pre` 是合并前唯一能判定的门禁 |
+| `update_branch` | `merge_state_status=BEHIND` | main 前进后旧 base 上的核验结论全部作废，必须先 `gh pr update-branch`；它改 head，所以之后必须重跑 `verify merge --pre` 与独立核验 |
+| `verify_pre` | 归属、目标分支（必须明确 `main`）、失败检查、未完成检查、未解决 thread、`merge_state_status=CLEAN`、**当前 head 已有核验记录** | `verify merge --pre` 是合并前唯一能判定的门禁；DIRTY/BLOCKED/UNKNOWN 一律不能进入合并 |
 | `changelog` | PR 正文声明了条目而 `[Unreleased]` 还没有本 PR 的引用行 | 追加会改 head，必须排在核验之后、合并之前 |
 | `merge` | `gh pr merge --squash --match-head-commit <head>` | head 绑定让 GitHub 拒绝合并未核验的提交 |
+
+**head 核验绑定**：`update_branch` 与 `changelog` 都改 head，旧 head 上的
+`verify merge --pre` 结论随之作废。本机运行记录的 `verified_head` 存「上一次
+通过 `--pre` 的 head」，队列要求它与 PR 当前 head 一致才进入 `merge`；两者都在
+改 head 之后把 `verified_head` 清空。没有这道判定，「CI 全绿 + Evidence 仍
+accepted」就能把新 head 直接合掉——Evidence 是 issue 级的，不绑定 head，
+拦不住这件事。
 | `evidence` | merge commit 的 CI 成功、`merged_into_main: true` | 异步，由 `evidence-register.yml` 写 |
 | `release` | 释放租约（`unclaim`） | 收口，要求 PR 已合并且 issue completed |
 
@@ -66,9 +75,10 @@ ruby tools/sebas-process queue --apply      # 推进队首一步（只做「合�
 
 | 队首 step | `--apply` 做什么 |
 |---|---|
+| `update_branch` | 只做 `gh pr update-branch`；改 head 后强制要求重跑核验，不接着合并 |
 | `changelog` | 把 PR 正文的条目追加进 `[Unreleased]`（幂等） |
 | `merge` | 先 `verify merge --pre`，再绑定 head squash 合并，合并后复核 |
-| `verify_pre` | 不做写，报出阻塞原因 |
+| `verify_pre` | 跑 `verify merge --pre`；通过则把当前 head 写进运行记录的 `verified_head`，之后才能进 `merge` |
 | `evidence` | 不做写：Evidence 升级由 workflows 完成，重跑 `queue` 看是否已解锁 |
 | `release` | 不做写：`unclaim` 是收口动作，需 PR 已合并 + issue completed |
 
@@ -105,7 +115,7 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 | 编号 | 判据 | 实现位置 | 测试 |
 |---|---|---|---|
 | F1–F4 | claim 各写入点崩溃 | `claim` 的写后回读与 `aborted` 对账 | `test_lease_coordinator.rb` |
-| F5 | worker 进程消失 | `RunRecord#heartbeat_expired?`（缺字段不判过期，时间戳非法判过期） | `test_fault_matrix.rb` |
+| F5 | worker 进程消失 | `RunRecord#heartbeat!`（每次写心跳同时记 pid）/ `#heartbeat_expired?` / `#worker_alive?`；路由侧 `worker_state` 双证据：心跳新鲜或本机 pid 存活 → `wait` 不接管；心跳过期且本机 pid 不存在 → `resume_issue`；跨机 → 不接管（F6）；缺心跳字段的旧记录不判死 | `test_fault_matrix.rb` |
 | F6 / F7 | 异机租约 / 有标签无凭据 | 逐租约 `owned?` + `claim` 的租约预检 | `test_selection_scheduling.rb`、`test_lease.rb` |
 | F8 | 记录与远端认领不是同一张卡 | `routing` 的 orphan 判定（`settled_record?` 排除已合并待释放） | `test_fault_matrix.rb`、`test_queue_regressions.rb` |
 | F9 | 同一张卡两份有效凭据 | `Lease.active_lease` 唯一性 | `test_lease.rb` |

@@ -56,12 +56,13 @@ class LeaseActionsTest < Minitest::Test
       {"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50},
       {"issue" => 2, "phase" => "claimed", "branch" => "feat/2", "pr" => 51}
     ])
-    assert_equal "resume_pr", view.next_action
+    # BEHIND 现在归合并队列的 update_branch 步骤处理（§3），不再是 resume_pr。
+    assert_equal "merge_ready", view.next_action
     assert_equal 2, view.next_issue
     # 逐租约表两张都在，判定互不影响
     by_issue = view.leases.to_h { |lease| [lease.issue, lease] }
     assert_equal "wait", by_issue[1].action
-    assert_equal "resume_pr", by_issue[2].action
+    assert_equal "merge_ready", by_issue[2].action, "BEHIND 进队列由 update_branch 处理"
     assert_operator by_issue[1].action, :!=, "invalid_plan"
   end
 
@@ -132,7 +133,7 @@ class LeaseActionsTest < Minitest::Test
       {"issue" => 1, "phase" => "paused", "branch" => "feat/1"},
       {"issue" => 2, "phase" => "claimed", "branch" => "feat/2", "pr" => 51}
     ])
-    assert_equal "resume_pr", view.next_action
+    assert_equal "merge_ready", view.next_action, "BEHIND 进队列由 update_branch 处理"
     assert_equal 2, view.next_issue
     by_issue = view.leases.to_h { |lease| [lease.issue, lease] }
     assert_equal "needs_human", by_issue[1].action

@@ -34,6 +34,12 @@ module SebasAgents
         opts.on("--verdict PATH") { |value| options[:verdict] = value }
         # 合并队列（#221）：CHANGELOG 正文来源，缺省读仓库根的 CHANGELOG.md。
         opts.on("--changelog PATH") { |value| options[:changelog] = value }
+        # 心跳（#221 §5 F5）：TTL（秒）只用于附带过期判定，不写进记录——
+        # 阈值属全局策略，按卡配置会变成「谁喊得久谁不死」。
+        opts.on("--ttl SECONDS") { |value| options[:ttl] = value }
+        # 心跳（#221 §5 F5）：长期 worker 的 pid。必须是 worker 自己的，
+        # 不是本 CLI 进程的——写完即退出的 pid 证明不了任何事。
+        opts.on("--pid PID") { |value| options[:pid] = value }
         opts.on("--apply") { options[:apply] = true }
         opts.on("--dry-run") { options[:apply] = false }
         # 合并前自检：跳过「已合并 / 已关闭」这两条只有合并后才可能成立的条件。

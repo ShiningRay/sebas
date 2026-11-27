@@ -237,5 +237,5 @@ concurrency:
 角色归属：这类残留目前没有自动巡检，需要人发现。合并队列落地后由 coordinator 的
 串行单位兜住（等 Evidence 升级完再合下一张，超时转人工，见
 [parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）；在此之前，
-发现与处置责任落在 Maintainer 与当轮 Implementer——`plan` 的 `verifier_queue_depth`
+发现与处置责任落在 Maintainer 与当轮 Implementer——`plan` 的 `verifier_queue_depth`（待核验的 `merge_ready` 数）
 与 issue 上缺失的 `merged_into_main: true` 是唯一的信号源。

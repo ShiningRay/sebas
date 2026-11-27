@@ -37,8 +37,13 @@ class MergeQueueTest < Minitest::Test
     SebasAgents::Model::Snapshot.from_hash(snapshot(issues: [], pull_requests: prs))
   end
 
-  def plan(leases, prs, changelog: nil)
-    SebasAgents::MergeQueue.plan(leases, snap_with(prs), changelog: changelog)
+  # 默认把所有 PR 的当前 head 视为「已核验」：本文件的用例大多在测链上其他
+  # 环节，不该每条都重述核验绑定。需要测核验绑定的用例显式传 verified_heads。
+  def plan(leases, prs, changelog: nil, verified_heads: nil)
+    heads = verified_heads || prs.to_h { |item| [item["number"], item["head_sha"]] }
+      .then { |by_pr| leases.to_h { |item| [item.issue, by_pr[item.pr]] } }
+    SebasAgents::MergeQueue.plan(leases, snap_with(prs), changelog: changelog,
+      verified_heads: heads)
   end
 
   # --- 链上步骤 ---

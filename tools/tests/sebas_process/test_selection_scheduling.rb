@@ -201,7 +201,8 @@ class SelectionSchedulingTest < Minitest::Test
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 50, "phase" => "claimed"})
-    assert_equal "resume_pr", action.action
+    # BEHIND 交给合并队列的 update_branch（§3）：update 会改 head，必须重核验。
+    assert_equal "merge_ready", action.action
     assert_includes action.reason, "BEHIND"
   end
 

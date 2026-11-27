@@ -3,6 +3,7 @@
 require "json"
 require "time"
 require "fileutils"
+require "socket"
 
 module SebasAgents
   # 本地运行记录：worktree 之外，原子写入，绝不保存凭据。
@@ -23,7 +24,8 @@ module SebasAgents
     LEGACY_SCHEMA = 1
     FIELDS = %w[
       issue branch worktree pr base_sha phase attempts status_written label_written
-      worker_id coordinator_id lease_id scope host claimed_at last_heartbeat_at
+      worker_id coordinator_id lease_id scope host claimed_at last_heartbeat_at pid
+      verified_head
     ].freeze
     # 活动 phase（续篇 §7）：这些记录代表持有中的租约，缺 v2 字段不能自动搬。
     ACTIVE_PHASES = %w[claiming claimed pr_open merging paused].freeze
@@ -97,7 +99,7 @@ module SebasAgents
 
       migrated = data.slice(*FIELDS)
         .merge("schema" => SCHEMA)
-        .merge(%w[worker_id coordinator_id lease_id scope host claimed_at last_heartbeat_at]
+        .merge(%w[worker_id coordinator_id lease_id scope host claimed_at last_heartbeat_at verified_head]
           .filter_map { |field| [field, data[field]] unless data.key?(field) }.to_h)
       FileUtils.mkdir_p(File.dirname(target))
       temp = "#{target}.tmp"
@@ -157,13 +159,83 @@ module SebasAgents
     # 挡不住两个进程各自读到旧快照再覆盖（后写的会吞掉先写的字段）。
     # 用独占创建的锁文件（与 coordinator 锁同一套路），拿不到锁就放弃本次
     # 心跳——心跳丢一次不影响正确性，覆盖别人的写入才会。
-    def heartbeat!(now: Time.now.utc)
-      with_record_lock(@path) do
+    #
+    # `pid` 必须是**长期 worker 的** pid，不是这条命令的 pid：CLI 写完就退出，
+    # 用它的 pid 会让 `Worker.state` 把仍在跑的长任务判成 :gone，于是第二个
+    # worker 被派去做同一张卡。调用方须显式提供（执行器从自己的进程拿）；
+    # 缺省用本进程 pid 只适用于「在 worker 进程内部调用」的场景，CLI 会拒绝。
+    #
+    # `expect_lease_id` / `expect_phase`：锁内复核。读—改—写跨越了调用方检查
+    # 与写入本身，中间可能发生「L1 释放 → 同一张卡被认领为 L2」。没有复核就会
+    # 把 L1 的 pid 写进 L2 的记录，`Worker.state` 随后据此误判 L2 失联。
+    # `host` 保持认领时的值不覆盖——换机写心跳不应让租约看起来属于新机器。
+    #
+    # 返回写入后的记录；锁被占 / 记录缺失 / 身份不符 / 已释放时返回 nil，
+    # 由调用方区分（`heartbeat_refusal` 记录原因）。
+    def heartbeat!(now: Time.now.utc, pid: Process.pid, expect_lease_id: nil, expect_phase: nil)
+      @heartbeat_refusal = nil
+      locked = with_record_lock(@path) do
         data = load
-        break nil if data.nil? || data.empty?
+        if data.nil? || data.empty?
+          @heartbeat_refusal = "missing"
+          break nil
+        end
 
-        save(data.merge("last_heartbeat_at" => now.iso8601))
+        if expect_lease_id && data["lease_id"] != expect_lease_id
+          @heartbeat_refusal = "lease_mismatch"
+          break nil
+        end
+        if expect_phase && data["phase"].to_s != expect_phase
+          @heartbeat_refusal = "phase_mismatch"
+          break nil
+        end
+        if data["phase"].to_s == "released"
+          @heartbeat_refusal = "released"
+          break nil
+        end
+
+        save(data.merge("last_heartbeat_at" => now.iso8601, "pid" => pid))
       end
+      # with_record_lock 拿不到锁时返回 nil 且块未执行：那是「锁被占」，
+      # 与身份不符要分开报告——前者稍后重试，后者说明这张卡已经换主了。
+      @heartbeat_refusal = "locked" if locked.nil? && @heartbeat_refusal.nil?
+      locked
+    end
+
+    # 上一次 heartbeat! 被拒绝的原因（nil 表示没被拒绝）。调用方据此给出
+    # 「锁被占」与「身份不符」这两种完全不同的处置。
+    attr_reader :heartbeat_refusal
+
+    # worker 是否还活着（§F5）。三级证据，缺一即「不可判定」：
+    #   1. 记录里有 pid，且
+    #   2. 记录里的 host 就是本机（跨机 pid 无意义），且
+    #   3. `kill(0, pid)` 不抛 ESRCH。
+    # 返回 true（活着）/ false（已消失）/ nil（判不了：缺 pid、跨机、pid 非法）。
+    # 调用方必须把 nil 与 false 区分开：nil 不能当成「可以接管」。
+    def worker_alive?
+      data = load
+      return nil if data.nil? || data.empty?
+
+      pid = data["pid"]
+      # pid 可能是整数（save 写的就是 Integer）或字符串（外部手改）。
+      # `Integer(int, 10)` 会抛 ArgumentError——那会被下面的 rescue 吞成 nil，
+      # 于是整数 pid 永远判不了。这里先归一成整数再判。
+      pid_int = case pid
+                when Integer then pid.positive? ? pid : nil
+                when String then pid.match?(/\A\d+\z/) ? pid.to_i : nil
+                end
+      return nil if pid_int.nil?
+
+      recorded_host = data["host"].to_s
+      return nil if recorded_host.empty? || recorded_host != Socket.gethostname
+
+      Process.kill(0, pid_int)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      # 进程存在但无权发信号：活着。
+      true
     end
 
     # 心跳是否过期（§F5）。

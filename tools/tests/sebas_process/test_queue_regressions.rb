@@ -94,7 +94,10 @@ class QueueRegressionsTest < Minitest::Test
       SebasAgents::Model::Snapshot.from_hash(data),
       records: [
         {"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 60},
-        {"issue" => 2, "phase" => "claimed", "branch" => "feat/2"}
+        # 卡 2 要测「另一张在途卡仍能拿到动作」，补上 worker 已失联的证据
+        {"issue" => 2, "phase" => "claimed", "branch" => "feat/2",
+         "host" => Socket.gethostname, "pid" => 999_999,
+         "last_heartbeat_at" => "2020-01-01T00:00:00Z"}
       ])
     refute_equal "invalid_plan", view.next_action,
       "合并后未 unclaim 是正常中间态，不该连带另一张判 invalid"
@@ -117,4 +120,133 @@ class QueueRegressionsTest < Minitest::Test
     assert_equal "invalid_plan", view.next_action
     assert_includes view.invalid_reason, "冲突"
   end
+
+  # --- BEHIND 必须先 update-branch 再核验（#221 §3）---
+
+  # 直接给 merge 会把旧 base 上的核验结论带进合并；必须先 update，且之后重跑核验。
+  def test_behind_pr_requires_update_branch_first
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "BEHIND",
+      "head_sha" => "abc12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n")
+    assert_equal "update_branch", step
+    assert_includes reason, "update-branch"
+    assert_includes reason, "重跑 verify merge --pre", "更新后必须声明要重新核验"
+  end
+
+  # 非 CLEAN 一律不能进入 merge：DIRTY 有冲突、BLOCKED 缺审批、UNKNOWN 还在算。
+  def test_non_clean_states_never_reach_merge
+    %w[DIRTY BLOCKED UNKNOWN].each do |state|
+      pr = SebasAgents::Model::PullRequest.from_hash(
+        "number" => 50, "state" => "OPEN", "merge_state_status" => state,
+        "head_sha" => "abc12345", "base_ref_name" => "main",
+        "checks" => [], "review_threads" => [], "closing_issues" => [1]
+      )
+      step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n")
+      assert_equal "verify_pre", step, "#{state} 不能判成可合并"
+      assert_includes reason, state
+    end
+  end
+
+  def test_clean_pr_still_reaches_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "abc12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: pr.head_sha)
+    assert_equal "merge", step
+  end
+
+  # base 缺失不放行：目标分支是安全边界，读不到即不可判定。
+  def test_missing_base_never_reaches_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "abc12345", "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n")
+    assert_equal "verify_pre", step
+    assert_includes reason, "不可判定"
+  end
+  # --- head 核验绑定（update_branch / CHANGELOG 追加都会改 head）---
+
+  # 没有核验记录不得进入 merge：Evidence 是 issue 级的，不绑定 head，拦不住这件事。
+  def test_unverified_head_blocks_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "new12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: nil)
+    assert_equal "verify_pre", step
+    assert_includes reason, "尚无核验记录"
+  end
+
+  # update-branch 后 head 变了：旧核验结论失效，必须重核验。
+  def test_changed_head_invalidates_verification
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "new12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "old12345")
+    assert_equal "verify_pre", step
+    assert_includes reason, "需要重新核验"
+  end
+
+  # 核验记录与当前 head 一致才放行。
+  def test_matching_head_reaches_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "same1234", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "same1234")
+    assert_equal "merge", step
+  end
+
+
+  # --- 端到端：BEHIND 必须从 routing 走到队列的 update_branch ---
+
+  # 上一轮把 update_branch 加在 next_step 里，但 routing 仍把 BEHIND 判成
+  # resume_pr，而 MergeQueue.plan 只收 merge_ready——update 步骤成了死代码。
+  # 这条测试从 routing 出发，经 plan 走到队列步骤。
+  def test_behind_pr_reaches_queue_update_step_end_to_end
+    data = snapshot(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      pull_requests: [{
+        "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
+        "merge_state_status" => "BEHIND", "matches" => nil,
+        "head_sha" => "sha50", "base_ref_name" => "main", "checks" => [],
+        "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      }],
+      capacity: 2
+    )
+    view = plan(data, records: [{"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "merge_ready", view.next_action, "routing 必须把 BEHIND 交给队列"
+
+    queue = MQ.plan(view.leases, SebasAgents::Model::Snapshot.from_hash(data),
+      changelog: "## [Unreleased]\n")
+    assert_equal "update_branch", queue.step, "队列必须给出 update_branch 步骤"
+    assert_equal 1, queue.head
+  end
+
+  # 核验记录到位后必须能进入 merge。真正的写入点由 CLI 级用例覆盖
+  # （test_cli_queue.rb 的 test_queue_apply_verify_pre_records_verified_head
+  # 走 queue --apply，删掉 remember_verified_head 会失效）；这里只锁定
+  # next_step 对 verified_head 的判定本身。
+  def test_verified_head_unblocks_merge_in_queue
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "sha50", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: nil)
+    assert_equal "verify_pre", step
+    step2, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "sha50")
+    assert_equal "merge", step2
+  end
+
 end
