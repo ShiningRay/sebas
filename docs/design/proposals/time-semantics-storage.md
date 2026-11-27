@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS wake_schedules (
 CREATE TABLE IF NOT EXISTS occurrences (
   id            TEXT PRIMARY KEY,             -- §4 稳定身份：schedule_id + slot
   schedule_id   TEXT NOT NULL REFERENCES wake_schedules(id),
-  slot          TEXT NOT NULL,                -- once:<utc> / cron:<expr>:<本轮起始 UTC>
+  slot          TEXT NOT NULL,                -- 实例身份（§4.4）：inst:<utc> / gap:<wall>@<tz>，与窗口无关
   due_at        TEXT,                         -- 本次唤醒 UTC 时刻（排序键）；state='invalid' 时可为空
   state         TEXT NOT NULL CHECK (state IN
                   ('pending','claimed','done','skipped','merged','invalid')),
