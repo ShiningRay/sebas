@@ -122,12 +122,12 @@
 - 范围：TUI channel 装配与固定会话入站，具体如下：
   - `src/channels/tui/bridge.cr`（或内联进 IPC server）实现 `ChannelAdapter`；`start` 为空操作，`send(peer, content)` 推 `tui.output`。
   - `sessions.ensure` 校验 binding 四段一致后 `Lifecycle#touch` 预登记空历史会话；`sessions.list` 合并 sessions 与 transcripts 来源。
-  - `tui.input` 校验所选 `local:tui:peer` 会话且 agent 段等于实时 binding 结果，随后持久化提交记录，冻结 `event_id/session_key/peer/content` 并入 bus。
-  - bus 消费端按提交记录中的固定 session_key admission，不按热换后的 binding 重新路由；发布 `tui.admission` 接受/拒绝终态。校验失败不创建 intent、不入 bus。
+  - `tui.input` 校验所选 `local:tui:peer` 会话且 agent 段等于实时 binding 结果，随后以 `client_submission_id` 幂等写入 `tui_submissions`，冻结 `event_id/session_key/peer/content` 并入 bus。
+  - bus 消费端按固定 session_key admission，不按热换后的 binding 重新路由；启动时扫描 pending 提交重放，event_id 唯一约束去重；提供 `tui.submissions.get` 与 `tui.admission` 终态。校验失败不创建 intent、不入 bus。
   - `spawn_adapters` 装配 TuiBridge；`Routing::BindingRule` 支持 `channel: tui`；`apply_config` 账号增删覆盖 tui。
 - 交付物：TuiBridge + IPC 协议扩展 + binding 路由 + spec（入站走完整链路 + 出站回传 + 多 peer 不串扰）。
 - 依赖：M6.5-WP1。
-- 验收：`tui.input {session_key: "agent:main:local:tui:a", peer: "a", content: "hello"}` 触发 agent turn 且 transcript 落该会话；校验后、bus 消费前发生 binding 热换仍落原选中会话，不改投新 agent；选中 email 会话的输入被拒绝且不创建 intent；agent `message.send` 后 IPC 推 `tui.output {peer: "a"}`；两 peer 并发不串会话；`channel: tui` 的 binding 路由正确解析。
+- 验收：`tui.input {client_submission_id: "a-1", session_key: "agent:main:local:tui:a", peer: "a", content: "hello"}` 触发 agent turn 且 transcript 落该会话；校验后、bus 消费前发生 binding 热换仍落原选中会话；ok_response 丢失后按 client_submission_id 找回，重发不二次入 bus；崩溃后 pending 提交重放且 event_id 去重，不重复执行；选中 email 会话的输入被拒绝且不创建 intent；agent `message.send` 后 IPC 推 `tui.output {peer: "a"}`；两 peer 并发不串会话；`channel: tui` 的 binding 路由正确解析。
 - 风险：零 binding 启动时给出明确错误 + 配置示例，不静默失败。[推演]
 
 **M6.5-WP5 TUI 前端：终端渲染 + 会话列表 + 对话流 + 输入框**（1.5–2 pd）

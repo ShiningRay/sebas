@@ -65,7 +65,7 @@ Sebas 当前的用户可见入口：
 ### 3.1 `tui.input`（TUI → gateway，写命令，需认证）
 
 ```json
-{"type": "tui.input", "id": "...", "session_key": "agent:main:local:tui:operator", "peer": "operator", "content": "帮我看下昨天 cron 跑的结果"}
+{"type": "tui.input", "id": "...", "client_submission_id": "tui-operator-00042", "session_key": "agent:main:local:tui:operator", "peer": "operator", "content": "帮我看下昨天 cron 跑的结果"}
 ```
 
 - `session_key`：**必填**，取 TUI 当前选中会话，服务端按以下规则校验：
@@ -75,11 +75,19 @@ Sebas 当前的用户可见入口：
   - email/telegram 等会话只读，不能借 TUI 输入框跨渠道发言。
 - `peer`：TUI 侧用户标识，默认 `"operator"`，多 TUI 实例可各起 peer 隔离会话；`session_key` 与 `peer` 同时发送是为显式绑定当前选中项，不是任选会话的旁路；
 - `content`：原始输入文本；
-- 响应：同步 `ok_response` 只表示**已入 bus**，附 `event_id`；它不是 admission 成功回执。最终接受/拒绝经 `tui.admission` 推送（含 `event_id/session_key/status/reason`）通知原请求连接；无 binding / 容量满 / 归档会话都在此给出可见终态。binding 仍按 `tui/local/peer` 解析 agent，`session_key` 不用于绕过路由指定 agent。
+- `client_submission_id`：客户端生成并持久保存的幂等键，同一 TUI peer 内唯一；服务端派生 `event_id="tui:<peer>:<client_submission_id>"`，并在 `ok_response`、`tui.admission` 和查询结果中回显该键。`tui.submissions.get {peer, client_submission_id}` 可在未收到 `event_id` 时找回提交。断线重发沿用原键与原文：已存在记录时返回同一 event_id 和当前状态，不再次入 bus；同键不同文返回 `client_submission_conflict`，不合并不同输入；
+- 响应：同步 `ok_response` 只表示**已入 bus**，附 `event_id` 与 `client_submission_id`；它不是 admission 成功回执。最终接受/拒绝经 `tui.admission` 推送（含 `event_id/client_submission_id/session_key/status/reason`）通知原请求连接；容量满 / 归档会话都在此给出可见终态。无 binding 在校验时同步返回 `error_response`，不入 bus。binding 仍按 `tui/local/peer` 解析 agent，`session_key` 不用于绕过路由指定 agent。
 
-**跨 bus 的会话归属**：`tui.input` 校验通过后，gateway 为该输入生成持久 TUI 提交记录，固定 `event_id + session_key + peer + content`；bus 携带该提交的引用，而不是让消费端把它当普通渠道消息重新路由。消费端只按提交记录中的 `session_key` admission，**不得再次按新 binding 改投其他 agent**；持久引用使崩溃恢复与 bus 排队期间都不丢失选中会话归属。
+**跨 bus 的会话归属**：`tui.input` 校验通过后，gateway 在 `tui_submissions` 表持久化提交，固定 `event_id + client_submission_id + session_key + peer + content + status + reason`；bus 只携带 event_id 引用。消费端按记录中的固定 `session_key` admission，**不得再次按新 binding 改投其他 agent**。状态机为 `pending → admitted | duplicate | rejected`，另以 `recovery_required` 表示无法安全重放的异常提交；每次状态迁移持久化后才发布对应事件。
 
-这一语义沿用调度契约的「admission 前完成路由，在途批次不随 binding 热换改归属」：校验完成即冻结该输入的选中会话，binding 热换只影响之后的新输入。接受、重复、容量拒绝和归档拒绝均发布 `tui.admission` 终态到原 peer/连接；进程崩溃无法返回同步终态时，TUI 以 `event_id` 查询提交/admission 状态，避免把「已入 bus」误报成「已投递给所选 agent」。
+**崩溃恢复与查询终态**：
+
+- gateway 启动时在 bus 消费启动前扫描 `tui_submissions.status=pending`，按创建顺序将 event_id 重新投入专用 TUI 提交队列，再统一 admission；重放始终使用记录中的固定 session_key，不重新路由。
+- admission 与提交状态迁移使用同一持久事务；`session_inputs.event_id` 唯一约束负责去重。已 admitted/duplicate 的提交不重放；pending 重放若发现同 event_id 已有输入则原子转 duplicate，不创建第二个 agent turn。
+- 恢复后向该 peer 的在线连接补发 `tui.admission`；不在线也可由 `tui.submissions.get` 按客户端幂等键或 event_id 读取 `pending/admitted/duplicate/rejected/recovery_required` 及 reason。`pending` 表示已持久接受、等待 admission，不是丢失或无终态。
+- 记录损坏、session_key 非法或无法安全重放时原子转 `recovery_required` 并给出 reason，发布 `tui.admission(status=rejected, reason=recovery_required)`；不自动改投、不反复重试。TUI 显示失败并让用户显式重发（新 client_submission_id）。
+
+这一语义沿用调度契约的「admission 前完成路由，在途批次不随 binding 热换改归属」：校验完成即冻结该输入的选中会话，binding 热换只影响之后的新输入。接受、重复、容量拒绝和归档拒绝均发布 `tui.admission` 终态到原 peer/连接；进程崩溃无法返回同步终态时，TUI 以持久 `client_submission_id`（或已收到的 event_id）查询上述提交状态，避免把「已入 bus」误报成「已投递给所选 agent」。
 
 ### 3.2 `tui.output`（gateway → TUI，推送帧）
 
