@@ -41,10 +41,11 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-ruby
-      - name: Vendor sandbox gem and build config
+      - name: Vendor sandbox gems and build config
         shell: pwsh
         run: |
           Copy-Item sebas/tools/mruby-build/mrbgems/mruby-sebas-stdio -Destination mruby/mrbgems/ -Recurse
+          Copy-Item sebas/tools/mruby-build/mrbgems/mruby-sebas-json -Destination mruby/mrbgems/ -Recurse
           Copy-Item sebas/tools/mruby-build/mrb_cr.rb -Destination mruby/build_config/
       - name: Build interpreter
         # MRUBY_CONFIG=mrb_cr：只构建沙箱裁剪配置（minirake 默认会构建
