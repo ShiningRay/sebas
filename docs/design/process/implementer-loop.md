@@ -340,7 +340,7 @@ evaluation = SebasAgents::Policy::Dependencies.evaluate(issue, snapshot)
 ruby tools/sebas-process next                  # 读取 GitHub，输出单一动作
 ruby tools/sebas-process plan                  # 只读多候选视图：与 next 同策略同路由，返回全部就绪候选（capacity=1、首选恒等、含验收背压），不改写行为（#218；契约详见 quickstart Implementer）
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
-ruby tools/sebas-process claim 39 --apply      # 写本地运行记录
+ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（M4x-WP2，#220）：协调评论为凭据，lease_id 对账恢复；详见 quickstart 租约与迁移节
 ```
 
 `policy/` 不执行网络、Git 或模型调用；所有副作用集中在 CLI 与 `CommandRunner`，

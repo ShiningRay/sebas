@@ -177,6 +177,22 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 `invalid_plan` / `handoff_release` / `idle` 之一，见
 [implementer-loop.md](implementer-loop.md) §4。
 
+#### 租约与迁移（M4x-Parallel-WP2，#220）
+
+- **租约凭据（Q1=B）**：`claim --apply` 在认领卡发一条带 `<!-- sebas-lease -->`
+  marker 的协调评论（comment id 即 lease_id，作者须在 `.github/agents.yml` 的
+  `coordinators:` 白名单）。写入序：本地记录（claiming）→ 租约评论 →
+  `agent:in-progress` 标签 + 回读 → claimed；任一步失败落 aborted。
+  重跑 `claim` 按 lease_id 对账复用既有凭据（不双开）。
+- **运行记录迁移（Q10=B）**：`.sebas-agent/run.json` 自动搬迁至
+  `.sebas-agent/runs/<issue>.json`（schema 2）；非活动记录自动搬，活动记录
+  缺 v2 字段须人工确认；迁移期容量恒为 1。
+- **scope 预算（Q4=A）**：Automation 可选 `scope: [路径前缀]`（`src/store/`
+  形态，尾 / 归一，禁 `..` 与绝对路径）；容量 >1 时前缀互相包含即冲突，
+  缺 scope 独占容量；本期容量恒 1，scope 过滤待命。
+- **故障排查**：认领 aborted → 看 run 记录 `label_written` 与卡上租约评论；
+  有标签无凭据（F7）、双凭据（F9）均 invalid_plan，交 Maintainer。
+
 `plan`（只读，dry-run 默认）：与 `next` 同快照同策略，输出 JSON——
 `candidates`（`issue/title/order/scope_conflict/selected`，`scope_conflict`
 本期恒为 `null` 未判定）、`excluded`（`issue/reason/detail`，`reason` 为枚举码：

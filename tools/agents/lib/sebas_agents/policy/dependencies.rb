@@ -26,6 +26,10 @@ module SebasAgents
           raise InvalidPlan, "##{issue.number} 的 automation.#{field} 必须显式写出数组" unless block[field].is_a?(Array)
         end
 
+        # scope（M4x-Parallel-WP2，#220；Proposal §6.1）：可选字段，校验并归一
+        # 尾部 `/`——非法值上抛（调度预算声明非法不能静默忽略），nil 保持 nil。
+        block["scope"] = Scope.normalize(block["scope"], issue_number: issue.number) if block.key?("scope")
+
         block
       end
 

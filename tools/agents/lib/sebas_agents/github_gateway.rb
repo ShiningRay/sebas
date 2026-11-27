@@ -1012,6 +1012,23 @@ end
       end
     end
 
+    public
+
+    # 授权可发/改租约评论的 coordinator 身份（M4x-WP2，#220 §5.2）。
+    # 缺省为空：未显式授权时任何租约凭据都判作者越权，仍是 fail-closed。
+    def coordinators
+      @coordinators ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return [] unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        Array(data && data["coordinators"]).map(&:to_s).reject(&:empty?)
+      end
+    end
+
+    private
+
     def paginate(path)
       separator = path.include?("?") ? "&" : "?"
       items = []
