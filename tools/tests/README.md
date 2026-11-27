@@ -5,7 +5,7 @@ Agent 流程工具（`tools/`）的离线测试。全部 minitest + 标准库，
 ## 跑测试
 
 ```sh
-ruby tools/tests/run.rb                     # 全量（40 个文件）
+ruby tools/tests/run.rb                     # 全量（47 个文件）
 ruby tools/tests/run.rb docs                # 只跑一个域
 ruby tools/tests/run.rb --list              # 列出会跑的文件
 make agents-check                           # 等价于全量
@@ -22,11 +22,11 @@ make agents-check                           # 等价于全量
 
 | 目录 | 覆盖对象 |
 |---|---|
-| `sebas_process/` | `tools/sebas-process` 的选卡、依赖对账、证据闸、Verifier、终验、CLI |
+| `sebas_process/` | `tools/sebas-process` 的选卡、依赖对账、证据闸、Verifier、终验、CLI、gateway PR/checks 读取 |
 | `evidence/` | `tools/evidence_register.rb` 的块读写、前置解析、两阶段登记 |
-| `workflows/` | `.github/workflows/*.yml` 与 `.github/actions/setup` 的契约、锚点抽取器、verify 汇总 |
+| `workflows/` | `.github/workflows/*.yml` 与 `.github/actions/setup` 的契约、`await_review.rb` 门闸语义、锚点抽取器、verify 汇总 |
 | `docs/` | `tools/check_docs.rb` 与文档示例一致性 |
-| `process/` | `tools/accept-proposal`、digest、backfill 脚本、版本守卫、Proposal 路径守卫 |
+| `process/` | `tools/accept-proposal`、digest、backfill 脚本、版本守卫、Proposal 路径守卫、lease/scope/run_record |
 | `support/` | 共享夹具（见下），不含断言 |
 
 ## 共享夹具

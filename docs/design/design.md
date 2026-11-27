@@ -19,7 +19,7 @@
 | [§2](spec/02-goals-non-goals.md) | 目标与非目标 | 四条硬需求范围与防蔓延边界 |
 | [§3](spec/03-core-concepts.md) | 核心概念模型 | Account/Agent/Binding、most-specific 路由、会话键五段 |
 | [§4](spec/04-architecture.md) | 总体架构 | 分层职责、Crystal 实现要点、进程模型 |
-| [§5](spec/05-multi-account.md) | 多账号设计（硬需求①） | 账号生命周期、TokenProvider、Email/WeCom/Lark 三渠道 |
+| [§5](spec/05-multi-account.md) | 多账号设计（硬需求①） | 账号生命周期、TokenProvider、Email/WeCom/Lark/Telegram 四渠道 |
 | [§6](spec/06-session-memory.md) | 会话与记忆 | 会话管理、记忆分层、会话输入调度（提案态） |
 | [§7](spec/07-orchestration.md) | 编排引擎（硬需求②） | 三段式原语、效应三明治、幂等三件套、lease 与预算 |
 | [§8](spec/08-multi-agent.md) | 多 Agent 协作 | 防环三件套、subagent 边界、并发上限 |

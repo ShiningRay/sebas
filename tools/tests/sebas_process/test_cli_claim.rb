@@ -172,6 +172,7 @@ end
   end
 
   # 写入失败也要落 aborted，不能让记录停在 claiming。
+  # 写入失败也要落 aborted，不能让记录停在 claiming。
   def test_claim_write_failure_records_aborted
     data = snapshot(issues: [issue(1, body: automation)])
     Dir.mktmpdir do |dir|
@@ -182,13 +183,21 @@ end
       # 用假 runner：写 status 抛错，其余按成功返回。
       fake = Class.new(SebasAgents::CommandRunner) do
         def run!(*argv, chdir: Dir.pwd)
-          raise SebasAgents::CommandError.new("boom", command: argv) if argv.any? { |arg| arg.start_with?("status=") }
+          if argv.any? { |arg| arg.start_with?("status=") }
+            raise SebasAgents::CommandError.new("boom", command: argv)
+          end
+          # 租约唯一性预检要读 issue comments（M4x-WP2）：分页 GET 返回空数组即可。
+          if argv.first == "gh" && argv[1] == "api" &&
+             argv.any? { |arg| arg.include?("/comments?") } &&
+             argv.none? { |arg| %w[-X -f].include?(arg) }
+            return "[]"
+          end
 
           ""
         end
       end
 
-      cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+      cli = SebasAgents::CLI.new(out: StringIO.new, err: $stderr)
       cli.define_singleton_method(:runner) { |_options| fake.new(dry_run: false) }
       out = StringIO.new
       cli.instance_variable_set(:@out, out)

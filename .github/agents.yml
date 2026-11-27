@@ -11,3 +11,10 @@ maintainers:
 # 能改本仓库 workflow 的人即可伪造 Evidence，必须与 .github/ 审核红线配套。
 trusted_bots:
   - github-actions[bot]
+
+# coordinator 身份白名单（M4x-Parallel-WP2，#220；Proposal parallel-implementers.md §5.2）：
+# 允许发/改带 <!-- sebas-lease --> marker 的租约评论。租约凭据是「谁持有这张卡」
+# 的 GitHub 侧事实源——授予此权限等于授予「写入认领所有权」的能力，
+# 口径同 trusted_bots：必须与 .github/ 审核红线配套；未列入者一律 invalid（fail-closed）。
+coordinators:
+  - ShiningRay

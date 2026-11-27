@@ -6,6 +6,7 @@ module SebasAgents
   # 纯值对象：全部由 JSON 快照构造，不含网络或文件副作用。
   module Model
     RESUME_LABEL = "agent:resume"
+    IN_PROGRESS_LABEL = "agent:in-progress"
     HUMAN_LABEL = "needs:human"
     INVALID_LABEL = "metadata:invalid"
 
@@ -177,7 +178,9 @@ module SebasAgents
           state: hash.fetch("state", "OPEN").to_s.upcase,
           merged: hash.fetch("merged", false) == true,
           merge_state_status: hash["merge_state_status"].to_s,
-          checks: Array(hash["checks"]),
+          # checks 为 nil（缺字段或显式 null）表示「未取」；空数组才是
+          # 「取了，确实没有检查」。二者不可合并：把未取当空会让 CI 门禁静默放行。
+          checks: hash["checks"].nil? ? nil : Array(hash["checks"]),
           review_threads: Array(hash["review_threads"]),
           closing_issues: Array(hash["closing_issues"]).map(&:to_i),
           url: hash["url"],
@@ -207,8 +210,14 @@ module SebasAgents
         review_threads.reject { |thread| thread["isResolved"] == true }
       end
 
+      # checks 为 nil = 快照未取该 PR 的 CI 结果（PR4 两段式只取 open 与点名 PR）。
+      # 未取不等于通过：调用方必须按「不可判定」处理，不得静默当空集。
+      def checks_loaded?
+        !checks.nil?
+      end
+
       def failing_checks
-        checks.select do |check|
+        loaded_checks.select do |check|
           %w[FAILURE ERROR CANCELLED TIMED_OUT ACTION_REQUIRED].include?(check["conclusion"].to_s.upcase)
         end
       end
@@ -218,12 +227,18 @@ module SebasAgents
       # 合并条件的读数（详见 AdvisoryChecks 的边界说明）。
       # 只豁免状态明确的未完成态：未知取值留在 pending 里，宁可多等一轮。
       def pending_checks
-        checks.select { |check| AdvisoryChecks.pending?(check) && !AdvisoryChecks.exempt?(check) }
+        loaded_checks.select { |check| AdvisoryChecks.pending?(check) && !AdvisoryChecks.exempt?(check) }
       end
 
       # 只统计门禁类检查；「只有 advisory」不能算有 CI 结果。
       def gate_checks
-        checks.reject { |check| AdvisoryChecks.advisory?(check) }
+        loaded_checks.reject { |check| AdvisoryChecks.advisory?(check) }
+      end
+
+      # 未取时返回空集，让既有判定（无失败/无 pending）保持「没有反证」的语义；
+      # 「是否可判定」由 checks_loaded? 单独把关。
+      def loaded_checks
+        checks || []
       end
 
       def green?

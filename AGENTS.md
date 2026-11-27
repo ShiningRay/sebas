@@ -31,6 +31,13 @@ CI 额外做：三平台（ubuntu/macos/windows）spec + ameba + verify + releas
 `verify anchors`（文档声称的 `file:line` 内容是否对得上源码），入口详见
 `docs/design/process/quickstart.md` 的 Verifier 节。
 
+PR 上的门闸是 `await-review`：CodeRabbit 审完，spec 与 ameba 才起跑；**审查提出
+需整改项时矩阵直接不跑**（读 review 正文的 `Actionable comments posted: N`）。
+排序阶段 fail-open——draft、超时、审查中断都放行并打 warning；整改阶段是真判定，
+判出问题 job 就红，靠 `await-review` 本身是分支保护必检来保证 skip 不等于放行。
+用 thread 手动 resolve 不影响判定。详见
+[development-workflow.md §4](docs/design/process/development-workflow.md)。
+
 ## 目录结构
 
 ```

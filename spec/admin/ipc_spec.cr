@@ -4,6 +4,7 @@ require "../../src/admin/ipc/server"
 require "../../src/admin/tui/client"
 require "../../src/platform/store/store"
 require "../../src/platform/config/schema"
+require "../../src/platform/config/loader" # agents.list 用 Loader.from_content 构造当前配置
 require "../../src/sessions/scheduling/steer"
 require "../../src/sessions/lifecycle/lifecycle"
 require "../../src/agents/agents"
@@ -214,6 +215,75 @@ module Sebas
         conflict["error"].as_s.should contain("already exists")
         client.close
       ensure
+        server.close
+        store.close
+      end
+    end
+
+    it "agents.list（M4x-WP2）：只读返回当前 Config.agents，按 id 排序、缺省 null/[]" do
+      store = ipc_store
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
+      server.listen
+      previous = ::Sebas::Platform::Config::CURRENT.get
+      begin
+        yaml = <<-YAML
+          agents:
+            worker: { model: fake/chat }
+            main: { model: fake/chat, category: general, tags: [assistant, triage] }
+          YAML
+        ::Sebas::Platform::Config::CURRENT.set(::Sebas::Platform::Config::Loader.from_content(yaml))
+        client = Admin::TUI::Client.new(server.discovery_path)
+        client.handshake
+
+        reply = client.request("agents.list").should_not be_nil
+        reply["ok"].as_bool.should be_true
+        entries = reply["payload"]["agents"].as_a
+        entries.size.should eq(2)
+        # 插入序为 worker, main：输出按 id 字典序（排序口径）
+        entries.map(&.["id"].as_s).should eq(["main", "worker"])
+        main = entries[0]
+        main["category"].as_s.should eq("general")
+        main["tags"].as_a.map(&.as_s).should eq(["assistant", "triage"])
+        worker = entries[1]
+        worker["category"].as_s?.should be_nil # 未分类 → JSON null（非字符串 "null"）
+        worker["tags"].as_a.size.should eq(0)
+        client.close
+      ensure
+        ::Sebas::Platform::Config::CURRENT.set(previous)
+        server.close
+        store.close
+      end
+    end
+
+    it "agents.list（M4x-WP2）：热更新后立即可见新值（数据源为 CURRENT 引用）" do
+      store = ipc_store
+      data_dir = Path[Dir.tempdir, "sebas-ipc-spec", Random::Secure.hex(4)]
+      server = Admin::IPC::Server.new(store, data_dir, port: 0) { {} of String => JSON::Any }
+      server.listen
+      previous = ::Sebas::Platform::Config::CURRENT.get
+      begin
+        yaml = <<-YAML
+          agents:
+            main: { model: fake/chat, category: general, tags: [assistant] }
+          YAML
+        ::Sebas::Platform::Config::CURRENT.set(::Sebas::Platform::Config::Loader.from_content(yaml))
+        client = Admin::TUI::Client.new(server.discovery_path)
+        client.handshake
+        before = client.request("agents.list").should_not be_nil
+        before["payload"]["agents"].as_a[0]["category"].as_s.should eq("general")
+
+        # 整根替换 CURRENT 引用后（先验后换同款），agents.list 不经重启立即反映新值
+        yaml = yaml.gsub("category: general, tags: [assistant]", "category: ops")
+        ::Sebas::Platform::Config::CURRENT.set(::Sebas::Platform::Config::Loader.from_content(yaml))
+        after = client.request("agents.list").should_not be_nil
+        entry = after["payload"]["agents"].as_a[0]
+        entry["id"].as_s.should eq("main")
+        entry["category"].as_s.should eq("ops")
+        entry["tags"].as_a.size.should eq(0)
+        client.close
+      ensure
+        ::Sebas::Platform::Config::CURRENT.set(previous)
         server.close
         store.close
       end

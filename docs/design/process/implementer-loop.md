@@ -332,17 +332,15 @@ action = SebasAgents::Policy::Selection.select_action(snapshot, record: run_reco
 
 # 单卡依赖判定：Ready / Blocked / Invalid
 evaluation = SebasAgents::Policy::Dependencies.evaluate(issue, snapshot)
-
-# PR 分类：resume_pr / wait
-action = SebasAgents::Policy::Selection.select_action(snapshot, record: run_record)
 ```
 
 命令入口：
 
 ```sh
 ruby tools/sebas-process next                  # 读取 GitHub，输出单一动作
+ruby tools/sebas-process plan                  # 只读多候选视图：与 next 同策略同路由，返回全部就绪候选（capacity=1、首选恒等、含验收背压），不改写行为（#218；契约详见 quickstart Implementer）
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
-ruby tools/sebas-process claim 39 --apply      # 写本地运行记录
+ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（M4x-WP2，#220）：协调评论为凭据，lease_id 对账恢复；详见 quickstart 租约与迁移节
 ```
 
 `policy/` 不执行网络、Git 或模型调用；所有副作用集中在 CLI 与 `CommandRunner`，
@@ -354,10 +352,10 @@ ruby tools/sebas-process claim 39 --apply      # 写本地运行记录
 - issue：`gh issue list/view --json …`，或 REST 分页获取完整字段。
 - 父子关系：`GET /repos/<owner>/<repo>/issues/<n>/sub_issues`。
 - 前置关系：快照组装走 GraphQL 别名批量（每批 50 张卡，`fetch_blocked_by_batch`），依赖闭包按需补取走 `fetch_issue`（REST 单 issue）；单卡的 `fetch_blocked_by` 仍保留 REST 读取，并优先命中批量写入的缓存。批量逐卡校验别名节点存在、连接为对象、`totalCount` 为非负整数且不超 `nodes` 长度，任一不满足即 fail-closed——不把「读不到」当「没有前置」。
-- PR：`gh pr view --json statusCheckRollup,mergeStateStatus,closingIssuesReferences,headRefOid,…`。
+- PR：清单走 GraphQL 游标分页，只取身份与关联字段；`statusCheckRollup` 按需单查（open PR 与 `verify merge` 的目标 PR），其余留「未取」，不得当成「没有检查」；单查 checks 必须回读 `headRefOid` 并与快照 head 比对，不一致即拒绝（避免混合快照）。
 - 未解决 review threads：GraphQL 分页读取 `reviewThreads(first: 100, after: ...) { nodes { isResolved } pageInfo { hasNextPage endCursor } }`，再在本地过滤未解决项；该连接没有 `isResolved` 查询参数。
 
-所有列表处理分页和空值。`gh` 非零退出、JSON 解析失败、缺字段均 fail-closed；凭据只由运行环境注入，不写日志、运行记录或文档。
+所有列表处理分页和空值。evidence 的 `source_ref` 作者与正文从一次全仓 issue 评论分页中取，命中即用、未命中回退单条请求（不得以空正文放行）。`gh` 非零退出、JSON 解析失败、缺字段均 fail-closed；凭据只由运行环境注入，不写日志、运行记录或文档。
 
 ### Harness 适配
 

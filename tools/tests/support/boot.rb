@@ -14,6 +14,7 @@ require "tmpdir"
 require "fileutils"
 require "stringio"
 require "open3"
+require "shellwords"
 require "yaml"
 
 require_relative "repo_paths"

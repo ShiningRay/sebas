@@ -103,6 +103,19 @@ class VerifierDocsTest < Minitest::Test
     end
   end
 
+  # checks 未取（nil）不能被当成「没有失败检查」：合并后核验留 unverified，
+  # 合并前自检直接 blocker——否则两段式会让门禁静默失效。
+  def test_verify_merge_without_loaded_checks_is_not_silent
+    data = snapshot(
+      issues: [issue(39, body: automation, state: "CLOSED", state_reason: "COMPLETED")],
+      pull_requests: [{"number" => 10, "state" => "MERGED", "closing_issues" => [39]}]
+    )
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data))
+    assert(report.unverified_items.any? { |i| i.message.include?("CI 检查未随快照取回") },
+      report.items.map(&:message).inspect)
+    assert_equal "有条件通过", report.conclusion
+  end
+
   def test_verify_merge_requires_completed_issue
     data = snapshot(
       issues: [issue(39, body: automation, state: "CLOSED", state_reason: "NOT_PLANNED")],

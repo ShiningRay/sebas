@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "json"
+require "socket"
+require_relative "policy/scope"
 
 module SebasAgents
   # CLI：所有子命令默认 dry-run，只有 --apply 才写远端或本地版本文件。
@@ -42,6 +44,7 @@ module SebasAgents
       command = argv.first
       case command
       when "next" then run_next(argv.drop(1))
+      when "plan" then run_plan(argv.drop(1))
       when "claim" then run_claim(argv.drop(1))
       when "resume" then run_resume(argv.drop(1))
       when "unclaim" then run_unclaim(argv.drop(1))
@@ -73,12 +76,12 @@ module SebasAgents
       CommandRunner.new(dry_run: !options[:apply])
     end
 
-    def snapshot(options, proposal_issue: nil)
+    def snapshot(options, proposal_issue: nil, verified_pr: nil)
       return load_snapshot(options[:snapshot]) if options[:snapshot]
 
       repo = options[:repo] || default_repo
       gateway = GithubGateway.new(runner(options), repo: repo)
-      gateway.snapshot(proposal_issue: proposal_issue)
+      gateway.snapshot(proposal_issue: proposal_issue, verified_pr: verified_pr)
     end
 
     # 快照是唯一事实源：结构不全就拒绝，绝不把缺失当成「没有工作」。
@@ -116,8 +119,34 @@ module SebasAgents
       match[1]
     end
 
-    def record_for(options)
-      RunRecord.new(path: options[:record]).load
+    def record_for(options, issue: nil)
+      explicit = RunRecord.new(path: options[:record]) if options[:record]
+      return explicit.load if explicit
+
+      # CR-12：试点双卡下 runs/ 可有多份活动记录（每卡一份 per-issue 文件）。
+      # 指定 issue 时精确取该卡记录；未指定（next/plan 路由）返回首份活动
+      # 记录供 resume 路由——每张卡的所有权由其 lease 凭据管理，路由顺序
+      # 不影响正确性。迁移窗口（legacy run.json 仍在）内保持容量 1：出现
+      # 多份活动记录即 invalid_plan（Q10=B 迁移期语义不变）。
+      active = RunRecord.active_records
+      if issue
+        found = active.find { |data| data["issue"].to_i == issue }
+        return found if found
+
+        # 指定 issue 但 runs/ 无记录：回落 v1 路径双读（迁移窗口）
+        return RunRecord.new(path: RunRecord::DEFAULT_PATH).load if File.exist?(RunRecord::DEFAULT_PATH) && !options[:record]
+
+        return nil
+      end
+
+      migration_window = File.exist?(RunRecord::DEFAULT_PATH)
+      if active.length > 1 && migration_window
+        raise InvalidPlan, "迁移窗口内存在 #{active.length} 份活动运行记录（迁移期容量 1），需人工确认迁移"
+      end
+
+      return active.first if active.length >= 1
+
+      RunRecord.new(path: RunRecord::DEFAULT_PATH).load
     end
 
     def run_next(argv)
@@ -126,6 +155,40 @@ module SebasAgents
       Output.emit({"ok" => action.action != "invalid_plan"}.merge(action.to_h), out: @out)
       action.action == "invalid_plan" ? EXIT_REFUSED : EXIT_OK
     end
+
+
+# plan（M4x-Parallel-WP1，#218）：只读多候选视图——与 next 同快照同策略，
+# 返回全部就绪候选（capacity 固定 1）、带枚举码的排除集与验证背压
+# （待验收 PR 数）。不改任何写行为；exit 0 正常 / 1 invalid_plan。
+def run_plan(argv)
+  options, = Argv.parse(argv)
+  snap = snapshot(options)
+  view = Policy::Selection.plan(snap, record: record_for(options))
+  candidates = view.ready.map.with_index do |issue, index|
+    {
+      "issue" => issue.number,
+      "title" => issue.title,
+      "order" => issue.automation["order"],
+      "scope_conflict" => nil, # 本期不判定；目录启发预填留待后续阶段
+      "selected" => index.zero?
+    }
+  end
+  payload = {
+    "ok" => view.invalid_reason.nil?,
+    "capacity" => 1,
+    "verifier_queue_depth" => snap.pull_requests.count(&:open?),
+    "next_action" => view.next_action,
+    "next_issue" => view.next_issue,
+    "candidates" => candidates,
+    "excluded" => view.excluded.map do |entry|
+      {"issue" => entry["issue"], "reason" => entry["code"], "detail" => entry["reason"]}
+    end,
+    "observed_main" => snap.main_sha
+  }
+  payload["invalid_reason"] = view.invalid_reason if view.invalid_reason
+  Output.emit(payload, out: @out)
+  view.invalid_reason ? EXIT_REFUSED : EXIT_OK
+end
 
     def run_claim(argv)
       return help if argv.include?("--help") || argv.include?("-h")
@@ -136,6 +199,10 @@ module SebasAgents
       snap = snapshot(options)
       issue = snap.issue(target)
       raise UsageError, "issue ##{number} 不在快照内" unless issue
+
+      # 启动搬迁（Q10=B）：v1 记录先走迁移，活动记录 fail-closed 要求人工确认。
+      # 仅写路径（--apply）触发；next/plan/claim --dry-run 只读不迁移（CR-0）。
+      RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) if options[:apply] && !options[:record]
 
       result = claimability(issue, snap)
       payload = {
@@ -148,22 +215,88 @@ module SebasAgents
       if options[:apply] && result.ready?
         # 快照决定校验对象；写入必须落在同一仓库，否则会认领一张没校验过的卡。
         repo = claim_write_repo(snap, options)
-        record = RunRecord.new(path: options[:record])
+        # 显式 --record 优先（测试与离线快照用）；缺省走 v2 per-issue 路径。
+        record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
+        gateway = GithubGateway.new(runner(options), repo: repo)
+        whitelist = gateway.coordinators
+
+        # 租约唯一性预检（F9）：state != released 的租约评论已存在即拒绝——
+        # 重复认领判定的两种归宿（§5.2 + 续篇 F1/F4）：
+        # - 本地记录处于 claiming/aborted，且凭据身份能对上（lease_id 或评论
+        #   id 与记录一致）→ 恢复路径：复用既有凭据继续认领（不重发、不双开）；
+        # - 否则（无本地归属/已释放）→ 有主凭据即拒绝，fail-closed。
+        prior = record.load
+        comments = gateway.issue_comments(issue.number)
+        existing = Lease.active_lease(comments, author_whitelist: whitelist)
+        adopted = nil
+        if existing
+          recoverable = prior && %w[claiming aborted].include?(prior["phase"]) &&
+                        prior["branch"] == existing["branch"] &&
+                        lease_identity_matches?(prior, existing, comments)
+          unless recoverable
+            payload["ok"] = false
+            payload["claim"] = "refused"
+            payload["reasons"] = ["issue ##{issue.number} 已持有有效租约（lease_id=#{existing["lease_id"].inspect}），且无可对账的本机记录，禁止重复认领"]
+            Output.emit(payload, out: @out)
+            return EXIT_REFUSED
+          end
+          adopted = existing
+        end
+
+        generated_lease_id = adopted ? adopted["lease_id"] : Lease.new_lease_id
+        claimed_at = Time.now.utc.iso8601
         payload["run_record"] = record.save({
           "issue" => issue.number,
           "branch" => "feat/#{issue.number}",
           "phase" => "claiming",
-          "attempts" => 0
+          "attempts" => 0,
+          # coordinator 串行认领（§5.2）：lease_id 生成后先落记录再发评论——
+          # 崩溃后按它检索复用既有评论，不会留下第二份有效凭据。
+          # 恢复路径复用既有凭据的 lease_id（补记评论 id 由下方回填）。
+          "lease_id" => generated_lease_id,
+          "scope" => issue.respond_to?(:automation) && issue.automation.is_a?(Hash) ? issue.automation["scope"] : nil,
+          "base_sha" => snap.main_sha,
+          "coordinator_id" => ENV["SEBAS_COORDINATOR_ID"] || Socket.gethostname,
+          "host" => Socket.gethostname,
+          "claimed_at" => claimed_at
         })
 
-        # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
-        # 任何一步出错都要落 aborted，不能让记录停在 claiming。
-        gateway = GithubGateway.new(runner(options), repo: repo)
-        written = false
+        # 逐步留痕（CR-2/CR-3）：每步成功即更新对应标志，失败落 aborted 时
+        # 能精确说明远端推进到了哪一步。
+        record_saved = true
+        comment_created = false
+        status_written = false
+        label_written = false
+        confirmed = false
         begin
+          # 发租约评论：先按生成的 lease_id 检索既有评论（评论已发出而 id 未
+          # 落盘的崩溃窗口），找到就复用；没有才发。随后把评论 id 补记为租约 id。
+          reused = Lease.find_by_lease_id(gateway.issue_comments(issue.number), generated_lease_id,
+            author_whitelist: whitelist)
+          if reused
+            comment_created = true
+            comment_id, _credential = reused
+          else
+            body = Lease.comment_body(
+              lease_id: generated_lease_id, issue: issue.number, branch: "feat/#{issue.number}",
+              base_sha: snap.main_sha, coordinator_id: payload["run_record"]["coordinator_id"],
+              host: payload["run_record"]["host"], claimed_at: claimed_at
+            )
+            posted = gateway.create_comment(issue.number, body, allow_write: true)
+            comment_id = posted.is_a?(Hash) ? posted["id"] : nil
+            comment_created = true
+          end
+          payload["run_record"] = record.save(payload["run_record"].merge("lease_id" => comment_id || generated_lease_id))
+
           gateway.set_status(issue.number, Model::STATUS_IN_PROGRESS, allow_write: true)
-          written = true
-          confirmed = gateway.status?(issue.number, Model::STATUS_IN_PROGRESS)
+          status_written = true
+          gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+          label_written = true
+
+          # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
+          confirmed = gateway.status?(issue.number, Model::STATUS_IN_PROGRESS) &&
+                      gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) &&
+                      lease_readback_confirmed?(gateway, issue.number, whitelist, payload["run_record"])
         rescue CommandError => e
           payload["reasons"] = ["认领写入失败：#{e.message}"]
           confirmed = false
@@ -174,21 +307,95 @@ module SebasAgents
           payload["claim"] = "claimed"
         else
           # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有被推进。
+          # lease_id 保留在记录里：恢复按它对账凭据（续篇 F1–F4），而不是重发评论。
           payload["run_record"] = record.save(
-            payload["run_record"].merge("phase" => "aborted", "status_written" => written)
+            payload["run_record"].merge("phase" => "aborted", "status_written" => status_written,
+                                        "label_written" => label_written)
           )
           payload["ok"] = false
           payload["claim"] = "claim_aborted"
           payload["reasons"] ||= []
-          payload["reasons"] << if written
-            "写入 status=#{Model::STATUS_IN_PROGRESS} 后回读未确认；远端状态未知，恢复前需人工核对"
-          else
-            "写入 status=#{Model::STATUS_IN_PROGRESS} 失败，未产生远端变更"
-          end
+          payload["reasons"] << "认领步骤未全部确认：" \
+            "record=#{record_saved} comment=#{comment_created} status=#{status_written} " \
+            "label=#{label_written} readback=#{confirmed}；远端可能已推进，恢复按 lease_id 对账"
         end
       end
       Output.emit(payload, out: @out)
       payload["ok"] ? EXIT_OK : EXIT_REFUSED
+    end
+
+    # 租约身份对账（CR-1）：记录里的 lease_id 必须能绑定到该凭据——
+    # 要么等于凭据 body 的 lease_id，要么等于承载该凭据的评论 id。
+    # 只比 phase+branch 不能区分同卡的多份历史租约。
+    def lease_identity_matches?(record, credential, comments)
+      lease_id = record["lease_id"].to_s
+      return false if lease_id.empty?
+
+      credential["lease_id"].to_s == lease_id ||
+        comments.any? do |comment|
+          comment["id"].to_s == lease_id && comment["body"].to_s.include?(credential["lease_id"].to_s)
+        end
+    end
+
+    # 释放租约凭据（F12 + CR-4）：本地记录缺失或缺 lease_id 时也必须核对
+    # 远端租约——认领成功后丢本地记录，卡上凭据仍要置 released。
+    # state 置 released 并回读唯一性（F9 判据不变）；对账不上 → aborted。
+    def release_lease_comment!(gateway, issue_number, record, payload)
+      lease_id = record && record["lease_id"]
+      comments = gateway.issue_comments(issue_number)
+
+      found = lease_id && Lease.find_by_lease_id(comments, lease_id,
+        author_whitelist: gateway.coordinators)
+      unless found
+        # 记录 lease_id 对不上账：退回「按卡扫描有效凭据」——有则按凭据释放，
+        # 无则确认卡上确实没有凭据（可能从未认领或已释放），放行收尾。
+        credential = Lease.active_lease(comments, author_whitelist: gateway.coordinators)
+        if credential
+          lease_id = credential["lease_id"]
+          found = [credential["lease_id"], credential]
+        else
+          return payload
+        end
+      end
+      comment_id, credential = found
+      unless credential["state"] == Lease::STATE_RELEASED
+        body = Lease.comment_body(
+          lease_id: lease_id, issue: issue_number, branch: credential["branch"],
+          base_sha: credential["base_sha"], coordinator_id: credential["coordinator_id"],
+          host: credential["host"], claimed_at: credential["claimed_at"],
+          state: Lease::STATE_RELEASED
+        )
+        gateway.update_comment(comment_id, body, allow_write: true)
+      end
+      remaining = Lease.active_lease(gateway.issue_comments(issue_number),
+        author_whitelist: gateway.coordinators)
+      return payload if remaining.nil?
+
+      payload["reasons"] = ["租约释放后仍存在有效凭据，需人工核对"]
+      payload["status"] = "aborted"
+      payload
+    end
+
+    # 租约回读确认（Q1=B + CR-5）：回读必须绑定到**当前有效凭据**——
+    # 记录里的 lease_id 要么等于有效凭据 body 的 lease_id，要么等于承载
+    # 有效凭据的那条评论的 id。已释放评论的 id 不算数（state 非 active）。
+    def lease_readback_confirmed?(gateway, number, whitelist, record)
+      lease_id = record["lease_id"].to_s
+      return false if lease_id.empty?
+
+      comments = gateway.issue_comments(number)
+      credential = Lease.active_lease(comments, author_whitelist: whitelist)
+      return false unless credential
+
+      credential["lease_id"] == lease_id ||
+        comments.any? do |comment|
+          comment["id"].to_s == lease_id &&
+            comment["body"].to_s.include?(%Q{"lease_id": "#{credential["lease_id"]}"}) &&
+            comment["body"].to_s.include?('"state": "active"')
+        end
+    rescue InvalidPlan
+      # 多份凭据/作者越权/凭据被篡改：fail-closed，交恢复路径人工核对
+      false
     end
 
     # 认领目标仓库必须与校验所用快照一致；否则会写入另一仓库。
@@ -225,8 +432,13 @@ module SebasAgents
 
       other = snap.in_progress_issues.find { |item| item.number != issue.number }
       if other
-        return Model::Evaluation.new(status: "invalid",
-          reasons: ["已有活动认领 ##{other.number}，全仓同时只允许一张"])
+        # 试点豁免（M4x-Parallel-WP2，#220 §8 阶段 2）：两张 docs-only 工作包
+        # 卡可由 coordinator 并行持有——所有权由各自 per-issue lease 管理，
+        # scope 冲突由预算判定；其余仍全仓同时只允许一张。
+        unless pilot_docs_pair?(issue, other, snap)
+          return Model::Evaluation.new(status: "invalid",
+            reasons: ["已有活动认领 ##{other.number}，全仓同时只允许一张"])
+        end
       end
 
       open_pr = snap.pull_requests.select(&:open?).find { |pr| pr.closing_issues.include?(issue.number) }
@@ -256,6 +468,42 @@ module SebasAgents
       end
 
       nil
+    end
+
+    # 试点并行判定（M4x-WP2，#220 §8 阶段 2）：两张卡都是 docs-only 工作包
+    # （kind=work_package 且 scope 全在 docs/ 下）时允许 coordinator 并行持有，
+    # 所有权由各自 lease 凭据管理；任一卡不是 docs-only → 不豁免。
+    # CR-14/15：试点并行上限两张，且两卡 scope 不得重叠（目录不重叠约束）。
+    def pilot_docs_pair?(issue, other, snap)
+      return false unless docs_only_work_package?(issue) && docs_only_card?(other)
+
+      other_active = snap.in_progress_issues.count { |item| item.number != issue.number }
+      return false if other_active >= 2 # 已有两张在途 = 试点容量（2）已满
+
+      begin
+        my_scope = Policy::Scope.normalize(docs_scope_of(issue), issue_number: issue.number)
+        other_scope = Policy::Scope.normalize(docs_scope_of(other), issue_number: other.number)
+      rescue InvalidPlan
+        return false
+      end
+      !Policy::Scope.conflict?(my_scope, other_scope)
+    end
+
+    def docs_scope_of(card)
+      Policy::Dependencies.automation_for(card)["scope"]
+    end
+
+    def docs_only_card?(card)
+      automation = Policy::Dependencies.automation_for(card)
+      return false unless automation
+      return false if %w[tracking manual design].include?(automation["kind"])
+
+      scope = automation["scope"]
+      scope.is_a?(Array) && !scope.empty? && scope.all? { |prefix| prefix.start_with?("docs/") }
+    end
+
+    def docs_only_work_package?(issue)
+      docs_only_card?(issue)
     end
 
     def parse_number(value, label)
@@ -304,9 +552,11 @@ module SebasAgents
       payload["pr"] = merged_pr.number
       if options[:apply]
         repo = claim_write_repo(snap, options)
+        gateway = GithubGateway.new(runner(options), repo: repo)
+        # 启动搬迁（Q10=B）：写路径才触发迁移（CR-0 只读路径不迁移）。
+        RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) unless options[:record]
         # 已完成的卡保持 Done：写回 Todo 会抹掉终态，让看板重新出现待办。
         unless issue.status?(Model::STATUS_DONE)
-          gateway = GithubGateway.new(runner(options), repo: repo)
           gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
           unless gateway.status?(issue.number, Model::STATUS_TODO)
             payload["reasons"] << "写回 status=#{Model::STATUS_TODO} 后回读不符，需人工核对"
@@ -315,8 +565,26 @@ module SebasAgents
             return EXIT_REFUSED
           end
         end
-        record = RunRecord.new(path: options[:record])
+        record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
         current = record.load
+        # 释放租约凭据（F12 + CR-4）：本地记录缺失/缺 lease_id 也要核对远端
+        # 租约——认领成功后丢本地记录时，卡上凭据仍必须置 released。
+        release_lease_comment!(gateway, issue.number, current, payload)
+        if payload["status"] == "aborted"
+          Output.emit(payload, out: @out)
+          return EXIT_REFUSED
+        end
+        # 人类可读信号同步摘除（CR-6）：凭据已释放，卡上不得残留执行中标签。
+        # 迁移窗口内的旧认领可能本就没打标签——缺席即无需摘除。
+        if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+          gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+          if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+            payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍在，需人工核对"
+            payload["status"] = "aborted"
+            Output.emit(payload, out: @out)
+            return EXIT_REFUSED
+          end
+        end
         # 只更新属于本 issue 的记录：传错 --record 时不能把别张卡的记录改脏。
         record.save(current.merge("phase" => "released")) if current && current["issue"].to_i == issue.number
       end
@@ -329,8 +597,9 @@ module SebasAgents
 
     def run_resume(argv)
       options, (number,) = Argv.parse(argv, required: ["issue"])
-      record = record_for(options)
       target = parse_number(number, "issue")
+      # CR-12：试点双卡下 runs/ 有多份活动记录——按目标 issue 取对应记录。
+      record = record_for(options, issue: target)
       raise InvalidPlan, "无本地运行记录，无法续跑 ##{number}" unless record
 
       if record["issue"].to_i != target
@@ -358,7 +627,11 @@ module SebasAgents
         "action" => "resume_issue"
       }
       if options[:apply]
-        payload["run_record"] = RunRecord.new(path: options[:record]).save(record.merge("phase" => "claimed"))
+        # CR-7/CR-16：显式 --record 优先；记录 Hash 与 RunRecord 对象分变量
+        # 保存，避免对象覆盖记录数据。缺省写回该卡自己的 per-issue 路径，
+        # 不与他卡记录交叉。
+        target_record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: record["issue"])
+        payload["run_record"] = target_record.save(record.merge("phase" => "claimed"))
       end
       Output.emit(payload, out: @out)
       EXIT_OK
@@ -449,8 +722,10 @@ module SebasAgents
         report, extra = run_final_verification(options, pr, issue)
         payload = report.to_h.merge(extra).merge("ok" => report.pass?, "pre" => false)
       else
-        report = Verifier.verify_merge(parse_number(pr, "pr"), parse_number(issue, "issue"),
-          snapshot(options), pre: options[:pre])
+        # 目标 PR 的 CI 单独补取：清单已不带 rollup，不补就只能是「未取」。
+        pr_number = parse_number(pr, "pr")
+        report = Verifier.verify_merge(pr_number, parse_number(issue, "issue"),
+          snapshot(options, verified_pr: pr_number), pre: options[:pre])
         payload = report.to_h.merge("ok" => report.pass?, "pre" => options[:pre] ? true : false)
       end
       Output.emit(payload, out: @out)
@@ -722,6 +997,7 @@ end
 
         Implementer
           next            读取 GitHub，输出单一动作（默认只读）
+          plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 验证背压（#218）
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed

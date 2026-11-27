@@ -17,7 +17,12 @@ module SebasAgents
     # blockedBy 连接的节点上限。超过即拒绝——截断会让依赖判定漏看前置。
     BLOCKED_BY_PAGE = 100
 
-    ALL_PULL_REQUESTS_QUERY = <<-'GRAPHQL'
+    # PR 清单只取身份与关联字段。statusCheckRollup 单独按需取：
+    # 它对每个 PR 都要服务端汇总 contexts，实测 106 个 PR 全量取要 4.2~6.2s / 139KB，
+    # 而当期 open PR 为 0——绝大多数载荷无人消费。
+    # 只有 OPEN 的 PR（选择器与 pre 核验要判 CI）和调用方显式指定的 PR
+    # （合并后核验要复核 CI）才值得付这份成本。
+    PULL_REQUEST_LIST_QUERY = <<-'GRAPHQL'
       query($owner: String!, $name: String!, $cursor: String) {
         repository(owner: $owner, name: $name) {
           pullRequests(states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}, first: 100, after: $cursor) {
@@ -32,15 +37,14 @@ module SebasAgents
               url
               isCrossRepository
               closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number } }
-              statusCheckRollup { contexts(first: 100) {
-                pageInfo { hasNextPage }
-                nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
-              } }
             }
           }
         }
       }
     GRAPHQL
+
+    # statusCheckRollup 的 contexts 单页上限；超了即拒绝，不产出不完整检查清单。
+    ROLLUP_PAGE = 100
 
     def initialize(runner, repo:)
       @runner = runner
@@ -50,6 +54,8 @@ module SebasAgents
       @thread_cache = {}
       @author_cache = {}
       @body_cache = {}
+      @issue_comment_index = nil
+      @issue_comment_index_lock = Mutex.new
     end
 
     # 认领/暂停所需的写操作：只碰标签，不碰 issue 内容。
@@ -152,22 +158,39 @@ end
       raw.dig("type", "name")
     end
 
-    def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil)
-      milestones = fetch_milestones
-      issues = fetch_all_issues
-      pull_requests = fetch_pull_requests(proposal_evidence: !proposal_issue.nil?)
-      issues = attach_blocked_by(issues)
+    def snapshot(gate_records: {}, external_records: {}, proposal_issue: nil, verified_pr: nil)
+      # 顶层读取互不依赖：milestone / issue 清单 / PR 清单 / main sha 并发发起。
+      # 异常统一由 #value 取出后原样抛出，整体 fail-closed，不产出部分快照。
+      readers = []
+      milestones_thread = spawn_reader(readers) { fetch_milestones }
+      issues_thread = spawn_reader(readers) { fetch_all_issues }
+      pull_requests_thread = spawn_reader(readers) do
+        pull_requests = fetch_pull_requests(proposal_evidence: !proposal_issue.nil?)
+        # verify merge 要复核指定 PR 的 CI：清单已不带 rollup，这里按编号补取。
+        # 补不到就抛错——宁可失败，也不能让门禁拿着「未取」当「通过」。
+        verified_pr ? attach_checks(pull_requests, [verified_pr]) : pull_requests
+      end
+      main_sha_thread = spawn_reader(readers) { main_sha }
+
+      raw_issues = issues_thread.value
+      # 评论索引只依赖 issue 清单（内容与后续步骤无关），可与 blocked_by 批量并发；
+      # 无 evidence 块时不预热，避免白白多打 4 页请求。
+      index_thread = evidence_blocks?(raw_issues) ? spawn_reader(readers) { issue_comment_index } : nil
+      blocked_thread = spawn_reader(readers) { attach_blocked_by(raw_issues) }
+
+      issues = blocked_thread.value
       issues = close_over_dependencies(issues)
+      index_thread&.value
 
       blocks = issues.filter_map { |issue| JsonBlock.one(issue.body, "evidence", subject: "issue ##{issue.number}") }
       discovered = discover_records(blocks)
       proposal_evidence = proposal_issue ? proposal_decision_evidence(issues, proposal_issue) : empty_proposal_evidence
       Model::Snapshot.new(
         repo: @repo,
-        main_sha: main_sha,
-        milestones: milestones,
+        main_sha: main_sha_thread.value,
+        milestones: milestones_thread.value,
         issues: issues,
-        pull_requests: pull_requests,
+        pull_requests: pull_requests_thread.value,
         maintainers: maintainers,
         source_authors: resolve_authors(blocks),
         gates: discovered["gates"].merge(gate_records),
@@ -176,6 +199,57 @@ end
         source_bodies: resolve_bodies(blocks),
         proposal_evidence: proposal_evidence
       )
+    rescue StandardError
+      # 任一流抛错时其余线程可能仍在跑：先收干净再让原始异常穿透，
+      # 避免「快照已失败、后台还在写缓存」的竞态。
+      #
+      # Thread#join 会把该线程的异常原样重新抛出：必须逐个 rescue 掉。
+      # 否则一个已失败的兄弟线程会中断循环（后面的线程没等到），
+      # 甚至用它自己的异常顶替调用方本该看到的原始失败。
+      readers.each do |thread|
+        thread.join(10)
+      rescue StandardError
+        # 兄弟流的失败不是本次结论；原始异常由下面的 raise 负责。
+        nil
+      end
+      raise
+    end
+
+    # 只要有任意一张卡带 evidence 块，评论索引就会派上用场。
+    def evidence_blocks?(issues)
+      issues.any? { |issue| JsonBlock.present?(issue.body, "evidence") }
+    end
+
+    # 并发读取的异常由调用方的 #value 取回并抛出；这里关掉线程自带的
+    # report_on_exception，避免同一个错误既进快照错误又刷屏 stderr。
+    def spawn_reader(collector, &block)
+      thread = Thread.new(&block)
+      thread.report_on_exception = false
+      collector << thread
+      thread
+    end
+
+    # 给指定编号的 PR 补取 CI 汇总（verify merge 的目标 PR）。
+    # 名单里的 PR 必须在快照内：编号对不上说明快照与请求不匹配，直接拒绝。
+    def attach_checks(pull_requests, numbers)
+      wanted = numbers.map(&:to_i).uniq
+      missing = wanted - pull_requests.map(&:number)
+      unless missing.empty?
+        raise CommandError.new(
+          "PR #{missing.map { |n| "##{n}" }.join("、")} 不在快照内，无法补取 CI 检查",
+          command: ["gh", "api", "graphql"]
+        )
+      end
+
+      # head 必须绑定到快照记录：checks 反映的是 PR 当前 head，
+      # 不校验就会把新提交的绿灯安到旧 head 的核验结论上。
+      heads = pull_requests.to_h { |pr| [pr.number, pr.head_sha] }
+      loaded = wanted.to_h do |number|
+        [number, fetch_checks(number, expected_head: heads[number])]
+      end
+      pull_requests.map do |pr|
+        loaded.key?(pr.number) ? pr.with(checks: loaded[pr.number]) : pr
+      end
     end
 
     # 只查一个 issue 的完整信息（含 blocked_by）。依赖闭包按需补取走这里。
@@ -404,11 +478,58 @@ end
       end
     end
 
+    # 全仓 issue 评论的本地索引：key 是评论 database id。
+    #
+    # 每个 source_ref 原本要两次独立请求（author + body），49 个引用就是 98 次；
+    # 而本仓评论总数只有 4 页。一次全量分页把这段从 210.6s 降到 2.2s。
+    #
+    # 索引仅供命中，不作为缺失的兜底：ref 不在索引里必须回退单条请求，
+    # 否则「评论已被删除/超出一页」会变成空正文——而 Evidence 校验对空正文是
+    # 放行作者校验的，那等于 fail-open。
+    def issue_comment_index
+      # 预热线程与主线程都可能首次进入，加锁避免重复翻页。
+      @issue_comment_index_lock.synchronize do
+        @issue_comment_index ||= build_issue_comment_index
+      end
+    end
+
+    def build_issue_comment_index
+      index = {}
+      page = 1
+      loop do
+        batch = @runner.json!("gh", "api",
+          "repos/#{@repo}/issues/comments?per_page=#{PAGE_SIZE}&page=#{page}")
+        unless batch.is_a?(Array)
+          raise CommandError.new("issue comments 分页返回非数组：#{batch.inspect[0, 200]}",
+            command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+        end
+        batch.each do |comment|
+          id = comment.is_a?(Hash) ? comment["id"] : nil
+          unless id.is_a?(Integer)
+            raise CommandError.new("issue 评论缺 id：#{comment.inspect[0, 120]}",
+              command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+          end
+          index[id] = comment
+        end
+        break if batch.length < PAGE_SIZE
+
+        page += 1
+        if page > MAX_PAGES
+          raise CommandError.new("issue comments 分页超过 #{MAX_PAGES} 页：#{@repo}",
+            command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+        end
+      end
+      index
+    end
+
     def ref_body(ref)
       @body_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
             (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
-          fetch_body("repos/#{@repo}/issues/comments/#{match[2]}")
+          comment = indexed_comment(match[2])
+          # 未命中必须回退单条：评论可能超出分页范围或已被删除，
+          # 空正文会让 Evidence 校验退化成「只验作者」。
+          comment.nil? ? fetch_body("repos/#{@repo}/issues/comments/#{match[2]}") : indexed_body(comment, match[2])
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_body("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -423,7 +544,7 @@ end
       @author_cache[ref] ||= begin
         if (match = ref.match(%r{/issues/(\d+)#issuecomment-(\d+)})) ||
             (match = ref.match(%r{/pull/(\d+)#issuecomment-(\d+)}))
-          fetch_login("repos/#{@repo}/issues/comments/#{match[2]}")
+          indexed_author(match[2]) || fetch_login("repos/#{@repo}/issues/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#discussion_r(\d+)}))
           fetch_login("repos/#{@repo}/pulls/comments/#{match[2]}")
         elsif (match = ref.match(%r{/pull/(\d+)#pullrequestreview-(\d+)}))
@@ -435,6 +556,36 @@ end
     end
 
     private
+
+    # 全量索引命中则直接返回，未命中返回 nil 交给调用方回退单条请求。
+    def indexed_comment(id)
+      issue_comment_index[id.to_i]
+    end
+
+    def indexed_author(id)
+      comment = indexed_comment(id)
+      return nil if comment.nil?
+
+      login = comment.dig("user", "login")
+      # 索引里存在但缺作者：结构非法，不能当「无人登记」放过去。
+      raise CommandError.new("issue 评论 #{id} 缺 user.login：#{comment.inspect[0, 120]}",
+        command: ["gh", "api", "repos/#{@repo}/issues/comments"]) if login.to_s.empty?
+
+      login
+    end
+
+    # 命中记录的正文必须是字符串：缺失时 to_s 会静默变 ""，
+    # 而空正文会让 Evidence 校验只验作者——那正是本索引要防的 fail-open。
+    # 合法的空字符串正文照常放行（评论内容本身可以为空）。
+    def indexed_body(comment, id)
+      body = comment["body"]
+      unless body.is_a?(String)
+        raise CommandError.new("issue 评论 #{id} 的 body 缺失或非字符串：#{body.inspect}",
+          command: ["gh", "api", "repos/#{@repo}/issues/comments"])
+      end
+
+      body
+    end
 
     def fetch_login(path)
       @runner.json!("gh", "api", path).dig("user", "login")
@@ -494,7 +645,11 @@ end
     # PR 全量清单走 GraphQL 分页（M4x-Comm-WP3 #244 后实证）：gh pr list --limit 100
     # 在仓库 PR 总量破百后永远打满单页，原「达到上限即 fail-closed」守卫把
     # verify merge / unclaim / next 全部堵死。游标分页保证全量，无截断面。
-    # statusCheckRollup 的 contexts 取 first:100——本仓单 PR 检查数远小于该值。
+    #
+    # 清单本身不带 CI 汇总（见 PULL_REQUEST_LIST_QUERY 的说明）：
+    #   - open PR 在明细阶段单独取 checks（选择器与 pre 核验要判 CI）；
+    #   - 其余 PR 留 nil，表示「未取」，不是「没有检查」；
+    #   - verify merge 需要的目标 PR 由 checks_for 按编号补取。
     def fetch_pull_requests(proposal_evidence: false)
       owner, name = @repo.split("/", 2)
       raw = []
@@ -505,7 +660,7 @@ end
         if pages > MAX_PAGES
           raise CommandError.new("pullRequests 分页超过 #{MAX_PAGES} 页仍未到底，拒绝继续", command: ["gh", "api", "graphql"])
         end
-        args = ["gh", "api", "graphql", "-f", "query=#{ALL_PULL_REQUESTS_QUERY}",
+        args = ["gh", "api", "graphql", "-f", "query=#{PULL_REQUEST_LIST_QUERY}",
           "-f", "owner=#{owner}", "-f", "name=#{name}"]
         args += ["-f", "cursor=#{cursor}"] if cursor
         payload = @runner.json!(*args)
@@ -563,6 +718,14 @@ end
         else
           {}
         end
+        # checks 的取值口径：列表不再带 rollup，所以这里的 key 缺失是常态。
+        # open PR 必须补齐（选择器要判 CI、pre 核验要拦未完成），
+        # 其余留 nil 表示「未取」，与「检查为空」区分开——下游据此判断是否可判定。
+        checks = if item.key?("statusCheckRollup")
+          normalize_checks(item["statusCheckRollup"])
+        elsif item["state"].to_s.casecmp?("OPEN")
+          fetch_checks(item["number"], expected_head: item["headRefOid"])
+        end
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -570,12 +733,59 @@ end
           "head_sha" => item["headRefOid"],
           "state" => item["state"],
           "merge_state_status" => item["mergeStateStatus"],
-          "checks" => normalize_checks(item["statusCheckRollup"]),
+          "checks" => checks,
           "review_threads" => threads,
           "closing_issues" => Array(item["closingIssuesReferences"]).map { |ref| ref["number"] },
           "url" => item["url"]
         ).merge_pr_details(details)
       end
+    end
+
+    # 按编号取单个 PR 的 CI 汇总，返回与 normalize_checks 一致的形状。
+    # 供 open PR 组装与 verify merge 的目标 PR 复核使用。
+    # 结构与截断校验与列表口径一致：读不到就抛错，不当空集。
+    #
+    # expected_head：调用方快照记录的 head sha。statusCheckRollup 反映的是
+    # PR **当前** head 的检查，而快照的 head_sha/files 属于采集时刻的 head。
+    # 两次请求之间 PR 若推了新提交，返回的 checks 就属于另一个 commit——
+    # 用它去判 A 的合并会把 B 的绿灯当成 A 的绿灯。因此这里回读 headRefOid
+    # 并强校验，不一致即拒绝（与 fetch_pr_details 的既有守卫同口径）。
+    def fetch_checks(number, expected_head: nil)
+      owner, name = @repo.split("/", 2)
+      fields = "p: pullRequest(number: #{number}) { number headRefOid statusCheckRollup " \
+        "{ contexts(first: #{ROLLUP_PAGE}) { pageInfo { hasNextPage } nodes " \
+        "{ __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } }"
+      args = ["gh", "api", "graphql",
+        "-f", "query=#{blocked_by_query(owner, name, [fields])}"]
+      payload = @runner.json!(*args)
+      errors = payload["errors"]
+      unless errors.nil? || (errors.respond_to?(:empty?) && errors.empty?)
+        raise CommandError.new("PR ##{number} checks 查询失败：#{errors.inspect}", command: args)
+      end
+      node = payload.dig("data", "repository", "p")
+      unless node.is_a?(Hash) && node["number"].to_i == number
+        raise CommandError.new("PR ##{number} checks 查询缺对应节点（结构非法，不当空集）", command: args)
+      end
+      ensure_checks_head!(number, node["headRefOid"], expected_head, args)
+
+      rollup = node["statusCheckRollup"]
+      # 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法。
+      return [] if node.key?("statusCheckRollup") && rollup.nil?
+
+      contexts = rollup.is_a?(Hash) ? rollup["contexts"] : nil
+      page_info = contexts.is_a?(Hash) ? contexts["pageInfo"] : nil
+      nodes = contexts.is_a?(Hash) ? contexts["nodes"] : nil
+      unless page_info.is_a?(Hash) && (page_info["hasNextPage"] == true || page_info["hasNextPage"] == false) &&
+          nodes.is_a?(Array)
+        raise CommandError.new("PR ##{number} 的 statusCheckRollup 结构非法：#{rollup.inspect[0, 120]}",
+          command: args)
+      end
+      if page_info["hasNextPage"]
+        raise CommandError.new("PR ##{number} 的 contexts 超过 #{ROLLUP_PAGE} 条被截断，拒绝产出不完整检查清单",
+          command: args)
+      end
+
+      normalize_checks(nodes)
     end
 
     # GraphQL 节点映射回 gh pr list 的 item 形状，下游转换零改动：
@@ -614,12 +824,6 @@ end
         end
         ns
       }
-      # statusCheckRollup 显式 null = 检查未产出（合法空集）；字段缺失 = 结构非法
-      rollup_nodes = if node.key?("statusCheckRollup") && node["statusCheckRollup"].nil?
-        []
-      else
-        inner_nodes.call(["statusCheckRollup", "contexts"], 100)
-      end
       closing_nodes = inner_nodes.call(["closingIssuesReferences"], 10)
       {
         "number" => node["number"],
@@ -628,7 +832,6 @@ end
         "headRefOid" => node["headRefOid"],
         "state" => node["state"],
         "mergeStateStatus" => node["mergeStateStatus"],
-        "statusCheckRollup" => rollup_nodes,
         "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"] } },
         "url" => node["url"],
         "isCrossRepository" => false
@@ -688,6 +891,26 @@ end
         "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{pr["head_sha"]}）；" \
         "拒绝构建混合快照，请重跑选择器",
         command: ["gh", "api", "pulls/#{number}"]
+      )
+    end
+
+    # checks 的 head 守卫：expected_head 为 nil 时（离线/无快照 head）不做比对，
+    # 一旦给了就必须严格相等；回读值缺失同样拒绝。
+    def ensure_checks_head!(number, actual_head, expected_head, args)
+      return if expected_head.nil?
+
+      if actual_head.to_s.empty?
+        raise CommandError.new(
+          "PR ##{number} 的 checks 查询缺 headRefOid，无法确认与快照同 head；拒绝（fail-closed）",
+          command: args
+        )
+      end
+      return if actual_head.to_s == expected_head.to_s
+
+      raise CommandError.new(
+        "PR ##{number} 在采集期间推进了 head（快照=#{expected_head}，当前=#{actual_head}）；" \
+        "checks 属于另一个 commit，拒绝拼成混合快照",
+        command: args
       )
     end
 
@@ -788,6 +1011,23 @@ end
         Array(data && data["trusted_bots"]).map(&:to_s).reject(&:empty?)
       end
     end
+
+    public
+
+    # 授权可发/改租约评论的 coordinator 身份（M4x-WP2，#220 §5.2）。
+    # 缺省为空：未显式授权时任何租约凭据都判作者越权，仍是 fail-closed。
+    def coordinators
+      @coordinators ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return [] unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        Array(data && data["coordinators"]).map(&:to_s).reject(&:empty?)
+      end
+    end
+
+    private
 
     def paginate(path)
       separator = path.include?("?") ? "&" : "?"

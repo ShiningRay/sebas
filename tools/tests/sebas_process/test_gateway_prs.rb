@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# GitHub gateway 的 PR 读取：head 二次回读、GraphQL 分页守卫、fork 剔除、
-# blocked_by 批量拉取。
+# GitHub gateway 的 PR 清单读取：head 二次回读、GraphQL 分页守卫、fork 剔除、
+# blocked_by 批量拉取。checks 的两段式补取见 test_gateway_checks.rb。
 
 require_relative "../support/boot"
 require_relative "../../agents/lib/sebas_agents"
@@ -30,12 +30,13 @@ class PrDetailsHeadMismatchTest < Minitest::Test
     assert_equal "b", details["body"]
     assert_equal 1, details["files"].length
   end
-end
 
+end
 class PullRequestsPaginationTest < Minitest::Test
   include GatewayStubs
 
-  def pr_node(number:, cross: false, rollup_truncated: false, closing_truncated: false, drop_cross: false)
+  # 列表形状：两段式后不再带 statusCheckRollup（PR4），只有 rolling 单独取。
+  def pr_node(number:, cross: false, closing_truncated: false, drop_cross: false)
     {
       "number" => number, "state" => "MERGED",
       "headRefName" => "feat/#{number}", "baseRefName" => "main",
@@ -44,12 +45,6 @@ class PullRequestsPaginationTest < Minitest::Test
       "closingIssuesReferences" => {
         "pageInfo" => { "hasNextPage" => closing_truncated },
         "nodes" => closing_truncated ? Array.new(10) { |i| { "number" => i } } : []
-      },
-      "statusCheckRollup" => {
-        "contexts" => {
-          "pageInfo" => { "hasNextPage" => rollup_truncated },
-          "nodes" => rollup_truncated ? Array.new(100) { |i| { "name" => "check#{i}", "status" => "COMPLETED", "conclusion" => "SUCCESS" } } : []
-        }
       }
     }.tap do |node|
       node["isCrossRepository"] = cross unless drop_cross
@@ -128,13 +123,6 @@ class PullRequestsPaginationTest < Minitest::Test
     assert_includes error.message, "isCrossRepository"
   end
 
-  def test_truncated_rollup_contexts_reject
-    payload = page([pr_node(number: 1, rollup_truncated: true)], false, nil)
-    gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(payload)]), repo: "o/r")
-    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
-    assert_includes error.message, "contexts 超过 100 条"
-  end
-
   def test_truncated_closing_issues_reject
     payload = page([pr_node(number: 1, closing_truncated: true)], false, nil)
     gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(payload)]), repo: "o/r")
@@ -167,48 +155,12 @@ class PullRequestsPaginationTest < Minitest::Test
     assert_equal [2], prs.map(&:number)
   end
 
-  # round 3：存在的内层连接必须有合法 pageInfo（缺失/字符串布尔都拒绝）
-  def test_inner_page_info_missing_rejects
-    node = pr_node(number: 1)
-    node["statusCheckRollup"]["contexts"].delete("pageInfo")
-    gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
-    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
-    assert_includes error.message, "分页元数据缺失或非法"
-  end
-
-  def test_inner_page_info_non_boolean_rejects
-    node = pr_node(number: 1)
-    node["statusCheckRollup"]["contexts"]["pageInfo"]["hasNextPage"] = "true"
-    gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
-    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
-    assert_includes error.message, "分页元数据缺失或非法"
-  end
-
   def test_inner_missing_nodes_rejects
     node = pr_node(number: 1)
     node["closingIssuesReferences"].delete("nodes")
     gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
     error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
     assert_includes error.message, "缺 nodes"
-  end
-
-  # statusCheckRollup=null 合法（检查未产出，非结构非法）
-  def test_null_rollup_is_legal_empty_checks
-    node = pr_node(number: 1)
-    node["statusCheckRollup"] = nil
-    gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
-    prs = gateway.send(:fetch_pull_requests)
-    assert_equal [1], prs.map(&:number)
-    assert_empty prs.first.checks
-  end
-
-  # round 4：字段缺失 ≠ 显式 null——statusCheckRollup 键整体缺失是结构非法
-  def test_missing_rollup_key_rejects
-    node = pr_node(number: 1)
-    node.delete("statusCheckRollup")
-    gateway = SebasAgents::GithubGateway.new(GatewayStubs::SequenceRunner.new([JSON.generate(page([node], false, nil))]), repo: "o/r")
-    error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
-    assert_includes error.message, "缺 statusCheckRollup 连接字段"
   end
 
   # round 4：closingIssuesReferences 缺失会让关联 issue 从快照消失（selection 重复分配）
@@ -235,8 +187,8 @@ class PullRequestsPaginationTest < Minitest::Test
     error = assert_raises(SebasAgents::CommandError) { gateway.send(:fetch_pull_requests) }
     assert_includes error.message, "查询缺 data.repository.pullRequests"
   end
-end
 
+end
 class PrDetailsSecondReadTest < Minitest::Test
   include GatewayStubs
 
@@ -253,8 +205,8 @@ class PrDetailsSecondReadTest < Minitest::Test
     end
     assert_includes error.message, "混合快照"
   end
-end
 
+end
 class EnsureHeadGuardTest < Minitest::Test
   include GatewayStubs
 
@@ -285,8 +237,8 @@ class EnsureHeadGuardTest < Minitest::Test
     details = gateway.send(:fetch_pr_details, 10, expected_head: "same")
     assert_equal 1, details["files"].length
   end
-end
 
+end
 class BlockedByBatchTest < Minitest::Test
   include SnapshotHelpers
   include CliHelpers
@@ -462,4 +414,5 @@ class BlockedByBatchTest < Minitest::Test
     assert_equal [3], gateway.fetch_blocked_by(4)
     assert_equal 1, runner.argvs.length, "缓存命中后不应再发单卡请求"
   end
+
 end

@@ -54,17 +54,17 @@ class PathChecksTest < Minitest::Test
     assert report.pass?, report.items.map(&:message).inspect
   end
 
-  # tools/ 有实质改动但 tools/tests/test_*.rb 无变更 → blocker。
+  # tools/ 有实质改动但无 test_*.rb 测试变更 → blocker。
   def test_tools_change_without_tests_blocks
     report = run_check([change("tools/new_script.rb", "+puts 1\n")])
-    assert report.blockers.any? { |i| i.message.include?("tools/tests/test_*.rb") }
+    assert report.blockers.any? { |i| i.message.include?("test_*.rb") }
   end
 
   # 新的测试目录约定必须被认作测试改动：只改 tools/tests/ 下的文件即可豁免联动。
   def test_tools_tests_directory_counts_as_test_change
     report = run_check([change("tools/new_script.rb", "+puts 1\n"),
                         change("tools/tests/sebas_process/test_new_script.rb", "+assert true\n")])
-    refute report.blockers.any? { |i| i.message.include?("tools/tests/test_*.rb") }
+    refute report.blockers.any? { |i| i.message.include?("test_*.rb") }
   end
 
   # 纯空白/注释改动豁免 spec 联动，且以 acceptable 留痕。
@@ -162,11 +162,11 @@ class PathChecksRound2Test < Minitest::Test
   def test_tools_test_pattern_requires_rb
     report = run_check([change("tools/new_script.rb", "+puts 1\n"),
                         change("tools/test_notes.md", "+note\n")])
-    assert report.blockers.any? { |i| i.message.include?("tools/tests/test_*.rb") }
+    assert report.blockers.any? { |i| i.message.include?("test_*.rb") }
 
     ok = run_check([change("tools/new_script.rb", "+puts 1\n"),
                     change("tools/tests/docs/test_new_script.rb", "+assert true\n")])
-    refute ok.blockers.any? { |i| i.message.include?("tools/tests/test_*.rb") }
+    refute ok.blockers.any? { |i| i.message.include?("test_*.rb") }
   end
 
   # jobG：纯注释 src 改动同时豁免文档联动，完整报告通过。

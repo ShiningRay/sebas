@@ -101,4 +101,8 @@ module SnapshotHelpers
   def select(data, record: nil)
     SebasAgents::Policy::Selection.select_action(SebasAgents::Model::Snapshot.from_hash(data), record: record)
   end
+
+  def plan(data, record: nil)
+    SebasAgents::Policy::Selection.plan(SebasAgents::Model::Snapshot.from_hash(data), record: record)
+  end
 end

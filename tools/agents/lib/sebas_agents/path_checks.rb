@@ -91,7 +91,7 @@ module SebasAgents
         File.basename(c.path).start_with?("test_") || blank_or_comment_only?(c.patch)
       end
       if substantive_tools.any? && !tools_tests_changed
-        report.blocker("tools/ 有实质改动但 tools/tests/test_*.rb 无任何变更：#{paths_list(substantive_tools)}")
+        report.blocker("tools/ 有实质改动但无 test_*.rb 测试变更：#{paths_list(substantive_tools)}")
       end
     end
 

@@ -13,13 +13,19 @@ module Sebas
       getter id : String
       getter persona : String
       getter memory_dir : Path
+      # 管理面元数据（M4x-WP2，#148）：registry 首建时固化，热更新后已存在实例
+      # 不自动刷新（避免运行中会话人格/标签漂移）；管理面查询以配置为真相源
+      getter category : String?
+      getter tags : Array(String)
 
       # clone_from_template patch 后重读 SOUL.md（patch 落盘→内存一致）
       def reload_persona : Nil
         @persona = File.read(@memory_dir / "SOUL.md")
       end
 
-      def initialize(@id : String, agents_root : String | Path, persona : String? = nil)
+      def initialize(@id : String, agents_root : String | Path, persona : String? = nil,
+                     @category : String? = nil, tags : Array(String) = [] of String)
+        @tags = tags.dup # 防御性拷贝：外部后续改动不渗入实例
         @memory_dir = Path[agents_root, @id]
         FileUtils.mkdir_p(@memory_dir) unless Dir.exists?(@memory_dir)
         soul = @memory_dir / "SOUL.md"
@@ -54,10 +60,14 @@ module Sebas
         FileUtils.mkdir_p(@root) unless Dir.exists?(@root)
       end
 
-      def get_or_create(id : String, persona : String? = nil) : AgentInstance
+      # category/tags 只在首建时固化进实例（#148）；已存在实例不刷新——
+      # `@agents[id]? ||` 短路返回，后续调用传新元数据无效（热更新语义见
+      # RegistryDualView 与 IPC agents.list：查询以配置为真相源）。
+      def get_or_create(id : String, persona : String? = nil, category : String? = nil,
+                        tags : Array(String) = [] of String) : AgentInstance
         @mutex.synchronize do
           @agents[id]? || begin
-            instance = AgentInstance.new(id, @root, persona)
+            instance = AgentInstance.new(id, @root, persona, category, tags)
             @agents[id] = instance
             instance
           end

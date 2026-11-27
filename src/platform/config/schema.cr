@@ -26,6 +26,7 @@ module Sebas
         getter agents : Hash(String, AgentConfig) = {} of String => AgentConfig
         getter bindings : Array(BindingConfig) = [] of BindingConfig
         getter gateway : GatewayConfig = GatewayConfig.new
+        getter plugins : PluginsConfig = PluginsConfig.new
 
         # 热更新整根替换需要可空构造（CURRENT 初始占位）
         def initialize
@@ -132,6 +133,10 @@ module Sebas
         getter skills : Array(String)?
         # 会话输入调度定向覆盖（session-input-scheduling.md §3.1；nil = 全继承 gateway.session）
         getter session : SessionPolicyConfig?
+        # 管理面筛选/聚合元数据（M4x-WP1，#147）：category 单值可空、tags 多值
+        # 缺省空数组；格式校验见 Loader#validate_agents（热更新先验后换复用同一校验）
+        getter category : String?
+        getter tags : Array(String) = [] of String
       end
 
       class MemoryConfig
@@ -164,6 +169,19 @@ module Sebas
 
         def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data", @session = nil,
                        @collaboration = CollaborationConfig.new)
+        end
+      end
+
+      # 插件面（M3-WP4，#16；design.md §12）：dir 缺省 = 插件面关闭（不扫描
+      # 不注册）；interpreter 缺省取 PATH 上的 mruby。目录直扫为开发/源码
+      # 布局，包格式与版本指针归 M3-WP6。
+      class PluginsConfig
+        include YAML::Serializable
+        getter dir : String?
+        getter interpreter : String?
+        getter interpreter_args : Array(String)?
+
+        def initialize(@dir = nil, @interpreter = nil, @interpreter_args = nil)
         end
       end
 

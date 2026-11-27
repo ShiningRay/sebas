@@ -34,6 +34,14 @@ class VerifierPreTest < Minitest::Test
     )
   end
 
+  def test_pre_verify_without_loaded_checks_blocks
+    data = pre_data(issue_body: automation + evidence(subject: "issue:39", merged: false))
+    data["pull_requests"].first.delete("checks")
+    report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
+    assert(report.blockers.any? { |i| i.message.include?("CI 检查未随快照取回") },
+      report.items.map(&:message).inspect)
+  end
+
   # 两阶段登记的合并前块：merged_into_main=false 且无 merge_commit，应通过。
   def test_pre_passes_with_two_phase_block
     body = automation + evidence(subject: "issue:39", merged: false, source: "workflow")
