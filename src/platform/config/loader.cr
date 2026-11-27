@@ -74,8 +74,21 @@ module Sebas
           validate_channels(config, errors)
           validate_bindings(config, errors)
           validate_gateway(config, errors)
+          validate_plugins(config, errors)
           validate_session_policies(config, errors)
           errors
+        end
+
+        # 插件面配置校验（M3-WP4，#16）：dir/interpreter 非空、dir 无控制
+        # 字符（路径卫生）；缺省（dir 未设）= 插件面关闭，合法。
+        private def validate_plugins(config : Config, errors : Array(String)) : Nil
+          if dir = config.plugins.dir
+            errors << "plugins.dir must not be empty" if dir.strip.empty?
+            errors << "plugins.dir must not contain control characters" if dir.matches?(/[[:cntrl:]]/)
+          end
+          if interpreter = config.plugins.interpreter
+            errors << "plugins.interpreter must not be empty" if interpreter.strip.empty?
+          end
         end
 
         # provider 层校验（#214）：protocol 枚举、base_url 可解析（缺省时须规格表

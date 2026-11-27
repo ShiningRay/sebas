@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "spin",
+  "version": "1.0.0",
+  "api_version": "1",
+  "actions": ["spin"],
+  "timeout_ms": 300
+}

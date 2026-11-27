@@ -5,7 +5,14 @@
   "api_version": "1",
   "entrypoint": "plugin.rb",
   "provides": ["memory.backend"],
-  "actions": ["remember", "recall", "forget"],
+  "actions": [
+    "remember",
+    "recall",
+    "forget",
+    "install",
+    "enable",
+    "disable"
+  ],
   "capabilities": [
     "memory_driver.write",
     "memory_driver.query",

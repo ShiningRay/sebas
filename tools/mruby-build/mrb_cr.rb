@@ -11,10 +11,12 @@ MRuby::Build.new do |conf|
 
   conf.gem core: "mruby-compiler"
   conf.gem core: "mruby-error"
-  # Sebas plugin subprocess sandbox (M3-WP4): print gives scripts a
-  # stdout-only channel (no files, no sockets); bin-mruby builds the
+  # Sebas plugin subprocess sandbox (M3-WP4): stdio gives scripts the two
+  # protocol pipes (sebas_print out / sebas_read in; no files, no sockets);
+  # JSON parses/generates the §12.2 protocol frames; bin-mruby builds the
   # interpreter executable the host spawns per plugin action.
   conf.gem core: "mruby-sebas-stdio"
+  conf.gem core: "mruby-sebas-json"
   conf.gem core: "mruby-exit"
   conf.gem core: "mruby-bin-mruby"
 
