@@ -108,16 +108,40 @@ module SebasAgents
         return "租约未声明 scope，无法判定越界" if lease_scope.nil?
         return "PR 变更文件清单未取回，无法判定越界" if files.nil?
 
-        outside = Array(files).filter_map do |file|
-          path = file.is_a?(Hash) ? (file["filename"] || file[:path]) : file
-          next if path.nil?
-
-          path unless lease_scope.any? { |prefix| path.start_with?(prefix) }
+        outside = []
+        unparsable = 0
+        Array(files).each do |file|
+          paths = candidate_paths(file)
+          if paths.empty?
+            # 解析不出路径就等于「无从判定」——按越界计，不放行。
+            unparsable += 1
+            next
+          end
+          # 重命名条目要查两个路径：原路径也可能落在 scope 外（搬走别人的
+          # 文件同样是越界），只查新路径会漏。
+          paths.each do |path|
+            outside << path unless lease_scope.any? { |prefix| path.start_with?(prefix) }
+          end
         end
-        return nil if outside.empty?
+        outside.uniq!
+        return nil if outside.empty? && unparsable.zero?
+        return "PR 变更条目有 #{unparsable} 条解析不出路径，无法判定越界" if outside.empty?
 
-        "变更文件不在 scope 内：#{outside.first(5).join("、")}" \
+        text = "变更文件不在 scope 内：#{outside.first(5).join("、")}" \
           "#{outside.length > 5 ? " 等 #{outside.length} 个" : ""}"
+        text += "（另有 #{unparsable} 条解析不出路径）" if unparsable.positive?
+        text
+      end
+
+      # 一条变更记录涉及的路径：filename（或 :path）加上重命名前的
+      # previous_filename。两项都查，任一越界即算越界。
+      def candidate_paths(file)
+        if file.is_a?(Hash)
+          [file["filename"] || file[:path],
+            file["previous_filename"] || file[:previous_filename]].compact
+        else
+          [file].compact
+        end.select { |path| path.is_a?(String) && !path.empty? }
       end
 
       def leases_of(issues)

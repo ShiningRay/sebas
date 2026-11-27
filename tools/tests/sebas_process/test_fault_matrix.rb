@@ -53,6 +53,26 @@ class FaultMatrixTest < Minitest::Test
     refute_nil scope.violations([{"filename" => "src/x"}], nil)
   end
 
+  # 解析不出路径的条目不能静默跳过：无从判定即按越界计。
+  def test_unparsable_entry_fails_closed
+    scope = SebasAgents::Policy::Scope
+    refute_nil scope.violations([{"patch" => "@@"}], ["src/"])
+    refute_nil scope.violations([{}], ["src/"])
+  end
+
+  # 重命名的原路径也要在 scope 内：把别人的文件搬走同样是越界。
+  def test_rename_previous_filename_is_checked
+    scope = SebasAgents::Policy::Scope
+    violation = scope.violations(
+      [{"filename" => "src/store/new.cr", "previous_filename" => "docs/old.md"}], ["src/"])
+    refute_nil violation
+    assert_includes violation, "docs/old.md"
+
+    # 两个路径都在 scope 内则放行
+    assert_nil scope.violations(
+      [{"filename" => "src/store/new.cr", "previous_filename" => "src/store/old.cr"}], ["src/"])
+  end
+
   # PR 越界 → 本卡转 needs_human 且不推进合并。
   def test_out_of_scope_pr_goes_needs_human
     snapshot = snap(
@@ -155,6 +175,42 @@ class FaultMatrixTest < Minitest::Test
       data = record.heartbeat!(now: stamp)
       assert_equal stamp.iso8601, data["last_heartbeat_at"]
       assert_equal stamp.iso8601, JSON.parse(File.read(path))["last_heartbeat_at"]
+    end
+  end
+
+  # 空字符串：字段存在但读不出时间，按过期处理（与「字段缺失」区分）。
+  def test_empty_heartbeat_treated_as_expired
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate(
+        {"schema" => 2, "issue" => 1, "phase" => "claimed", "last_heartbeat_at" => ""}),
+        encoding: "UTF-8")
+      assert SebasAgents::RunRecord.new(path: path).heartbeat_expired?(600),
+        "字段存在但为空，按过期处理"
+    end
+  end
+
+  # 心跳写入用跨进程锁：已存在锁文件时放弃本次写入，不覆盖别人。
+  def test_heartbeat_skips_when_lock_held
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      original = {"schema" => 2, "issue" => 1, "phase" => "claimed"}
+      File.write(path, JSON.generate(original), encoding: "UTF-8")
+      File.write("#{path}.lock", "12345")
+
+      result = SebasAgents::RunRecord.new(path: path).heartbeat!(now: Time.utc(2026, 1, 1))
+      assert_nil result, "锁被占用时跳过心跳"
+      assert_equal original, JSON.parse(File.read(path))
+      assert File.exist?("#{path}.lock"), "别人持有的锁不能被删"
+    end
+  end
+
+  def test_heartbeat_releases_lock_after_write
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({"schema" => 2, "issue" => 1, "phase" => "claimed"}), encoding: "UTF-8")
+      SebasAgents::RunRecord.new(path: path).heartbeat!(now: Time.utc(2026, 1, 1))
+      refute File.exist?("#{path}.lock"), "写完必须释放锁"
     end
   end
 

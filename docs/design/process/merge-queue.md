@@ -107,10 +107,12 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 | F1–F4 | claim 各写入点崩溃 | `claim` 的写后回读与 `aborted` 对账 | `test_lease_coordinator.rb` |
 | F5 | worker 进程消失 | `RunRecord#heartbeat_expired?`（缺字段不判过期，时间戳非法判过期） | `test_fault_matrix.rb` |
 | F6 / F7 | 异机租约 / 有标签无凭据 | 逐租约 `owned?` + `claim` 的租约预检 | `test_selection_scheduling.rb`、`test_lease.rb` |
-| F8 / F11 | 记录与认领不同卡 / 一个 PR 关联多卡 | `routing` 的 orphan 判定与 `lease_action` 归属校验 | `test_fault_matrix.rb`、`test_lease_actions.rb` |
+| F8 | 记录与远端认领不是同一张卡 | `routing` 的 orphan 判定（`settled_record?` 排除已合并待释放） | `test_fault_matrix.rb`、`test_queue_regressions.rb` |
 | F9 | 同一张卡两份有效凭据 | `Lease.active_lease` 唯一性 | `test_lease.rb` |
+| F10 | PR 已建、记录未回填 | `lease_action` 按 `closing_issues` 找 PR；`branch` 与记录一致才续做，不一致 `invalid_plan` | `test_lease_actions.rb` |
+| F11 | 别的 PR 关联了本卡 / 一个 PR 关联多张卡 | `lease_action` 的归属校验（多卡、base、分支三项） | `test_lease_actions.rb`、`test_fault_matrix.rb` |
 | F12 | 合并后 unclaim 失败 | `unclaim` 幂等 + `release_lease_comment!` | `test_lease_coordinator.rb` |
-| F14 | worker 越界写 | `Scope.violations`（缺输入即不可判定） | `test_fault_matrix.rb` |
+| F14 | worker 越界写 | `Scope.violations`（缺输入即不可判定；重命名查原路径与新路径） | `test_fault_matrix.rb` |
 | F15 | 合并中途崩溃（`phase=merging`） | `reconcile_merging`：已合并 → `release_ready`；仍 open → 重核验；异常 → `invalid_plan` | `test_fault_matrix.rb` |
 
 **F13（main CI 被取消）不在上表**：它的处置是重跑被取消的 CI run 或补登记，属人工动作，

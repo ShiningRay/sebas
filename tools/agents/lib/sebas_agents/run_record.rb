@@ -152,30 +152,57 @@ module SebasAgents
     end
 
     # 心跳（§F5）：worker 存活证明。只写本卡记录，不动其他租约。
+    #
+    # 读—改—写必须在**跨进程**锁内完成：原子 rename 只保证「不写坏文件」，
+    # 挡不住两个进程各自读到旧快照再覆盖（后写的会吞掉先写的字段）。
+    # 用独占创建的锁文件（与 coordinator 锁同一套路），拿不到锁就放弃本次
+    # 心跳——心跳丢一次不影响正确性，覆盖别人的写入才会。
     def heartbeat!(now: Time.now.utc)
-      data = load
-      return nil if data.nil? || data.empty?
+      with_record_lock(@path) do
+        data = load
+        break nil if data.nil? || data.empty?
 
-      save(data.merge("last_heartbeat_at" => now.iso8601))
+        save(data.merge("last_heartbeat_at" => now.iso8601))
+      end
     end
 
-    # 心跳是否过期（§F5）。缺 last_heartbeat_at 时不判过期：老记录没有心跳
-    # 字段，按过期处理会让升级当次的每张在途卡都被判死。
+    # 心跳是否过期（§F5）。
+    # - 缺字段（key 不存在）→ 不判过期：老记录没有该字段，否则升级当次
+    #   每张在途卡都被判死。仅这一种情形保留兼容。
+    # - 空字符串 / 非法时间戳 → 过期（fail-closed）：字段存在却读不出来，
+    #   说明记录已被写坏，按过期交恢复路径核对。
     # 判据只有时间——pid 在跨机/容器场景不可靠，不作为唯一依据。
     def heartbeat_expired?(ttl_seconds, now: Time.now.utc)
       data = load
       return false if data.nil? || data.empty?
+      return false unless data.key?("last_heartbeat_at")
 
       stamp = data["last_heartbeat_at"]
-      return false if stamp.to_s.empty?
+      return true if stamp.nil? || stamp.to_s.empty?
 
       Time.iso8601(stamp.to_s) < now - ttl_seconds
     rescue ArgumentError
-      # 时间戳非法：当作过期处理（fail-closed），交恢复路径核对。
       true
     end
 
     private
+
+    # 跨进程独占锁：锁文件用 O_CREAT|O_EXCL 创建，内容写 pid 便于排查。
+    # 已有锁就**跳过**本次写入（不等待、不抢锁）：心跳不是关键路径。
+    def with_record_lock(path)
+      lock = "#{path}.lock"
+      FileUtils.mkdir_p(File.dirname(lock))
+      handle = File.open(lock, File::CREAT | File::EXCL | File::WRONLY)
+      handle.write(Process.pid.to_s)
+      handle.close
+      begin
+        yield
+      ensure
+        FileUtils.rm_f(lock)
+      end
+    rescue Errno::EEXIST
+      nil
+    end
 
     def read_v2(path)
       data = JSON.parse(File.read(path, encoding: "UTF-8"))
