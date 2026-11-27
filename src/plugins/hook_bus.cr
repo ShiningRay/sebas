@@ -5,18 +5,22 @@ require "./hook_dispatcher"
 # plugins.dir 未配置/未装配时注入点零开销直通（nil dispatcher = 空操作），
 # 子系统只依赖本门面，不反向依赖 gateway 装配细节。
 #
-# 预算按 turn 划界：宿主在每个 turn/调用入口建一个 Budget 实例传入；
-# 本门面默认共享单一 Budget（gateway 装配时给定上限），跨 turn 复用——
-# 这是 §12.11「每 turn 次数/深度/总耗时上限」的保守实现：以 gateway 生命周期
-# 为大 turn，per-turn 精确划界随逐域接入补齐。
+# 预算按 turn 划界（§12.11）：budget_factory 每次派发调用新建一个 Budget——
+# 缺省「单次 hook 链即最小 turn」（跨 turn 累计零风险）；宿主需要更宽边界时
+# 传入自定义工厂（如按 agent turn 缓存复用同一 Budget 实例）。
 module Sebas
   module Plugins
     struct HookBus
       getter dispatcher : HookDispatcher?
-      getter budget : HookDispatcher::Budget
+      getter budget_factory : -> HookDispatcher::Budget
 
-      def initialize(@dispatcher : HookDispatcher? = nil, budget : HookDispatcher::Budget? = nil)
-        @budget = budget || HookDispatcher::Budget.new
+      def initialize(@dispatcher : HookDispatcher? = nil,
+                     budget_factory : -> HookDispatcher::Budget = -> { HookDispatcher::Budget.new })
+        @budget_factory = budget_factory
+      end
+
+      private def budget_for_call : HookDispatcher::Budget
+        @budget_factory.call
       end
 
       def self.disabled : HookBus
@@ -31,7 +35,7 @@ module Sebas
       def observe(hook : String, context : JSON::Any, payload : JSON::Any,
                   idempotency_key : String? = nil) : Nil
         d = @dispatcher
-        d.observe(hook, context, payload, budget: @budget, idempotency_key: idempotency_key) if d
+        d.observe(hook, context, payload, budget: budget_for_call, idempotency_key: idempotency_key) if d
       end
 
       # gate：无装配即放行（payload 原样）；deny 带结构化 code/reason。
@@ -39,7 +43,7 @@ module Sebas
                idempotency_key : String? = nil) : HookDispatcher::Verdict
         d = @dispatcher
         return HookDispatcher::Verdict.allow(payload) unless d
-        d.gate(hook, context, payload, budget: @budget, idempotency_key: idempotency_key)
+        d.gate(hook, context, payload, budget: budget_for_call, idempotency_key: idempotency_key)
       end
 
       # transform：无装配即原样；替换后的 payload 已重过 schema 校验。
@@ -47,7 +51,7 @@ module Sebas
                     idempotency_key : String? = nil) : HookDispatcher::Verdict
         d = @dispatcher
         return HookDispatcher::Verdict.allow(payload) unless d
-        d.transform(hook, context, payload, budget: @budget, idempotency_key: idempotency_key)
+        d.transform(hook, context, payload, budget: budget_for_call, idempotency_key: idempotency_key)
       end
     end
   end

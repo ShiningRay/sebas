@@ -232,7 +232,9 @@ module Sebas
             raise SchemaError.new("hook #{hook} payload '#{key}' must be an integer")
           end
         when .bool?
-          unless value.as_bool?
+          # as_bool? 对 false 返回 false——truthiness 判断会把合法的 false
+          # 误判为非法值；类型判定必须用 raw is_a?
+          unless value.raw.is_a?(Bool)
             raise SchemaError.new("hook #{hook} payload '#{key}' must be a boolean")
           end
         when .str_array?
@@ -295,7 +297,7 @@ module Sebas
                                            depth : Int32) : Nil
         raise SchemaError.new("hook #{hook} payload '#{key}' nesting exceeds depth") if depth > MAX_DEPTH
         ok = value.as_s? || value.as_i64? || value.as_i? || value.as_f? ||
-             value.as_bool? || value.raw.nil?
+             value.raw.is_a?(Bool) || value.raw.nil?
         return if ok
         if arr = value.as_a?
           arr.each { |item| validate_json_like!(hook, key, item, depth + 1) }

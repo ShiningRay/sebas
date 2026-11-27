@@ -80,7 +80,11 @@ module Sebas
 
         # capability "memory_driver.write"：params {kind, text, tags}。
         # 写前 gate+transform（entry 可 deny/modify，宿主重校验）；提交成功后
-        # observe（memory_id/kind/tags）。幂等键：同 key 重放直接返回同 id。
+        # observe（memory_id/kind/tags）。幂等重放：同 key 返回同 memory_id、
+        # 不重复写入（#17 验收「task 重放 memo 不重复副作用」）。
+        @idempotency = Hash(String, String).new
+
+        # ameba:disable Metrics/CyclomaticComplexity — 幂等查表+双重授权+终态登记的状态机，分支即语义
         def write(plugin_id : String, params : JSON::Any, context : JSON::Any,
                   hook_bus : HookBus = @hook_bus, idempotency_key : String? = nil) : JSON::Any
           entry = JSON.parse(JSON.build do |json|
@@ -92,9 +96,18 @@ module Sebas
           end)
           verdict = hook_bus.gate("memory.remember.before", context,
             JSON.parse(%({"entry": #{entry.to_json}})), idempotency_key: idempotency_key)
-          return JSON.parse(%({"ok": false, "error": "#{verdict.code}: #{verdict.reason}"})) if verdict.denied
+          if verdict.denied
+            return JSON.parse({ok: false, error: "#{verdict.code}: #{verdict.reason}"}.to_json)
+          end
           final_entry = verdict.payload.try(&.as_h?).try(&.[]?("entry")) || entry
 
+          # 幂等重放查表：同 key 已提交 → 返回既有 id，不重复写不重复 observe
+          if key = idempotency_key
+            existing_id = @mutex.synchronize { @idempotency[key]? }
+            if existing_id
+              return JSON.parse(%({"ok": true, "memory_id": #{existing_id.to_json}}))
+            end
+          end
           memory_id = "mem-#{Random::Secure.hex(8)}"
           stored = JSON.parse(JSON.build do |json|
             json.object do
@@ -109,6 +122,8 @@ module Sebas
               raise CapabilityError.new("memory_overflow", "memory driver store cap (#{MAX_ENTRIES}) reached")
             end
             @entries[memory_id] = stored
+            # 幂等键登记（提交成功后）；竞态下首个写入者持有 id（first-write-wins）
+            @idempotency[idempotency_key] = memory_id if idempotency_key && !@idempotency.has_key?(idempotency_key)
           end
           # 提交成功后 observe（§12.11：失败或 deny 不触发 after）
           kind = stored["kind"]?.try(&.as_s?) || "memory"
@@ -121,7 +136,7 @@ module Sebas
             end
           end)
           hook_bus.observe("memory.remember.after", context, after)
-          JSON.parse(%({"ok": true, "memory_id": #{memory_id.inspect}}))
+          JSON.parse(%({"ok": true, "memory_id": #{memory_id.to_json}}))
         end
       end
     end

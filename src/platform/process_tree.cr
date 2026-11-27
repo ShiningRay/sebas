@@ -19,19 +19,30 @@ module Sebas
       # 终止 pid 及其全部后代。幂等：进程已退出/无后代时不抛错。
       # 返回实际终止的数量（诊断用）。先杀后代再杀根：缩小父进程被杀后
       # 后代被重新收养导致漏杀的窗口。
+      # Windows：调用级 Job 承载树终止（runner 终态路径 terminate_and_close），
+      # 此处退化为 terminate 直接子进程兜底（后代由 Job 覆盖）。
       def self.kill_tree(pid : Int32) : Int32
         count = 0
-        descendants(pid).each do |child|
-          count += 1 if kill_process(child)
-        end
+        {% unless flag?(:windows) %}
+          kids = descendants(pid)
+          if kids.nil?
+            Log.warn { "pgrep enumeration failed (pid=#{pid}); killing root only — descendants may survive" }
+          else
+            kids.each do |child|
+              count += 1 if kill_process(child)
+            end
+          end
+        {% end %}
         count += 1 if kill_process(pid)
         count
       end
 
       # 枚举后代（不含 pid 本身）：POSIX pgrep -P 逐层走（深度/总量双封
-      # 顶，进程树失控时不无限枚举）；Windows 返回空——终止路径走 Job
-      # Object，无需枚举。
-      def self.descendants(pid : Int32) : Array(Int32)
+      # 顶，进程树失控时不无限枚举）；Windows 返回空——终止路径走调用级
+      # Job，无需枚举。
+      # pgrep 失败（不可用/非零退出）返回 nil 区分「无后代」与「枚举失败」：
+      # kill_tree 收到 nil 记日志并照常杀根（不静默当无后代）。
+      def self.descendants(pid : Int32) : Array(Int32)?
         {% if flag?(:windows) %}
           [] of Int32
         {% else %}
@@ -42,7 +53,9 @@ module Sebas
           until queue.empty? || out.size >= MAX_NODES || depth >= MAX_DEPTH
             depth += 1
             cur = queue.shift
-            direct_children(cur).each do |child|
+            children = direct_children(cur)
+            return nil if children.nil? # 枚举失败：调用方显式知晓
+            children.each do |child|
               next if seen.includes?(child)
               seen << child
               out << child
@@ -57,7 +70,7 @@ module Sebas
 
       private def self.kill_process(pid : Int32) : Bool
         {% if flag?(:windows) %}
-          JobObject.terminate_by_pid(pid)
+          LibC.TerminateProcess(LibC.OpenProcess(PROCESS_TERMINATE_WIN, 0, pid.to_u32), 1_u32) != 0
         {% else %}
           LibC.kill(pid, LibC::SIGKILL)
           $?.success?
@@ -66,19 +79,24 @@ module Sebas
         false
       end
 
+      {% if flag?(:windows) %}
+        private PROCESS_TERMINATE_WIN = 0x00000001_u32
+      {% end %}
+
       {% if flag?(:unix) %}
-        private def self.direct_children(pid : Int32) : Array(Int32)
+        # pgrep 可用性与执行失败 → nil（区分「无后代」）；成功但无输出 → 空数组
+        private def self.direct_children(pid : Int32) : Array(Int32)?
           io = IO::Memory.new
           res = Process.run("pgrep", ["-P", pid.to_s],
             input: Process::Redirect::Close,
             output: io,
             error: Process::Redirect::Close)
-          return [] of Int32 unless res.success?
+          return nil unless res.success?
           io.to_s.split(/\s+/).compact_map do |line|
             line.to_i?(10)
           end
         rescue
-          [] of Int32
+          nil
         end
       {% end %}
     end

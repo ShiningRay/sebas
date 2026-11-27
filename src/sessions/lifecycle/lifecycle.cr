@@ -67,8 +67,12 @@ module Sebas
           # session.start（M3-WP5，#17 §12.11）：新会话上下文建立后仅通知；
           # 仅通知、不得在每次消息时误触发——仅 INSERT（非 conflict update）触发
           if existed.nil?
-            hook_bus.observe("session.start", ::JSON.parse("{}"),
-              ::JSON.parse(%({"session_key": #{session_key.inspect}})))
+            begin
+              hook_bus.observe("session.start", ::JSON.parse("{}"),
+                ::JSON.parse(%({"session_key": #{session_key.to_json}})))
+            rescue ex
+              Log.warn(exception: ex) { "session.start hook skipped (already admitted, session=#{session_key})" }
+            end
           end
         end
 
@@ -141,9 +145,13 @@ module Sebas
             session_key).rows_affected > 0
           if affected
             # session.end（M3-WP5，#17 §12.11）：归档为明确会话边界，带 reason；
-            # observe 隔离，失败不阻断归档
-            hook_bus.observe("session.end", ::JSON.parse("{}"),
-              ::JSON.parse(%({"session_key": #{session_key.inspect}, "reason": "archived"})))
+            # observe 隔离，失败不阻断归档——已确定的提交结果不被覆盖
+            begin
+              hook_bus.observe("session.end", ::JSON.parse("{}"),
+                ::JSON.parse(%({"session_key": #{session_key.to_json}, "reason": "archived"})))
+            rescue ex
+              Log.warn(exception: ex) { "session.end hook skipped (already archived, session=#{session_key})" }
+            end
           end
           affected
         end

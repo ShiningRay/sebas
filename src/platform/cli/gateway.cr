@@ -105,9 +105,8 @@ module Sebas
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
           @lifecycle_store = Sessions::Lifecycle::Store.new(@store, @data_dir)
-          # secrets 收敛（M4.2-WP4 §5.3）：明文迁 vault，factory 包装见 GatewaySecrets
           @vault = Keys::EncryptedFileVault.open(@data_dir / "secrets.vault", platform_keyring)
-          migrate_secrets(@config)
+          migrate_secrets(@config) # secrets 收敛（M4.2-WP4 §5.3，包装见 GatewaySecrets）
           @provider_factory = wire_secret_factory(original_factory)
           @bus = Bus::Bus.new
           @channels = Channels::Registry.new
@@ -182,10 +181,9 @@ module Sebas
           @http.lifecycle = @lifecycle_store
           @http.templates = @agent_registry
           @http.steer_center = @steer_center
-          wire_hook_handler
-          wire_scheduling_admin
+          wire_hook_handler; wire_scheduling_admin
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
-          @join_writer = Orchestration::Fork::JoinWriter.new(@store)
+          @join_writer = Orchestration::Fork::JoinWriter.new(@store) # fork/join 装配
           spawn_adapters
         end
 
@@ -249,8 +247,7 @@ module Sebas
           # Telegram 账号热换（M3-WP8 装配）：增删=监督体启停
           reapply_telegram_accounts(new_config)
 
-          wire_plugins(new_config); wire_hook_faces # 插件面热更新（M3-WP4 数据类）：重扫即生效，hook 门面随之刷新（M3-WP5 #17）
-
+          wire_plugins(new_config); wire_hook_faces; @engine.hook_bus = @hook_bus # 插件面热更新（M3-WP4），hook 门面刷新含 task 域（M3-WP5 #17）
           @config = new_config
           restart_required
         end
@@ -273,7 +270,7 @@ module Sebas
         def process_message(message : Bus::InboundMessage, replay : Bool = false, admitted_session : String? = nil) : Nil
           # message.received（M3-WP5，#17 §12.11）：渠道验真/去重/解析完成后、
           # 路由前 observe（只读，失败不阻断接收——HookBus 内部隔离）
-          observe_message_received(message) # message.received hook（M3-WP5，#17）
+          observe_message_received(message) # message.received hook（M3-WP5 #17）
           # 重放（崩溃恢复）跳过 intent 排重：已存在 intent 继续 dispatch（send 幂等键防重复投递）
           intent_new = replay || @store.record_intent(message.event_id, "message", message.to_json)
           confirm_telegram_consumer(message) # M3-WP8 §4.2：消费者确认（含已有 intent 分支，防永卡 dispatched=false）
@@ -356,7 +353,10 @@ module Sebas
           register_dialog_fork_tool(registry, agent_name, agent)
           front_desk = agent_name == ::Sebas::Agents::Reception::FRONT_DESK_AGENT
           restrict_registry_to_read_only(registry) if front_desk
-          executor = Tools::Executor.new(registry, @channels)
+          if send_tool = registry.find("message.send").as?(Tools::MessageSendTool)
+            send_tool.hook_bus = @hook_bus # 消息域注入（per-turn 实例，M3-WP5 #17）
+          end
+          executor = Tools::Executor.new(registry, @channels, @hook_bus) # 工具域注入（M3-WP5 #17）
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
           # 工具协议说明（M4.3-WP1 CodeRabbit）：模型必须知道可用工具与调用
@@ -372,7 +372,7 @@ module Sebas
             @steer_center.drain(session, turn_id, generation)
           end
           runtime = Agents::AgentRuntime.new(@store, @approvals, drain)
-          inject_runtime_hooks(runtime) # agent/llm 域 hook 注入（M3-WP5，#17）
+          inject_runtime_hooks(runtime) # agent/llm 域 hook（M3-WP5 #17）
           turn_id = "turn:#{event_id}"
           lease = @steer_registry.register(session_key, turn_id)
           turn_ctx = Agents::TurnContext.new(session_key, lease.turn_id, lease.generation)

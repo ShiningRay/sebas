@@ -15,7 +15,7 @@ module Sebas
     def script_interpreter(code : String) : Array(String)
       ruby = Process.find_executable("ruby")
       pending "需要 ruby" unless ruby
-      [ruby.as(String), "-e", code]
+      [ruby.as(String), "-rjson", "-e", code]
     end
 
     # 合成最小 LoadedPlugin（runner 只读 entry_file 与 manifest 声明集合）。
@@ -75,15 +75,16 @@ module Sebas
       alive.should be_false, "watchdog 超时后孙进程应已被 kill_tree 终止"
     end
 
-    it "迟到输出丢弃（实测）：超时终止后的管道残留不阻塞、不炸宿主" do
-      # 子进程：狂写 stdout 后才睡死——watchdog 杀树后排水路径必须吃干净
+    it "迟到输出丢弃（实测）：watchdog 超时后的管道残留不阻塞、不炸宿主" do
+      # 受控时序到达超时清理路径：先发合法 registered → 静默期（注册帧已
+      # 合法消费）→ watchdog 超时杀树；子进程在 stdout 上持续灌非协议文本，
+      # 超时后排水必须吃干净且不阻塞 wait
       code = <<-RUBY # ameba:disable Style/HeredocEscape, Style/HeredocIndent
         $stdout.sync = true
         request = $stdin.gets
-        registered = JSON.generate({"type" => "registered", "actions" => [], "hooks" => []})
-        $stdout.puts registered
+        $stdout.puts JSON.generate({"type" => "registered", "actions" => [], "hooks" => []})
         Thread.new do
-          loop { $stdout.puts registered }
+          loop { $stdout.puts "late noise line" } # 非协议文本：迟到输出口径
         end
         sleep 30
       RUBY
@@ -93,8 +94,10 @@ module Sebas
       outcome = runner.call(RunnerWp5Helpers.stub_plugin, RunnerWp5Helpers.request)
       elapsed = (Time.instant - started).total_milliseconds
       outcome.ok.should be_false
-      # 超时/杀树竞态下终态为 timeout 或杀树后的 crash，二者都证明管道未阻塞
-      {"timeout", "plugin_crash"}.should contain(outcome.error_code)
+      # 到达 watchdog 清理路径的结构化终态：timeout（预期主口径）或杀树后
+      # audit 判定（protocol_violation——管道残留中混入协议形态行时成立）；
+      # 二者都证明排水不阻塞、宿主不炸、结果结构化返回
+      {"timeout", "protocol_violation"}.should contain(outcome.error_code)
       elapsed.should be < 5_000
     end
 
@@ -117,7 +120,9 @@ module Sebas
         outcome = runner.call(RunnerWp5Helpers.stub_plugin, RunnerWp5Helpers.request)
         elapsed = (Time.instant - started).total_milliseconds
         outcome.ok.should be_false
-        outcome.error_code.should eq("plugin_crash")
+        # CPU 上限杀进程后无 result 帧：plugin_crash（exit 非零）或
+        # plugin_no_result（EOF 干净退出）；二者都证明配额生效即终止
+        {"plugin_crash", "plugin_no_result"}.should contain(outcome.error_code)
         # CPU 上限生效即秒级终止，而不是跑满 30 秒
         elapsed.should be < 15_000
       end

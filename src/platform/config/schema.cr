@@ -180,8 +180,14 @@ module Sebas
         getter dir : String?
         getter interpreter : String?
         getter interpreter_args : Array(String)?
+        # OS 资源约束（M3-WP5，#17 §12.4 ②）：可省（nil = 不设限，行为同
+        # WP4）；配置即传给 Runner 生产装配（POSIX ulimit 包装 / Windows
+        # Job 内存上限），非法值 fail-closed 拒绝启动
+        getter memory_mb : Int64?
+        getter cpu_seconds : Int32?
 
-        def initialize(@dir = nil, @interpreter = nil, @interpreter_args = nil)
+        def initialize(@dir = nil, @interpreter = nil, @interpreter_args = nil,
+                       @memory_mb = nil, @cpu_seconds = nil)
         end
       end
 

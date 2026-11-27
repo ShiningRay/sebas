@@ -26,6 +26,7 @@ module Sebas
         # hook 门面（M3-WP5，#17）：gateway.start/stop 及各子系统注入点共用
         @hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
 
+        # ameba:disable Metrics/CyclomaticComplexity — 装配面（runner/hook/capability/工具四路接线），分支即装配语义
         private def wire_plugins(config : Config::Config) : Nil
           tools = @tools_registry || (Log.error { "plugins face wired before tool surface build" }; return)
           # 工具面同步：先摘旧名单再挂新名单（registry.unregister 语义）
@@ -49,7 +50,20 @@ module Sebas
 
           interpreter = config.plugins.interpreter || "mruby"
           args = config.plugins.interpreter_args || [] of String
-          runner = ::Sebas::Plugins::Runner.new([interpreter] + args)
+          # 生产装配也承载 OS 配额（M3-WP5 review）：非法值 from_config
+          # fail-closed（装配失败 → plugins face wiring failed → 停用插件面）
+          limits = begin
+            ::Sebas::Plugins::ResourceLimits.from_config(config.plugins.memory_mb,
+              config.plugins.cpu_seconds)
+          rescue ex
+            Log.error { "plugins limits invalid: #{ex.message}" }
+            nil
+          end
+          if limits || (config.plugins.memory_mb.nil? && config.plugins.cpu_seconds.nil?)
+            runner = ::Sebas::Plugins::Runner.new([interpreter] + args, limits: limits)
+          else
+            runner = ::Sebas::Plugins::Runner.new([interpreter] + args)
+          end
           dispatch = ::Sebas::Plugins::Dispatch.new(registry, runner)
           @plugin_dispatch = dispatch
           @plugin_tool_names = dispatch.register_tools_into(tools)

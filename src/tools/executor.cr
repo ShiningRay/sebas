@@ -37,10 +37,12 @@ module Sebas
         args = hooked.args
         deny_result, approval_reason = irreversible_gate?(tool, args, ctx)
         return deny_result if deny_result
+        tool_started = Time.instant
         result = tool.run(args, ctx)
+        tool_duration_ms = (Time.instant - tool_started).total_milliseconds.to_i64
         record_side_effect(tool, args, ctx, result, approval_reason)
         result = hook_result(tool, ctx, result)
-        hook_after(tool, ctx, result)
+        hook_after(tool, ctx, result, tool_duration_ms)
         result
       rescue ex : ::Exception
         # typed rescue 转值：工具错误不炸进程（autobot registry.cr 先例）
@@ -64,7 +66,7 @@ module Sebas
         HookBefore.new(true, args, "hook_failed: #{(ex.message || "hook failed")[0, 200]}")
       end
 
-      private def hook_after(tool : Tool, ctx : ToolContext, result : ToolResult) : Nil
+      private def hook_after(tool : Tool, ctx : ToolContext, result : ToolResult, duration_ms : Int64) : Nil
         status = result.ok? ? "success" : (result.error.to_s.includes?("crashed") ? "exception" : "error")
         payload = JSON.parse(JSON.build do |json|
           json.object do
@@ -72,7 +74,7 @@ module Sebas
             json.field "request_id", ctx.event_id
             json.field "session_key", ctx.session_key
             json.field "status", status
-            json.field "duration_ms", 0
+            json.field "duration_ms", duration_ms
             json.field "result_summary", (result.ok? ? result.output : result.error.to_s)[0, 200]
           end
         end)
@@ -85,7 +87,7 @@ module Sebas
       # output 文本；deny fail-closed 转错误结果，不返回未校验的文本。
       private def hook_result(tool : Tool, ctx : ToolContext, result : ToolResult) : ToolResult
         return result unless result.ok?
-        payload = JSON.parse(%({"tool_id": #{tool.name.inspect}, "request_id": #{ctx.event_id.inspect}, "text": #{result.output.inspect}}))
+        payload = JSON.parse(%({"tool_id": #{tool.name.to_json}, "request_id": #{ctx.event_id.to_json}, "text": #{result.output.to_json}}))
         verdict = @hook_bus.transform("tool.result.transform", hook_context(ctx), payload)
         return ToolResult.error("result transform denied: #{verdict.reason}") if verdict.denied
         replaced = verdict.payload.try(&.as_h?).try(&.[]?("text")).try(&.as_s?)
@@ -96,11 +98,11 @@ module Sebas
       end
 
       private def tool_payload(tool_id : String, args : JSON::Any, ctx : ToolContext) : JSON::Any
-        JSON.parse(%({"tool_id": #{tool_id.inspect},"request_id": #{ctx.event_id.inspect},"session_key": #{ctx.session_key.inspect},"params": #{args.to_json}}))
+        JSON.parse(%({"tool_id": #{tool_id.to_json},"request_id": #{ctx.event_id.to_json},"session_key": #{ctx.session_key.to_json},"params": #{args.to_json}}))
       end
 
       private def hook_context(ctx : ToolContext) : JSON::Any
-        JSON.parse(%({"session_key": #{ctx.session_key.inspect}, "account_id": #{ctx.account_id.inspect}}))
+        JSON.parse(%({"session_key": #{ctx.session_key.to_json}, "account_id": #{ctx.account_id.to_json}}))
       end
 
       # 副作用台账入账（M4.2-WP2 §2.2 通则 1「副作用已发生不隐瞒」）：执行
@@ -192,7 +194,12 @@ module Sebas
           end
         end)
         verdict = hook_bus.gate("message.sending", JSON.parse("{}"), payload, idempotency_key: memo_key)
-        return ToolResult.interrupted("message hook denied: #{verdict.code}: #{verdict.reason}") if verdict.denied
+        if verdict.denied
+          # deny 写非 intent 终态：同 key 重试返回「hook 拒绝的已记录裁决」，
+          # 不再误报「未知状态」；HookDispatcher gate memo 同 key 复用 deny
+          ctx.store.memo_replace(memo_key, "failed:hook_denied")
+          return ToolResult.interrupted("message hook denied: #{verdict.code}: #{verdict.reason}")
+        end
         replaced = verdict.payload.try(&.as_h?).try(&.[]?("content")).try(&.as_s?)
         result = adapter.send(peer, replaced || content)
         # message.sent（observe）：渠道返回投递结果后通知，不保证已读

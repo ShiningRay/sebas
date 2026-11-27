@@ -7,7 +7,14 @@
 
 ### Added
 
-- **插件沙箱与 22 钩子（M3-WP5）**：§12.11 22 钩子闭集目录与 payload schema 机读契约（键集闭/枚举/可空/结构化错误/深度封顶；敏感 hook 需 manifest `hooks.sensitive` 批准）；gate/transform 同步链（deny fail-closed、替换重校验）、observe 隔离、priority 稳定序、每 turn 预算（次数/深度/总耗时）与 idempotency memo；22 个宿主注入点全量接线（gateway/消息/Agent/LLM/工具/会话/记忆/任务八域）；runner 进程树清扫（POSIX pgrep 树遍历 + Windows Job Object FFI）、迟到输出排水、OS 资源约束（ulimit / Job 内存上限）；capability driver 双重白名单第二关 + scope 宿主注入 + 受控 memory.backend（memory.remember 双 hook 注入点）；SessionCompactor 接口与压缩协议（无生产压缩器，hook 语义先行）；`deny!`/`modify!` DSL 与 manifest `hook_priorities`（[#17](https://github.com/ShiningRay/sebas/issues/17)）。
+- **插件沙箱与 22 钩子（M3-WP5）**（[#17](https://github.com/ShiningRay/sebas/issues/17)）：
+  - 钩子契约：§12.11 22 钩子闭集目录 + payload schema 机读权威（键集闭/枚举/可空/结构化错误/深度封顶；敏感 hook 需 manifest `hooks.sensitive`）。
+  - 派发语义：gate/transform 同步链（deny fail-closed、替换重过 schema）、observe 隔离、priority 稳定序、按 fiber 链隔离的递归深度、预算 outcome 化（链中耗尽判 deny）、idempotency memo。
+  - 宿主注入：22/22 全量接线（gateway/消息/Agent/LLM/工具/会话/记忆/任务八域；per-turn executor 与热更新路径同步刷新）。
+  - runner 隔离：终态前置进程树清扫（POSIX pgrep 树遍历、失败区分「无后代/枚举失败」；Windows 调用级 Job Object FFI）、终态后有界帧校验、迟到输出时间/字节双预算排水、OS 资源约束（POSIX ulimit 全成功才 exec；Windows Job 内存上限；生产装配经 `plugins.memory_mb/cpu_seconds` 配置承载）。
+  - capability：双重白名单第二关 + scope 宿主注入 + 受控 memory.backend（幂等重放同 key 同 id，不重复副作用）。
+  - 压缩：SessionCompactor 接口与 CompactionRunner 协议（无生产压缩器，hook 语义先行）。
+  - DSL：`deny!`/`modify!`；manifest `hook_priorities`（向后兼容）。
 - **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：
   - `capacity` 配置：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限，缺键即 1（行为与单卡一致）；仅接受正整数，显式 null/浮点等非法值 fail-closed。
   - 路由与认领：快照承载 `capacity`；routing/claim/resume 判定按容量计数，超容量 invalid；容量内多卡的续做路由对准本地记录持有的卡。

@@ -121,13 +121,27 @@ module Sebas
         raise RunnerError.new("failed to spawn plugin interpreter #{interpreter.inspect}: #{ex.message}")
       else
         {% if flag?(:windows) %}
-          # Job Object 指派 + 内存上限（§12.4 ②；FFI 细节见
-          # platform/process_tree_ffi_windows.cr）
-          begin
-            Platform::ProcessTree::JobObject.set_memory_limit(limits.memory_mb.not_nil! * 1024 * 1024) if limits && limits.memory_mb
-            Platform::ProcessTree::JobObject.assign(process.pid.to_u32)
+          # 调用级 Job（M3-WP5 review）：每次调用独立 Job——终止只及本调用
+          # 的进程树，不伤并发活动调用。指派/创建失败即终止回收，不进入帧
+          # 循环（无隔离的插件进程不受控）。
+          memory_mb = limits.try(&.memory_mb)
+          job = begin
+            Platform::ProcessTree::JobObject.create(memory_mb.try { |mb| mb.to_u64 * 1024 * 1024 })
           rescue ex
-            Log.warn { "job object assign failed (pid=#{process.pid}): #{ex.message}" }
+            Platform::ProcessTree.kill_tree(process.pid.to_i32)
+            process.terminate(graceful: false) rescue nil
+            raise RunnerError.new("job object create failed (pid=#{process.pid}): #{ex.message}")
+          end
+          unless Platform::ProcessTree::JobObject.assign(job, process.pid.to_u32)
+            Platform::ProcessTree::JobObject.terminate_and_close(job)
+            Platform::ProcessTree.kill_tree(process.pid.to_i32)
+            process.terminate(graceful: false) rescue nil
+            raise RunnerError.new("job object assign failed (pid=#{process.pid}); plugin process recycled")
+          end
+          begin
+            return exchange_frames(process, plugin, request, started, job: job)
+          ensure
+            Platform::ProcessTree::JobObject.terminate_and_close(job)
           end
         {% end %}
         exchange_frames(process, plugin, request, started)
@@ -158,9 +172,9 @@ module Sebas
 
       # 帧循环主体。所有异常就地转结构化 CallOutcome——插件任何失败模式
       # （崩溃/超时/协议违规/宿主应答异常）都不逃出本次调用。
-      # ameba:disable Metrics/CyclomaticComplexity — 三类帧 × 失败模式的状态机，分支即语义
       private def exchange_frames(process : Process, plugin : LoadedPlugin,
-                                  request : Protocol::Request, started : Time::Instant) : CallOutcome
+                                  request : Protocol::Request, started : Time::Instant,
+                                  job : Void*? = nil) : CallOutcome
         duration = -> { (Time.instant - started).total_milliseconds.to_i64 }
         diagnostics = StderrDrainer.new(process.error)
         diagnostics.drain
@@ -177,9 +191,13 @@ module Sebas
           when finished.receive
           when timeout(timeout_ms.milliseconds)
             timed_out.set(true)
-            # 进程树终止（M3-WP5 §12.4 ④）：先清后代再杀根，防孤儿逃逸；
-            # 再对直接子进程兜底 terminate。
-            Platform::ProcessTree.kill_tree(process.pid.to_i32)
+            # 进程树终止（M3-WP5 §12.4 ④）：Windows 走调用级 Job（覆盖全部
+            # 后代）；POSIX 先清后代再杀根，防孤儿逃逸；再对直接子进程兜底。
+            {% if flag?(:windows) %}
+              Platform::ProcessTree::JobObject.terminate_and_close(job) if job
+            {% else %}
+              Platform::ProcessTree.kill_tree(process.pid.to_i32)
+            {% end %}
             process.terminate(graceful: false) rescue nil
           end
         end
@@ -240,7 +258,15 @@ module Sebas
                              "result.request_id #{frame.request_id.inspect} does not match #{request.request_id.inspect}"}
                 break
               end
+              # 终态提交（M3-WP5 review）：有效 result 通过唯一性 + request_id
+              # 校验后即提交并退出帧循环；提交后仍须有界校验后续帧——顶层伪
+              # 造 result 后再发 registered 帧 = 乱序违规（WP4 防伪造契约，
+              # noisy 夹具锁定）。有界排水兼顾防伪校验与迟到输出不阻塞。
               result_frame = frame
+              # 已有违规（如 registered 里的 undeclared_registration）优先——
+              # audit 只补「提交后才发现」的乱序/重复，不洗掉前置违规
+              violation ||= audit_late_frames(process, late_total: stdout_total)
+              break
             end
           end
         rescue ::Exception
@@ -294,15 +320,63 @@ module Sebas
         CallOutcome.error("capability_failed", (ex.message || "capability failed")[0, 500], 0)
       end
 
-      # 迟到输出排水：终态帧后读到 EOF 为止，内容按行丢弃（总量计数仍走
-      # 上限口径，但不触发违规——丢弃即语义）。
+      # 迟到输出排水（M3-WP5 review）：固定时间预算 + 字节预算，按实际读入
+      # 字节计（不按完整行）；任一超限或 EOF 即返回——无论辅助进程是否关闭
+      # stdout，exchange_frames 都能继续 wait。超时/超量记日志（诊断树清理
+      # 漏网的后代）。
+      private DRAIN_TIMEOUT_MS = 2_000i64
+      private DRAIN_CHUNK      =     4096
+
+      # 终态后的有界帧校验：读到的行仍解析为协议帧（registered/duplicate
+      # result 等乱序即违规——WP4 防伪造契约）；非协议文本按迟到输出丢弃。
+      # 时间与字节双预算，超限按迟到输出口径放行（此时违规未知 < 伪报风险）。
+      private def audit_late_frames(process : Process, late_total : Int32) : {String, String}?
+        deadline = Time.instant + DRAIN_TIMEOUT_MS.milliseconds
+        seen_bytes = 0
+        loop do
+          if Time.instant >= deadline || seen_bytes > Protocol::MAX_STDOUT_TOTAL
+            Log.warn { "late frame audit cut short after #{seen_bytes}B (timeout/overflow)" }
+            return # 审计中断：按迟到输出口径放行（伪报风险 < 无终态风险）
+          end
+          slice = Bytes.new(DRAIN_CHUNK)
+          n = process.output.read(slice)
+          return if n.zero? # EOF
+          seen_bytes += n
+          yield_buf = String.new(slice[0, n])
+          yield_buf.each_line(chomp: false) do |raw|
+            line = raw.chomp
+            next if line.empty?
+            parsed = begin
+              Protocol.parse_frame(line)
+            rescue ProtocolError
+              # 非协议文本（调试 print 等）：按迟到输出口径丢弃
+              next
+            end
+            case parsed
+            when Protocol::RegisteredFrame
+              return {"protocol_violation", "registered frame out of order"}
+            when Protocol::ResultFrame
+              return {"protocol_violation", "more than one result frame"}
+            end
+          end
+        end
+      end
+
       private def drain_late_output(process : Process) : Nil
         late_bytes = 0
-        while line = process.output.gets
-          late_bytes += line.bytesize
+        deadline = Time.instant + DRAIN_TIMEOUT_MS.milliseconds
+        loop do
+          if Time.instant >= deadline
+            Log.warn { "late output drain timed out after #{DRAIN_TIMEOUT_MS}ms (#{late_bytes}B discarded); a descendant may still hold stdout" }
+            return
+          end
+          slice = Bytes.new(DRAIN_CHUNK)
+          n = process.output.read(slice)
+          return if n.zero? # EOF
+          late_bytes += n
           if late_bytes > Protocol::MAX_STDOUT_TOTAL
             Log.warn { "late output exceeded #{Protocol::MAX_STDOUT_TOTAL} bytes; rest discarded silently" }
-            break
+            return
           end
         end
       rescue

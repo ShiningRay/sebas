@@ -132,6 +132,13 @@ module Sebas
         end
       end
 
+      it "开式哈希含 false/true 合法（as_bool? 对 false 为假，须 raw is_a? 判型）" do
+        payload = JSON.parse(%({"entry": {"text": "x", "enabled": false}}))
+        Hooks.validate_payload!("memory.remember.before", payload).should be_nil
+        payload = JSON.parse(%({"entry": {"text": "x", "enabled": true}}))
+        Hooks.validate_payload!("memory.remember.before", payload).should be_nil
+      end
+
       it "gateway.start 空 payload 契约：空对象通过，任何键拒绝" do
         Hooks.validate_payload!("gateway.start", JSON.parse("{}")).should be_nil
         expect_raises(Hooks::SchemaError, /undeclared key/) do

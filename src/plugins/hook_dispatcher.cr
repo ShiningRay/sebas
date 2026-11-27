@@ -44,8 +44,6 @@ module Sebas
         end
       end
 
-      class BudgetExceededError < RuntimeError; end
-
       # 每 turn 预算：调用次数上限、深度上限、总耗时上限。复用方每 turn
       # 建一个 Budget 实例传入 dispatch_*；nil 表示不设预算（测试/装配前）。
       class Budget
@@ -89,7 +87,36 @@ module Sebas
       getter subscriptions : Hash(String, Array(Subscription))
       getter memo : Memo
 
-      @depth = Atomic(Int32).new(0)
+      # 递归深度按调用链（fiber）隔离：并发独立 fiber 各自计数，互不累加；
+      # 嵌套触发（插件→capability→宿主 hook）发生在同一 fiber 上，正确累加。
+      private def chain_depth
+        (@chain_depths ||= Hash(UInt64, Int32).new)
+      end
+
+      @chain_depths_mutex = Mutex.new
+
+      private def with_chain_depth(& : Int32 -> CallOutcome) : CallOutcome
+        key = Fiber.current.object_id # UInt64
+        @chain_depths_mutex.synchronize do
+          chain_depth[key] = (chain_depth[key]? || 0) + 1
+        end
+        depth = @chain_depths_mutex.synchronize { chain_depth[key]? || 1 }
+        yield depth
+      ensure
+        # key 非空恒成立（Fiber.current.object_id 无 nil 路径）；ensure 块内
+        # 编译器窄化丢失，用局部快照恢复类型
+        snapshot = key
+        if snapshot
+          @chain_depths_mutex.synchronize do
+            remaining = (chain_depth[snapshot]? || 1) - 1
+            if remaining <= 0
+              chain_depth.delete(snapshot)
+            else
+              chain_depth[snapshot] = remaining
+            end
+          end
+        end
+      end
 
       def initialize
         @subscriptions = Hash(String, Array(Subscription)).new
@@ -239,6 +266,12 @@ module Sebas
               return Verdict.allow(current) if replacement.nil?
               return revalidated(hook, sub, replacement) || Verdict.allow(current)
             end
+            # verdict 键存在但值未匹配 allow/deny（拼写错误等）：gate 的默认
+            # 放行会违背「非法结果默认 deny」——此处显式 deny
+            if table.has_key?("verdict")
+              return Verdict.deny("invalid_result",
+                "unrecognized verdict from plugin #{sub.plugin_id}")
+            end
           end
           if transformable && value
             # 裸返回值 = 替换后的 payload（DSL modify 语义），宿主重新校验——
@@ -270,44 +303,43 @@ module Sebas
                               sub : Subscription, idempotency_key : String?,
                               budget : Budget?) : CallOutcome
         if budget
-          raise BudgetExceededError.new("hook budget exceeded (calls=#{budget.calls})") if budget.exceeded?
+          # 预算超限返回非 ok outcome（不抛异常）：gate/transform 经 interpret
+          # 判 deny（链中耗尽不得放行），observe 经 outcome.ok 为假记日志跳过
+          if budget.exceeded?
+            return CallOutcome.error("hook_budget_exceeded",
+              "hook budget exceeded (calls=#{budget.calls} total_ms=#{budget.total_ms})", 0)
+          end
           budget.calls += 1
         end
-        depth = @depth.add(1)
-        if budget && depth > budget.max_depth
-          @depth.add(-1)
-          return CallOutcome.error("hook_depth_exceeded", "hook recursion depth #{depth} exceeds budget", 0)
-        end
-        begin
+        with_chain_depth do |depth|
+          if budget && depth > budget.max_depth
+            return CallOutcome.error("hook_depth_exceeded", "hook recursion depth #{depth} exceeds budget", 0)
+          end
           dispatch = @dispatch
           unless dispatch
             return CallOutcome.error("hook_dispatch_missing", "plugin dispatch not assembled", 0)
           end
           started = Time.instant
-          outcome = dispatch.call_plugin_for_hook(sub.plugin_id, hook, context, payload, idempotency_key)
+          # RunnerError（装配失败：entry 不可读/解释器缺失）不穿透订阅循环：
+          # 转非 ok outcome——gate/transform 判 deny（fail-closed），observe 跳过
+          begin
+            outcome = dispatch.call_plugin_for_hook(sub.plugin_id, hook, context, payload, idempotency_key)
+          rescue ex : RunnerError
+            outcome = CallOutcome.error("hook_runner_error", (ex.message || "runner error")[0, 200], 0)
+          end
           if budget
             budget.total_ms += (Time.instant - started).total_milliseconds.to_i64
           end
           outcome
-        ensure
-          @depth.add(-1)
         end
       end
 
       setter dispatch : Dispatch?
 
-      # 预算超限在 gate/transform 路径表现为 deny、observe 路径为跳过：
-      # 统一在订阅循环外层把 BudgetExceededError 折算成剩余订阅者跳过。
       private def each_subscriber(hook : String, budget : Budget?, &)
         return if budget && budget.exceeded?
         subscribers(hook).each do |sub|
-          # ameba:disable Style/RedundantBegin — 块内 inline rescue 必须显式 begin
-          begin
-            yield sub
-          rescue BudgetExceededError
-            Log.warn { "hook #{hook} budget exceeded; remaining subscribers skipped" }
-            return
-          end
+          yield sub
         end
       end
     end

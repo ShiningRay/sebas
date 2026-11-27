@@ -42,7 +42,7 @@ module Sebas
               collab_hops : Int64? = nil) : String
         # agent.turn.before（M3-WP5，#17 §12.11 gate）：可拒绝整个 turn
         verdict = hook_bus.gate("agent.turn.before", hook_context(session_key),
-          JSON.parse(%({"agent_id": #{agent_id_of(session_key).inspect}, "session_key": #{session_key.inspect}})),
+          JSON.parse(%({"agent_id": #{agent_id_of(session_key).to_json}, "session_key": #{session_key.to_json}})),
           idempotency_key: "turn:#{turn.turn_id}")
         if verdict.denied
           Log.warn { "agent turn denied: #{verdict.code}: #{verdict.reason}" }
@@ -109,7 +109,7 @@ module Sebas
       # error（observe 重试序号）。model/provider/凭据/endpoint 不暴露给插件。
       private def llm_request(session_key : String, provider : Providers::Provider,
                               messages : Array(Providers::Message), attempt : Int32) : Providers::Completion
-        request_payload = JSON.parse(%({"provider": #{provider.class.name.split("::").last.inspect}, "model": #{provider.model.inspect}, "message_count": #{messages.size}, "system_append": ""}))
+        request_payload = JSON.parse(%({"provider": #{provider.class.name.split("::").last.to_json}, "model": #{provider.model.to_json}, "message_count": #{messages.size}, "system_append": ""}))
         verdict = hook_bus.gate("llm.request.before", hook_context(session_key), request_payload)
         if verdict.denied
           return Providers::Completion.error("llm hook denied: #{verdict.reason}")
@@ -133,7 +133,7 @@ module Sebas
           hook_bus.observe("llm.request.after", hook_context(session_key), after)
           text = completion.text
           tv = hook_bus.transform("llm.response.transform", hook_context(session_key),
-            JSON.parse(%({"provider": #{provider.class.name.split("::").last.inspect}, "model": #{provider.model.inspect}, "text": #{text.inspect}})))
+            JSON.parse(%({"provider": #{provider.class.name.split("::").last.to_json}, "model": #{provider.model.to_json}, "text": #{text.to_json}})))
           return Providers::Completion.error("llm hook denied: #{tv.reason}") if tv.denied
           replaced = tv.payload.try(&.as_h?).try(&.[]?("text")).try(&.as_s?)
           replaced ? Providers::Completion.new(replaced, nil) : completion
@@ -151,7 +151,7 @@ module Sebas
       end
 
       private def hook_context(session_key : String) : JSON::Any
-        JSON.parse(%({"session_key": #{session_key.inspect}}))
+        JSON.parse(%({"session_key": #{session_key.to_json}}))
       end
 
       private def agent_id_of(session_key : String) : String
