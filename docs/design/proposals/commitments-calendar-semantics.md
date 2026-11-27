@@ -90,8 +90,9 @@ Commitment 的这些维度，不自带——评估以 Commitment 的跟进策略
 | source | text | ✓ | 来源（capture / user / external） |
 | state | enum | ✓ | todo / doing / done / dropped |
 
-验收维度：Task 自带 source 与 owner；完成条件 = state=done 且（关联 Commitment 时）
-其 completion_condition 满足；跟进策略继承关联的 Commitment（独立任务无跟进）。
+验收维度：Task 的完成仅依据其自身 state=done，**不包含**关联 Commitment 的整体
+completion_condition——完成 Task 不会自动完成 Commitment（后者单独判定，
+见不变式 3）；owner/source 自带，跟进策略继承关联的 Commitment（独立任务无跟进）。
 
 ### 2.6 Event（外部或内部时间承诺）
 
@@ -172,10 +173,10 @@ Commitment 的这些维度，不自带——评估以 Commitment 的跟进策略
 | T02 | 创建 → needs_clarification | 跟进依据缺失（关注时间/可观察条件无法给出）且可给出最晚澄清时间。outcome 始终必填：缺失即捕获失败不入库 | 跟进依据完整（应入 T01/T03/T04） |
 | T03 | 创建 → waiting_condition | 等待外部条件且条件可观察 | 条件不可观察（须转 needs_clarification） |
 | T04 | 创建 → ready | 立即可行动且无未来关注时间 | — |
-| T05 | dormant → ready | 关注时间到达或暂候条件满足 | followup_policy 静默窗口内且有未决通知；源自 needs_clarification 且字段未补全（T08 暂缓路径）——补全前不得 ready，clarify_by 到期走取消 |
+| T05 | dormant → ready | 关注时间到达或暂候条件满足 | 源自 needs_clarification 且字段未补全（T08 暂缓路径）——补全前不得 ready，clarify_by 到期走取消。静默窗口属通知发送逻辑（提醒纪律），不阻止状态转移 |
 | T06 | dormant → cancelled | 用户显式取消 | 已 completed——completed 不可撤销，重开需新开 Commitment 并以 ExternalLink 关联旧卡（不引用 T19） |
 | T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready。补全后的关注时间不得晚于硬截止（同 T01 拒绝条件，提示调整） | 补全后仍缺必填项；关注时间晚于硬截止 |
-| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限约束**继续有效**——到期仍未补全走 T09 取消（暂缓不豁免期限） | 已过 clarify_by 且仍缺字段（走 T09）；暂缓后的关注时间晚于硬截止（同 T01 拒绝） |
+| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限内补全 → 按 T07 逻辑重判目标态（dormant/waiting_condition/ready 均可，按补全后的跟进依据判定）；**逾期仍未补全走 T09 取消（暂缓不豁免期限）** | 已过 clarify_by 且仍缺字段（走 T09） |
 | T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动）；补全前不得经任何路径进入 ready。到期判定以 clarify_by 时刻为准：到期后的补全不豁免取消（补全内容保留为记录） | 到期前已补全（应走 T07） |
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
@@ -242,12 +243,13 @@ Commitment 的这些维度，不自带——评估以 Commitment 的跟进策略
 变迁不清除）。反驳反例：同键存在两条 sent_at 非空的 Delivery 即违反——
 后条以 supersedes 关联前条也救不回来（发送已发生）。
 
-配套规则（区分「重复发送」与「未发送替代」）：
+配套规则：
 
-- 未发送的前条（scheduled）被后条替代：前条置 superseded（supersedes 可空），
-  后条正常发送——**不违反**。
-- 前条已发送、后条为更新内容：后条发送前必须以 supersedes 关联前条；若后条
-  在未关联的情况下发送即违反上式。
+- supersedes 关联**不影响** §4.2 的同键计数——计数只看 sent_at；
+- 未发送的前条（scheduled）被后条替代：前条置 superseded（无 sent_at），
+  后条正常发送 → 同键 sent 计数 = 1，**不违反**（属「未发送替代」）；
+- 同键两条都曾发送（sent_at 均非空）→ 违反 **§4.1** 的同键未决计数
+  （已发送的合计为 2，且无 supersedes 可救）——重复发送按 §4.1 判定。
 
 ### 4.3 Delivery 状态不等于完成
 
