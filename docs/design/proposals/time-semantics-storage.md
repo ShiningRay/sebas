@@ -61,7 +61,7 @@
 2. **按窗口生成**：Occurrence 只在唤醒需求窗口 `[window_start, window_end]` 内按需展开（提案 §4.2「不把无限重复展开为无限行」）；窗口外不生成行。
 3. **RDATE/EXDATE 集合运算**（RFC 5545 语义，两步不得合并）：
    - **加入**：实例集合 = DTSTART + RRULE 展开 + RDATE 附加。**实例身份按各值自身的时间表示解析出的 UTC 时刻判定**，身份相同才去重合并——同一当地墙钟但对应不同绝对时刻的实例（如纽约 2026-11-01 01:30 的 `05:30Z` 与 `06:30Z` 两个候选）是**不同实例**，不得按墙钟值合并丢失；RDATE 添加的实例与 RRULE 生成结果地位相同，不因「不属于 RRULE 展开结果」而被遗漏；
-   - **缺口实例的去重身份**：解析为 Gap 的值没有 UTC 时刻，身份改按**原墙钟 + IANA 时区**判定，文法与 §4.5 缺口 slot 一致——`gap:<original_wall>@<original_tz>`（周期序列与 RDATE 产生的缺口实例同用此身份，`schedule_id + gap:<wall>@<tz>` 在 schedule 内唯一，避免同一缺口墙钟被 RRULE 与 RDATE 重复生成或相互顶替）；有效实例仍按 UTC 时刻去重，两规则并存不冲突（一个值要么解析为有效、要么为缺口，不同时具两种身份）；
+   - **缺口实例的去重身份**：解析为 Gap 的值没有 UTC 时刻，身份改按**原墙钟 + IANA 时区**判定，文法与 §4.5 缺口 slot 一致——`gap:<original_wall>@<original_tz>`（周期序列与 RDATE 产生的缺口实例同用此身份，避免同一缺口墙钟被 RRULE 与 RDATE 重复生成或相互顶替）；有效实例仍按 UTC 时刻去重，两规则并存不冲突（一个值要么解析为有效、要么为缺口，不同时具两种身份）；
    - **排除**：再对合并后的集合应用 EXDATE，「命中即跳过」**仅适用于 EXDATE**。
 4. **EXDATE/RDATE 值的时区口径**：先按**属性自身的时间表示**解释每个值，再换算到系列的匹配表示：
    - 值带 `Z` 后缀 → **UTC 时刻**，按对应 UTC 时刻匹配（例：纽约系列中 `EXDATE:20260601T160000Z` 排除的是当地 12:00 那次，不是当地 16:00）；不得直接当作当地墙钟；
@@ -69,7 +69,11 @@
    - `DATE-TIME` 无 `Z` 无 `TZID`（RFC 5545 floating）→ 按系列 `*_tz` 的当地墙钟解释；
    - `DATE` 值（VALUE=DATE）→ 按日历日整日匹配。
    匹配针对系列展开出的各 occurrence 的原墙钟字段。tzdata 变化导致的 UTC 时刻漂移不影响原墙钟匹配。
-4. **Occurrence 稳定身份**：`schedule_id + slot`（一次性：`once:<utc>`；周期：`cron:<原始表达式>:<本轮起始 UTC>`）——身份生成规则归 M5.1-WP3，本文只约定「身份字段必须可由原文与窗口重算」。
+4. **Occurrence 稳定身份**：`schedule_id + slot`（一次性：`once:<utc>`；周期：`cron:<原始表达式>:<本轮起始 UTC>`）——身份生成规则归 M5.1-WP3，本文只约定「身份字段必须可由原文与窗口重算」。**周期/RDATE 缺口实例的 slot 必须携带缺口身份**，否则同一展开轮次的两个不同缺口会共用同一周期 slot 触发 `(schedule_id, slot)` 唯一冲突：
+   - 周期序列缺口：`cron:<原始表达式>:<本轮起始 UTC>:gap:<wall>@<tz>`；
+   - RDATE 缺口：`rdate:<原值>:gap:<wall>@<tz>`；
+   - 一次性缺口：`once:gap:<wall>@<tz>`（§4.5）。
+   有效实例的 slot 文法不变（不含 gap 段），两类身份互不冲突。
 5. **缺口与歧义 occurrence**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。**缺口一次性 occurrence 的 slot 文法**：`once:gap:<original_wall>@<original_tz>`（如 `once:gap:2026-03-08T02:30:00@America/New_York`）——不依赖 UTC 时刻，可由原墙钟、时区与窗口重算，schedule 内唯一（`once:<utc>` 与它不会冲突）。`invalid` 不静默跳过，须用户选择：改时间/换时区 → 按新值重解析转 `pending`（slot 换为 `once:<新utc>`）；**跳过 → 置 `skipped` 并保留原墙钟（`due_at` 保持空，不伪造 UTC 时刻）**。
 
 ## 5. 首版表结构草案（M5.1 六表）
@@ -182,6 +186,11 @@ WHEN NEW.state IN ('scheduled','sent','seen')
     OR OLD.supersedes IS NOT NEW.supersedes          -- 替代关系变化（如清除 supersedes 会使两条同时未决）
     OR OLD.commitment_id IS NOT NEW.commitment_id    -- 归属变化
   )
+  -- NEW 自身已有替代者（无论该替代者处于何种状态）时不得转入未决态：
+  -- 例 A、B(supersedes=A) 均 unknown，A→sent 会被此处拦下（B 虽不在
+  -- scheduled/sent/seen 集合内，下方 EXISTS 查不到它，故单独判）
+  AND NOT EXISTS (SELECT 1 FROM notification_deliveries s
+                  WHERE s.supersedes = NEW.id)
   AND EXISTS (
   SELECT 1 FROM notification_deliveries d
   WHERE d.commitment_id = NEW.commitment_id AND d.id != NEW.id
