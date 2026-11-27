@@ -207,4 +207,45 @@ class QueueRegressionsTest < Minitest::Test
     assert_equal "merge", step
   end
 
+
+  # --- 端到端：BEHIND 必须从 routing 走到队列的 update_branch ---
+
+  # 上一轮把 update_branch 加在 next_step 里，但 routing 仍把 BEHIND 判成
+  # resume_pr，而 MergeQueue.plan 只收 merge_ready——update 步骤成了死代码。
+  # 这条测试从 routing 出发，经 plan 走到队列步骤。
+  def test_behind_pr_reaches_queue_update_step_end_to_end
+    data = snapshot(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      pull_requests: [{
+        "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
+        "merge_state_status" => "BEHIND", "matches" => nil,
+        "head_sha" => "sha50", "base_ref_name" => "main", "checks" => [],
+        "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      }],
+      capacity: 2
+    )
+    view = plan(data, records: [{"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "merge_ready", view.next_action, "routing 必须把 BEHIND 交给队列"
+
+    queue = MQ.plan(view.leases, SebasAgents::Model::Snapshot.from_hash(data),
+      changelog: "## [Unreleased]\n")
+    assert_equal "update_branch", queue.step, "队列必须给出 update_branch 步骤"
+    assert_equal 1, queue.head
+  end
+
+  # 端到端：核验通过后必须能从 verify_pre 走到 merge（verified_head 有写入点）。
+  def test_verified_head_unblocks_merge_in_queue
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "sha50", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    # 无核验记录 → verify_pre
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: nil)
+    assert_equal "verify_pre", step
+    # 核验记录写入后 → merge
+    step2, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "sha50")
+    assert_equal "merge", step2, "verify_pre 写入 verified_head 后必须能进入 merge"
+  end
+
 end

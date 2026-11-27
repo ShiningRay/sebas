@@ -10,8 +10,7 @@ module SebasAgents
     module Routing
       extend self
 
-      # ---- 路由（在途状态优先于 milestone 评估，§3.2；逐租约求值见 §4.1）----
-
+      # 在途状态优先于 milestone 评估（§3.2）；逐租约求值见 §4.1。
       Routing = Data.define(:observed, :milestones, :action, :leases)
 
       # 单张在途租约的动作（Proposal §4.1）。`owned` 表示本 coordinator 持有该租约的
@@ -32,13 +31,11 @@ module SebasAgents
         end
 
         # wait 不占算力（§7.1）：coordinator 可转去处理别的租约或补位。
-        def waiting?
-          action == "wait"
-        end
+        def waiting? = action == "wait"
       end
 
-      # 动作优先级：越小越先执行。合并就绪排最前（有时效：main 每前进一次就
-      # BEHIND，越晚合并成本越高）；needs_human 排最后，它等的是人。
+      # 越小越先执行：合并就绪排最前（main 每前进一次就 BEHIND，越晚越贵）；
+      # needs_human 排最后，它等的是人。
       ACTION_PRIORITY = {
         "merge_ready" => 0,
         "resume_pr" => 1,
@@ -318,11 +315,16 @@ module SebasAgents
           return action("resume_pr", observed, "在途 PR ##{pr.number} 有失败检查：#{names}", issue: number)
         end
         if pr.unresolved_threads.any?
-          count = pr.unresolved_threads.length
-          return action("resume_pr", observed, "在途 PR ##{pr.number} 有 #{count} 条未解决 review thread", issue: number)
+          return action("resume_pr", observed,
+            "在途 PR ##{pr.number} 有 #{pr.unresolved_threads.length} 条未解决 review thread", issue: number)
         end
+        # BEHIND 必须由队列的 update_branch 步骤处理（§3）。若在这里返回
+        # resume_pr，`MergeQueue.plan`（只收 merge_ready）就永远看不到这张 PR，
+        # update 步骤成了死代码——上一轮正是这么断的。
         if pr.merge_state_status == "BEHIND"
-          return action("resume_pr", observed, "在途 PR ##{pr.number} BEHIND，需 update-branch", issue: number)
+          return action("merge_ready", observed,
+            "在途 PR ##{pr.number} BEHIND：进队列由 update_branch 同步 main 后重核验",
+            issue: number)
         end
         if pr.pending_checks.any?
           return action("wait", observed, "在途 PR ##{pr.number} 等待 CI", issue: number)

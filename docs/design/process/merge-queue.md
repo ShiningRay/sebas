@@ -13,7 +13,8 @@
 | 条件 | 动作 | 说明 |
 |---|---|---|
 | PR 关联多卡 / 目标不是 main / 分支与租约不符 | `invalid_plan` | 归属校验排在一切动作之前，fail-closed |
-| 失败检查 / 未解决 thread / BEHIND | `resume_pr` | 与单卡时一致 |
+| 失败检查 / 未解决 thread | `resume_pr` | 与单卡时一致 |
+| BEHIND | `merge_ready` | **不是** `resume_pr`：sync main 是合并队列的 `update_branch` 步骤，归队列就保证「update 后必重核验」；判成 `resume_pr` 会让队列看不到这张 PR（队列只收 `merge_ready`），update 永远不执行 |
 | 检查未完成 | `wait` | 本卡等，**释放算力**：容量有空位就补位认领 |
 | CLEAN 且 thread 清零 | `merge_ready` | 进合并队列；仍需 `--pre` 与独立核验 |
 | 本卡带 `needs:human` | `needs_human` | 只停本卡，不阻塞其他租约（Q9） |
@@ -77,7 +78,7 @@ accepted」就能把新 head 直接合掉——Evidence 是 issue 级的，不�
 | `update_branch` | 只做 `gh pr update-branch`；改 head 后强制要求重跑核验，不接着合并 |
 | `changelog` | 把 PR 正文的条目追加进 `[Unreleased]`（幂等） |
 | `merge` | 先 `verify merge --pre`，再绑定 head squash 合并，合并后复核 |
-| `verify_pre` | 不做写，报出阻塞原因 |
+| `verify_pre` | 跑 `verify merge --pre`；通过则把当前 head 写进运行记录的 `verified_head`，之后才能进 `merge` |
 | `evidence` | 不做写：Evidence 升级由 workflows 完成，重跑 `queue` 看是否已解锁 |
 | `release` | 不做写：`unclaim` 是收口动作，需 PR 已合并 + issue completed |
 

@@ -527,4 +527,19 @@ class FaultMatrixTest < Minitest::Test
     end
   end
 
+
+  # 缺 host 的记录不能被判 :gone：本机 pid 不存在证明不了异机 worker 已停，
+  # 判 gone 会派第二个 worker 写同一分支。
+  def test_missing_host_never_yields_gone
+    data = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      capacity: 2
+    )
+    record = {"issue" => 1, "phase" => "claimed", "branch" => "feat/1",
+              "pid" => 999_999, "last_heartbeat_at" => "2020-01-01T00:00:00Z"}
+    result = SebasAgents::Policy::Selection.plan(data, records: [record])
+    assert_equal "wait", result.leases.first.action
+    assert_includes result.leases.first.reason, "缺 host"
+  end
+
 end

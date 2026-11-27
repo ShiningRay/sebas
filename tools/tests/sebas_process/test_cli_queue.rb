@@ -96,4 +96,21 @@ class QueueCommandTest < Minitest::Test
     assert_includes out, "queue"
     assert_includes out, "合并队列"
   end
+
+  # --pid 必须为正整数：0 会被归一为 nil，写进去等于埋坑。
+  def test_heartbeat_rejects_non_positive_pid
+    Dir.mktmpdir do |dir|
+      rec = File.join(dir, "7.json")
+      File.write(rec, JSON.generate({"schema" => 2, "issue" => 7, "phase" => "claimed"}),
+        encoding: "UTF-8")
+      ["0", "-5"].each do |pid|
+        status, out, = run_cli(["heartbeat", "7", "--record", rec, "--apply", "--pid", pid])
+        assert_equal 2, status, "非正数 pid 应判用法错误"
+        assert_includes out, "正整数"
+      end
+      # 记录未被污染
+      refute JSON.parse(File.read(rec)).key?("pid")
+    end
+  end
+
 end

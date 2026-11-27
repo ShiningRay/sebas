@@ -37,8 +37,11 @@ module SebasAgents
       def state(record, now: Time.now.utc, ttl: TTL)
         return [:unknown, "缺本地记录"] unless record
 
+        # 缺 host 不能当本机：本机 pid 不存在证明不了「异机的原 worker 已停」，
+        # 判 :gone 会派第二个 worker 去写同一分支。只有明确是同机才允许 pid 判据。
         host = record["host"].to_s
-        return [:foreign, "租约属主机 #{host.inspect}"] if !host.empty? && host != Socket.gethostname
+        return [:unknown, "记录缺 host，无法确认是否本机租约"] if host.empty?
+        return [:foreign, "租约属主机 #{host.inspect}"] if host != Socket.gethostname
 
         pid = pid_of(record)
         has_stamp = record.key?("last_heartbeat_at")

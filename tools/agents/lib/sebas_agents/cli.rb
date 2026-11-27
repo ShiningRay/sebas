@@ -263,6 +263,11 @@ end
       # `Worker.state` 把仍在跑的长任务判成 :gone，随后第二个 worker 被派去
       # 做同一张卡——正是 F5 要防的事故。所以 --apply 时强制显式给出。
       worker_pid = options[:pid] ? parse_number(options[:pid], "pid") : nil
+      # 非正数必须拒：0 会被 `Worker.pid_of` 归一为 nil（`kill(0, 0)` 探测的是
+      # 当前进程组），写进去等于给自己埋一个「心跳新鲜但过期后永远 unknown」的坑。
+      if worker_pid && !worker_pid.positive?
+        raise UsageError, "--pid 必须是正整数，收到 #{worker_pid}"
+      end
       if options[:apply] && worker_pid.nil?
         return heartbeat_refused(target, "pid_required",
           "心跳写的是「worker 还活着」的证据，必须是长期 worker 的 pid；" \
@@ -377,6 +382,15 @@ end
       # 必须由下一轮的 verify merge --pre 与独立核验重新给结论。
       if entry.step == "update_branch"
         result = update_branch!(options, entry, snap)
+        Output.emit(payload.merge(result), out: @out)
+        return result["ok"] ? EXIT_OK : EXIT_REFUSED
+      end
+
+      # `verify_pre` 步骤必须真的跑核验：它是「这个 head 已核验」的唯一写入点。
+      # 若这里只报 blocked，队列永远走不到 merge——`next_step` 要求 verified_head
+      # 等于当前 head，而没有任何东西会把它写成非空，形成死锁。
+      if entry.step == "verify_pre"
+        result = run_queue_verify_pre(options, entry, snap)
         Output.emit(payload.merge(result), out: @out)
         return result["ok"] ? EXIT_OK : EXIT_REFUSED
       end
@@ -529,6 +543,36 @@ end
       return nil unless block.is_a?(Hash)
 
       block["merged_into_main"]
+    end
+
+    # 队列的 `verify_pre` 步骤：跑 `verify merge --pre`，通过才把 head 记进运行
+    # 记录。这是 `verified_head` 的唯一非空写入点——`next_step` 要求它与当前
+    # head 一致才允许进入 merge，所以这一步必须真的执行，不能只报 blocked。
+    #
+    # 它只做只读核验 + 写本机记录，不碰远端。
+    def run_queue_verify_pre(options, entry, snap)
+      pr = snap.pull_request(entry.pr.to_i)
+      payload = {"ok" => false, "status" => "refused", "step" => "verify_pre"}
+      if pr.nil?
+        payload["reasons"] = ["PR ##{entry.pr} 不在快照内，先重新取快照"]
+        return payload
+      end
+
+      pre = Verifier.verify_merge(pr.number, entry.issue, snap, pre: true)
+      payload["verify"] = pre.to_h
+      unless pre.pass?
+        payload["reasons"] = ["verify merge --pre 未通过"] +
+                             pre.to_h["items"].to_a.map { |item| item["message"] }
+        return payload
+      end
+
+      remember_verified_head(options, entry.issue, pr.head_sha)
+      payload["ok"] = true
+      payload["status"] = "verified"
+      payload["head_sha"] = pr.head_sha
+      payload["reasons"] = ["PR ##{pr.number} 的 head #{pr.head_sha[0, 8]} 已通过 verify merge --pre；" \
+                            "重跑 queue 可推进到下一步（独立 Verifier 核验仍是单独一关）"]
+      payload
     end
 
     # BEHIND 的队列步骤（#221 §3）：只做 update-branch，不接着合并。
