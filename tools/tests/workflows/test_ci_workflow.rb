@@ -206,11 +206,21 @@ class CiWorkflowTest < Minitest::Test
     assert triggers.key?("workflow_dispatch")
   end
 
-  # 并发组必须仍在 PR ref 上取消前一轮：门闸最长等 15 分钟，
-  # 若同一 PR 的新推送不能取消旧轮，队列会堆积大量空等。
+  # 并发组必须按事件分流（#221）：PR 侧继续取消前一轮，main 侧不得取消。
+  #
+  # PR 侧：门闸最长等 15 分钟，同一 PR 的新推送若不取消旧轮，队列会堆积大量空等。
+  # main 侧：Evidence 升级只认 CI 结论 success；若下一次 push 顶掉正在跑的 main CI，
+  # 那一轮的 Evidence 停在 merged_into_main=false，后继卡永久 blocked。
+  # 这两个方向互为反例，任何一边退化都不会让本测试以外的东西报错——所以两条都钉住。
   def test_concurrency_cancels_superseded_runs
-    assert_equal true, workflow.dig("concurrency", "cancel-in-progress")
-    assert_includes workflow.dig("concurrency", "group"), "github.ref"
+    concurrency = workflow["concurrency"]
+    assert_match(/github\.event_name/, concurrency["group"].to_s,
+      "并发组必须按事件分流，否则 push:main 与 pull_request 共用一组")
+    assert_includes concurrency["group"], "github.ref"
+
+    cancel = concurrency["cancel-in-progress"]
+    assert_match(/github\.event_name\s*==\s*'pull_request'/, cancel.to_s,
+      "取消必须限定在 pull_request 事件上，main 侧要跑完以升级 Evidence")
   end
 
   # 「等出现」的宽限必须小于主等待上限，否则它不会先触发，

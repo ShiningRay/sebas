@@ -74,3 +74,32 @@ GitHub 文档写明「依赖失败 job 的 job 会被 skipped 且可能不阻塞
 矩阵在审查未完时起跑。已见的审查一律按主上限重试。
 
 `docs` 与 `verify` 不进等待链：它们数秒完成，文档与锚点的反馈早给更有用。
+
+## 并发分组：PR 可取消，main 必须跑完
+
+`ci.yml` 的 `concurrency` 按事件分流（#221 合并队列的前置）：
+
+```yaml
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+两侧的理由相反，不能统一：
+
+- **PR 侧要取消。** 门闸最长等 15 分钟。同一 PR 新推送不取消旧轮，队列会堆积空等。
+- **main 侧不能取消。** [evidence-register.yml](../../../.github/workflows/evidence-register.yml)
+  只在 CI 结论为 `success` 时把 Evidence 升级为 `merged_into_main: true`，
+  `resolve_checks_url` 还要求触发的提交就是 merge commit。下一次 push 顶掉正在跑的
+  main CI，那一轮 Evidence 就停在 `false`，后继卡永久 `blocked`。
+
+2026-11-27 实测 main 侧 100 次 run 有 5 次 cancelled，其中 2 次是已跑 30 / 53 分钟后
+被下一次 push 顶掉。按 PR 量级换算，加速合并会放大这个比例。
+
+**边界**：GitHub 每个并发组只保留一个 running + 一个 pending，第三个进入时 pending
+被替换。所以本改动只保证「合并队列串行时的每张卡都能拿到成功 CI」，不保证绕过队列
+的连续人工合并不丢 Evidence——那要靠合并队列的串行单位（等 Evidence 升级完再合下一张，
+见 [parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）。
+
+`workflow_dispatch` 与 `push:main` 同组：手动全量重跑同属 main 证据链，应排队而非顶掉。
+
