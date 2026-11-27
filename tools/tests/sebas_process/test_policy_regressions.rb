@@ -35,14 +35,29 @@ class PolicyRegressionTest < Minitest::Test
     refute_includes action.reason, "squash"
   end
 
-  # 未建 PR 的暂停也必须报 needs_human，不能去开别的卡
-  def test_paused_card_without_claim_blocks_new_work
+  # Q9（Proposal §10.2）：needs:human 只作用于本卡。未建 PR 的暂停卡被排除出
+  # 候选，coordinator 转去认领其他就绪卡——这正是并行要的语义（暂停不全局停手）。
+  def test_paused_card_without_claim_does_not_block_other_cards
     data = snapshot(issues: [
       issue(1, body: automation, labels: ["needs:human"]),
       issue(2, body: automation(order: [4, 2]))
     ])
     action = select(data)
-    assert_equal "needs_human", action.action
+    assert_equal "claim_issue", action.action
+    assert_equal 2, action.issue
+    row = action.excluded.find { |item| item["issue"] == 1 }
+    refute_nil row
+    assert_includes row["reason"], "needs:human"
+  end
+
+  # 未认领的暂停卡带 agent:resume → 恢复认领（不被选卡跳过）。
+  def test_paused_card_with_resume_label_is_resumed
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: %w[needs:human agent:resume]),
+      issue(2, body: automation(order: [4, 2]))
+    ])
+    action = select(data)
+    assert_equal "resume_issue", action.action
     assert_equal 1, action.issue
   end
 

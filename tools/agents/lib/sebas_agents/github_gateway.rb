@@ -108,6 +108,19 @@ end
       allow_write ? @runner.with_write(:set_status) { @runner.run!(*call) } : @runner.run!(*call)
     end
 
+    # 合并（§7.2）：squash + 绑定已核验 head。head 在此期间变了，GitHub 会
+    # 拒绝合并——这正是我们要的：不拿旧结论套新提交。
+    def merge_pr(number, head_sha, allow_write: false)
+      call = ["gh", "pr", "merge", number.to_s, "--repo", @repo, "--squash",
+        "--match-head-commit", head_sha.to_s]
+      allow_write ? @runner.with_write(:merge_pr) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def update_branch(number, allow_write: false)
+      call = ["gh", "pr", "update-branch", number.to_s, "--repo", @repo]
+      allow_write ? @runner.with_write(:update_branch) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
     def status_of(number)
       raw = @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")
       raw.dig("status", "name")

@@ -14,6 +14,9 @@
 | [oneline.md](oneline.md) | 一句话开工速查表：每个角色一行，直接粘进 Harness |
 | [quickstart.md](quickstart.md) | 克隆仓库后如何用 `tools/sebas-process` 在 5 分钟内启动各角色 Agent |
 | [implementer-loop.md](implementer-loop.md) | 单 Implementer 的选卡、续跑与收口契约（可执行实现见 `tools/sebas-process`） |
+| [merge-queue.md](merge-queue.md) | 逐租约动作、scope 冲突预算、合并队列与 CHANGELOG 队列追加（#221） |
+| [evidence-registration.md](evidence-registration.md) | Evidence 自动登记：两阶段、幂等、fail-closed 与防伪造（原 implementer-loop §2.5） |
+| [pr-gate.md](pr-gate.md) | PR 门闸：先 review 再跑 CI；并发语义与 Evidence 漏跑后的恢复路径 |
 | [llm-semantic-verification-evaluation.md](llm-semantic-verification-evaluation.md) | #123 评估：LLM 语义核验为什么不做（含可复查的重新评估条件） |
 
 ## Agent 角色

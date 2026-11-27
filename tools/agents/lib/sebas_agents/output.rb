@@ -32,6 +32,8 @@ module SebasAgents
         opts.on("--fixes PATH") { |value| options[:fixes] = value }
         opts.on("--report PATH") { |value| options[:report] = value }
         opts.on("--verdict PATH") { |value| options[:verdict] = value }
+        # 合并队列（#221）：CHANGELOG 正文来源，缺省读仓库根的 CHANGELOG.md。
+        opts.on("--changelog PATH") { |value| options[:changelog] = value }
         opts.on("--apply") { options[:apply] = true }
         opts.on("--dry-run") { options[:apply] = false }
         # 合并前自检：跳过「已合并 / 已关闭」这两条只有合并后才可能成立的条件。

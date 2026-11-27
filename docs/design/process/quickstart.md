@@ -189,24 +189,49 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
   缺 v2 字段须人工确认；迁移窗口内有效容量钳回 1。
 - **容量（Q3）**：`.github/agents.yml` 的 `capacity` 键设定在途租约上限，
   缺键即 1；`plan` 输出 `capacity` 与 `capacity_used`（在途卡数）。
-- **scope 预算（Q4=A）**：Automation 可选 `scope: [路径前缀]`（`src/store/`
-  形态，尾 / 归一，禁 `..` 与绝对路径）；前缀互相包含即冲突、缺 scope
-  独占容量的判定属 WP3（#221）交付，当前未生效——容量提升后由
-  Maintainer 自行保证各卡目录不重叠。
+- **scope 预算（Q4=A，已生效）**：Automation 可选 `scope: [路径前缀]`
+  （`src/store/` 形态，尾 / 归一，禁 `..` 与绝对路径）。前缀互相包含即冲突；
+  缺 scope 独占容量：在途任一租约缺 scope 就不认领新卡，候选缺 scope 也只能
+  在无在途租约时认领。共享文件（`CHANGELOG.md`、`src/store/schema.cr`、
+  `.github/workflows/`）要改就写进自己的 scope，于是改同一文件的卡自然不并行。
+  `plan` 与 `claim` 用同一判定，人工 `claim` 不是绕过预算的后门。
 - **故障排查**：认领 aborted → 看 run 记录 `label_written` 与卡上租约评论；
   有标签无凭据（F7）、双凭据（F9）均 invalid_plan，交 Maintainer。
 
 `plan`（只读，dry-run 默认）：与 `next` 同快照同策略，输出 JSON——
-`candidates`（`issue/title/order/scope_conflict/selected`，`scope_conflict`
-本期恒为 `null` 未判定）、`excluded`（`issue/reason/detail`，`reason` 为枚举码：
+`candidates`（`issue/title/order/scope/scope_conflict/selected`；就绪候选的
+`scope_conflict` 恒为 `null`，冲突的已进 `excluded`）、`leases`（逐租约动作：
+`issue/action/owned/pr/reason`，含 `wait` 与 `needs_human`）、`excluded`
+（`issue/reason/detail`，`reason` 为枚举码：
 `depends_on_unmet` / `has_pr` / `needs_human` / `already_in_progress` /
 `missing_automation` / `non_work_kind` / `invalid_plan` / `proposal` /
-`metadata_invalid`，`detail` 为与 `next` 一致的原因文本）、`capacity`（快照
+`scope_conflict` / `metadata_invalid`，`detail` 为与 `next` 一致的原因文本）、
+`capacity`（快照
 容量，缺省 1；迁移窗口钳回 1）与 `capacity_used`（在途卡数）、
 `verifier_queue_depth`（open PR 数，验证背压可观察）、`next_action`/`next_issue`
 （与 `next` 恒等的首选）。退出码 0 正常、1 `invalid_plan`、2 参数错误。
 不改任何写行为；本 coordinator 持有的在途卡走续做路由，异机在途卡在
 容量未满时不阻塞新候选。
+
+#### 合并队列（M4x-Parallel-WP3，#221）
+
+```sh
+ruby tools/sebas-process queue                # 只读：entries / head / step / blocked_by
+ruby tools/sebas-process queue --apply        # 推进队首一步（只做「合并」这一步）
+```
+
+只读输出 `queue.head`（队首 issue）、`queue.step`
+（`verify_pre` / `changelog` / `merge` / `evidence` / `release`）与 `blocked_by`。
+`--apply` 会先跑 `verify merge --pre`，再重读一次 PR 的 base 与 head，
+然后用 `gh pr merge --squash --match-head-commit <已核验 head>` 合并，最后复核 MERGED。
+只做一张、一步：`changelog` 步追加条目，`merge` 步先 `--pre` 再绑 head 合并；
+`verify_pre`/`evidence`/`release` 三步不做写（只报原因）。不循环——下一张由 coordinator
+重跑 `queue` 决定。只要本机有「PR 已合并但 Evidence 未升级」的记录，队列会以
+`step=evidence` 阻塞，不给可合并项。
+
+写守卫：`:merge_pr` 与 `:update_branch` 是两条独立写意图，合并命令必须同时带
+`--repo`、`--squash`、`--match-head-commit`；多余参数（如 `--admin`）一律不匹配。
+契约与链上细节见 [merge-queue.md](merge-queue.md)。
 
 ### Verifier
 

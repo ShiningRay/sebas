@@ -46,13 +46,29 @@ class SelectionSchedulingTest < Minitest::Test
     assert_includes reasons, "kind=design"
   end
 
-  # §3.2：暂停卡未放行时整轮停手，不得换卡并发
-  def test_needs_human_blocks_new_work
+  # Q9 默认值（Proposal §10.2）：needs:human 只作用于本卡，不再阻塞其他租约——
+  # 容量 1 时也如此。暂停卡被排除出候选，coordinator 转去认领其他就绪卡。
+  def test_needs_human_scopes_to_single_card
     data = snapshot(issues: [
       issue(1, body: automation, labels: ["needs:human"]),
       issue(2, body: automation(order: [4]))
     ])
     action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 2, action.issue
+    row = action.excluded.find { |item| item["issue"] == 1 }
+    refute_nil row
+    assert_includes row["reason"], "needs:human"
+  end
+
+  # 本机持有的在途卡处于 needs:human 时，动作仍是 needs_human（等的是人），
+  # 而不是被当成 wait 或转去开新卡。
+  def test_in_flight_needs_human_reports_needs_human
+    data = snapshot(issues: [
+      issue(1, body: automation, labels: ["needs:human"], status: "In progress"),
+      issue(2, body: automation(order: [4]))
+    ])
+    action = select(data, record: {"issue" => 1, "phase" => "claimed"})
     assert_equal "needs_human", action.action
     assert_equal 1, action.issue
   end
@@ -93,9 +109,48 @@ class SelectionSchedulingTest < Minitest::Test
   # 异机租约（续篇 F6）：容量未满且在途卡无本地记录时不接管、不续跑
   # 他人 PR——落到 milestone 评估给出新卡。
   def test_foreign_claim_falls_through_to_claim_when_capacity_available
+    # 两张卡都声明 scope 且不重叠：Q4=A 强制下缺 scope 的卡独占容量，
+    # 不声明就测不到「异机租约不阻塞新候选」这条。
+    data = snapshot(issues: [
+      issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+      issue(2, body: automation(order: [4, 2], scope: ["src/bus/"]))
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 2, action.issue
+  end
+
+  # Q4=A 强制：在途租约缺 scope 时无法判定重叠 → 不认领新卡，即使容量有空位。
+  def test_missing_scope_on_active_lease_blocks_new_claims
     data = snapshot(issues: [
       issue(1, body: automation, status: "In progress"),
-      issue(2, body: automation(order: [4, 2]))
+      issue(2, body: automation(order: [4, 2], scope: ["src/bus/"]))
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "blocked", action.action
+    row = action.excluded.find { |item| item["issue"] == 2 }
+    refute_nil row
+    assert_includes row["reason"], "未声明 scope"
+  end
+
+  # 两个 scope 前缀互相包含 → 冲突，候选不可并行认领。
+  def test_overlapping_scope_blocks_candidate
+    data = snapshot(issues: [
+      issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+      issue(2, body: automation(order: [4, 2], scope: ["src/"]))
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "blocked", action.action
+    row = action.excluded.find { |item| item["issue"] == 2 }
+    refute_nil row
+    assert_includes row["reason"], "scope 与在途 #1 重叠"
+  end
+
+  # 兄弟目录不冲突 → 可以并行补位。
+  def test_sibling_scope_allows_candidate
+    data = snapshot(issues: [
+      issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+      issue(2, body: automation(order: [4, 2], scope: ["src/keys/"]))
     ], capacity: 2)
     action = select(data)
     assert_equal "claim_issue", action.action

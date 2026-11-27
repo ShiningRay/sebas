@@ -52,6 +52,7 @@ module SebasAgents
       when "verify" then run_verify(argv.drop(1))
       when "triage" then run_triage(argv.drop(1))
       when "digest" then run_digest(argv.drop(1))
+      when "queue" then run_queue(argv.drop(1))
       when "mark-review" then run_mark_review(argv.drop(1))
       when "docs-check" then run_docs_check(argv.drop(1))
       when "release" then run_release(argv.drop(1))
@@ -136,39 +137,45 @@ module SebasAgents
       match[1]
     end
 
-    def record_for(options, issue: nil)
-      explicit = RunRecord.new(path: options[:record]) if options[:record]
-      return explicit.load if explicit
-
-      # CR-12：试点双卡下 runs/ 可有多份活动记录（每卡一份 per-issue 文件）。
-      # 指定 issue 时精确取该卡记录；未指定（next/plan 路由）返回首份活动
-      # 记录供 resume 路由——每张卡的所有权由其 lease 凭据管理，路由顺序
-      # 不影响正确性。迁移窗口（legacy run.json 仍在）内保持容量 1：出现
-      # 多份活动记录即 invalid_plan（Q10=B 迁移期语义不变）。
-      active = RunRecord.active_records
-      if issue
-        found = active.find { |data| data["issue"].to_i == issue }
-        return found if found
-
-        # 指定 issue 但 runs/ 无记录：回落 v1 路径双读（迁移窗口）
-        return RunRecord.new(path: RunRecord::DEFAULT_PATH).load if File.exist?(RunRecord::DEFAULT_PATH) && !options[:record]
-
-        return nil
+    # 全部活动记录（§4.1 逐租约路由的输入）。
+    # 迁移窗口（legacy run.json 仍在）内保持容量 1：出现多份活动记录即
+    # invalid_plan（Q10=B 迁移期语义不变）。
+    def active_records_for(options)
+      # 显式 --record 不是「没有记录」：路由据此判 owned，返回空数组会把
+      # 本机持有的租约当成异机租约（容量满时误报 wait）。
+      if options[:record]
+        data = RunRecord.new(path: options[:record]).load
+        return data && !data.empty? ? [data] : []
       end
 
+      active = RunRecord.active_records
       migration_window = File.exist?(RunRecord::DEFAULT_PATH)
       if active.length > 1 && migration_window
         raise InvalidPlan, "迁移窗口内存在 #{active.length} 份活动运行记录（迁移期容量 1），需人工确认迁移"
       end
+      legacy = RunRecord.new(path: RunRecord::DEFAULT_PATH).load
+      active + (legacy && !legacy.empty? ? [legacy] : [])
+    end
 
-      return active.first if active.length >= 1
+    # 单条记录入口（兼容 --record 与「只看一张」的调用方）。
+    # 未指定 issue 时返回本机持有的第一条活动记录：多租约下真正的逐卡求值
+    # 由 routing 的 records 参数承担，这里只保证旧的单记录语义不退化。
+    def record_for(options, issue: nil)
+      explicit = RunRecord.new(path: options[:record]) if options[:record]
+      return explicit.load if explicit
 
-      RunRecord.new(path: RunRecord::DEFAULT_PATH).load
+      active = active_records_for(options)
+      if issue
+        return active.find { |data| data["issue"].to_i == issue }
+      end
+
+      active.first
     end
 
     def run_next(argv)
       options, = Argv.parse(argv)
-      action = Policy::Selection.select_action(snapshot(options), record: record_for(options))
+      records = active_records_for(options)
+      action = Policy::Selection.select_action(snapshot(options), record: records.first, records: records)
       Output.emit({"ok" => action.action != "invalid_plan"}.merge(action.to_h), out: @out)
       action.action == "invalid_plan" ? EXIT_REFUSED : EXIT_OK
     end
@@ -181,13 +188,17 @@ module SebasAgents
 def run_plan(argv)
   options, = Argv.parse(argv)
   snap = snapshot(options)
-  view = Policy::Selection.plan(snap, record: record_for(options))
+  records = active_records_for(options)
+  view = Policy::Selection.plan(snap, record: records.first, records: records)
   candidates = view.ready.map.with_index do |issue, index|
     {
       "issue" => issue.number,
       "title" => issue.title,
       "order" => issue.automation["order"],
-      "scope_conflict" => nil, # 本期不判定；目录启发预填留待后续阶段
+      # scope_conflict：该候选与在途租约的 scope 冲突说明。就绪候选恒为 nil
+      # （冲突的已进 excluded），保留字段是为了契约稳定与人工核对。
+      "scope_conflict" => nil,
+      "scope" => issue.automation["scope"],
       "selected" => index.zero?
     }
   end
@@ -202,12 +213,226 @@ def run_plan(argv)
     "excluded" => view.excluded.map do |entry|
       {"issue" => entry["issue"], "reason" => entry["code"], "detail" => entry["reason"]}
     end,
+    # 逐租约动作表（§4.1）：每张在途卡的下一步与所属关系，coordinator 据此派活。
+    "leases" => view.leases.map(&:to_h),
     "observed_main" => snap.main_sha
   }
   payload["invalid_reason"] = view.invalid_reason if view.invalid_reason
   Output.emit(payload, out: @out)
   view.invalid_reason ? EXIT_REFUSED : EXIT_OK
 end
+
+    # 合并队列（M4x-Parallel-WP3，#221；Proposal §7.2）。
+    # 默认只读规划：算出队首 PR 与它在链上的下一步。
+    # `--apply` 才推进队首一步（且只推进「合并」这一步）：
+    #   核验归属与目标分支 → verify merge --pre → 绑定 head squash 合并 → 远端复核。
+    # 不循环、不追加 CHANGELOG、不等 Evidence：那三件事各需要一次独立决策，
+    # 由 coordinator 重跑队列决定（§7.2 的串行单位）。
+    # `--changelog <path>` 提供 CHANGELOG.md 正文，缺省读仓库根。
+    def run_queue(argv)
+      return help if argv.include?("--help") || argv.include?("-h")
+
+      options, = Argv.parse(argv)
+      snap = snapshot(options)
+      records = active_records_for(options)
+      view = Policy::Selection.plan(snap, record: records.first, records: records)
+      changelog = read_changelog(options)
+      queue = MergeQueue.plan(view.leases, snap, changelog: changelog,
+        pending_evidence: pending_evidence_issues(snap, records))
+
+      payload = {
+        "ok" => true,
+        "dry_run" => !options[:apply],
+        "capacity" => snap.capacity,
+        "verifier_queue_depth" => snap.pull_requests.count(&:open?),
+        "observed_main" => snap.main_sha,
+        "changelog_loaded" => !changelog.nil?,
+        "queue" => queue.to_h
+      }
+
+      unless options[:apply]
+        Output.emit(payload, out: @out)
+        return EXIT_OK
+      end
+
+      if queue.empty?
+        payload["status"] = "empty"
+        Output.emit(payload, out: @out)
+        return EXIT_OK
+      end
+
+      entry = queue.entries.first
+      pr = snap.pull_request(entry.pr)
+
+      # CHANGELOG 追加是队列自己的一步（§6.3 裁决）：否则带 marker 的 PR 会
+      # 永远停在 changelog，重跑队列仍是同一步。追加后再走一次标准合并路径。
+      if entry.step == "changelog"
+        result = append_changelog!(options, entry, snap)
+        Output.emit(payload.merge(result), out: @out)
+        return result["ok"] ? EXIT_OK : EXIT_REFUSED
+      end
+
+      if entry.step != "merge"
+        payload["status"] = "blocked"
+        payload["step"] = entry.step
+        payload["reasons"] = [queue.blocked_by]
+        payload["ok"] = false
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      # 核验前置：不带 --pre 的 verify merge 是合并后口径，合并前必然 blocker。
+      pre = Verifier.verify_merge(pr.number, entry.issue, snap, pre: true)
+      payload["verify"] = pre.to_h
+      unless pre.pass?
+        payload["status"] = "refused"
+        payload["ok"] = false
+        payload["reasons"] = ["verify merge --pre 未通过"] +
+                             pre.to_h["items"].to_a.map { |item| item["message"] }
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      # 快照是规划时取的，写之前必须重读：head 与 base 都可能已经变了。
+      gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
+      current = gateway.snapshot.pull_request(pr.number)
+      unless current&.open?
+        payload["status"] = "refused"
+        payload["ok"] = false
+        payload["reasons"] = ["合并前复核：PR ##{pr.number} 已不是 open"]
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+      unless current.base.to_s.empty? || current.base == "main"
+        payload["status"] = "refused"
+        payload["ok"] = false
+        payload["reasons"] = ["合并前复核：PR ##{pr.number} 的目标分支是 #{current.base.inspect}"]
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+      if current.head_sha != pr.head_sha
+        payload["status"] = "refused"
+        payload["ok"] = false
+        payload["reasons"] = ["合并前复核：head 已从 #{pr.head_sha[0, 8]} 变为 #{current.head_sha[0, 8]}，须重新核验"]
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      gateway.merge_pr(pr.number, pr.head_sha, allow_write: true)
+      merged = gateway.snapshot.pull_request(pr.number)
+      unless merged&.merged?
+        payload["status"] = "aborted"
+        payload["ok"] = false
+        payload["reasons"] = ["合并后远端复核未确认 MERGED，需人工核对 PR ##{pr.number}"]
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+      # 第三次核对目标分支：gh pr merge 绑不住 base，写前复核与合并之间仍可能被改。
+      # 这里只能发现错误，不能撤销已完成的合并——所以要求人工核对，不报 merged。
+      unless merged.base.to_s.empty? || merged.base == "main"
+        payload["status"] = "aborted"
+        payload["ok"] = false
+        payload["reasons"] = ["合并后复核：PR ##{pr.number} 的目标分支是 #{merged.base.inspect}，" \
+                              "已合并但可能未进入 main，须人工核对"]
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      payload["status"] = "merged"
+      payload["pr"] = pr.number
+      payload["issue"] = entry.issue
+      payload["head_sha"] = pr.head_sha
+      Output.emit(payload, out: @out)
+      EXIT_OK
+    end
+
+    # 「PR 已合并但 Evidence 还没升级」的 issue 列表（§7.2 的串行单位）。
+    # 判据只看本机记录里的卡：记录里仍有 PR、快照显示该 PR 已合并，且快照里
+    # 该 issue 的 Evidence 还没有 merged_into_main=true。缺 Evidence 事实时
+    # 不猜——不列入，交由 verify merge --pre 在合并前拦。
+    def pending_evidence_issues(snap, records)
+      Array(records).filter_map do |record|
+        next if record["phase"].to_s == "released"
+        pr_number = record["pr"].to_i
+        next unless pr_number.positive?
+
+        pr = snap.pull_request(pr_number)
+        next unless pr&.merged?
+
+        issue = snap.issue(record["issue"].to_i)
+        next unless issue
+
+        merged_into_main = snap_evidence_merged?(snap, issue.number)
+        # 未知（nil）同样按未完成处理：串行单位宁可多等一轮，也不抢先合下一张。
+        issue.number unless merged_into_main == true
+      end
+    end
+
+    # 从快照读 issue 自己正文里的 Evidence 块（与 Policy::Evidence 同源；
+    # gates/externals 只存 gate:/external: 登记，不能混用）。
+    # 未登记或解析失败返回 nil（未知），调用方按「未升级」处理。
+    def snap_evidence_merged?(snap, issue_number)
+      issue = snap.issue(issue_number)
+      return nil unless issue
+
+      block = begin
+        JsonBlock.one(issue.body, "evidence", subject: "issue ##{issue_number}")
+      rescue InvalidPlan
+        nil
+      end
+      return nil unless block.is_a?(Hash)
+
+      block["merged_into_main"]
+    end
+
+    # 把 PR 正文携带的条目追加进 CHANGELOG 并推到租约分支。
+    # 幂等：已有本 PR 引用时跳过（重跑队列不会重复追加）。
+    def append_changelog!(options, entry, snap)
+      entries = entry.changelog_pending
+      payload = {"ok" => false, "status" => "aborted", "step" => "changelog"}
+      if entries.nil? || entries.empty?
+        payload["reasons"] = ["PR ##{entry.pr} 声明了待追加条目但解析为空，需人工补正文"]
+        return payload
+      end
+
+      path = File.join(root(options), "CHANGELOG.md")
+      unless File.exist?(path)
+        payload["reasons"] = ["找不到 #{path}"]
+        return payload
+      end
+
+      content = File.read(path, encoding: "UTF-8")
+      if MergeQueue.changelog_recorded?(content, entry.pr)
+        payload["ok"] = true
+        payload["status"] = "skipped"
+        payload["reasons"] = ["CHANGELOG 已有本 PR 条目，跳过追加（幂等）"]
+        return payload
+      end
+
+      updated = begin
+        MergeQueue.append_entries(content, entries, entry.pr)
+      rescue InvalidPlan => e
+        payload["reasons"] = [e.message]
+        return payload
+      end
+
+      File.write(path, updated, encoding: "UTF-8")
+      record = RunRecord.new(issue: entry.issue)
+      current = record.load || {}
+      record.save(current.merge("phase" => "merging", "changelog_appended" => true)) if current["issue"]
+
+      payload["ok"] = true
+      payload["status"] = "changelog_appended"
+      payload["appended"] = entries
+      payload
+    end
+
+    def read_changelog(options)
+      path = options[:changelog] || File.join(root(options), "CHANGELOG.md")
+      File.read(path, encoding: "UTF-8")
+    rescue Errno::ENOENT, Errno::EISDIR
+      nil
+    end
 
     def run_claim(argv)
       return help if argv.include?("--help") || argv.include?("-h")
@@ -479,6 +704,12 @@ end
       end
       return Model::Evaluation.new(status: "invalid", reasons: ["##{issue.number} 缺 Automation 块"]) unless automation
 
+      # scope 冲突预算（§6.1 / Q4=A）：容量还有空位也必须过这一关。
+      # claim 是绕过 plan 的人工入口，口径必须与 plan 一致，否则「plan 说不能并行、
+      # claim 硬认领」就成了绕过预算的后门。
+      scope_blocker = scope_conflict_blocker(issue.with(automation: automation), snap)
+      return scope_blocker if scope_blocker
+
       if %w[tracking manual].include?(automation["kind"])
         return Model::Evaluation.new(status: "invalid",
           reasons: ["##{issue.number} 的 kind=#{automation["kind"]}，不可认领"])
@@ -493,6 +724,20 @@ end
       end
 
       nil
+    end
+
+    # scope 冲突预算的 claim 侧判定。容量为 1 且无在途租约时恒放行
+    # （与单卡行为一致）；容量 1 + 单张 docs 试点由 pilot_docs_pair? 另行豁免。
+    def scope_conflict_blocker(issue, snap)
+      others = snap.in_progress_issues.reject { |item| item.number == issue.number }
+      return nil if others.empty?
+
+      scope = issue.automation.is_a?(Hash) ? issue.automation["scope"] : nil
+      reason, other = Policy::Scope.blocking_lease(scope, Policy::Scope.leases_of(others))
+      return nil unless reason
+
+      Model::Evaluation.new(status: "invalid",
+        reasons: ["##{issue.number} 不能与在途 ##{other} 并行：#{reason}"])
     end
 
     # 试点并行判定（M4x-WP2，#220 §8 阶段 2）：两张卡都是 docs-only 工作包
@@ -1026,7 +1271,8 @@ end
 
         Implementer
           next            读取 GitHub，输出单一动作（默认只读）
-          plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 验证背压（#218）
+          plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 逐租约动作（#218/#221）
+          queue           只读合并队列：队首 PR 与它在合并链上的下一步（#221）
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed

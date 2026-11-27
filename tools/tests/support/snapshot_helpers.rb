@@ -7,7 +7,7 @@ require "json"
 
 module SnapshotHelpers
   # 工作包卡面：automation 块前放可选的前置依赖散文，供 prose↔automation 对账用例使用。
-  def automation(kind: "work_package", order: [1], depends_on: [], external: [], prose: nil)
+  def automation(kind: "work_package", order: [1], depends_on: [], external: [], prose: nil, scope: nil)
     prose_section = prose ? "\n## 前置依赖\n\n#{prose}\n" : ""
     body = <<~MD
       ## 目标
@@ -16,15 +16,15 @@ module SnapshotHelpers
       ```json automation
       #{" "}
       MD
-    body.sub("#{" "}\n", "") + JSON.pretty_generate(
-      {
-        "schema" => 1,
-        "kind" => kind,
-        "order" => order,
-        "depends_on" => depends_on,
-        "external" => external
-      }
-    ) + "\n```\n"
+    block = {
+      "schema" => 1,
+      "kind" => kind,
+      "order" => order,
+      "depends_on" => depends_on,
+      "external" => external
+    }
+    block["scope"] = scope unless scope.nil?
+    body.sub("#{" "}\n", "") + JSON.pretty_generate(block) + "\n```\n"
   end
 
   def evidence(subject:, status: "accepted", ready: nil, merged: true, untested: [],
@@ -103,11 +103,14 @@ module SnapshotHelpers
   end
 
 
-  def select(data, record: nil)
-    SebasAgents::Policy::Selection.select_action(SebasAgents::Model::Snapshot.from_hash(data), record: record)
+  # records：per-issue 多租约（§4.1 逐租约路由）。record 保留为单条兼容入口。
+  def select(data, record: nil, records: [])
+    SebasAgents::Policy::Selection.select_action(
+      SebasAgents::Model::Snapshot.from_hash(data), record: record, records: records)
   end
 
-  def plan(data, record: nil)
-    SebasAgents::Policy::Selection.plan(SebasAgents::Model::Snapshot.from_hash(data), record: record)
+  def plan(data, record: nil, records: [])
+    SebasAgents::Policy::Selection.plan(
+      SebasAgents::Model::Snapshot.from_hash(data), record: record, records: records)
   end
 end
