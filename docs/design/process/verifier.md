@@ -164,7 +164,7 @@ result = SebasAgents::VerifyChecks.rerun(item, fix, root: Dir.pwd) # {passed:, r
 | `src/**` 实质改动而 `spec/**` 无变更 | blocker |
 | `src/**` 实质改动而 `docs/**` 无变更且正文未声明「无行为变更」 | must_fix |
 | `.github/workflows/**` 改动而正文缺「安全边界」说明 | must_fix |
-| `tools/**` 实质改动而 `tools/tests/**/test_*.rb` 无变更 | blocker |
+| `tools/**` 实质改动而 `tools/tests/<域>/test_*.rb` 无变更 | blocker |
 | workflow `uses:` 未钉 40 位 SHA / force-push / 分支保护写入 | blocker |
 | 新增行疑似凭据进输出语句（正则近似，误报走可留复核） | must_fix |
 | `policy/evidence.rb` 触碰 `SOURCES`（授权段位变更） | blocker |

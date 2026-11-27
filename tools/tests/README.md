@@ -5,7 +5,7 @@ Agent 流程工具（`tools/`）的离线测试。全部 minitest + 标准库，
 ## 跑测试
 
 ```sh
-ruby tools/tests/run.rb                     # 全量（47 个文件）
+ruby tools/tests/run.rb                     # 全量（51 个文件）
 ruby tools/tests/run.rb docs                # 只跑一个域
 ruby tools/tests/run.rb --list              # 列出会跑的文件
 make agents-check                           # 等价于全量
@@ -33,13 +33,14 @@ make agents-check                           # 等价于全量
 
 | 文件 | 提供什么 |
 |---|---|
-| `support/boot.rb` | 统一 require 标准库 + 装载全部夹具；每个测试文件只 require 它 |
+| `support/boot.rb` | 统一 require 标准库 + 装载列出的共用夹具；每个测试文件 require 它即可。`setup_action_helpers.rb` 与 `await_review_helpers.rb` 不在其中，用到它们的测试需额外 require |
 | `support/repo_paths.rb` | `RepoPaths::ROOT` / `RepoPaths.join(...)`，避免各文件重复算 `__dir__` 深度 |
-| `support/snapshot_helpers.rb` | `automation` / `evidence` / `issue` / `milestone` / `snapshot` / `select` |
+| `support/snapshot_helpers.rb` | `automation` / `evidence` / `issue` / `milestone` / `snapshot` / `select` / `plan` |
 | `support/cli_helpers.rb` | `run_cli` / `with_snapshot` / `write_json` |
 | `support/gateway_stubs.rb` | `GatewayStubs::SequenceRunner`（按序吐响应、记录 argv） |
 | `support/path_checks_helpers.rb` | `change` / `run_check` |
 | `support/setup_action_helpers.rb` | 假工具链、`prepare` / `release`、`GITHUB_OUTPUT` 读取 |
+| `support/await_review_helpers.rb` | `env` / `run_with` / `fake_clock` / `stop_sleeping` / `check_run` / `review` 等门闸用例构造件 |
 
 夹具只放「多文件重复过的」东西。只在单个文件用的辅助方法留在该文件内，
 避免 support 变成第二个大杂烩。
@@ -47,7 +48,7 @@ make agents-check                           # 等价于全量
 ## 约定
 
 - 文件名前缀 `test_`，且必须是 `.rb`——`PathChecks` 的测试联动规则只认这个形态
-  （`tools/tests/**/test_*.rb`）。
+  （`tools/tests/<域>/test_*.rb`，只认一层域目录，与 run.rb 的发现范围一致）。
 - 新测试文件放进对应域目录即可，不必改 `Makefile` 或 `ci.yml`：清单由目录推导。
 - 测试正文多为「缺陷回归」，注释写清**为什么**这条断言必须存在；无注释的用例
   应能从方法名读出被测行为。

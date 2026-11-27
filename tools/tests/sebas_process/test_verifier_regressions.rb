@@ -85,16 +85,20 @@ class VerifierRegressionTest < Minitest::Test
     assert(report.blockers.any? { |b| b.message.include?("未合并") })
   end
 
+  # 必须带齐 Evidence 与干净 thread，否则「缺证据」也会让 pass? 为假，
+  # 删掉失败 CI 的阻断逻辑用例照样绿（假通过）。
   def test_verify_merge_pre_still_blocks_on_failing_ci
     data = snapshot(
-      issues: [issue(39, body: automation, state: "OPEN")],
+      issues: [issue(39, body: automation + evidence(subject: "issue:39", merged: false), state: "OPEN")],
       pull_requests: [{
-        "number" => 10, "state" => "OPEN", "closing_issues" => [39],
+        "number" => 10, "state" => "OPEN", "closing_issues" => [39], "review_threads" => [],
         "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "FAILURE"}]
       }]
     )
     report = SebasAgents::Verifier.verify_merge(10, 39, SebasAgents::Model::Snapshot.from_hash(data), pre: true)
     refute report.pass?
+    assert(report.blockers.any? { |b| b.message.include?("存在失败检查") },
+      "必须是失败 CI 阻断，而不是缺证据：#{report.items.map(&:message).inspect}")
   end
 
   def test_verify_merge_pre_blocks_when_issue_already_closed

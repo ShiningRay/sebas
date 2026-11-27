@@ -63,9 +63,12 @@ module SebasAgents
       docs_changed = paths.any? { |p| p.start_with?("docs/") }
       workflow_changed = paths.any? { |p| p.start_with?(".github/workflows/") }
       tools_changes = changes.select { |c| c.path.start_with?("tools/") && c.path.end_with?(".rb") }
-      # 只认 tools/test_*.rb 与 tools/tests/**/test_*.rb 两种约定；
+      # 只认 tools/test_*.rb（legacy）与 tools/tests/<域>/test_*.rb 两种约定，
+      # 与 tools/tests/run.rb 的发现规则严格一致：run.rb 只跑一层域目录下的文件，
+      # 更深的嵌套会被它当 stray 拒绝。这里若放行嵌套路径，就会出现
+      # 「门禁认作测试改动但根本没跑」的假绿。
       # test_ 前缀的 Markdown 等非 Ruby 文件不算测试改动。
-      tools_tests_changed = paths.any? { |p| p.match?(%r{\Atools/(?:tests/(?:[^/]+/)*)?test_[^/]*\.rb\z}) }
+      tools_tests_changed = paths.any? { |p| p.match?(%r{\Atools/(?:tests/[^/]+/)?test_[^/]*\.rb\z}) }
       declares_no_behavior = NO_BEHAVIOR_CHANGE.match?(body.to_s)
       declares_security = SECURITY_BOUNDARY.match?(body.to_s)
 

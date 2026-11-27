@@ -139,20 +139,48 @@ end
     end
   end
 
-  # --apply 需要真实标签写入与回读；此处只验证 dry-run 不落盘，
-  # 以及写授权机制本身（见 DryRunGuardTest）。
+  # --apply 的真实写入链：租约评论 → status → 标签 → 三项回读。
+  # 标签写入失败时不得声称 claimed，且必须落 aborted、把已推进的步骤记进记录，
+  # 否则恢复流程会以为远端没动过（重复发租约）。
   def test_claim_apply_claims_only_with_verified_label
     data = snapshot(issues: [issue(1, body: automation)])
     Dir.mktmpdir do |dir|
       path = File.join(dir, "snapshot.json")
       record = File.join(dir, "run.json")
       File.write(path, JSON.generate(data), encoding: "UTF-8")
-      status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", record, "--apply",
-        "--repo", "invalid/does-not-exist-zzz"])
-      # 仓库不可达时不得声称 claimed
-      assert_includes [1, 2], status
-      payload = JSON.parse(out)
-      refute_equal "claimed", payload["claim"]
+
+      # 假 runner：只让 add_label 失败，其余（评论/status/回读）成功。
+      fake = Class.new(SebasAgents::CommandRunner) do
+        def run!(*argv, chdir: Dir.pwd)
+          raise SebasAgents::CommandError.new("label boom", command: argv) if argv.include?("--add-label")
+
+          ""
+        end
+
+        def json!(*argv, chdir: Dir.pwd)
+          joined = argv.join(" ")
+          # 租约唯一性预检要读已发评论：返回空数组（尚无租约）。
+          return [] if joined.include?("/comments?")
+          # 回读：status 与 label 都按「已写入」回答，只让标签写入那一步失败。
+          return {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS}} if joined.exclude?("/comments")
+
+          []
+        end
+      end
+
+      cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+      cli.define_singleton_method(:runner) { |_options| fake.new(dry_run: false) }
+      out = StringIO.new
+      cli.instance_variable_set(:@out, out)
+      status = cli.run(["claim", "1", "--snapshot", path, "--record", record, "--apply"])
+      payload = JSON.parse(out.string)
+
+      refute_equal "claimed", payload["claim"], "标签写入失败不得声称 claimed"
+      assert_equal 1, status
+      saved = JSON.parse(File.read(record, encoding: "UTF-8"))
+      assert_equal "aborted", saved["phase"]
+      assert_equal true, saved["status_written"], "status 已写入的进度必须留痕"
+      assert_equal false, saved["label_written"]
     end
   end
 

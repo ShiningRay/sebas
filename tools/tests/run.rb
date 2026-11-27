@@ -5,7 +5,8 @@
 # 用法：
 #   ruby tools/tests/run.rb            # 全量
 #   ruby tools/tests/run.rb docs       # 只跑某个域
-#   ruby tools/tests/run.rb --list     # 只列会跑的文件
+#   ruby tools/tests/run.rb --list     # 只列会跑的文件（可带域）
+#   ruby tools/tests/run.rb docs --list
 #
 # 域：docs / evidence / legacy / process / sebas_process / workflows
 #
@@ -20,6 +21,9 @@ require "rbconfig"
 ROOT = File.expand_path("../..", __dir__)
 DOMAINS = %w[docs evidence legacy process sebas_process workflows].freeze
 
+# 布局约定：tools/test_*.rb（legacy）或 tools/tests/<域>/test_*.rb，只认一层域目录。
+# 域目录再往下嵌套、或把测试直接放在 tools/tests/ 根下，都会被下面的
+# stray_files 抓出来报错——不静默跳过，否则门禁绿了却没跑。
 def test_files(domains)
   domains.flat_map do |domain|
     next Dir.glob(File.join(ROOT, "tools", "test_*.rb")) if domain == "legacy"
@@ -28,11 +32,21 @@ def test_files(domains)
   end.uniq.sort
 end
 
-args = ARGV.dup
-if args.delete("--list")
-  puts test_files(DOMAINS)
-  exit 0
+# 不符合布局约定、因而不会被跑到的测试文件。
+# 约定只认 tools/tests/<已知域>/test_*.rb 一层；嵌套子目录与 tools/tests/ 根下都算 stray。
+def stray_files
+  found = Dir.glob(File.join(ROOT, "tools", "tests", "**", "test_*.rb"))
+  expected = DOMAINS.reject { |d| d == "legacy" }
+    .flat_map { |d| Dir.glob(File.join(ROOT, "tools", "tests", d, "test_*.rb")) }
+  found - expected
 end
+
+def relative(path)
+  path.delete_prefix("#{ROOT}/")
+end
+
+args = ARGV.dup
+list_only = !args.delete("--list").nil?
 
 domains = args.empty? ? DOMAINS : args
 unknown = domains - DOMAINS
@@ -41,26 +55,38 @@ unless unknown.empty?
   exit 2
 end
 
+stray = stray_files
+unless stray.empty?
+  warn "以下测试文件不符合布局约定，不会被跑："
+  stray.each { |f| warn "  - #{relative(f)}（应放在 tools/tests/<域>/ 下，域限 #{DOMAINS.join("、")}）" }
+  exit 2
+end
+
 files = test_files(domains)
+
+if list_only
+  puts files
+  exit 0
+end
+
 if files.empty?
   warn "没有匹配的测试文件（域：#{domains.join("、")}）"
   exit 2
 end
 
-legacy = test_files(%w[legacy])
+legacy = test_files(%w[legacy]) & files
 unless legacy.empty?
   warn "提示：以下测试仍在旧路径，建议迁到 tools/tests/<域>/："
-  legacy.each { |f| warn "  - #{f.delete_prefix("#{ROOT}/")}" }
+  legacy.each { |f| warn "  - #{relative(f)}" }
 end
 
 # 逐文件起子进程：evidence 测试会改写模块级 runner/git_runner 注入点，
 # 同进程串跑会把彼此的残留注入串到一起；独立进程也便于定位失败文件。
 failures = []
 files.each do |file|
-  relative = file.delete_prefix("#{ROOT}/")
-  puts "\n== #{relative}"
+  puts "\n== #{relative(file)}"
   ok = system(RbConfig.ruby, file)
-  failures << relative unless ok
+  failures << relative(file) unless ok
 end
 
 puts

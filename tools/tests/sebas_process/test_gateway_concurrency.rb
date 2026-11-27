@@ -2,6 +2,11 @@
 
 # 快照读取的并发契约：顶层读取真并发、单流失败整体 fail-closed、
 # 评论索引只预热一次且与 blocked_by 重叠。
+#
+# 判据不用「全程峰值」：全程峰值只能证明「某处曾达 3」，分不清是哪几条请求
+# 重叠；顶层读取先把峰值推到 3 之后，索引与 blocked_by 即使串行也会通过。
+# 这里给每条请求打标签，记录所有「同时出现过的标签集合」，断言落在具体的
+# 组合上。
 
 require_relative "../support/boot"
 require_relative "../../agents/lib/sebas_agents"
@@ -9,17 +14,17 @@ require_relative "../../agents/lib/sebas_agents"
 class SnapshotConcurrencyTest < Minitest::Test
   include SnapshotHelpers
 
-  # 每次调用都睡一小段，并统计同时在飞的峰值。
-  # 串行实现峰值恒为 1；并发实现必然 ≥ 3。与机器快慢无关。
-  class SleepyRunner
-    attr_reader :peak, :paths
+  # 按最长前缀匹配响应；记录标签、峰值与所有并发窗口。
+  class TaggedRunner
+    attr_reader :paths, :overlaps, :peak
 
     def initialize(payloads, delay: 0.15)
       @payloads = payloads
       @delay = delay
-      @in_flight = 0
-      @peak = 0
       @paths = []
+      @overlaps = []
+      @in_flight = []
+      @peak = 0
       @lock = Mutex.new
     end
 
@@ -30,15 +35,37 @@ class SnapshotConcurrencyTest < Minitest::Test
         .find { |candidate| path.start_with?(candidate) }
       raise "未预期的请求：#{argv.join(" ")}" if key.nil?
 
+      tag = self.class.tag_for(key, argv)
       @lock.synchronize do
         @paths << key
-        @in_flight += 1
-        @peak = [@peak, @in_flight].max
+        @in_flight << tag
+        @peak = [@peak, @in_flight.length].max
+        @overlaps << @in_flight.dup if @in_flight.length > 1
       end
       sleep @delay
       JSON.parse(@payloads.fetch(key))
     ensure
-      @lock.synchronize { @in_flight -= 1 }
+      @lock.synchronize { @in_flight.delete(tag) if tag && @in_flight.include?(tag) }
+    end
+
+    # 指定的这几个标签是否曾同时出现在飞。
+    def overlapped?(*wanted)
+      @overlaps.any? { |set| (wanted - set).empty? }
+    end
+
+    # 请求 → 逻辑标签。顶层四条是 milestone / issue 清单 / PR 清单 / main sha；
+    # 之后的阶段是评论索引（证据）与 blocked_by 批量。
+    # GraphQL 一次承载多个查询，必须按 query 正文区分，不能都算成一条。
+    def self.tag_for(key, argv)
+      joined = argv.join(" ")
+      return :main_sha if key.include?("commits/main")
+      return :comment_index if key.include?("/issues/comments")
+      return :milestones if key.include?("/milestones")
+      return :issues if key.include?("/issues")
+      return :pull_requests if joined.include?("pullRequests")
+      return :blocked_by if joined.include?("blockedBy")
+
+      :graphql_other
     end
   end
 
@@ -66,14 +93,16 @@ class SnapshotConcurrencyTest < Minitest::Test
     }
   end
 
-  # 四条顶层读取必须真的并发：串行实现峰值只能是 1。
+  # 四条顶层读取必须真的并发。断言的是「这四条彼此重叠」，而不是全程峰值：
+  # 峰值 ≥ 3 也可能来自后续阶段的请求，串行的顶层读取照样能凑出来。
   def test_top_level_reads_run_concurrently
-    runner = SleepyRunner.new(payloads)
+    runner = TaggedRunner.new(payloads)
     gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
     snapshot = gateway.snapshot
 
-    assert_operator runner.peak, :>=, 3,
-      "并发峰值只有 #{runner.peak}（#{runner.paths.inspect}），顶层读取仍在串行"
+    top_level = %i[milestones issues pull_requests main_sha]
+    assert runner.overlapped?(*top_level),
+      "四条顶层读取未同时出现在飞（观测到的并发窗口：#{runner.overlaps.inspect}）"
     assert_equal "abc123", snapshot.main_sha
     assert_equal 1, snapshot.issues.length
     assert_equal 1, snapshot.milestones.length
@@ -85,7 +114,7 @@ class SnapshotConcurrencyTest < Minitest::Test
     # issue 流立即失败并已终止；milestone 流稍晚失败但先于清理完成。
     # 旧实现的清理 `each { join }` 会在遇到已终止且带异常的线程时重抛，
     # 用它自己的异常顶替 issue 流的原始失败。
-    double_failure = Class.new(SleepyRunner) do
+    double_failure = Class.new(TaggedRunner) do
       def json!(*argv)
         joined = argv.join(" ")
         if joined =~ %r{repos/o/r/issues(\?|$)}
@@ -109,26 +138,26 @@ class SnapshotConcurrencyTest < Minitest::Test
   # 带 evidence 时必须预热评论索引；不带则一次都不该请求（避免白打 4 页）。
   def test_comment_index_preheated_only_when_evidence_present
     with_evidence = payloads(issue_body: automation + evidence(subject: "issue:1"))
-    runner = SleepyRunner.new(with_evidence)
+    runner = TaggedRunner.new(with_evidence)
     SebasAgents::GithubGateway.new(runner, repo: "o/r").snapshot
     assert_includes runner.paths, "repos/o/r/issues/comments",
       "有 evidence 块时必须预热评论索引"
 
-    plain_runner = SleepyRunner.new(payloads)
+    plain_runner = TaggedRunner.new(payloads)
     SebasAgents::GithubGateway.new(plain_runner, repo: "o/r").snapshot
     refute_includes plain_runner.paths, "repos/o/r/issues/comments",
       "没有 evidence 块时不该请求评论索引"
   end
 
   # 评论索引与 blocked_by 必须在同一阶段重叠（都只依赖 issue 清单）。
+  # 断言这两者共处一个窗口，而不是全局峰值——后者会被顶层读取的并发带过。
   def test_comment_index_overlaps_blocked_by
-    runner = SleepyRunner.new(payloads(issue_body: automation + evidence(subject: "issue:1")))
+    runner = TaggedRunner.new(payloads(issue_body: automation + evidence(subject: "issue:1")))
     gateway = SebasAgents::GithubGateway.new(runner, repo: "o/r")
     gateway.snapshot
 
-    # 峰值已由时间重叠保证：评论索引与 blocked_by 都是 150ms 的慢请求，
-    # 若串行则这两条不会同时出现在飞。
-    assert_operator runner.peak, :>=, 3, "索引与 blocked_by 未并发（#{runner.paths.inspect}）"
+    assert runner.overlapped?(:comment_index, :blocked_by),
+      "索引与 blocked_by 未同时出现在飞（观测到的并发窗口：#{runner.overlaps.inspect}）"
     assert_includes runner.paths, "repos/o/r/issues/comments"
   end
 
@@ -136,8 +165,7 @@ class SnapshotConcurrencyTest < Minitest::Test
   def test_comment_index_builds_once_under_concurrency
     calls = 0
     lock = Mutex.new
-    runner = SleepyRunner.new(payloads(issue_body: automation + evidence(subject: "issue:1")))
-    counting = Class.new(SleepyRunner) do
+    counting = Class.new(TaggedRunner) do
       define_method(:json!) do |*argv|
         if argv.join(" ").include?("issues/comments")
           lock.synchronize { calls += 1 }
@@ -146,7 +174,9 @@ class SnapshotConcurrencyTest < Minitest::Test
       end
     end
 
-    gateway = SebasAgents::GithubGateway.new(counting.new(payloads(issue_body: automation + evidence(subject: "issue:1"))), repo: "o/r")
+    gateway = SebasAgents::GithubGateway.new(
+      counting.new(payloads(issue_body: automation + evidence(subject: "issue:1"))), repo: "o/r"
+    )
     threads = 4.times.map { Thread.new { gateway.send(:issue_comment_index) } }
     threads.each(&:value)
 
@@ -155,7 +185,7 @@ class SnapshotConcurrencyTest < Minitest::Test
 
   # 任一流失败都必须整体失败，不能返回半份快照。
   def test_stream_failure_fails_closed
-    broken = Class.new(SleepyRunner) do
+    broken = Class.new(TaggedRunner) do
       def json!(*argv)
         raise SebasAgents::CommandError.new("boom", command: argv) if argv.join(" ").include?("commits/main")
 
@@ -166,5 +196,4 @@ class SnapshotConcurrencyTest < Minitest::Test
     error = assert_raises(SebasAgents::CommandError) { gateway.snapshot }
     assert_includes error.message, "boom"
   end
-
 end

@@ -89,14 +89,31 @@ class DryRunGuardTest < Minitest::Test
     ["gh", "status"]
   ].freeze
 
+  # 拦截路径必须真的不落子进程：只断言 read_only? 的话，分类判对了但提前返回
+  # 失效时，`git reset --hard` 会先毁掉工作区再让断言失败。这里把 capture3
+  # 换成「一被调用就报错」的桩，确保拦截发生在启动进程之前。
   def test_write_commands_are_never_executed
-    WRITE_COMMANDS.each do |argv|
-      runner = SebasAgents::CommandRunner.new(dry_run: true)
-      refute runner.send(:read_only?, argv), "未拦截写命令：#{argv.join(" ")}"
-      result = runner.capture(*argv)
-      assert result.success?, "dry-run 应返回假成功：#{argv.join(" ")}"
-      assert_equal "", result.stdout, "dry-run 不得返回伪数据：#{argv.join(" ")}"
+    with_forbidden_capture3 do
+      WRITE_COMMANDS.each do |argv|
+        runner = SebasAgents::CommandRunner.new(dry_run: true)
+        refute runner.send(:read_only?, argv), "未拦截写命令：#{argv.join(" ")}"
+        result = runner.capture(*argv)
+        assert result.success?, "dry-run 应返回假成功：#{argv.join(" ")}"
+        assert_equal "", result.stdout, "dry-run 不得返回伪数据：#{argv.join(" ")}"
+      end
     end
+  end
+
+  # 把 Open3.capture3 换成禁止调用的桩，块内任何真实子进程都会让用例失败。
+  def with_forbidden_capture3
+    Open3.singleton_class.alias_method(:__forbidden_capture3, :capture3)
+    Open3.define_singleton_method(:capture3) do |*argv, **_opts|
+      raise "测试期间不得真正执行命令：#{argv.join(" ")}"
+    end
+    yield
+  ensure
+    Open3.singleton_class.alias_method(:capture3, :__forbidden_capture3)
+    Open3.singleton_class.send(:remove_method, :__forbidden_capture3)
   end
 
   def test_read_commands_are_executed
@@ -150,24 +167,29 @@ class DryRunGuardTest < Minitest::Test
   end
 
   # 重试耗尽后，错误必须带 command 与 stderr，否则上游无法定位。
+  # 生产 with_retry 保持真实：只替换 Open3 与 sleep，断言「一次 run! 里
+  # 真的重试了一次」——如果替身掉 with_retry，重试循环被删掉也照样绿。
   def test_retry_exhaustion_keeps_command_context
+    attempts = 0
+    Open3.singleton_class.alias_method(:__retry_capture3, :capture3)
+    Open3.define_singleton_method(:capture3) do |*_argv, **_opts|
+      attempts += 1
+      ["", "unexpected EOF\n", Struct.new(:success?).new(false)]
+    end
+
     runner = SebasAgents::CommandRunner.new(dry_run: false)
-    calls = 0
-    runner.define_singleton_method(:with_retry) do |&block|
-      block.call
+    slept = []
+    runner.define_singleton_method(:sleep) { |seconds| slept << seconds }
+
+    begin
+      error = assert_raises(SebasAgents::CommandError) { runner.run!("gh", "api", "x") }
+    ensure
+      Open3.singleton_class.alias_method(:capture3, :__retry_capture3)
+      Open3.singleton_class.send(:remove_method, :__retry_capture3)
     end
-    runner.singleton_class.send(:remove_method, :with_retry)
-    runner.define_singleton_method(:with_retry) do
-      calls += 1
-      SebasAgents::CommandRunner::Result.new(stdout: "", stderr: "unexpected EOF\n",
-        status: Struct.new(:success?).new(false))
-    end
-    assert_raises(SebasAgents::CommandError) { runner.run!("gh", "api", "x") }
-    error = begin
-      runner.run!("gh", "api", "x")
-    rescue SebasAgents::CommandError => e
-      e
-    end
+
+    assert_equal 2, attempts, "可重试错误必须重试一次（共两次尝试）"
+    assert_equal 1, slept.length, "重试之间必须等待，且只等一次"
     assert_equal ["gh", "api", "x"], error.command
     assert_includes error.stderr.to_s, "EOF"
     assert_includes error.message, "gh api x"

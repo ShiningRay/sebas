@@ -67,6 +67,14 @@ class PathChecksTest < Minitest::Test
     refute report.blockers.any? { |i| i.message.include?("test_*.rb") }
   end
 
+  # 联动规则必须与 run.rb 的发现范围一致：run.rb 只跑一层域目录，
+  # 嵌套的文件既不跑也不该被认作测试改动，否则门禁会给出假绿。
+  def test_nested_test_dir_is_not_counted_as_test_change
+    report = run_check([change("tools/new_script.rb", "+puts 1\n"),
+                        change("tools/tests/sebas_process/nested/test_new_script.rb", "+assert true\n")])
+    assert report.blockers.any? { |i| i.message.include?("test_*.rb") }
+  end
+
   # 纯空白/注释改动豁免 spec 联动，且以 acceptable 留痕。
   def test_comment_only_src_change_is_exempted_with_trail
     report = run_check([change("src/store/store.cr", "+# 注释说明\n-# 旧注释\n+  \n")])
