@@ -77,8 +77,11 @@ GitHub 文档写明「依赖失败 job 的 job 会被 skipped 且可能不阻塞
 
 ## 并发语义：PR 可取消，main 必须跑完
 
-`ci.yml` 的 `concurrency` 组名沿用 `ci-<ref>`。PR 事件的 ref 是 `refs/pull/<n>/merge`，
-`push:main` 与 `workflow_dispatch` 都是 `refs/heads/main`，天然分属两组，组名不必按事件改写。
+`ci.yml` 的 `concurrency` 组名沿用 `ci-<ref>`，不按事件改写：PR 事件的 ref 是
+`refs/pull/<n>/merge`，`push:main` 与 `workflow_dispatch`（选 main 时）都是
+`refs/heads/main`，天然分属两组。手动运行若选其他分支或标签，用的是所选 ref，
+不进 main 组；这条按 GitHub 文档「并发组由 `group` 表达式求值决定」的口径推导，
+未在本仓库实测。
 
 要按事件区分的是**取消语义**：
 
@@ -97,7 +100,13 @@ concurrency:
 2026-11-27 实测 main 侧 100 次 run 有 5 次 cancelled，其中 2 次是已跑 30 / 53 分钟后
 被下一次 push 顶掉。按 PR 量级换算，加速合并会放大这个比例。
 
-**边界**：GitHub 每个并发组只保留一个 running + 一个 pending，第三个进入时 pending
-被替换。所以本改动只保证「合并队列串行时的每张卡都能拿到成功 CI」，不保证绕过队列
-的连续人工合并不丢 Evidence——那要靠合并队列的串行单位（等 Evidence 升级完再合下一张，
-见 [parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）。
+**边界一：待跑位只有一个。** GitHub 每个并发组只保留一个 running + 一个 pending，
+第三个进入时 pending 被替换。所以本改动只保证「合并队列串行时每张卡都能拿到成功 CI」，
+不保证绕过队列的连续人工合并不丢 Evidence。
+
+**边界二：排队中的提交也可能被顶掉。** 上一轮 main CI 还在跑时，下一张卡的合并提交
+可以进入 pending；再来一次 main push（含手动 `workflow_dispatch` 选 main）就替换掉
+这个 pending 位——被替换的提交从此没有成功 CI，Evidence 依然停在 `false`，队列会一直
+等它。要真正闭合这条路径，串行单位必须限制「同一时刻只有一个 main 运行」，或对少了
+成功 CI 的提交补跑。这是合并队列本体（[parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）
+的职责，本改动不覆盖。

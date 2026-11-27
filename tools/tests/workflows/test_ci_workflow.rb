@@ -211,20 +211,19 @@ class CiWorkflowTest < Minitest::Test
   # PR 侧必须取消：门闸最长等 15 分钟，同一 PR 的新推送不取消旧轮会让队列堆积空等。
   # main 侧不能取消：Evidence 升级只认 CI 结论 success；下一次 push 顶掉正在跑的
   # main CI，那一轮的 Evidence 就停在 merged_into_main=false，后继卡永久 blocked。
+  #
+  # 断言整条表达式，不查子串：`!= 'pull_request'` 这类反向条件同样含
+  # `github.event_name` 与 `pull_request`，只查 has-include 会让它蒙混过关。
   def test_concurrency_cancels_only_pull_requests
     concurrency = workflow["concurrency"]
 
     # 组名沿用 ci-<ref>：PR 的 ref 是 refs/pull/<n>/merge，main 的 ref 是
     # refs/heads/main，两者天然分属不同组，不需要按事件改写组名。
-    assert_includes concurrency["group"], "github.ref"
+    assert_equal "ci-${{ github.ref }}", concurrency["group"]
 
-    cancel = concurrency["cancel-in-progress"].to_s
-    assert_includes cancel, "github.event_name",
-      "取消条件必须按事件判定；写成裸 true 会让 main 侧也互相取消"
-    assert_includes cancel, "pull_request",
-      "取消只允许发生在 pull_request 事件上"
-    refute_includes cancel, "push",
-      "cancel-in-progress 不能包含 push 侧条件（main 必须跑完以升级 Evidence）"
+    assert_equal "${{ github.event_name == 'pull_request' }}",
+      concurrency["cancel-in-progress"],
+      "取消必须严格等于「事件是 PR」；裸 true 或 != 写法都会让 main 侧互相取消"
   end
 
   # 「等出现」的宽限必须小于主等待上限，否则它不会先触发，
