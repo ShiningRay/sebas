@@ -45,7 +45,7 @@ ruby tools/accept-proposal 159 --reason "排期进 v0.2.0" --milestone v0.2.0 --
 Proposal 上的 milestone 只是排期意图记录，Implementer 只按 Scribe 拆出的工作包卡（有 Automation 块）选卡；
 Proposal 本身不进实现选卡。
 使用前提与完整参数见 [quickstart.md](quickstart.md) 的 Maintainer 段；测试见
-`tools/test_accept_proposal.rb`。
+`tools/tests/process/test_accept_proposal.rb`。
 
 ### 2. 范围决策
 

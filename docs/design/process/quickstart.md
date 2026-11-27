@@ -153,7 +153,7 @@ marker → 复用 `Triager.plan` 校验裁决作者、正文与评论父对象 �
 并把 issue 挂到该 milestone。这里挂的是排期意图记录，不是实现排期本身——Implementer 只按
 Scribe 拆出的工作包卡选卡，Proposal 本身不进实现选卡。
 接受设计不等于自动拆卡——实现工作包仍由 Scribe 按指令拆解。
-不指定 milestone 时排期仍需另行裁决。测试见 `tools/test_accept_proposal.rb`。
+不指定 milestone 时排期仍需另行裁决。测试见 `tools/tests/process/test_accept_proposal.rb`。
 
 ### Implementer
 
@@ -287,7 +287,7 @@ ruby tools/sebas-process release verify v0.2.1 --root /tmp/sebas-v0.2.1
 ruby tools/sebas-process next --snapshot snapshot.json --record run.json
 ```
 
-同一份快照必须得到同一动作；回归用例见 `tools/test_sebas_process.rb`。
+同一份快照必须得到同一动作；回归用例见 `tools/tests/sebas_process/`。
 
 ## 7. 安全边界
 

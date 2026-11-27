@@ -40,8 +40,12 @@ module CheckDocs
   module_function
 
   def markdown_files(root, exclude_dirs)
-    Dir.glob(File.join(root, "**", "*.md")).sort.reject do |path|
-      path.split(/[\\\/]/).any? { |part| part.start_with?(".") || exclude_dirs.include?(part) }
+    base = File.expand_path(root)
+    Dir.glob(File.join(base, "**", "*.md")).sort.reject do |path|
+      # 只按 root 之下的相对路径判断：绝对路径里的上级目录（如工作区
+      # ~/.dimcode/worktrees/...）带点号前缀，不该让整个仓库的文档被跳过。
+      relative = path.delete_prefix("#{base}/")
+      relative.split(/[\\\/]/).any? { |part| part.start_with?(".") || exclude_dirs.include?(part) }
     end
   end
 
