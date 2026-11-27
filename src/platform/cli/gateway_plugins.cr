@@ -26,7 +26,6 @@ module Sebas
         # hook 门面（M3-WP5，#17）：gateway.start/stop 及各子系统注入点共用
         @hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
 
-        # ameba:disable Metrics/CyclomaticComplexity — 装配面（runner/hook/capability/工具四路接线），分支即装配语义
         private def wire_plugins(config : Config::Config) : Nil
           tools = @tools_registry || (Log.error { "plugins face wired before tool surface build" }; return)
           # 工具面同步：先摘旧名单再挂新名单（registry.unregister 语义）
