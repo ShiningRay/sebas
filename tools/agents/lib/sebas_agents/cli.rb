@@ -42,6 +42,7 @@ module SebasAgents
       command = argv.first
       case command
       when "next" then run_next(argv.drop(1))
+      when "plan" then run_plan(argv.drop(1))
       when "claim" then run_claim(argv.drop(1))
       when "resume" then run_resume(argv.drop(1))
       when "unclaim" then run_unclaim(argv.drop(1))
@@ -126,6 +127,40 @@ module SebasAgents
       Output.emit({"ok" => action.action != "invalid_plan"}.merge(action.to_h), out: @out)
       action.action == "invalid_plan" ? EXIT_REFUSED : EXIT_OK
     end
+
+
+# plan（M4x-Parallel-WP1，#218）：只读多候选视图——与 next 同快照同策略，
+# 返回全部就绪候选（capacity 固定 1）、带枚举码的排除集与验证背压
+# （待验收 PR 数）。不改任何写行为；exit 0 正常 / 1 invalid_plan。
+def run_plan(argv)
+  options, = Argv.parse(argv)
+  snap = snapshot(options)
+  view = Policy::Selection.plan(snap, record: record_for(options))
+  candidates = view.ready.map.with_index do |issue, index|
+    {
+      "issue" => issue.number,
+      "title" => issue.title,
+      "order" => issue.automation["order"],
+      "scope_conflict" => nil, # 本期不判定；目录启发预填留待后续阶段
+      "selected" => index.zero?
+    }
+  end
+  payload = {
+    "ok" => view.invalid_reason.nil?,
+    "capacity" => 1,
+    "verifier_queue_depth" => snap.pull_requests.count(&:open?),
+    "next_action" => view.next_action,
+    "next_issue" => view.next_issue,
+    "candidates" => candidates,
+    "excluded" => view.excluded.map do |entry|
+      {"issue" => entry["issue"], "reason" => entry["code"], "detail" => entry["reason"]}
+    end,
+    "observed_main" => snap.main_sha
+  }
+  payload["invalid_reason"] = view.invalid_reason if view.invalid_reason
+  Output.emit(payload, out: @out)
+  view.invalid_reason ? EXIT_REFUSED : EXIT_OK
+end
 
     def run_claim(argv)
       return help if argv.include?("--help") || argv.include?("-h")
@@ -724,6 +759,7 @@ end
 
         Implementer
           next            读取 GitHub，输出单一动作（默认只读）
+          plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 验证背压（#218）
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed
