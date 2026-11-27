@@ -190,9 +190,13 @@ end
   end
 
   # 快照仓库与 --repo 不一致时必须拒绝写入，否则会认领到没校验过的仓库。
-# 回读路径必须被真正执行：标签写入成功但回读说没生效时，不得声称 claimed。
-# 与上一条（写入失败）互补——那条走不到回读，这条才覆盖 status?/label_present?
-# 与 lease 三段回读的组合。
+# 回读路径必须被真正执行，且失败只能归因于标签缺失。
+#
+# 关键是租约回读要**先成功**：若评论列表恒空，lease 那段必然 false，
+# 即使实现把 label_present? 从 && 链里删掉，认领照样落同一失败分支，
+# 用例仍绿（测不出标签检查有没有执行）。所以让替身记住 POST 出去的
+# 租约正文，回读 /comments? 时原样返回——凭据的 lease_id 与运行记录一致，
+# 三段回读里只有标签这一环为假。
 def test_claim_label_readback_mismatch_records_aborted
   data = snapshot(issues: [issue(1, body: automation)])
   Dir.mktmpdir do |dir|
@@ -200,16 +204,29 @@ def test_claim_label_readback_mismatch_records_aborted
     record = File.join(dir, "run.json")
     File.write(path, JSON.generate(data), encoding: "UTF-8")
 
-    # 所有写入都成功；回读单卡时说「标签不在」，制造不一致。
     fake = Class.new(SebasAgents::CommandRunner) do
+      def initialize(*args, **opts)
+        super
+        @created_lease_body = nil
+      end
+
       def run!(*argv, chdir: Dir.pwd)
+        # 记下租约评论正文，供后续回读当作既有凭据返回。
+        body_arg = argv.find { |arg| arg.to_s.start_with?("body=") }
+        @created_lease_body = body_arg.sub(/\Abody=/, "") if body_arg&.include?("sebas-lease")
         ""
       end
 
       def json!(*argv, chdir: Dir.pwd)
         joined = argv.join(" ")
-        return [] if joined.include?("/comments?")
+        if joined.include?("/comments?")
+          # 预检阶段尚未发评论 → 空；回读阶段返回刚发出的凭据。
+          return [] if @created_lease_body.nil?
 
+          return [{"id" => 900, "user" => {"login" => "ShiningRay"}, "body" => @created_lease_body}]
+        end
+
+        # 单卡回读：status 已写入，标签不在——只有这一环为假。
         {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS}, "labels" => []}
       end
     end
@@ -223,6 +240,7 @@ def test_claim_label_readback_mismatch_records_aborted
 
     assert_equal 1, status
     refute_equal "claimed", payload["claim"], "回读不一致不得声称 claimed"
+    # 租约回读通过、status 回读通过，只有 label_present? 为假。
     assert_includes payload["reasons"].join, "readback=false",
       "必须落到回读确认失败，而不是别的分支：#{payload["reasons"].inspect}"
     saved = JSON.parse(File.read(record, encoding: "UTF-8"))
