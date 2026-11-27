@@ -42,12 +42,13 @@ module SebasAgents
       File.join(RUNS_DIR, "#{issue}.json")
     end
 
-    # 迁移期容量 1：runs/ 下至多一份活动记录；多份或 schema 非 2 → invalid_plan。
-    # 返回活动记录 Hash 或 nil（无活动记录）。
-    def self.scan_active(runs_dir = RUNS_DIR)
-      return nil unless Dir.exist?(runs_dir)
+    # 活动记录清单（CR-12）：runs/ 下 phase ∈ ACTIVE_PHASES 的记录。
+    # schema 非 2 → invalid_plan；多份活动记录是否合法由调用方按
+    # 迁移窗口/试点容量判定（迁移期容量 1；试点 docs 对容量 2）。
+    def self.active_records(runs_dir = RUNS_DIR)
+      return [] unless Dir.exist?(runs_dir)
 
-      active = Dir.children(runs_dir).grep(/\.json\z/).filter_map do |file|
+      Dir.children(runs_dir).grep(/\.json\z/).filter_map do |file|
         path = File.join(runs_dir, file)
         data = JSON.parse(File.read(path, encoding: "UTF-8"))
         if data["schema"] != SCHEMA
@@ -55,12 +56,7 @@ module SebasAgents
         end
 
         data if ACTIVE_PHASES.include?(data["phase"])
-      end
-      if active.length > 1
-        raise InvalidPlan, "runs/ 下存在 #{active.length} 份活动运行记录（容量 1）：#{active.map { |r| r["issue"] }.join("、")}"
-      end
-
-      active.first
+      end.sort_by! { |data| data["issue"].to_i }
     rescue JSON::ParserError => e
       raise InvalidPlan, "运行记录不是合法 JSON（#{runs_dir}）：#{e.message}"
     end

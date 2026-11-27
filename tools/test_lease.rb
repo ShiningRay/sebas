@@ -170,26 +170,51 @@ class RunRecordMigrationTest < Minitest::Test
     end
   end
 
-  def test_scan_active_enforces_schema_2_and_capacity_one
+  def test_active_records_enforces_schema_2
     Dir.mktmpdir do |dir|
       runs = File.join(dir, "runs")
       FileUtils.mkdir_p(runs)
       File.write(File.join(runs, "7.json"), JSON.generate({
         "schema" => 2, "issue" => 7, "phase" => "claimed"
       }), encoding: "UTF-8")
-      assert_equal 7, SebasAgents::RunRecord.scan_active(runs)["issue"]
+      assert_equal 7, SebasAgents::RunRecord.active_records(runs).first["issue"]
 
-      # schema 非 2 → invalid_plan
+      # schema 非 2 → invalid_plan（CR-10：未知 schema 一律拒绝）
       File.write(File.join(runs, "8.json"), JSON.generate({"schema" => 1, "issue" => 8, "phase" => "released"}),
         encoding: "UTF-8")
-      assert_raises(SebasAgents::InvalidPlan) { SebasAgents::RunRecord.scan_active(runs) }
+      assert_raises(SebasAgents::InvalidPlan) { SebasAgents::RunRecord.active_records(runs) }
+      File.write(File.join(runs, "8.json"), JSON.generate({"schema" => 99, "issue" => 8, "phase" => "claimed"}),
+        encoding: "UTF-8")
+      assert_raises(SebasAgents::InvalidPlan) { SebasAgents::RunRecord.active_records(runs) }
+    end
+  end
 
-      # 两份活动记录（容量 1）→ invalid_plan
+  def test_migration_window_capacity_one_invalid_plan_on_multi_active
+    Dir.mktmpdir do |dir|
+      runs = File.join(dir, "runs")
+      FileUtils.mkdir_p(runs)
+      File.write(File.join(runs, "7.json"), JSON.generate({"schema" => 2, "issue" => 7, "phase" => "claimed"}),
+        encoding: "UTF-8")
       File.write(File.join(runs, "8.json"), JSON.generate({"schema" => 2, "issue" => 8, "phase" => "claimed"}),
         encoding: "UTF-8")
-      error = assert_raises(SebasAgents::InvalidPlan) { SebasAgents::RunRecord.scan_active(runs) }
-      assert_includes error.message, "2 份活动运行记录"
+      legacy = File.join(dir, "run.json")
+      File.write(legacy, JSON.generate({"schema" => 2, "issue" => 99, "phase" => "claimed"}), encoding: "UTF-8")
+
+      # 迁移窗口（legacy run.json 在场）内两份活动记录 → 容量 1 → invalid_plan
+      error = assert_raises(SebasAgents::InvalidPlan) do
+        cli_record_for_with_migration(dir, legacy)
+      end
+      assert_includes error.message, "迁移期容量"
     end
+  end
+
+  # 复刻 record_for 的迁移窗口语义：legacy 在场 + runs/ 多活动 → invalid_plan
+  def cli_record_for_with_migration(dir, legacy)
+    active = SebasAgents::RunRecord.active_records(File.join(dir, "runs"))
+    if active.length > 1 && File.exist?(legacy)
+      raise SebasAgents::InvalidPlan, "迁移窗口内存在 #{active.length} 份活动运行记录（迁移期容量 1），需人工确认迁移"
+    end
+    active.first
   end
 end
 
@@ -457,9 +482,9 @@ end
 # 试点豁免（§8 阶段 2）：两张 docs-only 工作包卡可并行；claim --dry-run 验证
 # claim_blocker 的「已有活动认领」判定放行 docs-only 对、拒绝非 docs 对。
 class PilotExemptionTest < Minitest::Test
-  def docs_issue(number, status: nil)
+  def docs_issue(number, status: nil, scope: ["docs/guide/"])
     automation = {"schema" => 1, "kind" => "work_package", "order" => [4, 6, 1],
-                  "depends_on" => [], "external" => [], "scope" => ["docs/"]}
+                  "depends_on" => [], "external" => [], "scope" => scope}
     body = "## 目标\n测试\n\n```json automation\n#{JSON.pretty_generate(automation)}\n```\n"
     {"number" => number, "title" => "docs card #{number}", "state" => "OPEN",
      "state_reason" => nil, "body" => body, "labels" => [], "milestone" => 1,
@@ -507,10 +532,25 @@ class PilotExemptionTest < Minitest::Test
   end
 
   def test_docs_only_pair_is_exempt_from_single_active_check
-    data = snapshot(issues: [docs_issue(11, status: "In progress"), docs_issue(12)])
+    # 目录不重叠（guide/ vs reference/）→ 试点豁免 → 可并行
+    data = snapshot(issues: [
+      docs_issue(11, status: "In progress", scope: ["docs/guide/"]),
+      docs_issue(12, scope: ["docs/reference/"])
+    ])
     status, payload = run_dry(data, 12)
     assert_equal 0, status
     assert_equal true, payload["ok"], payload["reasons"].inspect
+  end
+
+  def test_overlapping_docs_pair_is_refused
+    # 目录重叠（都是 guide/）→ 冲突 → 拒绝（CR-15）
+    data = snapshot(issues: [
+      docs_issue(11, status: "In progress", scope: ["docs/guide/"]),
+      docs_issue(12, scope: ["docs/guide/"])
+    ])
+    status, payload = run_dry(data, 12)
+    assert_equal 1, status
+    assert_equal false, payload["ok"]
   end
 
   def test_non_docs_pair_is_refused

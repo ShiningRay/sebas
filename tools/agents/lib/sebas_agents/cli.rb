@@ -2,6 +2,7 @@
 
 require "json"
 require "socket"
+require_relative "policy/scope"
 
 module SebasAgents
   # CLI：所有子命令默认 dry-run，只有 --apply 才写远端或本地版本文件。
@@ -118,14 +119,32 @@ module SebasAgents
       match[1]
     end
 
-    def record_for(options)
+    def record_for(options, issue: nil)
       explicit = RunRecord.new(path: options[:record]) if options[:record]
       return explicit.load if explicit
 
-      # 读路径不迁移（CR-0）；活动记录扫描 runs/（迁移期容量 1），
-      # 无活动记录时回落 v1 路径双读（迁移窗口）。
-      active = RunRecord.scan_active
-      return active if active
+      # CR-12：试点双卡下 runs/ 可有多份活动记录（每卡一份 per-issue 文件）。
+      # 指定 issue 时精确取该卡记录；未指定（next/plan 路由）返回首份活动
+      # 记录供 resume 路由——每张卡的所有权由其 lease 凭据管理，路由顺序
+      # 不影响正确性。迁移窗口（legacy run.json 仍在）内保持容量 1：出现
+      # 多份活动记录即 invalid_plan（Q10=B 迁移期语义不变）。
+      active = RunRecord.active_records
+      if issue
+        found = active.find { |data| data["issue"].to_i == issue }
+        return found if found
+
+        # 指定 issue 但 runs/ 无记录：回落 v1 路径双读（迁移窗口）
+        return RunRecord.new(path: RunRecord::DEFAULT_PATH).load if File.exist?(RunRecord::DEFAULT_PATH) && !options[:record]
+
+        return nil
+      end
+
+      migration_window = File.exist?(RunRecord::DEFAULT_PATH)
+      if active.length > 1 && migration_window
+        raise InvalidPlan, "迁移窗口内存在 #{active.length} 份活动运行记录（迁移期容量 1），需人工确认迁移"
+      end
+
+      return active.first if active.length >= 1
 
       RunRecord.new(path: RunRecord::DEFAULT_PATH).load
     end
@@ -454,10 +473,24 @@ end
     # 试点并行判定（M4x-WP2，#220 §8 阶段 2）：两张卡都是 docs-only 工作包
     # （kind=work_package 且 scope 全在 docs/ 下）时允许 coordinator 并行持有，
     # 所有权由各自 lease 凭据管理；任一卡不是 docs-only → 不豁免。
+    # CR-14/15：试点并行上限两张，且两卡 scope 不得重叠（目录不重叠约束）。
     def pilot_docs_pair?(issue, other, snap)
-      docs_only_work_package?(issue) && docs_only_card?(other)
-    rescue InvalidPlan
-      false
+      return false unless docs_only_work_package?(issue) && docs_only_card?(other)
+
+      other_active = snap.in_progress_issues.count { |item| item.number != issue.number }
+      return false if other_active >= 2 # 已有两张在途 = 试点容量（2）已满
+
+      begin
+        my_scope = Policy::Scope.normalize(docs_scope_of(issue), issue_number: issue.number)
+        other_scope = Policy::Scope.normalize(docs_scope_of(other), issue_number: other.number)
+      rescue InvalidPlan
+        return false
+      end
+      !Policy::Scope.conflict?(my_scope, other_scope)
+    end
+
+    def docs_scope_of(card)
+      Policy::Dependencies.automation_for(card)["scope"]
     end
 
     def docs_only_card?(card)
@@ -561,8 +594,9 @@ end
 
     def run_resume(argv)
       options, (number,) = Argv.parse(argv, required: ["issue"])
-      record = record_for(options)
       target = parse_number(number, "issue")
+      # CR-12：试点双卡下 runs/ 有多份活动记录——按目标 issue 取对应记录。
+      record = record_for(options, issue: target)
       raise InvalidPlan, "无本地运行记录，无法续跑 ##{number}" unless record
 
       if record["issue"].to_i != target
@@ -590,9 +624,11 @@ end
         "action" => "resume_issue"
       }
       if options[:apply]
-        # CR-7：显式 --record 优先，避免自定路径与默认 runs/ 分叉出两份记录。
-        record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: record["issue"])
-        payload["run_record"] = record.save(record.merge("phase" => "claimed"))
+        # CR-7/CR-16：显式 --record 优先；记录 Hash 与 RunRecord 对象分变量
+        # 保存，避免对象覆盖记录数据。缺省写回该卡自己的 per-issue 路径，
+        # 不与他卡记录交叉。
+        target_record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: record["issue"])
+        payload["run_record"] = target_record.save(record.merge("phase" => "claimed"))
       end
       Output.emit(payload, out: @out)
       EXIT_OK
