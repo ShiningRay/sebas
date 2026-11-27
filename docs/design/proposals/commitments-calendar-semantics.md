@@ -25,7 +25,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| outcome | text | ✓ | 期望结果（不是提示词） |
+| outcome | text | ✓ | 期望结果（不是提示词）。**始终必填**：缺失即捕获失败，不入库（不进 needs_clarification——澄清态只针对跟进依据缺失） |
 | source | text | ✓ | 用户原话 / 来源消息 / 外部对象链接 |
 | owner | text | ✓ | 持有者 |
 | state | enum(§3 九态) | ✓ | 生命周期状态 |
@@ -37,6 +37,8 @@
 | remind_policy | json | — | 提醒策略：提前量、渠道、纪律参数 |
 | plan_version | integer | ✓ | 计划版本号（不变式 2 判定依据） |
 | paused | boolean | ✓ | 暂停跟进标记（不变式 4：暂停不删配置） |
+| missing_fields | json | — | needs_clarification 态必填：缺失字段名数组（§3.3） |
+| clarify_by | timestamptz | — | needs_clarification 态必填：最晚澄清时间（到期未补走 T09） |
 
 来源=source 字段；完成条件=completion_condition；权限：首期单用户 owner 自有，外部对象权限存 ExternalLink。
 
@@ -70,6 +72,8 @@
 | plan_version | integer | ✓ | 投递时的计划版本（不变式 2 判定依据） |
 | channel | text | ✓ | 渠道 |
 | state | enum | ✓ | scheduled / sent / seen / actioned / superseded / expired / unknown |
+| supersedes | uuid | — | 被本条替代的 Delivery id；置 superseded 时必填此字段（不变式 2/伴随规则据此对账） |
+| sent_at | timestamptz | — | 实际发送时刻（投递历史事实；置 sent 时写入，后续 state 变迁不得清除） |
 
 ### 2.5 Task / WorkItem（可执行工作）
 
@@ -92,6 +96,7 @@
 | access | enum | ✓ | read_only / read_write |
 | busy | boolean | ✓ | busy / free |
 | wall_start / tz | timestamp / text | ✓ | 原墙钟开始 + IANA 时区 |
+| wall_end / duration | timestamp / interval | ✓ | 原墙钟结束或时长（二者择一存储，语义全文一致）——相同开始与时区的不同会议由此区分各自的结束与 busy 时段 |
 
 ### 2.7 WorkSession（一次计划执行时间）
 
@@ -153,14 +158,14 @@
 | # | from → to | 触发条件 | 拒绝条件 |
 |---|---|---|---|
 | T01 | 创建 → dormant | 有未来关注时间或暂候条件 | outcome 或 source 为空 |
-| T02 | 创建 → needs_clarification | 必要字段缺失且可给出最晚澄清时间 | 无缺失字段（应入 T01/T03/T04） |
+| T02 | 创建 → needs_clarification | 跟进依据缺失（关注时间/可观察条件无法给出）且可给出最晚澄清时间。outcome 始终必填：缺失即捕获失败不入库 | 跟进依据完整（应入 T01/T03/T04） |
 | T03 | 创建 → waiting_condition | 等待外部条件且条件可观察 | 条件不可观察（须转 needs_clarification） |
 | T04 | 创建 → ready | 立即可行动且无未来关注时间 | — |
 | T05 | dormant → ready | 关注时间到达或暂候条件满足 | followup_policy 静默窗口内且有未决通知 |
-| T06 | dormant → cancelled | 用户显式取消 | 已 completed（须走 T19 撤销路径） |
-| T07 | needs_clarification → ready | 用户补全全部缺失字段 | 补全后仍缺必填项 |
-| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」 | 已过 clarify_by 且仍缺字段（走 T09） |
-| T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动） | 缺失字段已补全 |
+| T06 | dormant → cancelled | 用户显式取消 | 已 completed——completed 不可撤销，重开需新开 Commitment 并以 ExternalLink 关联旧卡（不引用 T19） |
+| T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready | 补全后仍缺必填项；补全前不得直接进入 ready（clarify_by 期限约束继续有效） |
+| T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限约束**继续有效**，到期仍未补全走 T09 | 已过 clarify_by 且仍缺字段（走 T09） |
+| T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动）；补全前不得经任何路径进入 ready | 缺失字段已补全 |
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
 | T12 | waiting_condition → cancelled | 条件永久失效或用户取消 | — |
@@ -174,12 +179,17 @@
 | T20 | active → cancelled | 用户取消 | 副作用执行中（须先确认结果，outcome_unknown 记录） |
 | T21 | at_risk → active | 缓解措施生效，回到正轨 | — |
 | T22 | at_risk → overdue | 风险成为现实（截止已过） | 无硬截止 |
+| T27 | at_risk → completed | completion_condition 满足且有完成证据（同 T17 拒绝条件；T21 缓解回正轨行为保留） | 仅 Delivery 状态变化（同 T17） |
 | T23 | at_risk → cancelled | 降低承诺或取消 | — |
 | T24 | overdue → completed | 补救完成（completion_condition 满足） | 同 T17 拒绝条件 |
 | T25 | overdue → cancelled | 放弃；如改期则新开 Commitment 并链接旧卡 | — |
 | T26 | 任意活跃态 → 自身 | Checkpoint 无新信息（静默续眠） | 有未决通知时不得原样重推（不变式 1/2） |
 
-伴随规则：T10/T12/T23/T25/T26 执行时，该 Commitment 全部 `state=scheduled` 的未投递 Delivery 置 superseded（提案 §3.2「条件失效撤销过时提醒」）；completed/cancelled 使未来唤醒失去效力（提案 §3.3）。
+伴随规则（CR：区分「失效撤销」与「无变化静默」）：
+
+- **撤销类**（T09/T11/T12/T23/T25——条件失效、澄清超时、取消/放弃）：该 Commitment 全部 `state=scheduled` 的未投递 Delivery 置 superseded，且逐条回填 `supersedes` 关联；提案 §3.2「撤销尚未投递的过时提醒」仅适用于这些失效路径。
+- **静默类**（T26 无变化续眠）：**不得**撤销仍有效的未来唤醒与 scheduled Delivery——无新信息时原计划继续有效。
+- **完成类**（T17/T24/T27）：completed/cancelled 使未来唤醒失去效力（提案 §3.3），已 sent/seen 的历史 Delivery 保留原状态与 sent_at。
 
 ### 3.3 needs_clarification 澄清契约
 
@@ -213,12 +223,14 @@
   d1.commitment_id = d2.commitment_id
   AND d1.trigger_reason = d2.trigger_reason
   AND d1.plan_version = d2.plan_version
-  AND d1.created_at < d2.created_at
-  ⇒ d2.state IN {superseded, expired}
+  AND (d1.created_at, d1.id) < (d2.created_at, d2.id)   -- 先后顺序含同刻并列时按 id 决胜
+  AND d1.sent_at IS NOT NULL                            -- 曾实际发送（历史事实，后续 state 变迁不清除）
+  ⇒ d2.supersedes = d1.id                               -- 后条必须显式替代前条
 ```
 
-反驳反例：同 (commitment, trigger_reason, plan_version) 的第二条 Delivery 处于
-sent/seen/actioned 且未被 supersede 即违反。计划版本变更（plan_version 不同）产生的新投递不违反。
+反驳反例：同 (commitment, trigger_reason, plan_version) 的后条曾实际发送
+（sent_at 非空）而未以 supersedes 关联前条即违反。前条未发送（仅 scheduled）
+时由伴随规则的失效撤销处理，不属于本判定式。计划版本变更（plan_version 不同）产生的新投递不违反。
 
 ### 4.3 Delivery 状态不等于完成
 
@@ -236,11 +248,12 @@ sent/seen/actioned 且未被 supersede 即违反。计划版本变更（plan_ver
 
 ```
 ∀ Commitment C WHERE C.paused = true:
-  ∃ followup_policy(C) AND ∃ remind_policy(C)
-  （记录存在且完整；enabled 位可关，但行不得删除）
+  ∀ policy p ∈ {followup_policy(C), remind_policy(C)} 暂停前已存在:
+    p 暂停后仍存在（enabled 位可关，但行不得删除）
 ```
 
-反驳反例：C.paused = true 后 followup_policy 或 remind_policy 行被删除即违反。
+语义：保留**暂停前已存在**的策略配置；原本为空的策略允许继续为空——
+不要求暂停时两项策略都必须存在。反驳反例：暂停前已存在的配置行在暂停后被删除即违反。
 
 ## 5. 与提案 §9 首闭环的映射
 
