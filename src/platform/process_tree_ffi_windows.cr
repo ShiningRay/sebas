@@ -90,7 +90,7 @@
           # 创建调用级 Job：可带每进程内存上限（字节）。失败抛错——调用方
           # （runner）回收刚 spawn 的进程并返回装配错误。
           def self.create(memory_bytes : UInt64?) : Void*
-            h = LibJob.create_job_object_w(nil, nil)
+            h = LibJob.sebas_create_job_object_w(nil, nil)
             raise "CreateJobObjectW failed" if h.null? || h == INVALID_HANDLE_VALUE
             info = LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION.new
             flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -99,10 +99,10 @@
               info.process_memory_limit = LibC::SizeT.new(memory_bytes)
             end
             info.basic_limit_information.limit_flags = flags
-            ok = LibJob.set_information_job_object(h, JobObjectExtendedLimitInformationClass,
+            ok = LibJob.sebas_set_information_job_object(h, JobObjectExtendedLimitInformationClass,
               pointerof(info), sizeof(LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32)
             unless ok != 0
-              LibJob.close_handle(h)
+              LibJob.sebas_close_handle(h)
               raise "SetInformationJobObject failed"
             end
             h
@@ -113,7 +113,7 @@
           def self.assign(job : Void*, pid : UInt32) : Bool
             opened = open_process(pid)
             return false if opened.nil?
-            LibJob.assign_process_to_job_object(job, opened) != 0
+            LibJob.sebas_assign_process_to_job_object(job, opened) != 0
           ensure
             close(opened) if opened
           end
@@ -122,8 +122,8 @@
           # 随后关闭句柄。经 JobHandle 调用——直接持裸句柄调用只限
           # create/assign 失败的同步回收路径（句柄尚未共享）。
           def self.terminate_and_close(job : Void*) : Bool
-            ok = LibJob.terminate_job_object(job, 1_u32) != 0
-            LibJob.close_handle(job)
+            ok = LibJob.sebas_terminate_job_object(job, 1_u32) != 0
+            LibJob.sebas_close_handle(job)
             ok
           end
 
@@ -133,7 +133,7 @@
           end
 
           private def self.close(handle : Void*?) : Nil
-            LibJob.close_handle(handle) if handle
+            LibJob.sebas_close_handle(handle) if handle
           end
         end
       end
