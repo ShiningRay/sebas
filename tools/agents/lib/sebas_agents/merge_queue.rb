@@ -124,12 +124,15 @@ module SebasAgents
       (rows[0...insert_at] + payload + rows[insert_at..].to_a).join
     end
 
-    # 验收背压（#221 §4 / Proposal §7.4）：待验收的 PR 数量。
+    # 验收背压（#221 §4 / Proposal §7.4）：队列要处理的 PR 数量。
     #
-    # 口径不是「open PR 数」——那只反映有多少 PR 存在，不反映有多少**在等
-    # 独立核验**。这里只数队列真正要处理的那部分：租约动作是 `merge_ready`
-    # 的 PR（已 CLEAN、thread 清零，就等核验与合并）。`wait`/`needs_human`
-    # 的卡还没到验收这一步，算进去会让背压指标虚高、掩盖真实排队。
+    # 口径不是「open PR 数」——那只反映有多少 PR 存在。这里只数租约动作为
+    # `merge_ready` 的 PR：已进入合并队列、接下来要做核验 / update-branch /
+    # 合并的。`wait`（等 CI）与 `needs_human` 还没到这一步，算进去会让背压
+    # 虚高、掩盖真实排队。
+    #
+    # 注意 `merge_ready` **包含 BEHIND**：那类 PR 先要 `update_branch`，之后
+    # 还得重核验，所以它确实占验收通道；只是它的第一步不是核验。
     #
     # 为什么单独给方法而不是在调用方写 `count`：`plan` 与 `queue` 两处都要，
     # 口径必须同源，否则「一个说 3 一个说 5」。

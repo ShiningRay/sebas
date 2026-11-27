@@ -221,8 +221,9 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 `scope_conflict` / `metadata_invalid`，`detail` 为与 `next` 一致的原因文本）、
 `capacity`（快照容量，缺省 1；迁移窗口钳回 1）、`capacity_used`
 （在途卡数）与 `capacity_limit`（同 `capacity`）、
-`verifier_queue_depth`（待独立核验的 `merge_ready` 数——只数已 CLEAN、thread 清零、
-就等核验与合并的 PR；`wait`/`needs_human` 的卡还没到验收这一步）、`next_action`/`next_issue`
+`verifier_queue_depth`（`merge_ready` 的 PR 数——已进入合并队列、接下来要做
+核验 / update-branch / 合并的；**含 BEHIND**，因为它要先 update 再重核验，确实
+占验收通道。`wait`/`needs_human` 不计入）、`next_action`/`next_issue`
 （与 `next` 恒等的首选）。退出码 0 正常、1 `invalid_plan`、2 参数错误。
 不改任何写行为；本 coordinator 持有的在途卡走续做路由，异机在途卡在
 容量未满时不阻塞新候选。
