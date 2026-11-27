@@ -32,7 +32,7 @@
 | due_at | timestamptz | — | 硬截止（UTC）。关注时间不得晚于 due_at（T01 拒绝口径） |
 | prepare_window | interval | — | 截止前准备窗口 |
 | due_wall / due_tz | date / text | — | 原墙钟截止 + IANA 时区（与 due_at 互斥使用场景见提案 §4.2） |
-| completion_condition | text | — | 可观察完成条件 |
+| completion_condition | text | — | 可观察完成条件。**未配置（空）时**：完成走 `user_confirmed`（用户显式确认）——用户确认同时构成完成判定与完成证据（§4.3），不要求其他条件 |
 | followup_policy | json | — | 跟进策略：检查间隔、升级预算、静默窗口 |
 | remind_policy | json | — | 提醒策略：提前量、渠道、纪律参数 |
 | plan_version | integer | ✓ | 计划版本号（不变式 2 判定依据） |
@@ -200,12 +200,13 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 | T18 | active → at_risk | 进度落后于计划或容量恶化 | — |
 | T19 | active → overdue | 硬截止已过仍在执行 | 无硬截止 |
 | T20 | active → cancelled | 用户取消 | 副作用执行中（须先确认结果，outcome_unknown 记录） |
+| T20b | ready → cancelled | 用户取消 | 与 T20 同款副作用确认：执行中副作用先确认结果并记 outcome_unknown |
 | T21 | at_risk → active | 缓解措施生效，回到正轨 | — |
 | T22 | at_risk → overdue | 风险成为现实（截止已过） | 无硬截止 |
 | T27 | at_risk → completed | completion_condition 满足且有完成证据（同 T17 拒绝条件；T21 缓解回正轨行为保留） | 仅 Delivery 状态变化（同 T17） |
-| T23 | at_risk → cancelled | 降低承诺或取消 | — |
+| T23 | at_risk → cancelled | 降低承诺或取消 | 副作用执行中（同 T20：先确认结果，outcome_unknown 记录） |
 | T24 | overdue → completed | 补救完成（completion_condition 满足） | 同 T17 拒绝条件 |
-| T25 | overdue → cancelled | 放弃；如改期则新开 Commitment 并链接旧卡 | — |
+| T25 | overdue → cancelled | 放弃；如改期则新开 Commitment 并链接旧卡 | 副作用执行中（同 T20：先确认结果，outcome_unknown 记录） |
 | T26 | 任意活跃态 → 自身 | Checkpoint 无新信息（静默续眠） | 有未决通知时不得原样重推（不变式 1/2） |
 
 伴随规则（CR：区分「失效撤销」「用户取消」与「无变化静默」）：
@@ -270,6 +271,9 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
     WHERE e.kind IN {user_confirmed, agent_confirmed, condition_met}
     AND e.commitment_id = C.id
 ```
+
+- `condition_met`：completion_condition 已配置且满足；
+- `user_confirmed`：未配置完成条件时，用户显式确认**同时**构成完成判定与完成证据（T17/T24/T27 均可依此触发）。
 
 反驳反例：存在 completed 的 C，其全部关联事件仅为 Delivery 状态变迁
 （sent/seen/actioned/snoozed）而无上述三类证据之一即违反。
