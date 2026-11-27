@@ -206,38 +206,6 @@ module SebasAgents
     # 「锁被占」与「身份不符」这两种完全不同的处置。
     attr_reader :heartbeat_refusal
 
-    # worker 是否还活着（§F5）。三级证据，缺一即「不可判定」：
-    #   1. 记录里有 pid，且
-    #   2. 记录里的 host 就是本机（跨机 pid 无意义），且
-    #   3. `kill(0, pid)` 不抛 ESRCH。
-    # 返回 true（活着）/ false（已消失）/ nil（判不了：缺 pid、跨机、pid 非法）。
-    # 调用方必须把 nil 与 false 区分开：nil 不能当成「可以接管」。
-    def worker_alive?
-      data = load
-      return nil if data.nil? || data.empty?
-
-      pid = data["pid"]
-      # pid 可能是整数（save 写的就是 Integer）或字符串（外部手改）。
-      # `Integer(int, 10)` 会抛 ArgumentError——那会被下面的 rescue 吞成 nil，
-      # 于是整数 pid 永远判不了。这里先归一成整数再判。
-      pid_int = case pid
-                when Integer then pid.positive? ? pid : nil
-                when String then pid.match?(/\A\d+\z/) ? pid.to_i : nil
-                end
-      return nil if pid_int.nil?
-
-      recorded_host = data["host"].to_s
-      return nil if recorded_host.empty? || recorded_host != Socket.gethostname
-
-      Process.kill(0, pid_int)
-      true
-    rescue Errno::ESRCH
-      false
-    rescue Errno::EPERM
-      # 进程存在但无权发信号：活着。
-      true
-    end
-
     # 心跳是否过期（§F5）。
     # - 缺字段（key 不存在）→ 不判过期：老记录没有该字段，否则升级当次
     #   每张在途卡都被判死。仅这一种情形保留兼容。
