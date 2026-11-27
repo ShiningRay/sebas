@@ -11,11 +11,17 @@ require_relative "../../agents/lib/sebas_agents"
 class LeaseActionsTest < Minitest::Test
   include SnapshotHelpers
 
-  def in_progress_issue(number, scope: nil, labels: [], **rest)
+  def in_progress_issue(number, scope: ["src/"], labels: [], **rest)
     issue(number, body: automation(scope: scope), status: "In progress", labels: labels, **rest)
   end
 
-  def open_pr(number:, issue:, state: "CLEAN", branches: nil, threads: [], checks: nil, base: "main")
+  # files 默认给一个落在测试 scope 内的值：越界检测（F14）在无 file 清单时
+  # 按不可判定处理，缺省会把这些用例全部变成 needs_human，测不到原本的判定。
+  # 默认 files 落在 src/ 下：本文件用例的 scope 都是 src/ 或它的子目录。
+  # 越界检测（F14）生效后，给错目录的文件会让判定变成 needs_human，
+  # 于是测不到原本要测的分支。
+  def open_pr(number:, issue:, state: "CLEAN", branches: nil, threads: [], checks: nil,
+    base: "main", files: [{"filename" => "src/store/x.cr"}])
     {
       "number" => number,
       "head_ref_name" => branches || "feat/#{issue}",
@@ -24,7 +30,8 @@ class LeaseActionsTest < Minitest::Test
       "merge_state_status" => state,
       "checks" => checks,
       "closing_issues" => Array(issue),
-      "review_threads" => threads
+      "review_threads" => threads,
+      "files" => files
     }
   end
 
@@ -41,7 +48,8 @@ class LeaseActionsTest < Minitest::Test
       pull_requests: [
         open_pr(number: 50, issue: 1, state: "BLOCKED",
           checks: [{"name" => "spec / ubuntu-latest", "status" => "IN_PROGRESS", "conclusion" => nil}]),
-        open_pr(number: 51, issue: 2, state: "BEHIND", checks: [])
+        open_pr(number: 51, issue: 2, state: "BEHIND", checks: [],
+          files: [{"filename" => "src/keys/y.cr"}])
       ]
     )
     view = plan(data, records: [
@@ -115,7 +123,10 @@ class LeaseActionsTest < Minitest::Test
         in_progress_issue(2, scope: ["src/keys/"])
       ],
       capacity: 2,
-      pull_requests: [open_pr(number: 51, issue: 2, state: "BEHIND", checks: [])]
+      pull_requests: [
+        open_pr(number: 51, issue: 2, state: "BEHIND", checks: [],
+          files: [{"filename" => "src/keys/y.cr"}])
+      ]
     )
     view = plan(data, records: [
       {"issue" => 1, "phase" => "paused", "branch" => "feat/1"},

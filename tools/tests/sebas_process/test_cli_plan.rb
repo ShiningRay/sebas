@@ -184,6 +184,8 @@ class PlanCommandTest < Minitest::Test
       assert_equal 0, status
       payload = JSON.parse(out)
       assert_equal 2, payload["capacity"]
+      assert_equal 2, payload["capacity_limit"]
+      assert_operator payload["capacity_used"], :<=, payload["capacity_limit"]
       assert_equal 1, payload["capacity_used"]
       assert_equal "claim_issue", payload["next_action"]
     end

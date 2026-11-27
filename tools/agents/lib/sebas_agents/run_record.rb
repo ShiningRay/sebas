@@ -151,7 +151,102 @@ module SebasAgents
       FileUtils.rm_f(@path)
     end
 
+    # 心跳（§F5）：worker 存活证明。只写本卡记录，不动其他租约。
+    #
+    # 读—改—写必须在**跨进程**锁内完成：原子 rename 只保证「不写坏文件」，
+    # 挡不住两个进程各自读到旧快照再覆盖（后写的会吞掉先写的字段）。
+    # 用独占创建的锁文件（与 coordinator 锁同一套路），拿不到锁就放弃本次
+    # 心跳——心跳丢一次不影响正确性，覆盖别人的写入才会。
+    def heartbeat!(now: Time.now.utc)
+      with_record_lock(@path) do
+        data = load
+        break nil if data.nil? || data.empty?
+
+        save(data.merge("last_heartbeat_at" => now.iso8601))
+      end
+    end
+
+    # 心跳是否过期（§F5）。
+    # - 缺字段（key 不存在）→ 不判过期：老记录没有该字段，否则升级当次
+    #   每张在途卡都被判死。仅这一种情形保留兼容。
+    # - 空字符串 / 非法时间戳 → 过期（fail-closed）：字段存在却读不出来，
+    #   说明记录已被写坏，按过期交恢复路径核对。
+    # 判据只有时间——pid 在跨机/容器场景不可靠，不作为唯一依据。
+    def heartbeat_expired?(ttl_seconds, now: Time.now.utc)
+      data = load
+      return false if data.nil? || data.empty?
+      return false unless data.key?("last_heartbeat_at")
+
+      stamp = data["last_heartbeat_at"]
+      return true if stamp.nil? || stamp.to_s.empty?
+
+      Time.iso8601(stamp.to_s) < now - ttl_seconds
+    rescue ArgumentError
+      true
+    end
+
     private
+
+    # 跨进程独占锁：锁文件用 O_CREAT|O_EXCL 创建，内容写 pid 便于排查。
+    #
+    # 三种结局：
+    #   - 拿到锁 → 执行 → 释放
+    #   - 有锁且持有者进程仍活着 → 跳过本次心跳（不等待、不抢锁）
+    #   - 有锁但 pid 已不存在（崩溃残留）→ 接管：删掉再创建，只重试一次
+    #
+    # 残留锁必须能被接管，否则一次崩溃就让这张卡的心跳永久失效，F5 判据
+    # 变成「永远不过期」，恰好是最危险的反向失效。接管只看 pid 是否存活，
+    # 因此它防的是「同机进程已退出」，不防跨机同名 pid——那由 host 字段判。
+    def with_record_lock(path)
+      lock = "#{path}.lock"
+      FileUtils.mkdir_p(File.dirname(lock))
+      handle = acquire_lock(lock)
+      return nil unless handle
+
+      begin
+        handle.write(Process.pid.to_s)
+        handle.close
+        yield
+      ensure
+        # 正常路径与异常路径都清锁：写 pid / close 失败会留下半成品锁，
+        # 那会挡住后续所有心跳。
+        FileUtils.rm_f(lock)
+      end
+    end
+
+    # 返回已打开的锁句柄；拿不到（活跃持有者）返回 nil。
+    # 写 pid / 关闭失败时自己删锁再抛：否则半成品锁会挡住后续所有心跳。
+    def acquire_lock(lock)
+      handle = File.open(lock, File::CREAT | File::EXCL | File::WRONLY)
+      handle
+    rescue Errno::EEXIST
+      return nil unless stale_lock?(lock)
+
+      FileUtils.rm_f(lock)
+      begin
+        File.open(lock, File::CREAT | File::EXCL | File::WRONLY)
+      rescue Errno::EEXIST
+        nil
+      end
+    end
+
+    # 残留判定：读得到 pid 且该进程已不存在 → 残留；其余一律按活跃。
+    #
+    # 只有 `Errno::ESRCH`（进程不存在）才是残留证据。`EPERM` 表示进程存在但
+    # 无权限发信号——**那是活跃持有者**，删它的锁会破坏互斥，必须按活跃处理。
+    # 读不到 pid、pid 非法、文件已消失同样按活跃：锁刚创建还没写 pid 的窗口
+    # 里删它会伤到别人。
+    def stale_lock?(lock)
+      pid = File.read(lock, encoding: "UTF-8").strip
+      return false if pid.empty?
+
+      Process.kill(0, Integer(pid, 10))
+      false
+    rescue Errno::ESRCH
+      true
+    rescue ArgumentError, Errno::ENOENT, Errno::EACCES, Errno::EPERM
+      false
+    end
 
     def read_v2(path)
       data = JSON.parse(File.read(path, encoding: "UTF-8"))

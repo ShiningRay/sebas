@@ -25,7 +25,9 @@ ruby tools/sebas-process next
 |---|---|---|
 | `claim_issue` | 认领新卡 | `claim <issue> --dry-run` → `--apply`，再启动 Harness |
 | `resume_issue` | 续做已认领、尚无 PR 的卡 | 沿用本地记录里的 worktree |
-| `resume_pr` | 自己的在途 PR 需要推进 | 修 review / CI / BEHIND，或核验后合并 |
+| `resume_pr` | 自己的在途 PR 需要推进 | 修 review / CI / BEHIND |
+| `merge_ready` | PR 已 CLEAN 且 thread 清零 | 进合并队列：`queue --apply`（先 `--pre`） |
+| `release_ready` | PR 已合并、Evidence 待升级 | 升级后 `unclaim <issue> --apply` |
 | `wait` | 等 CI 或 review | 不做新卡，等下次运行 |
 | `blocked` | 无就绪卡 | 停，把 `excluded` 原因报告 Maintainer |
 | `needs_human` | 需要人决策 | 停，报告 Maintainer |

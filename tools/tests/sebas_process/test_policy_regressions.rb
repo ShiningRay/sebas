@@ -24,7 +24,7 @@ class PolicyRegressionTest < Minitest::Test
     pr = {
       "number" => 9, "state" => "OPEN", "merge_state_status" => "CLEAN",
       "checks" => [{"name" => "spec", "status" => "COMPLETED", "conclusion" => "SUCCESS"}],
-      "closing_issues" => [1], "review_threads" => []
+      "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => []
     }
     data = snapshot(
       issues: [issue(1, body: automation, labels: ["needs:human"], status: "In progress")],
@@ -63,7 +63,7 @@ class PolicyRegressionTest < Minitest::Test
 
   # 阻断 10：已有 open PR 的卡不得重复认领
   def test_card_with_open_pr_is_excluded_from_selection
-    pr = {"number" => 9, "state" => "OPEN", "closing_issues" => [1], "checks" => [], "review_threads" => []}
+    pr = {"number" => 9, "state" => "OPEN", "base_ref_name" => "main", "closing_issues" => [1], "checks" => [], "review_threads" => []}
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1])),
       issue(2, body: automation(order: [4, 2]))

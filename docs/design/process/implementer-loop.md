@@ -260,6 +260,7 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 | `resume_pr` | 修复或推进自己的在途 PR | 按需 |
 | `claim_issue` | 认领一张新的就绪卡 | 认领成功后启动 |
 | `merge_ready` | 在途 PR 已 CLEAN 且 thread 清零，进合并队列 | 否（队列推进） |
+| `release_ready` | PR 已合并、等 Evidence 升级后释放租约 | 否 |
 | `wait` | 等 CI、review 或其他正常异步事件 | 否 |
 | `blocked` | 当前没有就绪卡；列出前置与依赖原因，并在 `metadata_gaps` 列出挂不到 active milestone 的工作包 | 否 |
 | `needs_human` | 需要 Maintainer 决策或外部输入 | 否 |

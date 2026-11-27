@@ -97,6 +97,75 @@ module SebasAgents
         {issue: issue.number, scope: scope}
       end
 
+      # 合并队列自己会往租约分支追加这些文件（§6.3 Q3=B：worker 不写
+      # CHANGELOG，由队列统一追加）。它们出现在 pr.files 里不是 worker 越界，
+      # 若一并判越界，合法 PR 会在追加后被自己的队列动作挡成 needs_human。
+      QUEUE_OWNED_PATHS = ["CHANGELOG.md"].freeze
+
+      # 从变更清单里剔掉队列自有的路径。非数组原样返回，让 violations 自己报
+      # 「形状不对」——这里不替它兜底。
+      def without_queue_owned(files)
+        return files unless files.is_a?(Array)
+
+        files.reject do |file|
+          paths = candidate_paths(file)
+          # 空候选路径必须留下——`[].all?` 恒真，会把它当队列自有文件删掉，
+          # 于是 `violations([])` 返回 nil（零变更）静默放行。留下它，
+          # violations 会按「解析不出路径」拒绝。
+          !paths.empty? && paths.all? { |path| QUEUE_OWNED_PATHS.include?(path) }
+        end
+      end
+
+      # 越界检测（§6 §F14）：PR 变更文件必须落在租约 scope 内。
+      # scope 是调度预算、不是沙箱——这里只做事后检测，越界即停本卡。
+      #
+      # 缺失一律 fail-closed：PR 未带 files（快照未取）或租约缺 scope 时
+      # 都返回「不可判定」，调用方按越界处理。理由与 §6.2 同：安全边界不押在
+      # 「没看到就等于没违规」上。
+      # 返回 nil（未越界）或错误描述字符串。
+      def violations(files, lease_scope)
+        return "租约未声明 scope，无法判定越界" if lease_scope.nil?
+        return "PR 变更文件清单未取回，无法判定越界" if files.nil?
+        # 非数组同样是「取回的形状不对」：Array("x") 会变成 ["x"]、Array({}) 变
+        # 空数组，后者会被当成「零变更」静默放行。显式拒绝，交由调用方 fail-closed。
+        return "PR 变更文件清单不是数组（#{files.class}），无法判定越界" unless files.is_a?(Array)
+
+        outside = []
+        unparsable = 0
+        Array(files).each do |file|
+          paths = candidate_paths(file)
+          if paths.empty?
+            # 解析不出路径就等于「无从判定」——按越界计，不放行。
+            unparsable += 1
+            next
+          end
+          # 重命名条目要查两个路径：原路径也可能落在 scope 外（搬走别人的
+          # 文件同样是越界），只查新路径会漏。
+          paths.each do |path|
+            outside << path unless lease_scope.any? { |prefix| path.start_with?(prefix) }
+          end
+        end
+        outside.uniq!
+        return nil if outside.empty? && unparsable.zero?
+        return "PR 变更条目有 #{unparsable} 条解析不出路径，无法判定越界" if outside.empty?
+
+        text = "变更文件不在 scope 内：#{outside.first(5).join("、")}" \
+          "#{outside.length > 5 ? " 等 #{outside.length} 个" : ""}"
+        text += "（另有 #{unparsable} 条解析不出路径）" if unparsable.positive?
+        text
+      end
+
+      # 一条变更记录涉及的路径：filename（或 :path）加上重命名前的
+      # previous_filename。两项都查，任一越界即算越界。
+      def candidate_paths(file)
+        if file.is_a?(Hash)
+          [file["filename"] || file[:path],
+            file["previous_filename"] || file[:previous_filename]].compact
+        else
+          [file].compact
+        end.select { |path| path.is_a?(String) && !path.empty? }
+      end
+
       def leases_of(issues)
         Array(issues).map { |issue| lease_of(issue) }
       end

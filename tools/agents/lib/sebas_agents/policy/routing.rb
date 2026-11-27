@@ -64,6 +64,21 @@ module SebasAgents
             action: invalid(observed, "存在 #{in_progress.length} 张执行中 issue，超过容量 #{snapshot.capacity}（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}"))
         end
 
+        # F15 先于 settled 判定：merging 记录即使 PR 已合并也要走自己的对账
+        # （要抓目标分支被改写、PR 关闭未合并这两种），否则会被 settled 静默吞掉。
+        # 记录停在 merging 说明 coordinator 在合并步骤中途崩溃：
+        # - PR 已合并：目标分支不是 main → 人工；否则等 Evidence 升级后 unclaim
+        # - PR 仍 open：从归属校验与 --pre 重来（不沿用崩溃前的核验结论）
+        # 逐条对账：只取第一条会漏掉后面的 merging 记录（多租约并行下常见）。
+        # 首个能判定的结果立即返回；nil 表示该记录尚不自洽，交给下一条。
+        owned_records.select { |data| data["phase"] == "merging" }.each do |merging|
+          resume = reconcile_merging(merging, snapshot, observed)
+          next unless resume
+
+          return Routing.new(observed: observed, milestones: milestones, leases: [],
+            action: resume)
+        end
+
         # 已合并待释放：PR 已合并、或卡已以 completed 关闭，但本地记录还没走到
         # released。这是「合并 → unclaim」之间的正常状态，不是所有权冲突——
         # 判成 orphan 会让另一张在途卡（B）连带 invalid_plan。
@@ -155,6 +170,49 @@ module SebasAgents
         Routing.new(observed: observed, milestones: milestones, leases: leases, action: nil)
       end
 
+      # F15 的对账：返回 Action 或 nil（记录不自洽，交给后续通用分支）。
+      def reconcile_merging(record, snapshot, observed)
+        number = record["issue"].to_i
+        pr_number = record["pr"].to_i
+        pr = pr_number.positive? ? snapshot.pull_request(pr_number) : nil
+
+        if pr.nil?
+          return action("invalid_plan", observed,
+            "## #{number} 的记录为 merging 但找不到 PR ##{pr_number}：需人工核对远端后再恢复",
+            issue: number)
+        end
+
+        if pr.merged?
+          unless pr.base == "main"
+            return action("invalid_plan", observed,
+              "## #{number} 的 PR ##{pr_number} 已合并但目标分支是 #{pr.base.inspect}，" \
+              "可能未进入 main（base 缺失同样不可判定），须人工核对",
+              issue: number)
+          end
+          return action("release_ready", observed,
+            "## #{number} 的 PR ##{pr_number} 已合并（崩溃前已完成）：等 Evidence 升级后跑 unclaim",
+            issue: number)
+        end
+
+        if pr.open?
+          # 矛盾状态：卡已被人工以 completed 关闭，但 PR 还开着。若就此返回 nil，
+          # settled_record? 会因 issue.completed? 放行并给出 release_ready——而 PR
+          # 没合并，Evidence 与 unclaim 都完不成，F15 的重新核验也被跳过。
+          issue = snapshot.issue(number)
+          if issue&.completed?
+            return action("invalid_plan", observed,
+              "## #{number} 已以 completed 关闭但 PR ##{pr_number} 仍 open：合并未完成，" \
+              "须人工裁决（是重开卡还是关闭 PR）",
+              issue: number)
+          end
+          return nil
+        end
+
+        action("invalid_plan", observed,
+          "## #{number} 的记录为 merging 但 PR ##{pr_number} 是 #{pr.state} 且未合并：需人工裁决",
+          issue: number)
+      end
+
       # 记录已进入「等释放」态：PR 已合并，或卡已以 completed 关闭。
       # 两种都说明工作已完成，只是还没 unclaim；不该因此拖累其他租约。
       def settled_record?(data, snapshot)
@@ -190,11 +248,12 @@ module SebasAgents
             return LeaseAction.new(issue: number, action: "invalid_plan", pr: pr.number, owned: owned,
               reason: "PR ##{pr.number} 关联了 #{pr.closing_issues.length} 张卡（#{pr.closing_issues.join("、")}），一个 PR 只允许关联一张卡")
           end
-          # base 为空表示快照未取该字段（离线夹具/旧快照），不能据此判非法；
-          # 取到了就必须是 main（§7.2 三次核对里的第一处）。
-          unless pr.base.to_s.empty? || pr.base == "main"
+          # base 必须明确是 main（§7.2 三次核对里的第一处）。
+          # 缺失/空串不构成「未取到故放行」的理由：目标分支是安全边界，宁可
+          # 停下来补取。这与 files 缺失按不可判定处理同一口径。
+          unless pr.base == "main"
             return LeaseAction.new(issue: number, action: "invalid_plan", pr: pr.number, owned: owned,
-              reason: "PR ##{pr.number} 的目标分支是 #{pr.base.inspect}，只允许 main")
+              reason: "PR ##{pr.number} 的目标分支是 #{pr.base.inspect}（只允许 main；缺失即不可判定）")
           end
           expected = record && record["branch"].to_s
           if expected && !expected.empty? && pr.branch != expected
@@ -215,6 +274,20 @@ module SebasAgents
         end
 
         if pr
+          # 越界检测（§6 / F14）：PR 变更文件必须落在租约 scope 内。scope 是
+          # 调度预算，靠事后检测兜底——越界即停本卡，不继续推进合并。
+          #
+          # 无条件调用：files 为 nil（快照未取）时 Scope.violations 也会返回
+          # 「无法判定」，这里照样转 needs_human。理由与 §6.2 一致：安全边界不押在
+          # 「没取到就等于没违规」上。代价是快照缺 files 的在途 PR 会停下来——
+          # 这是有意的，让 coordinator 去补取，而不是默默放行。
+          lease_scope = Policy::Scope.lease_of(issue)[:scope]
+          violation = Policy::Scope.violations(Policy::Scope.without_queue_owned(pr.files), lease_scope)
+          if violation
+            return LeaseAction.new(issue: number, action: "needs_human", pr: pr.number,
+              owned: owned, reason: "##{number} 越界（#{violation}）：本租约暂停，等 Maintainer 裁决")
+          end
+
           classified = classify_pr(pr, issue, observed)
           return LeaseAction.new(issue: number, action: classified.action, pr: pr.number,
             owned: owned, reason: classified.reason)

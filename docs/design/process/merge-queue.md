@@ -17,6 +17,8 @@
 | 检查未完成 | `wait` | 本卡等，**释放算力**：容量有空位就补位认领 |
 | CLEAN 且 thread 清零 | `merge_ready` | 进合并队列；仍需 `--pre` 与独立核验 |
 | 本卡带 `needs:human` | `needs_human` | 只停本卡，不阻塞其他租约（Q9） |
+| 记录 `phase=merging` | 按 PR 状态对账（F15） | 已合并 → `release_ready`；仍 open → 重新核验；异常 → `invalid_plan` |
+| PR 变更文件越出 scope | `needs_human` | 越界即停（F14），交 Maintainer |
 
 多条动作同时存在时按优先级取一条返回：`merge_ready` > `resume_pr` > `resume_issue` >
 `needs_human`。合并就绪排最前是因为它有时效——main 每前进一次，在途 PR 就转 BEHIND，
@@ -98,7 +100,26 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 不同 PR 各写各的引用行，互不吞并。声明了 marker 但条目为空也算 pending——避免「空块 =
 已完成」的静默放行。没有 marker 的 PR 走旧路径，队列不要求追加。
 
-### 3.4 写守卫
+### 3.4 故障矩阵覆盖
+
+| 编号 | 判据 | 实现位置 | 测试 |
+|---|---|---|---|
+| F1–F4 | claim 各写入点崩溃 | `claim` 的写后回读与 `aborted` 对账 | `test_lease_coordinator.rb` |
+| F5 | worker 进程消失 | `RunRecord#heartbeat_expired?`（缺字段不判过期，时间戳非法判过期） | `test_fault_matrix.rb` |
+| F6 / F7 | 异机租约 / 有标签无凭据 | 逐租约 `owned?` + `claim` 的租约预检 | `test_selection_scheduling.rb`、`test_lease.rb` |
+| F8 | 记录与远端认领不是同一张卡 | `routing` 的 orphan 判定（`settled_record?` 排除已合并待释放） | `test_fault_matrix.rb`、`test_queue_regressions.rb` |
+| F9 | 同一张卡两份有效凭据 | `Lease.active_lease` 唯一性 | `test_lease.rb` |
+| F10 | PR 已建、记录未回填 | `lease_action` 按 `closing_issues` 找 PR；`branch` 与记录一致才续做，不一致 `invalid_plan` | `test_lease_actions.rb` |
+| F11 | 别的 PR 关联了本卡 / 一个 PR 关联多张卡 | `lease_action` 的归属校验（多卡、base、分支三项） | `test_lease_actions.rb`、`test_fault_matrix.rb` |
+| F12 | 合并后 unclaim 失败 | `unclaim` 幂等 + `release_lease_comment!` | `test_lease_coordinator.rb` |
+| F14 | worker 越界写 | `Scope.violations`：非数组 / 缺清单 / 缺 scope / 解析不出路径一律不可判定即 `needs_human`；重命名同时查原路径与新路径。队列自有的 `CHANGELOG.md` 先由 `Scope.without_queue_owned` 剔除，不算 worker 越界 | `test_fault_matrix.rb` |
+| F15 | 合并中途崩溃（`phase=merging`） | `reconcile_merging` 逐条对账：已合并且 base 明确为 main → `release_ready`（base 缺失即不可判定）；仍 open → 重核验，但卡已 completed 时属矛盾态 → `invalid_plan`；其余异常 → `invalid_plan` | `test_fault_matrix.rb` |
+
+**F13（main CI 被取消）不在上表**：它的处置是重跑被取消的 CI run 或补登记，属人工动作，
+判据与步骤写在 [pr-gate.md](pr-gate.md) 的「并发语义」节。`#289` 已让 main 侧不再互相取消，
+所以这条从「必然发生」降为「残余风险」。
+
+### 3.5 写守卫
 
 合并与 `update-branch` 是仓库里仅有的两条能改变 main 的命令，各自需要独立的写意图
 （`:merge_pr` / `:update_branch`），且形态必须完整匹配：
