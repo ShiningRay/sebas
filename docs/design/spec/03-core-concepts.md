@@ -129,6 +129,8 @@ gateway:
 
 要点：
 
+- **应用根目录（#274，accepted-design，待实现）**：默认 `~/.sebas`，可由 `SEBAS_HOME` 覆盖；默认配置为 `<home>/config.yaml`，省略 `gateway.data_dir` 时为 `<home>/data`。显式 `--config` 不改根目录，配置内相对路径以实际配置文件目录为基准。完整契约见 [proposals/sebas-home.md](../proposals/sebas-home.md)。
+
 - **端口**：`http.port` / `ipc.port` 可填 `0`，表示由内核分配空闲端口（listen 后回写实际端口）；spec 与同机多实例用它避开默认 18790/18791。
 
 - **渠道配置**：`channels.<type>.accounts[]` 为**数组结构**，每项一个账号一套凭据（autobot B1 的改造方向：`accounts: Array[AccountConfig]`；OpenClaw 的具名账号条目同构）。

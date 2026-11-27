@@ -12,6 +12,10 @@
 - **M3-WP4 插件层产品化**：每动作裁剪 mruby 子进程 runner（合成 prelude+plugin.rb 程序、stdin 单行 request、NDJSON 帧协议、watchdog 超时 kill、崩溃隔离、结构化错误）；`on_action`/`on_hook` 声明式 DSL 与 `capability` 同步 host-call（帧字段闭集、manifest 双重授权、未声明/未注册/重复注册拒绝）；manifest fail-closed 校验（id/SemVer/api_version/钩子闭集/超时上限）；`plugins:` 配置段接入 gateway（`plugin.<id>.<action>` 进宿主工具面，生命周期动作不进）；沙箱解释器 gembox 扩展 `sebas_read` 与自研 `mruby-sebas-json`（`mruby-sandbox` workflow 构建发布 + 插件验收 spec 注解释器直跑）（[#16](https://github.com/ShiningRay/sebas/issues/16)）。
 - **M4x Agent 分类与标签**：`AgentConfig` 新增 `category`/`tags`（词法 `[a-z0-9][a-z0-9-]*` 1..64，loader 先验后换逐条校验，重复标签报错不去重）；`AgentInstance` 首建时固化元数据（热更新不刷新存量实例，避免人格/标签漂移）；IPC 新增 `agents.list` 只读命令（读当前 `Config.agents` 真相源，按 id 字典序，未分类输出 JSON `null`）（[#261](https://github.com/ShiningRay/sebas/pull/261)）。
 
+### Documentation
+
+- #274 `~/.sebas` / `SEBAS_HOME` 设计快照、M5.0-WP3 排期、测试主目录隔离契约与 setup 路径联动（尚未实现产品行为）。
+
 ## [0.2.0] - 2026-11-26
 
 ### Added
