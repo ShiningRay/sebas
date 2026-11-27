@@ -37,13 +37,17 @@
 ## 整改阶段（真判定）
 
 审查跑完后读当前 head 上的 review，匹配 CodeRabbit 写的
-`Actionable comments posted: N`，N>0 即判整改：
+`Actionable comments posted: N`，**取最新一条带该文案的 review**，N>0 即判整改：
 
-| 情形 | 处理 |
+| 情形（只看最新一条带文案的 review） | 处理 |
 |---|---|
-| 有任何 review 的 N>0 | **job 红**，矩阵不跑，贴一条整改清单评论 |
-| 所有 review 都没有该文案（或无 review） | 放行 |
+| 最新一条的 N>0 | **job 红**，矩阵不跑，贴一条整改清单评论 |
+| 最新一条的 N=0 | 放行 |
+| 该 head 上没有任何带该文案的 review | 放行 |
 | 读不到 review 列表 / 接口形状异常 | 放行 + warning |
+
+判定不看「所有 review 里有没有 N>0」——那会让历史轮次永久卡住 PR，
+详见下一节。
 
 只看当前 head：旧 commit 的意见不该挡住已修过的新 commit。
 用 actionable 文案而不是 review thread，是因为 thread 可以被人手动 resolve
@@ -94,12 +98,19 @@ commit 脱身。
 - 只对基线审查方（`coderabbitai[bot]`）的 review 生效。别人发的 review 不触发
   任何动作，否则任何人都能伪造一条 `Actionable comments posted: 99` 反复烧
   runner（与 CWE-345 同型）。
+- 取 review 正文里**首个**匹配，不取最大值：正文可能引用示例文本
+  （本仓库的文档与测试就含该文案）。首个值才是审查方自己的判定。
 - N=0 或无该文案时不重跑：无整改项本来就不该多烧一轮。
 - 重跑落在同一 head 上（按 `head_sha=` 查 run），不换 sha。
-- rerun 失败只打 warning：重判是补漏、不是门禁本身，让它红会淹没真正的门闸结论。
+- 只重跑已完成的 run：进行中的 run 不允许 rerun（接口 403）。
+- 查询与重跑失败一律降级为 warning：重判是补漏、不是门禁本身，
+  让它红会淹没真正的门闸结论。
 - concurrency 分组与主 CI 的 `ci-<ref>` 分开，避免抢槽位。
-- 只重跑已完成的 run：进行中的 run 不允许 rerun（接口 403），而它本来就会读到
-  这条新 review。
+
+**这条补漏不是兜底保证，只是缩小窗口。** 它依赖『review 事件一定能触达』，
+而 runner 排队、API 抖动、fork PR 的只读 token 都会让 rerun 落空。
+所以判定「本轮审完了没有」仍以 head 上有没有本轮 review 记录为准
+（见 [implementer.md](implementer.md) §2 与合并前置第 6、7 条）。
 
 ## 为什么门闸可以红（与早期口径相反）
 

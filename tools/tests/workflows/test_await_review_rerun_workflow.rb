@@ -50,6 +50,23 @@ class AwaitReviewRerunWorkflowTest < Minitest::Test
     assert_includes job["if"].to_s, "github.event.review.user.login == 'coderabbitai[bot]'"
   end
 
+  # 取首个匹配，与 tools/await_review.rb 的 ACTIONABLE_PATTERN 同口径。
+  # review 正文可能引用示例文本（本仓库文档与测试就含该文案），取最大值会把
+  # 示例当结论。这条断言钉住 grep 的 -m1 与后续数字抽取。
+  def test_first_actionable_marker_wins
+    assert_includes text, "grep -oEm1 'Actionable comments posted:", "必须只取首个匹配"
+    refute_includes text, "sort -n", "取最大值会把正文里的示例当结论"
+    refute_includes text, "tail -1", "取最大值会把正文里的示例当结论"
+  end
+
+  # 查询失败与找不到 run 都必须降级为 warning 并以 0 退出：`set -e` 下让赋值
+  # 命令非零退会直接终止步骤，补漏 job 变红就淹没了真正的门闸结论。
+  def test_query_failures_degrade_to_warning
+    assert_includes text, '|| true)"', "head sha 读取必须兜住失败"
+    assert_includes text, "if ! run_id=", "run 查询失败必须走独立 warning 分支"
+    assert_includes text, "查询 $sha 的 CI run 失败", "查询失败要有明确 warning"
+  end
+
   def test_closed_pull_requests_are_skipped
     assert_includes workflow.dig("jobs", "rerun", "if").to_s, "pull_request.state == 'open'"
   end

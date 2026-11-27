@@ -229,8 +229,10 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
    两阶段登记（#126）下合并前的块是 `merged_into_main: false`、`merge_commit: null`，
    门禁接受这种形态；若块已声称 `merged_into_main: true` 而 PR 未合并，一律判伪造并阻断。
 5. `mergeStateStatus=CLEAN` 且未解决 review thread 为 0。
-6. head 上的 `await-review` 结论为 success。failure 必须整改后重推；
-   skipped / cancelled 视为未审，需在 PR 写明理由再合并。
+6. head 上的 `await-review` 结论为 success。**skipped / cancelled 不能替代 success**：
+   它们只说明这一轮没审成，不构成放行。处置是把必检恢复成能跑出结论的状态
+   （修好 draft 状态、等审查方恢复、必要时重跑 run），再等到 success 才合并。
+   failure 必须整改后重推。
 7. head 上存在本轮的审查记录（review 或明确的 skipped 说明）。
    **只有「没有 thread」不构成通过**——review 未到达时 thread 恒为零。
 
