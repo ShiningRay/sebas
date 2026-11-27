@@ -10,9 +10,27 @@ on:
 permissions:
   contents: read
 
+# 并发分组：组名沿用 ci-<ref>——PR 事件的 ref 是 refs/pull/<n>/merge，
+# push:main 与 workflow_dispatch 都是 refs/heads/main，天然分属两组，
+# 所以组名不需要按事件改写。
+#
+# 要改的是取消语义：
+#   1. PR 侧必须取消。门闸最长等 15 分钟，同一 PR 的新推送不取消旧轮，
+#      队列会堆积大量空等。
+#   2. main 侧不能取消。`evidence-register.yml` 只在 CI 结论为 success 时把
+#      Evidence 升级为 merged_into_main=true（`resolve_checks_url` 还要求触发的
+#      提交就是 merge commit）。下一次 push 顶掉正在跑的 main CI，那一轮的
+#      Evidence 就停在 false，后继卡永久 blocked。2026-11-27 实测 main 侧
+#      100 次 run 有 5 次 cancelled，其中 2 次是已跑 30 / 53 分钟后被下一次
+#      push 顶掉；合并队列上线后 main push 变密集，这个比例会放大。
+#
+# 边界（必须知道）：GitHub 每个并发组只保留一个 running + 一个 pending，
+# 第三个进入时 pending 会被替换。所以本改动只保证「合并队列串行时的每张卡
+# 都能拿到成功 CI」，不保证绕过队列的连续人工合并不丢 Evidence——那要靠
+# 合并队列的串行单位（等 Evidence 升级完再合下一张）。
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # 分支保护要求 spec / ameba 四项始终报告状态，所以这些 job 不整体跳过，
