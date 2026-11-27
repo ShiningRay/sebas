@@ -11,16 +11,21 @@
 # ## 为什么是 fail-open（与仓库其他工具的 fail-closed 相反）
 #
 # 仓库对 tools/** 的 fail-closed 纪律针对的是**授权与身份校验**：元数据缺失、
-# 身份不可信时必须拒绝。本脚本不是校验器，是**顺序门闸**——它只回答
-# 「审查这轮跑完了没有」，不判定任何质量结论。门闸卡住 PR 的代价
-# （draft 永远等不到、审查方被卸载或按 path_filters 全跳过、接口抖动）
-# 远大于「这一轮矩阵白跑」。因此下列情形一律放行并打 warning：
+# 身份不可信时必须拒绝。那条纪律的权威表述已同步限定范围（见
+# docs/design/process/implementer-loop.md 与 .coderabbit.yaml 的 tools/** 审阅指令），
+# 本脚本是其中显式声明的例外。
+#
+# 本脚本不是校验器，是**顺序门闸**——它只回答「审查这轮跑完了没有」，
+# 不判定任何质量结论。门闸卡住 PR 的代价（draft 永远等不到、审查方被卸载
+# 或按 path_filters 全跳过、接口抖动）远大于「这一轮矩阵白跑」。
+# 因此下列情形一律放行并打 warning：
 #
 #   - PR 是 draft（.coderabbit.yaml 的 reviews.auto_review.drafts=false，本就不审）
 #   - 宽限期内 check run 始终没出现（不在审查范围：path_filters 全排除、App 未启用）
 #   - 出现后超时仍未完成
 #   - 审查给出非 success 结论（failure / cancelled / timed_out / skipped …）
 #   - 连续多次读不到 check-runs
+#   - 缺 REPO / PR_NUMBER / HEAD_SHA（拿不到待审对象，无从等起）
 #
 # 真正的必检仍是 spec / ameba / verify。本门闸存在的意义是「省」，不是「拦」——
 # 因此它在任何情况下都不让下游被 skipped：GitHub 文档明确写着，依赖失败 job 的
@@ -36,6 +41,7 @@
 
 require "json"
 require "open3"
+require "timeout"
 
 module AwaitReview
   DEFAULT_APP_SLUG = "coderabbitai"
@@ -46,6 +52,9 @@ module AwaitReview
   DEFAULT_POLL_SECONDS = 20
   # 连续读接口失败到上限就放行：审查不是安全边界，不该因网络抖动阻塞合并。
   MAX_CONSECUTIVE_ERRORS = 3
+  # 单次 gh api 的硬超时。gh 无默认请求超时，挂住的 fetch 会一路拖到 job 超时，
+  # 而 job 被杀 = 下游必检 skipped = 可能不阻塞合并。
+  GH_CALL_TIMEOUT_SECONDS = 60
 
   class << self
     # 测试注入点：生产为 nil，走真实 gh 与真实时钟。
@@ -82,6 +91,9 @@ module AwaitReview
     )
   end
 
+  # 实测 normal 情况：本 PR 门闸等 9m45s（CodeRabbit 9m30s）。20 分钟 job 上限
+  # 只比 15 分钟脚本等待多 5 分钟，若 gh 调用本身挂起，job 会被 GitHub 杀掉。
+  # 步骤级超时保证「脚本挂住」也走不到「下游被 skip」那条路。
   def await(repo:, sha:, app_slug:, check_name:, timeout:, interval:, appear_timeout:, out:)
     start = now
     deadline = start + timeout
@@ -90,6 +102,10 @@ module AwaitReview
     # 实测正常创建延迟 18-23s，偶发 113s，故给 5 分钟宽限。
     # 取 min 是为了让 env 把 appear 配得比 timeout 更大时不会越过主上限。
     appear_deadline = [start + appear_timeout, deadline].min
+    # 见过之后再遇到接口错误不能退回「等出现」的口径——审查看起来还在跑，
+    # 就算 appear 窗已过也必须按主上限重试（CodeRabbit 在 PR #280 指出：
+    # 第 280s 读到 in_progress、第 320s 读失败时，异常分支把 runs 置空，
+    # 会按已过期的 appear_deadline 直接放行，矩阵在审查未完时起跑）。
     seen = false
     errors = 0
 
@@ -111,12 +127,17 @@ module AwaitReview
       current = now
 
       run = pick(runs, app_slug, check_name)
+      # 读失败不等于「没出现」：若之前见过它，这一轮只是暂时读不到，
+      # 不能把它当「从未出现过」而按出现窗放行。
+      read_failed = runs.empty? && errors.positive?
       if run.nil?
-        if current >= appear_deadline
-          return pass_open(out, "#{appear_timeout}s 内未出现 #{app_slug} 的 #{check_name} check run" \
-                                 "（该 PR 大概不在审查范围内）")
+        unless read_failed
+          if current >= appear_deadline
+            return pass_open(out, "#{appear_timeout}s 内未出现 #{app_slug} 的 #{check_name} check run" \
+                                   "（该 PR 大概不在审查范围内）")
+          end
+          out.puts "尚未出现 #{app_slug} 的 #{check_name} check run（head=#{sha[0, 8]}）"
         end
-        out.puts "尚未出现 #{app_slug} 的 #{check_name} check run（head=#{sha[0, 8]}）"
       else
         seen = true
         return judge(run, out) if run["status"] == "completed"
@@ -124,7 +145,8 @@ module AwaitReview
         out.puts "等待 #{check_name} 完成（status=#{run["status"]}）"
       end
 
-      remaining = (seen ? deadline : appear_deadline) - current
+      # 只有「从未出现过」才受出现窗约束；一旦见过，一律按主上限等。
+      remaining = (seen || read_failed ? deadline : appear_deadline) - current
       if remaining <= 0
         return pass_open(out, "等待审查超时 #{timeout}s，check run 仍未完成（status=#{run && run["status"]}）")
       end
@@ -178,10 +200,17 @@ module AwaitReview
   def gh_json(path)
     return gh_reader.call(path) if gh_reader
 
-    out, err, status = Open3.capture3("gh", "api", path)
+    # gh 自身没有默认请求超时：一次挂住的 fetch 会让整个 job 卡到 GitHub 的
+    # job 超时，而 job 被杀后下游 spec / ameba 是 skipped——那正是本门闸
+    # 最该避免的形态（见头注释）。用 Ruby 侧 Timeout 兜住单次调用。
+    out, err, status = Timeout.timeout(GH_CALL_TIMEOUT_SECONDS) do
+      Open3.capture3("gh", "api", path)
+    end
     raise "gh api #{path} 失败：#{err.strip}" unless status.success?
 
     JSON.parse(out)
+  rescue Timeout::Error
+    raise "gh api #{path} 超时（#{GH_CALL_TIMEOUT_SECONDS}s）"
   end
 
   def now

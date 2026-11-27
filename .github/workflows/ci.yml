@@ -108,8 +108,9 @@ jobs:
   await-review:
     name: await-review
     runs-on: ubuntu-latest
-    # 比脚本自身的等待上限（REVIEW_TIMEOUT_SECONDS 默认 900s）留出余量，
-    # 否则脚本的 fail-open 超时永远来不及触发，门闸会变成「硬失败」。
+    # 同 job 内的等待步骤还有自己的 timeout-minutes（16min），这里留 4 分钟
+    # 给 checkout / Ruby 选择 / 收尾。两层超时都必要：步骤超时管「脚本挂住」，
+    # job 超时管「步骤声明缺失或 checkout 卡住」。
     timeout-minutes: 20
     permissions:
       contents: read
@@ -158,6 +159,10 @@ jobs:
       - name: Await review on the head commit
         if: github.event_name == 'pull_request'
         continue-on-error: true
+        # 脚本自己会 fail-open，但它只在两次轮询之间检查 deadline，
+        # 拦不住一次挂住的 gh 调用。步骤级超时兜底：超时被杀后
+        # continue-on-error 仍让 job success，矩阵照常起跑。
+        timeout-minutes: 16
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}

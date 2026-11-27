@@ -253,12 +253,21 @@ issue 开工（status: Todo → In progress，tools/sebas-process claim）
 fail-open 的理由：这是**顺序门闸**，不是校验器，不判定任何质量结论。
 卡住 PR 的代价（draft 永远等不到、审查方被卸载、接口抖动）远大于「这一轮矩阵白跑」。
 质量门禁仍由 spec / ameba / verify 承担。与 tools/** 的 fail-closed 纪律不冲突——
-那条针对的是授权与身份校验。
+那条针对的是授权与身份校验，`await_review.rb` 是其中显式声明的例外
+（`.coderabbit.yaml` 的 tools/** 审阅指令里也写明，免得审查方把它报成缺陷）。
+
+三层超时各管一段：脚本的 `REVIEW_APPEAR_SECONDS`（300s）管「审查方没打算审」，
+`REVIEW_TIMEOUT_SECONDS`（900s）管「审得慢」，单次 `gh api` 硬超时（60s）管
+「调用挂住」，步骤 `timeout-minutes`（16）管「脚本整体卡死」，job（20）兜最后一层。
 
 门闸 job 的每个步骤都带 `continue-on-error`，让 job 恒为 success。
 这不是偷懒，而是堵一个真漏洞：GitHub 文档写明「依赖失败 job 的 job 会被 skipped
 且可能不阻塞合并」。若门闸把自己搞红，spec / ameba 会跟着 skip，PR 反而能在没有 spec
 的情况下合入——省 runner 的门闸顺手放走了一个真门禁。宁可退化成「照常跑矩阵」。
+
+一个反直觉的边界：**见过 check run 之后遇到接口错误，不能退回「等出现」的口径**。
+否则第 280s 读到 `in_progress`、第 320s 读失败时，会按已过期的出现窗直接放行，
+矩阵在审查未完时起跑。已见的审查一律按主上限重试。
 
 `docs` 与 `verify` 不进等待链：它们数秒完成，文档与锚点的反馈早给更有用。
 

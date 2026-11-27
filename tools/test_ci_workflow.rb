@@ -116,6 +116,26 @@ class CiWorkflowTest < Minitest::Test
       "job 超时 #{job_minutes}min 与脚本等待 #{script_seconds}s 至少留 2 分钟余量"
   end
 
+  # 等待步骤自己也要有超时：脚本仅在两次轮询之间查 deadline，拦不住一次
+  # 挂住的 gh 调用（gh 无默认请求超时）。步骤超时 + continue-on-error 才能
+  # 保证「脚本挂死」也不会把下游带成 skipped。
+  def test_wait_step_has_its_own_timeout
+    step = wait_step
+    refute_nil step["timeout-minutes"], "等待步骤必须声明 timeout-minutes"
+    assert_equal true, step["continue-on-error"], "超时被杀时也不能让 job 变红"
+
+    # 步骤超时要大于脚本等待，否则脚本的 fail-open 永远来不及触发。
+    assert_operator step["timeout-minutes"] * 60, :>, AwaitReview::DEFAULT_TIMEOUT_SECONDS
+    assert_operator step["timeout-minutes"], :<, jobs.dig(GATE, "timeout-minutes"),
+      "步骤超时必须小于 job 超时，才能在 job 被杀前先落地"
+  end
+
+  def wait_step
+    step = jobs.dig(GATE, "steps").find { |s| s["run"].to_s.include?("tools/await_review.rb") }
+    refute_nil step, "门闸必须真的调用 tools/await_review.rb"
+    step
+  end
+
   def test_step_passes_head_sha_not_merge_sha
     wait = jobs.dig(GATE, "steps").find { |s| s["run"].to_s.include?("tools/await_review.rb") }
     env = wait["env"] || {}

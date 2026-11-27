@@ -205,6 +205,47 @@ class AwaitReviewTest < Minitest::Test
     refute_includes @out.string, "不在审查范围内"
   end
 
+  # 审查进行中遇到接口错误，不能退回「等出现」的口径直接放行
+  # （CodeRabbit 在 PR #280 指出：第 280s 读到 in_progress、第 320s 读失败时，
+  # 旧实现把 runs 置空后按已过期的 appear_deadline 放行，矩阵在审查未完时起跑）。
+  def test_api_error_after_seen_does_not_fall_back_to_appear_window
+    stop_sleeping
+    AwaitReview.clock = fake_clock(step: 10)
+
+    in_progress = runs_page([check_run(status: "in_progress")])
+    done = runs_page([check_run(status: "completed", conclusion: "success")])
+    script = [in_progress] * 4 + [RuntimeError.new("HTTP 502"), in_progress, done]
+
+    queue = script.dup
+    AwaitReview.gh_reader = lambda do |path|
+      next({"draft" => false}) if path.include?("/pulls/")
+
+      page = queue.shift
+      raise page if page.is_a?(RuntimeError)
+
+      raise "测试数据用尽" if page.nil?
+
+      page
+    end
+
+    # 主上限放宽到 200s，才能在逻辑时钟推进下走到「读完」那一步；
+    # 关键断言是它没有在 20s 的 appear 窗一到就放行。
+    assert_equal 0, AwaitReview.run(env: env("REVIEW_TIMEOUT_SECONDS" => "200"), out: @out)
+    refute_includes @out.string, "不在审查范围内"
+    assert_includes @out.string, "审查已完成"
+  end
+
+  # 单次 gh 调用必须有硬超时：gh 默认无请求超时，挂住会拖到 job 被杀，
+  # 而 job 被杀 = 下游 spec/ameba skipped = 可能不阻塞合并。
+  def test_gh_call_has_hard_timeout
+    assert_kind_of Integer, AwaitReview::GH_CALL_TIMEOUT_SECONDS
+    assert_operator AwaitReview::GH_CALL_TIMEOUT_SECONDS, :<=, 120
+    assert_operator AwaitReview::GH_CALL_TIMEOUT_SECONDS, :>, 0
+    source = File.read(File.expand_path("await_review.rb", __dir__), encoding: "UTF-8")
+    assert_includes source, "Timeout.timeout(GH_CALL_TIMEOUT_SECONDS)",
+      "gh 调用必须包在 Timeout 里"
+  end
+
   # app 为 null 的 check run 不能让脚本崩溃（旧实现用 dig 会 TypeError）。
   def test_null_app_does_not_crash
     stop_sleeping
