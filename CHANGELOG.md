@@ -21,6 +21,14 @@
   - F5 心跳：`RunRecord#heartbeat!` / `#heartbeat_expired?`——缺 `last_heartbeat_at` 不判过期（兼容老记录），非法/空时间戳判过期；写入用 `O_CREAT|O_EXCL` 跨进程锁，活跃持有者跳过且不删锁，pid 已退出则接管（`ESRCH` 才算残留，`EPERM` 视为活跃）。
   - F15 合并中途崩溃：`reconcile_merging` 先于 settled 判定，逐条对账每条 `phase=merging` 记录。已合并且 base 明确为 main → `release_ready`；base 缺失/非 main → `invalid_plan`；PR 仍 open → 重走核验，但卡已 completed 时属矛盾态 → `invalid_plan`；已关闭未合并 → `invalid_plan`。
   - `release_ready` 动作写入 `role_prompts`、`implementer.md`、`implementer-loop.md`；`merge-queue.md` 新增故障矩阵覆盖表（F1–F15 逐条对到实现与测试，并说明 F13 为何不入表）。
+  - 合并队列补 `update_branch` 步骤：BEHIND 的 PR 由队列同步 main，改 head 后强制重核验；
+    合并准入收紧为 `merge_state_status=CLEAN`（DIRTY/BLOCKED/UNKNOWN 一律回 `verify_pre`）。
+  - head 核验绑定：运行记录新增 `verified_head`，`queue --apply` 的 `verify_pre` 步骤跑
+    `verify merge --pre` 并落记录；`update_branch` 与 CHANGELOG 追加改 head 后清空它。
+  - F5 心跳落地：`claim --apply` 写首个心跳；新增 `heartbeat <issue> --apply --pid <pid>`
+    子命令（锁内复核 lease_id/phase）；`Policy::Worker.state` 用「心跳过期 + 本机 pid 不存在」
+    双证据判失联，跨机/缺 host/证据不足一律不自动接管。
+  - `verifier_queue_depth` 改为「待核验的 `merge_ready` 数」，不再数 open PR。
 - **CI 并发语义按事件区分**（[#221](https://github.com/ShiningRay/sebas/issues/221)）：`ci.yml` 的 `cancel-in-progress` 改为只在 `pull_request` 事件为 true。main 侧不再互相取消——被顶掉的 main CI 会让 Evidence 停在 `merged_into_main: false`、后继卡永久 blocked。理由与边界见 [pr-gate.md](docs/design/process/pr-gate.md)。
 - **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：
   - `capacity` 配置：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限，缺键即 1（行为与单卡一致）；仅接受正整数，显式 null/浮点等非法值 fail-closed。
