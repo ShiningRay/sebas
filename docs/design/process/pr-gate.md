@@ -112,5 +112,24 @@ concurrency:
 的职责，本改动不覆盖。
 
 **边界三：测试失败是另一回事。** CI 跑完但结论为 `failure` 时，Evidence 同样停在
-`false`。本改动只消除「被取消」这一类，不改变失败语义——失败要靠修代码重跑，
-不是并发配置能解决的。
+`false`。本改动只防止「后续 main 运行取消正在跑的那一轮」，不承诺 CI 一定成功，
+也不改变失败语义。
+
+失败或漏跑之后的恢复路径有两条，都是**人工触发**，本改动不自动化：
+
+1. **对同一个 merge commit 重跑 CI。** `gh run rerun <run-id>`（或 Actions 页面
+   Re-run all jobs）。CI 成功后 `workflow_run` 自动触发 `evidence-register.yml`，
+   按 `head_sha` 反查 PR 并升级 Evidence，无需其它动作。
+2. **直接补登记。** `gh workflow run evidence-register.yml -f pr=<PR号>`。
+   `resolve_pr` 接受 dispatch 输入的 PR 号，脚本自己复核「已合并 + merge commit 在
+   main 上」，条件不满足即跳过、零写入。
+
+两种方式都要先确认原因：被取消就重跑；测试真的失败必须先修代码并重新合并，
+补登记不能把失败洗成通过（脚本 `merged_into_main?` 用 `git merge-base --is-ancestor`
+证实，且缺 `success` 的 CI 时 `resolve_checks_url` 会失败）。
+
+持续时间与角色归属：这类残留目前没有自动巡检，需要人发现。合并队列落地后由
+coordinator 的串行单位兜住（等 Evidence 升级完再合下一张，超时转人工，见
+[parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）；在此之前，
+发现责任落在 Maintainer 与当轮 Implementer——`plan` 的 `verifier_queue_depth`
+与 issue 上缺失的 `merged_into_main: true` 是唯一的信号源。
