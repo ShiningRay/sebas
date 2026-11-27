@@ -118,3 +118,53 @@ class QueueRegressionsTest < Minitest::Test
     assert_includes view.invalid_reason, "冲突"
   end
 end
+
+  # --- BEHIND 必须先 update-branch 再核验（#221 §3）---
+
+  # 直接给 merge 会把旧 base 上的核验结论带进合并；必须先 update，且之后重跑核验。
+  def test_behind_pr_requires_update_branch_first
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "BEHIND",
+      "head_sha" => "abc12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n")
+    assert_equal "update_branch", step
+    assert_includes reason, "update-branch"
+    assert_includes reason, "重跑 verify merge --pre", "更新后必须声明要重新核验"
+  end
+
+  # 非 CLEAN 一律不能进入 merge：DIRTY 有冲突、BLOCKED 缺审批、UNKNOWN 还在算。
+  def test_non_clean_states_never_reach_merge
+    %w[DIRTY BLOCKED UNKNOWN].each do |state|
+      pr = SebasAgents::Model::PullRequest.from_hash(
+        "number" => 50, "state" => "OPEN", "merge_state_status" => state,
+        "head_sha" => "abc12345", "base_ref_name" => "main",
+        "checks" => [], "review_threads" => [], "closing_issues" => [1]
+      )
+      step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n")
+      assert_equal "verify_pre", step, "#{state} 不能判成可合并"
+      assert_includes reason, state
+    end
+  end
+
+  def test_clean_pr_still_reaches_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "abc12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n")
+    assert_equal "merge", step
+  end
+
+  # base 缺失不放行：目标分支是安全边界，读不到即不可判定。
+  def test_missing_base_never_reaches_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "abc12345", "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n")
+    assert_equal "verify_pre", step
+    assert_includes reason, "不可判定"
+  end

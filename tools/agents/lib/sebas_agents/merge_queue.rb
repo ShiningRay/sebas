@@ -16,6 +16,7 @@ module SebasAgents
   module MergeQueue
     # 链上步骤，按执行顺序。queue_step 返回其中一项。
     STEPS = %w[
+      update_branch
       verify_pre
       changelog
       merge
@@ -177,17 +178,36 @@ module SebasAgents
         return ["verify_pre", "PR 已关闭但未合并，需人工裁决"]
       end
 
-      if pr.base.to_s != "" && pr.base != "main"
-        return ["verify_pre", "PR 目标分支是 #{pr.base.inspect}，只允许 main"]
+      # base 必须明确是 main：缺失不等于「未取到故放行」（与 scope.files 同口径）。
+      unless pr.base == "main"
+        return ["verify_pre", "PR 目标分支是 #{pr.base.inspect}（只允许 main；缺失即不可判定）"]
       end
       if pr.failing_checks.any?
         return ["verify_pre", "存在失败检查：#{pr.failing_checks.map { |c| c["name"] }.compact.join("、")}"]
       end
+      if pr.unresolved_threads.any?
+        return ["verify_pre", "有 #{pr.unresolved_threads.length} 条未解决 review thread"]
+      end
+
+      # BEHIND 必须先 update-branch 再核验（#221 §3）：main 前进后 PR 的 CI 与
+      # 独立核验跑的都是旧 base，直接合并等于把未在新 base 上验证过的结论合进去。
+      # `gh pr update-branch` 会改写 head，所以这一步之后必须重跑 `verify merge --pre`
+      # 与独立核验——新 head 在下一轮快照里自然落到 verify_pre，不复用旧结论。
+      if pr.merge_state_status == "BEHIND"
+        return ["update_branch", "PR ##{pr.number} 落后于 main，先 gh pr update-branch，之后必须重跑 verify merge --pre 与独立核验"]
+      end
+
       if pr.pending_checks.any?
         return ["verify_pre", "仍有未完成的检查"]
       end
-      if pr.unresolved_threads.any?
-        return ["verify_pre", "有 #{pr.unresolved_threads.length} 条未解决 review thread"]
+
+      # 只有 CLEAN 才能合并。BEHIND 已在上方分流；DIRTY（有冲突）、BLOCKED
+      # （缺必需审批或分支保护未满足）、UNKNOWN（GitHub 还在算）都不能当成
+      # 「可合并」——放过去等于让 `queue --apply` 去碰一个必然失败的合并。
+      unless pr.merge_state_status == "CLEAN"
+        return ["verify_pre",
+          "PR ##{pr.number} 的合并状态是 #{pr.merge_state_status.inspect}，只有 CLEAN 才可合并" \
+          "（DIRTY=有冲突需先解决；BLOCKED=缺审批或分支保护未满足）"]
       end
 
       # 「先 verify 再追加 CHANGELOG」：追加会改 head，追加之后的提交必须重新核验，

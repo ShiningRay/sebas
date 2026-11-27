@@ -53,6 +53,7 @@ module SebasAgents
       when "triage" then run_triage(argv.drop(1))
       when "digest" then run_digest(argv.drop(1))
       when "queue" then run_queue(argv.drop(1))
+      when "heartbeat" then run_heartbeat(argv.drop(1))
       when "mark-review" then run_mark_review(argv.drop(1))
       when "docs-check" then run_docs_check(argv.drop(1))
       when "release" then run_release(argv.drop(1))
@@ -224,6 +225,71 @@ def run_plan(argv)
   view.invalid_reason ? EXIT_REFUSED : EXIT_OK
 end
 
+    # 心跳子命令（#221 §5 F5）：worker 存活证明。
+    #
+    # 为什么不自动在每次命令里写：心跳要证明的正是「worker 还在跑」，只有 worker
+    # 自己的循环能给出这件事。coordinator 代写等于把「我读过它的记录」当成
+    # 「它还活着」，F5 就永远判不出来。所以这里只提供写入原语，由执行器按自己的
+    # 节奏调用（Implementer 长任务期间定期跑）。
+    #
+    # `--ttl` 给的是判据提示，不写进记录：租约的过期阈值属全局策略，
+    # 让每张卡自带阈值会变成「谁喊得久谁不死」。
+    def run_heartbeat(argv)
+      return help if argv.include?("--help") || argv.include?("-h")
+
+      options, (number,) = Argv.parse(argv, required: ["issue"])
+      target = parse_number(number, "issue")
+      ttl = options[:ttl] ? parse_number(options[:ttl], "ttl") : nil
+
+      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: target)
+      data = record.load
+      if data.nil? || data.empty?
+        payload = {"ok" => false, "issue" => target, "status" => "missing",
+          "reasons" => ["issue ##{target} 没有本地运行记录，无法写心跳（未认领或已释放）"]}
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      # 记录里的 issue 必须与请求一致：心跳写错卡会让另一张卡的失联判定失真。
+      if data["issue"].to_i != target
+        payload = {"ok" => false, "issue" => target, "status" => "mismatch",
+          "reasons" => ["请求 issue ##{target}，记录里是 ##{data["issue"]}，拒绝写入"]}
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      if data["phase"].to_s == "released"
+        payload = {"ok" => false, "issue" => target, "status" => "released",
+          "reasons" => ["issue ##{target} 的租约已释放，不再写心跳"]}
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      unless options[:apply]
+        payload = {"ok" => true, "dry_run" => true, "issue" => target, "status" => "would_write",
+          "phase" => data["phase"], "last_heartbeat_at" => data["last_heartbeat_at"],
+          "ttl_seconds" => ttl, "expired" => ttl ? record.heartbeat_expired?(ttl) : nil}
+        Output.emit(payload, out: @out)
+        return EXIT_OK
+      end
+
+      # nil 表示锁被活跃持有者占用（本进程没有写入），如实报告而不是假装成功。
+      written = record.heartbeat!
+      if written.nil?
+        payload = {"ok" => false, "issue" => target, "status" => "locked",
+          "reasons" => ["记录锁被另一个活跃进程占用，本次心跳放弃（不影响正确性，稍后重试）"]}
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
+
+      Output.emit(
+        {"ok" => true, "dry_run" => false, "issue" => target, "status" => "written",
+         "phase" => written["phase"], "last_heartbeat_at" => written["last_heartbeat_at"]},
+        out: @out
+      )
+      EXIT_OK
+    end
+
     # 合并队列（M4x-Parallel-WP3，#221；Proposal §7.2）。
     # 默认只读规划：算出队首 PR 与它在链上的下一步。
     # `--apply` 才推进队首一步（且只推进「合并」这一步）：
@@ -276,6 +342,15 @@ end
         return result["ok"] ? EXIT_OK : EXIT_REFUSED
       end
 
+      # BEHIND 是队列自己的第二步（#221 §3）：只推进 update-branch 一次，
+      # 不接着合并。理由：update-branch 改 head，旧 head 的核验结论全部作废，
+      # 必须由下一轮的 verify merge --pre 与独立核验重新给结论。
+      if entry.step == "update_branch"
+        result = update_branch!(options, entry, snap)
+        Output.emit(payload.merge(result), out: @out)
+        return result["ok"] ? EXIT_OK : EXIT_REFUSED
+      end
+
       if entry.step != "merge"
         payload["status"] = "blocked"
         payload["step"] = entry.step
@@ -307,10 +382,12 @@ end
         Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
-      unless current.base.to_s.empty? || current.base == "main"
+      # 目标分支必须明确是 main。空值不放行：合并前复核的价值就在于「看到才认」，
+      # 读不到 base 时合并等于把目标分支交给默认值。
+      unless current.base == "main"
         payload["status"] = "refused"
         payload["ok"] = false
-        payload["reasons"] = ["合并前复核：PR ##{pr.number} 的目标分支是 #{current.base.inspect}"]
+        payload["reasons"] = ["合并前复核：PR ##{pr.number} 的目标分支是 #{current.base.inspect}（只允许 main；缺失即不可判定）"]
         Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
@@ -333,11 +410,12 @@ end
       end
       # 第三次核对目标分支：gh pr merge 绑不住 base，写前复核与合并之间仍可能被改。
       # 这里只能发现错误，不能撤销已完成的合并——所以要求人工核对，不报 merged。
-      unless merged.base.to_s.empty? || merged.base == "main"
+      # 空值同样不放行：读不到 base 说明这次合并的目标分支不可确认。
+      unless merged.base == "main"
         payload["status"] = "aborted"
         payload["ok"] = false
-        payload["reasons"] = ["合并后复核：PR ##{pr.number} 的目标分支是 #{merged.base.inspect}，" \
-                              "已合并但可能未进入 main，须人工核对"]
+        payload["reasons"] = ["合并后复核：PR ##{pr.number} 的目标分支是 #{merged.base.inspect}（缺失即不可判定），" \
+                              "已合并但目标分支不可确认，须人工核对"]
         Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
@@ -387,6 +465,65 @@ end
       return nil unless block.is_a?(Hash)
 
       block["merged_into_main"]
+    end
+
+    # BEHIND 的队列步骤（#221 §3）：只做 update-branch，不接着合并。
+    #
+    # `gh pr update-branch` 改写 head，旧 head 上的 `verify merge --pre` 与独立
+    # 核验结论全部作废。所以这里显式要求「更新后重跑核验」，并把新 head 写进
+    # 结果，供下一轮快照比对——不复用、不推断。
+    def update_branch!(options, entry, snap)
+      payload = {"ok" => false, "status" => "refused", "step" => "update_branch"}
+      pr_number = entry.pr.to_i
+      pr = snap.pull_request(pr_number)
+      payload["reasons"] = ["PR ##{pr_number} 不在快照内，先重新取快照"] if pr.nil?
+      return payload if pr.nil?
+
+      unless pr.open?
+        payload["reasons"] = ["PR ##{pr_number} 已不是 open（#{pr.state}），不能 update-branch"]
+        return payload
+      end
+      unless pr.base == "main"
+        payload["reasons"] = ["PR ##{pr_number} 的目标分支是 #{pr.base.inspect}（只允许 main；缺失即不可判定）"]
+        return payload
+      end
+
+      # 写前重读：快照是规划时取的，BEHIND 状态可能已经变了（他人刚 update 过）。
+      gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
+      current = gateway.snapshot.pull_request(pr_number)
+      unless current&.open?
+        payload["reasons"] = ["更新前复核：PR ##{pr_number} 已不是 open"]
+        return payload
+      end
+      unless current.merge_state_status == "BEHIND"
+        payload["reasons"] = ["更新前复核：PR ##{pr_number} 状态已是 #{current.merge_state_status.inspect}，不再需要 update-branch"]
+        payload["status"] = "skipped"
+        payload["ok"] = true
+        return payload
+      end
+
+      old_head = current.head_sha
+      gateway.update_branch(pr_number, allow_write: true)
+      after = gateway.snapshot.pull_request(pr_number)
+      unless after&.open?
+        payload["reasons"] = ["更新后复核：PR ##{pr_number} 已不是 open，须人工核对"]
+        return payload
+      end
+      if after.head_sha == old_head
+        # 分支已与 main 同步时 update-branch 可能不改 head。此时不能声称「已更新
+        # 并需重新核验」，如实报告让 coordinator 判断。
+        payload["reasons"] = ["update-branch 未改变 head（#{old_head[0, 8]}），目标分支可能已不再 BEHIND，重新取快照确认"]
+        return payload
+      end
+
+      payload["ok"] = true
+      payload["status"] = "updated_branch"
+      payload["old_head_sha"] = old_head
+      payload["head_sha"] = after.head_sha
+      payload["required_next"] = ["verify merge --pre", "独立 Verifier 核验"]
+      payload["reasons"] = ["PR ##{pr_number} 已更新到 main（#{old_head[0, 8]} → #{after.head_sha[0, 8]}）；" \
+                            "旧核验结论作废，必须重跑 verify merge --pre 与独立核验"]
+      payload
     end
 
     # 把 PR 正文携带的条目追加进 CHANGELOG 并推到租约分支。
@@ -507,7 +644,11 @@ end
           "base_sha" => snap.main_sha,
           "coordinator_id" => ENV["SEBAS_COORDINATOR_ID"] || Socket.gethostname,
           "host" => Socket.gethostname,
-          "claimed_at" => claimed_at
+          "claimed_at" => claimed_at,
+          # F5：认领成功即写首个心跳，之后由 `heartbeat` 子命令续写。
+          # 没有这个起点，`heartbeat_expired?` 的「缺字段不判过期」会让新卡
+          # 永远不进入失联判定。
+          "last_heartbeat_at" => claimed_at
         })
 
         # 逐步留痕（CR-2/CR-3）：每步成功即更新对应标志，失败落 aborted 时
@@ -1277,6 +1418,7 @@ end
           next            读取 GitHub，输出单一动作（默认只读）
           plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 逐租约动作（#218/#221）
           queue           只读合并队列：队首 PR 与它在合并链上的下一步（#221）
+          heartbeat <issue> 写存活心跳（F5）；--apply 才写，`--ttl <秒>` 附过期判定
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed

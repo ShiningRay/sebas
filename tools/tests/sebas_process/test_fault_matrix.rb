@@ -8,6 +8,8 @@
 require_relative "../support/boot"
 require_relative "../../agents/lib/sebas_agents"
 
+require "socket"
+
 class FaultMatrixTest < Minitest::Test
   include SnapshotHelpers
 
@@ -355,6 +357,109 @@ class FaultMatrixTest < Minitest::Test
         encoding: "UTF-8")
       assert SebasAgents::RunRecord.new(path: path).heartbeat_expired?(600),
         "时间戳非法按过期处理（fail-closed）"
+    end
+  end
+
+  # --- F5：worker 存活判定（心跳 + pid 双证据）---
+
+  # 本机 + 心跳过期 + pid 不存在 → 失联，可续做。
+  def test_worker_gone_when_heartbeat_expired_and_pid_dead
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      now = Time.utc(2026, 1, 1, 12)
+      File.write(path, JSON.generate({
+        "schema" => 2, "issue" => 1, "phase" => "claimed", "branch" => "feat/1",
+        "host" => Socket.gethostname,
+        "last_heartbeat_at" => (now - 3600).iso8601, "pid" => 999_999
+      }), encoding: "UTF-8")
+
+      data = snap(
+        issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+        capacity: 2
+      )
+      result = SebasAgents::Policy::Selection.plan(data,
+        records: [JSON.parse(File.read(path))])
+      assert_equal "resume_issue", result.next_action
+      assert_includes result.leases.first.reason, "已失联"
+    end
+  end
+
+  # 本机 + 心跳过期但 pid 仍存活 → 不接管（长跑中的 worker）。
+  def test_worker_alive_blocks_takeover_even_if_heartbeat_stale
+    now = Time.utc(2026, 1, 1, 12)
+    data = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      capacity: 2
+    )
+    record = {
+      "issue" => 1, "phase" => "claimed", "branch" => "feat/1",
+      "host" => Socket.gethostname,
+      "last_heartbeat_at" => (now - 3600).iso8601,
+      # 用本进程 pid：一定存活
+      "pid" => Process.pid
+    }
+    result = SebasAgents::Policy::Selection.plan(data, records: [record])
+    # 逐租约判定：本卡 wait（不接管）；整体动作有容量空位时转为补位评估，
+    # 因此断言落在 leases 上——next_action 在这里不是「等这张卡」的意思。
+    assert_equal "wait", result.leases.first.action, "活着的 worker 不能被接管"
+    assert_equal 1, result.leases.first.issue
+    assert_includes result.leases.first.reason, "仍在运行"
+  end
+
+  # 新鲜心跳也算活着：pid 可能被复用，心跳是更直接的证据。
+  def test_fresh_heartbeat_keeps_worker_alive
+    now = Time.now.utc
+    data = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      capacity: 2
+    )
+    record = {
+      "issue" => 1, "phase" => "claimed", "branch" => "feat/1",
+      "host" => Socket.gethostname,
+      "last_heartbeat_at" => now.iso8601, "pid" => 999_999
+    }
+    result = SebasAgents::Policy::Selection.plan(data, records: [record])
+    assert_equal "wait", result.leases.first.action
+    assert_includes result.leases.first.reason, "仍在运行"
+  end
+
+  # 别的主机的租约不归本 coordinator（F6）：即使 pid 看起来已死也不接管。
+  def test_foreign_host_lease_is_not_taken_over
+    now = Time.now.utc
+    data = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      capacity: 2
+    )
+    record = {
+      "issue" => 1, "phase" => "claimed", "branch" => "feat/1",
+      "host" => "some-other-host",
+      "last_heartbeat_at" => (now - 3600).iso8601, "pid" => 999_999
+    }
+    result = SebasAgents::Policy::Selection.plan(data, records: [record])
+    assert_equal "wait", result.leases.first.action
+    assert_includes result.leases.first.reason, "非本机租约"
+  end
+
+  # 老记录没有心跳字段：不能据此判死（升级当次不许把在途卡全部判掉）。
+  def test_legacy_record_without_heartbeat_is_not_declared_dead
+    data = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      capacity: 2
+    )
+    record = {"issue" => 1, "phase" => "claimed", "branch" => "feat/1",
+              "host" => Socket.gethostname, "pid" => 999_999}
+    result = SebasAgents::Policy::Selection.plan(data, records: [record])
+    assert_equal "resume_issue", result.next_action
+    refute_includes result.leases.first.reason.to_s, "已失联"
+  end
+
+  # heartbeat! 顺手记 pid：写心跳的就是 worker 自己，pid 即存活判据。
+  def test_heartbeat_records_writer_pid
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({"schema" => 2, "issue" => 1, "phase" => "claimed"}), encoding: "UTF-8")
+      data = SebasAgents::RunRecord.new(path: path).heartbeat!
+      assert_equal Process.pid, data["pid"]
     end
   end
 end

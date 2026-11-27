@@ -39,6 +39,9 @@ module SebasAgents
 
       # 动作优先级：越小越先执行。合并就绪排最前（有时效：main 每前进一次就
       # BEHIND，越晚合并成本越高）；needs_human 排最后，它等的是人。
+      # 心跳 TTL 的唯一来源在 Worker::TTL；这里保留别名只为调用点可读。
+      WORKER_TTL = Worker::TTL
+
       ACTION_PRIORITY = {
         "merge_ready" => 0,
         "resume_pr" => 1,
@@ -51,7 +54,7 @@ module SebasAgents
       # leases 为全部在途卡的动作表。
       #
       # `record` 兼容旧的单条本地记录，`records` 承载 per-issue 多租约。
-      def routing(snapshot, record, records: [])
+      def routing(snapshot, record, records: [], now: Time.now.utc)
         milestones = Milestones.normalize(snapshot.milestones)
         observed = snapshot.main_sha
         owned_records = normalize_records(record, records)
@@ -72,7 +75,8 @@ module SebasAgents
         # 逐条对账：只取第一条会漏掉后面的 merging 记录（多租约并行下常见）。
         # 首个能判定的结果立即返回；nil 表示该记录尚不自洽，交给下一条。
         owned_records.select { |data| data["phase"] == "merging" }.each do |merging|
-          resume = reconcile_merging(merging, snapshot, observed)
+          resume = MergingReconcile.call(merging, snapshot, observed,
+            ->(name, obs, reason, issue:) { action(name, obs, reason, issue: issue) })
           next unless resume
 
           return Routing.new(observed: observed, milestones: milestones, leases: [],
@@ -119,7 +123,7 @@ module SebasAgents
         # 逐租约求值（§4.1）：每张在途卡一个动作，互不阻塞。
         leases = in_progress.map do |issue|
           data = owned_records.find { |item| item["issue"].to_i == issue.number }
-          lease_action(issue, snapshot, observed, owned: !data.nil?, record: data)
+          lease_action(issue, snapshot, observed, owned: !data.nil?, record: data, now: now)
         end
 
         # 任一租约 invalid → 整体拒绝：不确定的所有权不能被其他租约的进度掩盖。
@@ -170,49 +174,6 @@ module SebasAgents
         Routing.new(observed: observed, milestones: milestones, leases: leases, action: nil)
       end
 
-      # F15 的对账：返回 Action 或 nil（记录不自洽，交给后续通用分支）。
-      def reconcile_merging(record, snapshot, observed)
-        number = record["issue"].to_i
-        pr_number = record["pr"].to_i
-        pr = pr_number.positive? ? snapshot.pull_request(pr_number) : nil
-
-        if pr.nil?
-          return action("invalid_plan", observed,
-            "## #{number} 的记录为 merging 但找不到 PR ##{pr_number}：需人工核对远端后再恢复",
-            issue: number)
-        end
-
-        if pr.merged?
-          unless pr.base == "main"
-            return action("invalid_plan", observed,
-              "## #{number} 的 PR ##{pr_number} 已合并但目标分支是 #{pr.base.inspect}，" \
-              "可能未进入 main（base 缺失同样不可判定），须人工核对",
-              issue: number)
-          end
-          return action("release_ready", observed,
-            "## #{number} 的 PR ##{pr_number} 已合并（崩溃前已完成）：等 Evidence 升级后跑 unclaim",
-            issue: number)
-        end
-
-        if pr.open?
-          # 矛盾状态：卡已被人工以 completed 关闭，但 PR 还开着。若就此返回 nil，
-          # settled_record? 会因 issue.completed? 放行并给出 release_ready——而 PR
-          # 没合并，Evidence 与 unclaim 都完不成，F15 的重新核验也被跳过。
-          issue = snapshot.issue(number)
-          if issue&.completed?
-            return action("invalid_plan", observed,
-              "## #{number} 已以 completed 关闭但 PR ##{pr_number} 仍 open：合并未完成，" \
-              "须人工裁决（是重开卡还是关闭 PR）",
-              issue: number)
-          end
-          return nil
-        end
-
-        action("invalid_plan", observed,
-          "## #{number} 的记录为 merging 但 PR ##{pr_number} 是 #{pr.state} 且未合并：需人工裁决",
-          issue: number)
-      end
-
       # 记录已进入「等释放」态：PR 已合并，或卡已以 completed 关闭。
       # 两种都说明工作已完成，只是还没 unclaim；不该因此拖累其他租约。
       def settled_record?(data, snapshot)
@@ -239,7 +200,7 @@ module SebasAgents
 
       # 单张在途租约的动作（§4.1）。归属校验排在一切动作之前：PR 不是本租约的
       # PR、目标分支不是 main、一个 PR 关联多卡，一律 invalid_plan，不看检查是否全绿。
-      def lease_action(issue, snapshot, observed, owned:, record: nil)
+      def lease_action(issue, snapshot, observed, owned:, record: nil, now: Time.now.utc)
         number = issue.number
         pr = snapshot.pull_requests.select(&:open?).find { |item| item.closing_issues.include?(number) }
 
@@ -298,15 +259,29 @@ module SebasAgents
         return LeaseAction.new(issue: number, action: "invalid_plan", owned: owned,
           reason: "##{number} 已认领但缺本地运行记录") if owned && (record.nil? || record.empty?)
 
-        reason = if record && record["phase"] == "claiming"
-          "认领中断：本地记录为 claiming 且远端已标执行中，回读补全为 claimed"
-        else
-          "续做已认领卡，沿用 worktree #{(record && record["worktree"]).inspect}"
+        if record && record["phase"] == "claiming"
+          return LeaseAction.new(issue: number, action: "resume_issue", owned: owned,
+            reason: "认领中断：本地记录为 claiming 且远端已标执行中，回读补全为 claimed")
         end
+
+        # F5：worker 还活着就不能派第二个 worker 做同一张卡。这是 F5 真正要防的
+        # 事故——双开两个 worker 写同一分支，比「晚一点续做」贵得多。
+        state, detail = Worker.state(record, now: now, ttl: WORKER_TTL)
+        if state == :alive
+          return LeaseAction.new(issue: number, action: "wait", owned: owned,
+            reason: "worker 仍在运行（#{detail}）：不接管，等它自己推进或退出")
+        end
+        if state == :foreign
+          # F6：别的机器的租约不归本 coordinator。这里不能给 resume_issue——
+          # 那等于让本机去改别人正在做的分支。
+          return LeaseAction.new(issue: number, action: "wait", owned: owned,
+            reason: "非本机租约（#{detail}）：不接管，占容量等对方 coordinator 收口")
+        end
+
+        reason = "续做已认领卡，沿用 worktree #{(record && record["worktree"]).inspect}"
+        reason = "worker 已失联（#{detail}）：沿用原 worktree 续做" if state == :gone
         LeaseAction.new(issue: number, action: "resume_issue", owned: owned, reason: reason)
       end
-
-
 
       # 找本 Implementer 的在途 PR：优先本地记录，其次「任一认领/记录关联」，再退到
       # 「PR 关联了未认领但属于本仓 open 卡」——后者用于发现重复开工风险。
@@ -399,17 +374,9 @@ module SebasAgents
       end
 
 
-      def action(name, observed, reason, milestone: nil, issue: nil, excluded: [], metadata_gaps: [])
-        Model::Action.new(action: name, milestone: milestone, issue: issue,
-          reason: reason, observed_main: observed, excluded: excluded,
-          metadata_gaps: metadata_gaps)
-      end
-
-      def invalid(observed, reason)
-        action("invalid_plan", observed, reason)
-      end
-
       # 动作构造器：唯一定义处（Selection 转调这里，保持两处形状一致）。
+      # 此前本文件重复定义了两份，Ruby 用后者覆盖前者——行为一致但重复定义
+      # 会让改一处漏一处，已合并。
       def action(name, observed, reason, milestone: nil, issue: nil, excluded: [], metadata_gaps: [])
         Model::Action.new(action: name, milestone: milestone, issue: issue,
           reason: reason, observed_main: observed, excluded: excluded,

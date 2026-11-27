@@ -47,16 +47,17 @@
 
 ```sh
 ruby tools/sebas-process queue              # 只读：entries / head / step / blocked_by
-ruby tools/sebas-process queue --apply      # 推进队首一步（只做「合并」这一步）
+ruby tools/sebas-process queue --apply      # 推进队首一步（update-branch / 追加 CHANGELOG / 合并）
 ```
 
 ### 3.1 链上步骤
 
-顺序固定为 **verify_pre → changelog → merge → evidence → release**：
+顺序固定为 **update_branch → verify_pre → changelog → merge → evidence → release**：
 
 | 步骤 | 判定 | 为什么在这一步 |
 |---|---|---|
-| `verify_pre` | 归属、目标分支、失败检查、未完成检查、未解决 thread | `verify merge --pre` 是合并前唯一能判定的门禁 |
+| `update_branch` | `merge_state_status=BEHIND` | main 前进后旧 base 上的核验结论全部作废，必须先 `gh pr update-branch`；它改 head，所以之后必须重跑 `verify merge --pre` 与独立核验 |
+| `verify_pre` | 归属、目标分支（必须明确 `main`）、失败检查、未完成检查、未解决 thread、`merge_state_status=CLEAN` | `verify merge --pre` 是合并前唯一能判定的门禁；DIRTY/BLOCKED/UNKNOWN 一律不能进入合并 |
 | `changelog` | PR 正文声明了条目而 `[Unreleased]` 还没有本 PR 的引用行 | 追加会改 head，必须排在核验之后、合并之前 |
 | `merge` | `gh pr merge --squash --match-head-commit <head>` | head 绑定让 GitHub 拒绝合并未核验的提交 |
 | `evidence` | merge commit 的 CI 成功、`merged_into_main: true` | 异步，由 `evidence-register.yml` 写 |
@@ -66,6 +67,7 @@ ruby tools/sebas-process queue --apply      # 推进队首一步（只做「合�
 
 | 队首 step | `--apply` 做什么 |
 |---|---|
+| `update_branch` | 只做 `gh pr update-branch`；改 head 后强制要求重跑核验，不接着合并 |
 | `changelog` | 把 PR 正文的条目追加进 `[Unreleased]`（幂等） |
 | `merge` | 先 `verify merge --pre`，再绑定 head squash 合并，合并后复核 |
 | `verify_pre` | 不做写，报出阻塞原因 |
@@ -105,7 +107,7 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 | 编号 | 判据 | 实现位置 | 测试 |
 |---|---|---|---|
 | F1–F4 | claim 各写入点崩溃 | `claim` 的写后回读与 `aborted` 对账 | `test_lease_coordinator.rb` |
-| F5 | worker 进程消失 | `RunRecord#heartbeat_expired?`（缺字段不判过期，时间戳非法判过期） | `test_fault_matrix.rb` |
+| F5 | worker 进程消失 | `RunRecord#heartbeat!`（每次写心跳同时记 pid）/ `#heartbeat_expired?` / `#worker_alive?`；路由侧 `worker_state` 双证据：心跳新鲜或本机 pid 存活 → `wait` 不接管；心跳过期且本机 pid 不存在 → `resume_issue`；跨机 → 不接管（F6）；缺心跳字段的旧记录不判死 | `test_fault_matrix.rb` |
 | F6 / F7 | 异机租约 / 有标签无凭据 | 逐租约 `owned?` + `claim` 的租约预检 | `test_selection_scheduling.rb`、`test_lease.rb` |
 | F8 | 记录与远端认领不是同一张卡 | `routing` 的 orphan 判定（`settled_record?` 排除已合并待释放） | `test_fault_matrix.rb`、`test_queue_regressions.rb` |
 | F9 | 同一张卡两份有效凭据 | `Lease.active_lease` 唯一性 | `test_lease.rb` |
