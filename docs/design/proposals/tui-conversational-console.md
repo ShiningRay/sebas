@@ -51,7 +51,12 @@ Sebas 当前的用户可见入口：
 
 **零 binding 启动**：`sebas tui` 启动时先解析本机 `tui/local/<peer>` 的 binding。无 binding、目标 agent 不存在或配置无效时，给出明确错误 + 配置示例，**不创建空会话、不进入可输入状态**。默认 binding 的引导与 #145（初始安装配置引导）协同，不在本期范围。
 
-**首个会话预登记**：binding 有效但会话列表没有该 peer 的 TUI 会话时，TUI 在发送第一条消息前调用认证写命令 `sessions.ensure {session_key, peer}`。服务端重新解析 binding，校验它与 `session_key` 的 agent/account/channel/peer 四段一致，然后调用 `Sessions::Lifecycle::Store#touch` 将 active 会话 upsert 到 `sessions` 表；该操作只预登记生命周期，不写 transcript、不创建 intent、不触发 agent turn。`sessions.list` 合并 `sessions` 表与既有 transcript 会话键并去重，因此空历史会话也能列出、选中并满足 §3.1 的输入契约。`sessions.ensure` 只支持 `local:tui` 目标，重复调用幂等，归档会话返回错误；不借它预建其他渠道会话。
+**首个会话预登记**：binding 有效但会话列表没有该 peer 的 TUI 会话时，TUI 在发送第一条消息前调用认证写命令 `sessions.ensure {session_key, peer}`，契约如下：
+
+- 服务端重新解析 binding，校验它与 `session_key` 的 agent/account/channel/peer 四段一致，然后调用 `Sessions::Lifecycle::Store#touch` 将 active 会话 upsert 到 `sessions` 表。
+- 该操作只预登记生命周期，不写 transcript、不创建 intent、不触发 agent turn。
+- `sessions.list` 合并 `sessions` 表与既有 transcript 会话键并去重，因此空历史会话也能列出、选中并满足 §3.1 的输入契约。
+- `sessions.ensure` 只支持 `local:tui` 目标，重复调用幂等，归档会话返回错误；不借它预建其他渠道会话。
 
 ## 3. IPC 协议扩展
 
@@ -63,10 +68,18 @@ Sebas 当前的用户可见入口：
 {"type": "tui.input", "id": "...", "session_key": "agent:main:local:tui:operator", "peer": "operator", "content": "帮我看下昨天 cron 跑的结果"}
 ```
 
-- `session_key`：**必填**，取 TUI 当前选中会话；服务端校验其五段结构中的 `account_id="local"` 且 `channel_type="tui"`，`peer` 段等于帧内 `peer`，且 `agent` 段等于按 `tui/local/peer` 实时解析出的 binding agent。校验失败返回 `error_response("tui.input requires the selected tui session")`，**不创建 intent、不入 bus**；binding 热换导致旧选中会话与新 agent 不一致时同样拒绝，TUI 提示重新选择/预登记会话。email/telegram 等会话只读，不能借 TUI 输入框跨渠道发言；
+- `session_key`：**必填**，取 TUI 当前选中会话，服务端按以下规则校验：
+  - `account_id="local"`、`channel_type="tui"`，且 `peer` 段等于帧内 `peer`；
+  - `agent` 段等于按 `tui/local/peer` 实时解析出的 binding agent；
+  - 失败返回 `error_response("tui.input requires the selected tui session")`，**不创建 intent、不入 bus**。binding 热换导致旧选中会话与新 agent 不一致时同样拒绝，TUI 提示重新选择/预登记会话；
+  - email/telegram 等会话只读，不能借 TUI 输入框跨渠道发言。
 - `peer`：TUI 侧用户标识，默认 `"operator"`，多 TUI 实例可各起 peer 隔离会话；`session_key` 与 `peer` 同时发送是为显式绑定当前选中项，不是任选会话的旁路；
 - `content`：原始输入文本；
-- 响应：标准 `ok_response`，附 `event_id`（admission 接受后）或 `error_response`（目标非 TUI 会话 / 无 binding / 容量满 / 归档会话）。binding 仍按 `tui/local/peer` 解析 agent，`session_key` 不用于绕过路由指定 agent。
+- 响应：同步 `ok_response` 只表示**已入 bus**，附 `event_id`；它不是 admission 成功回执。最终接受/拒绝经 `tui.admission` 推送（含 `event_id/session_key/status/reason`）通知原请求连接；无 binding / 容量满 / 归档会话都在此给出可见终态。binding 仍按 `tui/local/peer` 解析 agent，`session_key` 不用于绕过路由指定 agent。
+
+**跨 bus 的会话归属**：`tui.input` 校验通过后，gateway 为该输入生成持久 TUI 提交记录，固定 `event_id + session_key + peer + content`；bus 携带该提交的引用，而不是让消费端把它当普通渠道消息重新路由。消费端只按提交记录中的 `session_key` admission，**不得再次按新 binding 改投其他 agent**；持久引用使崩溃恢复与 bus 排队期间都不丢失选中会话归属。
+
+这一语义沿用调度契约的「admission 前完成路由，在途批次不随 binding 热换改归属」：校验完成即冻结该输入的选中会话，binding 热换只影响之后的新输入。接受、重复、容量拒绝和归档拒绝均发布 `tui.admission` 终态到原 peer/连接；进程崩溃无法返回同步终态时，TUI 以 `event_id` 查询提交/admission 状态，避免把「已入 bus」误报成「已投递给所选 agent」。
 
 ### 3.2 `tui.output`（gateway → TUI，推送帧）
 
