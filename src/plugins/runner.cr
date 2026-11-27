@@ -139,12 +139,13 @@ module Sebas
             process.terminate(graceful: false) rescue nil
             raise RunnerError.new("job object assign failed (pid=#{process.pid}); plugin process recycled")
           end
-          # exchange_frames 内部（watchdog fiber 超时路径）与本 ensure（正常
-          # 终态路径）共用同一 JobHandle：恰好一次终止+关闭，双重调用幂等
+          # 终态（含 watchdog 超时后的 process.terminate）统一由本 ensure 的
+          # JobHandle 收口：恰好一次终止+关闭，双重调用幂等。Job 指派已生效，
+          # TerminateJobObject 覆盖全部后代（含脱离 pgrep 视野的）。
           begin
-            return exchange_frames(process, plugin, request, started, job: handle)
+            return exchange_frames(process, plugin, request, started)
           ensure
-            handle.terminate_and_close_once?
+            handle.terminate_and_close_once? # 终态统一收口：恰好一次终止+关闭
           end
         {% end %}
         exchange_frames(process, plugin, request, started)
