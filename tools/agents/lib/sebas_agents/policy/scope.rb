@@ -97,6 +97,21 @@ module SebasAgents
         {issue: issue.number, scope: scope}
       end
 
+      # 合并队列自己会往租约分支追加这些文件（§6.3 Q3=B：worker 不写
+      # CHANGELOG，由队列统一追加）。它们出现在 pr.files 里不是 worker 越界，
+      # 若一并判越界，合法 PR 会在追加后被自己的队列动作挡成 needs_human。
+      QUEUE_OWNED_PATHS = ["CHANGELOG.md"].freeze
+
+      # 从变更清单里剔掉队列自有的路径。非数组原样返回，让 violations 自己报
+      # 「形状不对」——这里不替它兜底。
+      def without_queue_owned(files)
+        return files unless files.is_a?(Array)
+
+        files.reject do |file|
+          candidate_paths(file).all? { |path| QUEUE_OWNED_PATHS.include?(path) }
+        end
+      end
+
       # 越界检测（§6 §F14）：PR 变更文件必须落在租约 scope 内。
       # scope 是调度预算、不是沙箱——这里只做事后检测，越界即停本卡。
       #

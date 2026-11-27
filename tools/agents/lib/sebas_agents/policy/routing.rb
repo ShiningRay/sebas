@@ -194,7 +194,19 @@ module SebasAgents
             issue: number)
         end
 
-        return nil if pr.open?
+        if pr.open?
+          # 矛盾状态：卡已被人工以 completed 关闭，但 PR 还开着。若就此返回 nil，
+          # settled_record? 会因 issue.completed? 放行并给出 release_ready——而 PR
+          # 没合并，Evidence 与 unclaim 都完不成，F15 的重新核验也被跳过。
+          issue = snapshot.issue(number)
+          if issue&.completed?
+            return action("invalid_plan", observed,
+              "## #{number} 已以 completed 关闭但 PR ##{pr_number} 仍 open：合并未完成，" \
+              "须人工裁决（是重开卡还是关闭 PR）",
+              issue: number)
+          end
+          return nil
+        end
 
         action("invalid_plan", observed,
           "## #{number} 的记录为 merging 但 PR ##{pr_number} 是 #{pr.state} 且未合并：需人工裁决",
@@ -270,7 +282,7 @@ module SebasAgents
           # 「没取到就等于没违规」上。代价是快照缺 files 的在途 PR 会停下来——
           # 这是有意的，让 coordinator 去补取，而不是默默放行。
           lease_scope = Policy::Scope.lease_of(issue)[:scope]
-          violation = Policy::Scope.violations(pr.files, lease_scope)
+          violation = Policy::Scope.violations(Policy::Scope.without_queue_owned(pr.files), lease_scope)
           if violation
             return LeaseAction.new(issue: number, action: "needs_human", pr: pr.number,
               owned: owned, reason: "##{number} 越界（#{violation}）：本租约暂停，等 Maintainer 裁决")

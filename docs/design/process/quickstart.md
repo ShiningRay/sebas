@@ -190,6 +190,10 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 - **容量（Q3）**：`.github/agents.yml` 的 `capacity` 键设定在途租约上限，
   缺键即 1；`plan` 输出 `capacity`（兼容保留）、`capacity_used`（在途卡数）
   与 `capacity_limit`（等于 `capacity`，两者并存便于直接算剩余槽位）。
+  注意 `capacity_limit - capacity_used` **不等于**实际可认领数：容量 1 且只有
+  一张 docs-only 在途卡时，另一张 scope 不重叠的 docs-only 卡仍可认领
+  （M4x-WP2 试点豁免）。协调者判定「还能不能派活」应以 `claim`/`plan` 的
+  判定为准，不要只用这个差值。
 - **scope 预算（Q4=A，已生效）**：Automation 可选 `scope: [路径前缀]`
   （`src/store/` 形态，尾 / 归一，禁 `..` 与绝对路径）。前缀互相包含即冲突；
   缺 scope 独占容量：在途任一租约缺 scope 就不认领新卡，候选缺 scope 也只能

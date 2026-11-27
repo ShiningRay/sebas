@@ -142,6 +142,43 @@ class FaultMatrixTest < Minitest::Test
     assert_includes result.invalid_reason, "人工核对"
   end
 
+  # 队列自己追加 CHANGELOG.md 后，该文件出现在 pr.files 里不算 worker 越界——
+  # 否则合法 PR 会被队列自己的动作挡成 needs_human。
+  def test_queue_owned_changelog_does_not_count_as_violation
+    snapshot = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      prs: [pr(files: [{"filename" => "src/x.cr"}, {"filename" => "CHANGELOG.md"}])],
+      capacity: 2
+    )
+    result = view(snapshot, [{"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "merge_ready", result.next_action, "队列追加的 CHANGELOG.md 不是越界"
+  end
+
+  # scope 外的**其他**文件仍然算越界：剔除只针对队列自有路径。
+  def test_foreign_file_still_counts_outside_queue_owned
+    snapshot = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      prs: [pr(files: [{"filename" => "src/x.cr"}, {"filename" => "Makefile"}])],
+      capacity: 2
+    )
+    result = view(snapshot, [{"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "needs_human", result.next_action
+  end
+
+  # 卡片被人工以 completed 关闭、但 PR 仍 open：不许被 settled 判成 release_ready。
+  def test_completed_issue_with_open_merging_pr_is_invalid
+    snapshot = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), state: "CLOSED",
+        state_reason: "COMPLETED")],
+      prs: [pr(files: [{"filename" => "src/x.cr"}])],
+      capacity: 2
+    )
+    result = view(snapshot, [{"issue" => 1, "phase" => "merging", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "invalid_plan", result.next_action,
+      "PR 未合并时不能因卡已 completed 就给 release_ready"
+    assert_includes result.invalid_reason, "仍 open"
+  end
+
   # base 缺失不构成放行理由：目标分支是安全边界，缺失即不可判定。
   def test_merging_record_with_missing_base_is_invalid
     snapshot = snap(
