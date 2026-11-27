@@ -29,7 +29,9 @@ sebas setup --non-interactive --input answers.json
 - 默认是逐屏问答；`Esc` 返回上一步，`Ctrl-C` / EOF 取消，未确认不写正式配置。
 - `--config` 决定正式配置路径；相对 `gateway.data_dir` 与 vault 路径以该文件所在目录为基准，与 gateway 一致。
 - 待 #274 的路径 resolver 落地后，省略 `--config` 时使用同一解析结果 `<home>/config.yaml`；省略 `data_dir` 时使用 `<home>/data`。`setup` 不另写根目录推导规则。
-- 在此之前仍使用本文示例的显式 `--config config.yaml` 与相对 `data`；不得把尚未实现的新默认目录当作现有行为。
+- 在此之前仍使用显式 `--config` 与相对 `data`；不得把尚未实现的新默认目录当作现有行为。
+- 过渡期间生成的 persona 写入配置目录下的 `agents/main/SOUL.md`，YAML 的 `persona_file` 暂存该文件的**绝对路径**，保证从任意工作目录启动时现有 Loader 的校验与运行期读取一致。自定义相对 persona 同样先解析为配置目录内绝对路径；目录外路径须经用户明确选择。
+- #274 交付后，setup 改为保存配置相对路径并复用统一 resolver；不得永久保留机器相关绝对 persona 作为最终默认。
 - 草稿只保存非秘密答案、当前步骤与 schema 版本；秘密只短暂留在进程内存。默认不把草稿写入 home 或临时目录；用户显式选择「稍后继续」时才写 `--resume` 指定的安全路径，权限 `0600`。
 - 非交互 JSON 走相同问题模型和校验器；缺字段、额外字段、秘密值或 EOF 均明确失败。秘密经独立受保护输入或既有 vault 条目注入，**answers.json 禁止秘密**。
 - 不自动启动常驻 gateway、不打开公网端口、不安装系统服务。最后一步可由用户选择「现在启动本地 gateway 并打开 TUI」，默认仅打印命令。
@@ -80,7 +82,7 @@ Detect → Provider → Model → Agent → Channel → Binding
 
 - 默认 Agent ID 为 `main`，显示名仅作 UI 文案，不新增 Hermes profile 领域概念。
 - 默认生成 `agents/main/SOUL.md`，内容为最小个人助手人格；已有文件不覆盖。
-- 可选自定义 persona 文件；相对路径按配置目录规范化，loader 必须能重新找到它。
+- 可选自定义 persona 文件；#274 交付前使用 §2 过渡约定的绝对路径，交付后统一保存配置目录相对路径。loader 校验与实际加载必须能从任意工作目录找到同一文件。
 - 默认 memory window、tools 和调度策略继承现有安全默认，不在首次向导暴露高级编排项。
 
 ### 3.5 Channel：本地 TUI 为默认
