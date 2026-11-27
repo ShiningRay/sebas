@@ -46,20 +46,8 @@
 #
 # thread 可以被人手动 resolve 掉而代码未改；`Actionable comments posted: N`
 # 是审查方自己的原始判断，不受人工操作影响。代价是耦合了 CodeRabbit 的文案，
-# 所以匹配失败时按「无整改项」处理（fail-open）。
-#
-# ## 同一 head 上多轮 review 取最新一条
-#
-# review 正文不可编辑，同一 head 上旧轮次的记录会一直留着。求和会让数字单调不减，
-# 整改完也回不到 0——PR 永久卡红，只能靠新 commit 脱身。取最新一条同时符合
-# `full review` 的语义（无视历史评论、重新完整审阅）。
-#
-# ## 迟到的 review 需要门闸重判
-#
-# CodeRabbit 的 check run 完成与 review 写入之间没有顺序保证：实测 PR #283 上
-# check run 11:48 完成、review 13:13 才写入（差 5099s）。门闸那时判的是
-# 「当时没有 review」并已放行，不会再读一次。所以 review 提交事件必须能重跑
-# 本门闸（见 .github/workflows/await-review-rerun.yml 的 pull_request_review 触发）。
+# 所以匹配失败时按「无整改项」处理（fail-open）。同一 head 上多轮 review 取
+# 最新一条而非求和，以及迟到 review 的重判入口，见 pr-gate.md。
 
 require "json"
 require "open3"
@@ -222,21 +210,14 @@ module AwaitReview
     1
   end
 
-  # 同一 head 上可能有多条带 actionable 文案的 review：上一轮意见未处理完又
-  # 在同一 head 上重审时（`@coderabbitai review` / `full review`），旧的 review
-  # 记录不会消失。这里取**最新一条**，不求和：
+  # 同一 head 上可能有多条带 actionable 文案的 review（上一轮意见未处理完又在
+  # 同一 head 上 `@coderabbitai review` / `full review` 时，旧记录不会消失）。
+  # 取**最新一条**而非求和：正文不可编辑，求和会让数字单调不减，整改完也回不到
+  # 0（PR #282 head 07f46473 实测 1+2=3，门闸连红到换 head）。
   #
-  #   - review 正文不可编辑，求和让数字单调不减。整改完也回不到 0，PR 永久
-  #     卡红（实测 PR #282 head 07f46473：N=1 与 full review 的 N=2 相加，
-  #     门闸报「3 条需整改项」，直到换 head 才放行）；
-  #   - `full review` 的语义是「无视已有评论、重新完整审阅」，最新一条就是
-  #     当前全量结论；把历史轮次再加一遍是重复计数。
-  #
-  # 只挑**带该文案的** review，不取「最新一条 review」：CodeRabbit 常在主 review
-  # 之后补发 pre-merge 提示与 commentary，那些正文没有该文案，也不撤销先前结论。
-  #
-  # 「最新」按 submitted_at 比，同一秒用 id 兜底。两者都缺时视为最早，
-  # 不会盖住有时间戳的记录。
+  # 只挑**带该文案的** review：CodeRabbit 常在主 review 后补发 pre-merge 提示与
+  # commentary，那些正文没有该文案，也不撤销先前结论。最新按 submitted_at 比，
+  # 同秒用 id 兜底。
   def latest_marked_review(reviews)
     marked = reviews.select { |review| ACTIONABLE_PATTERN.match?(review["body"].to_s) }
     marked.max_by { |review| [review["submitted_at"].to_s, review["id"].to_i] }
