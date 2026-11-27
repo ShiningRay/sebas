@@ -120,6 +120,8 @@ concurrency:
 1. **对同一个 merge commit 重跑 CI。** `gh run rerun <run-id>`（或 Actions 页面
    Re-run all jobs）。CI 成功后 `workflow_run` 自动触发 `evidence-register.yml`，
    按 `head_sha` 反查 PR 并升级 Evidence，无需其它动作。
+   限制（[GitHub 文档](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)）：
+   重跑必须在原始运行后 **30 天内**，且每个 run 累计最多 **50 次**重跑。
 2. **直接补登记。** `gh workflow run evidence-register.yml -f pr=<PR号>`。
    `resolve_pr` 接受 dispatch 输入的 PR 号，脚本自己复核「已合并 + merge commit 在
    main 上」，条件不满足即跳过、零写入。
@@ -128,8 +130,16 @@ concurrency:
 补登记不能把失败洗成通过（脚本 `merged_into_main?` 用 `git merge-base --is-ancestor`
 证实，且缺 `success` 的 CI 时 `resolve_checks_url` 会失败）。
 
-持续时间与角色归属：这类残留目前没有自动巡检，需要人发现。合并队列落地后由
-coordinator 的串行单位兜住（等 Evidence 升级完再合下一张，超时转人工，见
+**超过 30 天或 50 次上限时**，第 1 条失效，只剩两条出路，都由 Maintainer 决定：
+
+- **走第 2 条补登记**：要求该 merge commit 另有可查的成功 CI；否则脚本必然拒绝，
+  不能降格放行。
+- **人工裁决该卡为不可自动解锁**：在 issue 上记 `needs:human` 并写明原因，由 Maintainer
+  决定是重新实现（新分支新 PR，旧卡关闭为 not planned）还是维持阻塞。下游卡随之
+  停在 `blocked`，这是正确语义，不是故障。
+
+角色归属：这类残留目前没有自动巡检，需要人发现。合并队列落地后由 coordinator 的
+串行单位兜住（等 Evidence 升级完再合下一张，超时转人工，见
 [parallel-implementers.md](../proposals/parallel-implementers.md) §7.2）；在此之前，
-发现责任落在 Maintainer 与当轮 Implementer——`plan` 的 `verifier_queue_depth`
+发现与处置责任落在 Maintainer 与当轮 Implementer——`plan` 的 `verifier_queue_depth`
 与 issue 上缺失的 `merged_into_main: true` 是唯一的信号源。
