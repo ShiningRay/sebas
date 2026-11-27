@@ -5,9 +5,8 @@
   "api_version": "1",
   "entrypoint": "plugin.rb",
   "provides": ["hook"],
-  "actions": ["memory.remember.before"],
   "hooks": ["memory.remember.before"],
   "capabilities": [],
-  "timeout_ms": 100,
+  "timeout_ms": 1000,
   "config_schema": {}
 }

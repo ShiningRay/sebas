@@ -26,6 +26,7 @@ module Sebas
         getter agents : Hash(String, AgentConfig) = {} of String => AgentConfig
         getter bindings : Array(BindingConfig) = [] of BindingConfig
         getter gateway : GatewayConfig = GatewayConfig.new
+        getter plugins : PluginsConfig = PluginsConfig.new
 
         # 热更新整根替换需要可空构造（CURRENT 初始占位）
         def initialize
@@ -168,6 +169,19 @@ module Sebas
 
         def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data", @session = nil,
                        @collaboration = CollaborationConfig.new)
+        end
+      end
+
+      # 插件面（M3-WP4，#16；design.md §12）：dir 缺省 = 插件面关闭（不扫描
+      # 不注册）；interpreter 缺省取 PATH 上的 mruby。目录直扫为开发/源码
+      # 布局，包格式与版本指针归 M3-WP6。
+      class PluginsConfig
+        include YAML::Serializable
+        getter dir : String?
+        getter interpreter : String?
+        getter interpreter_args : Array(String)?
+
+        def initialize(@dir = nil, @interpreter = nil, @interpreter_args = nil)
         end
       end
 
