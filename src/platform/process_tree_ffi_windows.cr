@@ -87,7 +87,7 @@
             # 终止并关闭；幂等——恰一次执行，其余调用返回 nil（未持有时）。
             # 返回 Bool = 本次调用实际执行了终止。
             def terminate_and_close_once? : Bool
-              return false if @closed.swap(true).value
+              return false if @closed.swap(true) # swap 直接返回旧 Bool 值（非 Atomic 包装）
               JobObject.terminate_and_close(@job)
             end
           end
