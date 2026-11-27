@@ -14,6 +14,7 @@ require "minitest/autorun"
 require "stringio"
 require "tmpdir"
 require "fileutils"
+require "shellwords"
 require_relative "await_review"
 
 class AwaitReviewTest < Minitest::Test
@@ -260,9 +261,14 @@ class AwaitReviewTest < Minitest::Test
     dir = Dir.mktmpdir
     pid_file = File.join(dir, "descendant.pid")
     # 后代忽略 TERM 并常驻；外壳同样忽略 TERM，确保只有 KILL 能收场。
-    script = <<~SH
+    #
+    # 必须避开 heredoc 插值坑：曾写成插值 heredoc 并把 `$$` 写丢成 `$`，于是
+    # PID 文件内容为字面 `$`、to_i 得 0、存活断言恒假通过（PR #280）。这里用
+    # 单引号 heredoc（Ruby 不插值 `$`）+ 位置参数：PID 由 shell 自己展开，
+    # 路径经 Shellwords 转义传入。
+    script = format(<<~'SH', Shellwords.escape(pid_file))
       trap '' TERM
-      sh -c 'trap "" TERM; echo $ > #{pid_file}; sleep 30' &
+      sh -c 'trap "" TERM; echo $$ > "$1"; sleep 30' _ %s &
       wait
     SH
 
@@ -279,19 +285,24 @@ class AwaitReviewTest < Minitest::Test
     assert_operator elapsed, :<, 10,
       "超时必须真的终止进程组；实测 #{elapsed.round(2)}s 说明还在等 sleep 30 自然退出"
 
-    # 最多等 2s 让 /proc 语义的系统完成回收可见性
+    # 先确认后代真的写了合法 PID：否则下面的「已消失」断言会空泛通过。
+    assert File.exist?(pid_file), "后代没有写出 PID 文件，脚本未被真正执行"
+    recorded = File.read(pid_file).strip
+    assert_match(/\A\d+\z/, recorded, "PID 文件内容非法（应为纯数字）：#{recorded.inspect}")
+    assert_operator recorded.to_i, :>, 0, "PID 必须为正数，实际 #{recorded.inspect}"
+
+    # 最多等 2s 让进程退出在系统层面可见
     deadline = Time.now + 2
-    sleep 0.05 while descendant_alive?(pid_file) && Time.now < deadline
-    refute descendant_alive?(pid_file),
-      "忽略 TERM 的后代仍存活：说明只杀了组长，没有升级到 KILL 整组"
+    sleep 0.05 while alive?(recorded.to_i) && Time.now < deadline
+    refute alive?(recorded.to_i),
+      "忽略 TERM 的后代（pid #{recorded}）仍存活：说明只杀了组长，没有升级到 KILL 整组"
   ensure
     silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, original) } if original
     cleanup_pid(pid_file)
     FileUtils.remove_entry(dir) if dir && Dir.exist?(dir)
   end
 
-  def descendant_alive?(pid_file)
-    pid = File.exist?(pid_file) ? File.read(pid_file).to_i : 0
+  def alive?(pid)
     return false unless pid.positive?
 
     Process.kill(0, pid)
