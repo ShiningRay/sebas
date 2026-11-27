@@ -1,7 +1,7 @@
 # 对话式 TUI：TUI 作为新 channel 接入完整对话链路（Proposal）
 
 > 状态：**Proposal**（2026-11-27 Maintainer 裁决路线 A + 范围扩充 M6，待评审）。
-> Tracking：（待建）
+> Tracking：[#263](https://github.com/ShiningRay/sebas/issues/263)（WP 子卡 #264–#270）。
 > 本文职责：定义对话式 TUI 的**契约**——架构定位、通道协议、UI 信息架构、后端事件扩展、控制命令入口、与既有调度/审批/审计纪律的关系。实施 WBS 见 [plan/wbs/m6-calendar-mirror.md](../plan/wbs/m6-calendar-mirror.md) M6.5 段。
 
 ## 1. 背景与动机
@@ -28,7 +28,7 @@ Sebas 当前的用户可见入口：
 
 新增 `channel_type="tui"` 的 channel，TUI 进程通过 IPC 与 gateway 通信。gateway 侧注册一个 `TuiChannelAdapter`（落地形态允许内联为 IPC server 内的 TuiBridge），职责：
 
-- **入站**：IPC 收到 `tui.input {peer, content}` 帧 → 包装为 `Bus::InboundMessage(channel_type: "tui", account_id: "local", peer: peer, content: content)` 推 bus → 走完整 Router → Scheduler → Pool → AgentRuntime；
+- **入站**：IPC 收到 `tui.input {session_key, peer, content}` 帧后，服务端校验目标确为选中 TUI 会话，再包装为 `Bus::InboundMessage(channel_type: "tui", account_id: "local", peer: peer, content: content)` 推 bus → 走完整 Router → Scheduler → Pool → AgentRuntime；
 - **出站**：agent 调 `message.send` → `TuiChannelAdapter.send(peer, content)` → IPC 推 `tui.output {peer, content}` 帧 → TUI 渲染。
 
 ```
@@ -58,12 +58,13 @@ Sebas 当前的用户可见入口：
 ### 3.1 `tui.input`（TUI → gateway，写命令，需认证）
 
 ```json
-{"type": "tui.input", "id": "...", "peer": "operator", "content": "帮我看下昨天 cron 跑的结果"}
+{"type": "tui.input", "id": "...", "session_key": "agent:main:local:tui:operator", "peer": "operator", "content": "帮我看下昨天 cron 跑的结果"}
 ```
 
-- `peer`：TUI 侧用户标识，默认 `"operator"`，多 TUI 实例可各起 peer 隔离会话；
+- `session_key`：**必填**，取 TUI 当前选中会话；服务端校验其五段结构中的 `account_id="local"` 且 `channel_type="tui"`，并以 `peer` 段等于帧内 `peer` 为准。校验失败返回 `error_response("tui.input requires the selected tui session")`，**不创建 intent、不入 bus**；email/telegram 等会话只读，不能借 TUI 输入框跨渠道发言；
+- `peer`：TUI 侧用户标识，默认 `"operator"`，多 TUI 实例可各起 peer 隔离会话；`session_key` 与 `peer` 同时发送是为显式绑定当前选中项，不是任选会话的旁路；
 - `content`：原始输入文本；
-- 响应：标准 `ok_response`，附 `event_id`（ admission 接受后）或 `error_response`（无 binding / 容量满 / 归档会话）。
+- 响应：标准 `ok_response`，附 `event_id`（admission 接受后）或 `error_response`（目标非 TUI 会话 / 无 binding / 容量满 / 归档会话）。binding 仍按 `tui/local/peer` 解析 agent，`session_key` 不用于绕过路由指定 agent。
 
 ### 3.2 `tui.output`（gateway → TUI，推送帧）
 
@@ -92,14 +93,18 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 ```json
 {"type": "event.transcript.appended", "ts": "...", "payload": {
   "session_key": "agent:main:local:tui:operator",
+  "cursor": 42,
   "role": "user|agent|tool",
   "content": "...",
   "created_at": "..."
 }}
 ```
 
+- `cursor` 直接取 `transcripts.id`（SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`）；它是**提交后可查询、严格递增的持久游标**，不是 IPC 连接内的临时计数。`Store#append_transcript` 返回该行 id，DB 提交后再发布事件；`sessions.read` 的 entries 同步返回 `cursor`（对应 transcript id），支持 `after_cursor` 只取 `id > after_cursor` 的行并按 id 升序返回；
 - 经 `@ipc.tap.publish(Admin::IPC.event_line("transcript.appended", ...))` 广播；
-- 高频事件（每 turn ≥2 次）——EventTap 满则丢弃策略不变，TUI 端做「丢帧检测 + 整段重拉」兜底（见 §6 风险）。
+- **间隙检测**：TUI 为每个会话保存 `last_cursor`。首次加载、重连或切换会话时以 `sessions.read` 全量对账；增量帧仅当 `cursor > last_cursor` 时处理。收到 `cursor > last_cursor + 1` 不直接断言丢帧——其他会话的 transcript 也消耗全局 id——而是调 `sessions.read(session_key, after_cursor=last_cursor)` 补齐该会话缺段，再更新游标；
+- **静默丢失最后一条事件**：不能依赖后续帧触发检测。TUI 每次发送/收到本会话输入回执后、周期性（建议 5 秒）以及 IPC 重连后都做轻量对账：`sessions.read(after_cursor=last_cursor)`，有新增行则按序补渲染；若客户端只看到部分旧历史，直接全量 `sessions.read` 后按 cursor 去重重绘。事件只是提示，SQLite transcript 才是权威；
+- EventTap 满则丢弃策略不变。上述「持久游标 + 主动对账」覆盖队列丢弃、断线和最后一条静默丢失，不承诺事件流自身可靠送达。
 
 ### 4.2 `approval.requested` / `approval.decided`（新增）
 
@@ -161,7 +166,7 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 
 - **左栏会话列表**（宽 24 列，可 `Tab` 隐藏）：从 `sessions.list` / `sessions.lifecycle` 拉取，按 `last_active_at` 倒序；选中切换主区。
 - **主区对话流**：从 `sessions.read` 拉历史 transcript（首屏最近 50 行，向上滚动分页）；新消息通过 `transcript.appended` 事件增量推送。
-- **底部输入框**（高 3 行）：Enter 发送；`/steer` `/stop` `/flush` 由服务端解析；`Ctrl-C` 清空当前输入，`q`（输入框空时）退出 TUI。
+- **底部输入框**（高 3 行）：仅对选中的 `agent:*:local:tui:*` 会话可编辑，发送时带该 `session_key`；选中 email/telegram 等会话时显示「只读：不能从 TUI 向其他渠道会话发言」，禁用发送。Enter 发送；`/steer` `/stop` `/flush` 由服务端解析；`Ctrl-C` 清空当前输入，`q`（输入框空时）退出 TUI。
 - **审批弹层**：模态卡片覆盖主区，显示 tool/args_summary/deadline，`y` 批准 / `n` 拒绝 / `Esc` 稍后决策。
 - **事件流尾栏**：默认折叠，`Ctrl-E` 展开看最近 N 条 `batch.*` / `steer.*` / `account.*` 事件。
 
@@ -184,6 +189,7 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 - 不做 mouse 支持；
 - 不动 busy interrupt/redirect 语义（另有 [busy-interrupt-redirect.md](busy-interrupt-redirect.md) proposal）；
 - 不做 `/stop` 的完整 interrupt 语义（本期只最小实现，见 §5.2）；
+- 不做从 TUI 向 email/telegram 等其他渠道会话代发消息（那些会话只读；跨渠道发言须另立带身份与授权契约的提案）；
 - 不做 TUI 多用户认证（首版本机回环 + IPC token，与现有管理面同口径）。
 
 ## 8. 验收（设计评审口径）
@@ -205,8 +211,8 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 
 ## 10. 风险
 
-1. **Transcript 事件粒度**：高频事件可能撑爆 tap 订阅者队列——TUI 端必须做「丢帧检测（比较 event_id 连续性）+ 整段重拉（sessions.read）」兜底；
+1. **Transcript 事件粒度**：高频事件可能撑爆 tap 订阅者队列——TUI 端以 transcript id 为持久游标，主动对账并整段重拉，不把事件流当权威（见 §4.1）；
 2. **审批事件源**：`Approvals::Center#request` 是同步等待决策——事件推送必须在 Mutex 外发，避免阻塞决策路径；
 3. **会话列表规模**：`sessions.list` 全量返回，量大时需分页——本期先全量拉 + 客户端排序，量级失控再优化；
-4. **TUI 与 gateway 同机假设**：IPC 明文 TCP 限定回环绑定（`server.cr:87`），远程场景需 SSH 端口转发——文档写明；
-5. **M6 范围扩充的连锁影响**：M6 原估 20–34 pd，加 5–8 pd 后 25–42 pd，发版节奏后延——development-plan.md / roadmap / milestone 描述同步改写。
+4. **TUI 与 gateway 同机假设**：IPC 明文 TCP 只允许回环绑定，远程场景需 SSH 端口转发——文档写明；
+5. **M6 范围扩充的连锁影响**：M6 原估 20–34 pd，加 6–9 pd 后 26–43 pd，发版节奏后延——development-plan.md / roadmap / milestone 描述同步改写。

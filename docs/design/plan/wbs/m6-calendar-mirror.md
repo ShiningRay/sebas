@@ -1,8 +1,8 @@
-# development-plan M6 · 外部日历/TODO 只读镜像与变化驱动重估 + 对话式 TUI（25–42 pd）
+# development-plan M6 · 外部日历/TODO 只读镜像与变化驱动重估 + 对话式 TUI（26–43 pd）
 
 > 导航：[设计总览](../../design.md) ｜ [文档索引](../../README.md) ｜ [计划总览](../../development-plan.md) ｜ 上一节：[M5](m5-commitments.md) ｜ 下一节：[M7](m7-projection.md)
 
-### M6 · 外部日历/TODO 只读镜像与变化驱动重估 + 对话式 TUI——估时合计 25–42 pd（2026-11-20 追加，2026-11-27 范围扩充，v0.4.0）
+### M6 · 外部日历/TODO 只读镜像与变化驱动重估 + 对话式 TUI——估时合计 26–43 pd（2026-11-20 追加，2026-11-27 范围扩充，v0.4.0）
 
 > 依据：[proposals/commitments-calendar-integration.md](../../proposals/commitments-calendar-integration.md) §6–§7、§9 首闭环第 3 条（日历部分）+ [proposals/tui-conversational-console.md](../../proposals/tui-conversational-console.md)（TUI 部分，2026-11-27 Maintainer 裁决路线 A 全入 M6）。
 > 期定位：**只读镜像与观察（接入深度 1）+ 显式关联（深度 2）**（日历部分，不做复制、不做双向，深度 3 归 M7）+ **本地对话入口 TUI**（channel_type="tui" 与 email/telegram 对等）。
@@ -82,14 +82,14 @@
   - ③全天跨时区——在 `Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 账户/时区读取，`DATE` 值不变。
   - 三条（含①的两分支）须全部进入 m6-gate.md 证据表。
 - 交付物：实测矩阵 + m6-gate.md + tag。
-- 依赖：M6.3 门禁、E.1#9。
-- 验收：**至少两 provider 真机 round-trip 全绿方可发版**（提案 §9「必须验证的边界」第 6 条）；未实测 provider 在产品面标「实验/未验证」并列入 gate 未验证项。
+- 依赖：M6.3 门禁、M6.5-WP7 端到端手动验收、E.1#9。
+- 验收：**至少两 provider 真机 round-trip 全绿且 M6.5-WP7 TUI 全链路验收通过方可发版**（提案 §9「必须验证的边界」第 6 条）；未实测 provider 在产品面标「实验/未验证」并列入 gate 未验证项。
 - **provider 数与 CalDAV 顺延的口径裁断（CodeRabbit 问）**：①「至少两 provider」指**真机实测通过数**，不是「已实现数」——回放通过不计入。②CalDAV 若超期顺延 v0.4.1，**Google + Graph 两 provider 真机全绿仍满足 M6 门禁**，v0.4.0 按原计划发布，release notes 明写「CalDAV 顺延 v0.4.1」。③反向不允许：若只有 CalDAV 一家真机通过而 Google/Graph 均未实测，则 provider 数=1，**不足两 provider → 不发 v0.4.0**，整期按 B.3 第 6 条降级为「引擎+回放就绪」并记入 §15.1，v0.4.0 顺延待第二家真机通过。④顺延 v0.4.1 不改变 M6.0–M6.3 的验收有效性，只移动 M6.2-WP1 与 M6.4 的完成时点。
 - 风险：外部账户未就绪则本期降级为「引擎 + 回放就绪、集成未验证」，按 B.3 第 5 条记入 §15.1 口径，不发 v0.4.0。[推演]
 
 ---
 
-### M6.5 对话式 TUI（2026-11-27 追加，5–8 pd）
+### M6.5 对话式 TUI（2026-11-27 追加，6–9 pd）
 
 > 依据：[proposals/tui-conversational-console.md](../../proposals/tui-conversational-console.md)。Maintainer 裁决：路线 A（TUI 作为新 channel）+ 最小 `/stop` + 全入 M6。
 > 期定位：让 Sebas 拥有第一个**本地对话入口**——`sebas tui` 启动后呈现「会话列表 + 单会话对话流 + 底部输入框」，与 email/telegram 对等，走完整 binding → scheduler → pool → agent 链路。
@@ -103,7 +103,7 @@
 
 **M6.5-WP2 后端事件扩展：transcript.appended + approval.requested/decided**（0.5–1 pd）
 - 目标：TUI 的对话流增量更新与审批问答有事件源。
-- 范围：`Store#append_transcript` 提交后 `@ipc.tap.publish` 发 `transcript.appended`（含 session_key/role/content/created_at）；`Approvals::Center#request` 入口发 `approval.requested`、`#decide` 出口发 `approval.decided`；事件推送在 Mutex 外；`IPC::CAPABILITIES` 追加 `tui.subscribe`。
+- 范围：`Store#append_transcript` 返回并发布 `transcripts.id` 作为 `cursor`（含 session_key/role/content/created_at），DB 提交后 `@ipc.tap.publish`；`sessions.read` entries 返回 cursor 并支持 `after_cursor` 增量对账；`Approvals::Center#request` 入口发 `approval.requested`、`#decide` 出口发 `approval.decided`；事件推送在 Mutex 外；`IPC::CAPABILITIES` 追加 `tui.subscribe`。
 - 交付物：事件发布点 + spec（验证事件字段完整 + 持锁路径无 publish）。
 - 依赖：M6.5-WP1。
 - 验收：append_transcript 后订阅者收到事件；审批请求/决策双向事件字段与 `approvals.pending` 返回一致；spec 全绿。
@@ -119,18 +119,18 @@
 
 **M6.5-WP4 TUI channel：TuiBridge + IPC tui.input/tui.output**（1.5–2 pd）
 - 目标：TUI 作为 channel_type="tui" 与 email/telegram 对等。
-- 范围：`src/channels/tui/bridge.cr`（或内联进 `src/admin/ipc/server.cr`，由实现者按体量判断）实现 `ChannelAdapter` 接口；`start` = 空操作（TUI 主动连 IPC，无独立 fiber）；`send(peer, content)` = IPC 推 `tui.output` 帧；IPC 收到 `tui.input` 帧 → 包装为 `InboundMessage(channel_type: "tui", account_id: "local", peer, content)` 推 bus；`spawn_adapters` 装配 TuiBridge；`Routing::BindingRule` 支持 `channel: tui`；`apply_config` 账号增删覆盖 tui。
+- 范围：`src/channels/tui/bridge.cr`（或内联进 `src/admin/ipc/server.cr`，由实现者按体量判断）实现 `ChannelAdapter` 接口；`start` = 空操作（TUI 主动连 IPC，无独立 fiber）；`send(peer, content)` = IPC 推 `tui.output` 帧；IPC 收到 `tui.input` 帧先校验 `session_key` 属于所选 `local:tui:peer` 会话，再包装为 `InboundMessage(channel_type: "tui", account_id: "local", peer, content)` 推 bus，非 TUI 会话拒绝且不入 bus；`spawn_adapters` 装配 TuiBridge；`Routing::BindingRule` 支持 `channel: tui`；`apply_config` 账号增删覆盖 tui。
 - 交付物：TuiBridge + IPC 协议扩展 + binding 路由 + spec（入站走完整链路 + 出站回传 + 多 peer 不串扰）。
 - 依赖：M6.5-WP1。
-- 验收：`tui.input {peer: "a", content: "hello"}` 触发 agent turn 且 transcript 落 `agent:main:local:tui:a`；agent `message.send` 后 IPC 推 `tui.output {peer: "a"}`；两 peer 并发不串会话；`channel: tui` 的 binding 路由正确解析。
+- 验收：`tui.input {session_key: "agent:main:local:tui:a", peer: "a", content: "hello"}` 触发 agent turn 且 transcript 落该会话；选中 email 会话的输入被拒绝且不创建 intent；agent `message.send` 后 IPC 推 `tui.output {peer: "a"}`；两 peer 并发不串会话；`channel: tui` 的 binding 路由正确解析。
 - 风险：零 binding 启动时给出明确错误 + 配置示例，不静默失败。[推演]
 
 **M6.5-WP5 TUI 前端：终端渲染 + 会话列表 + 对话流 + 输入框**（1.5–2 pd）
 - 目标：`src/admin/tui/` 从事件流监视器升级为对话界面。
-- 范围：自写 ANSI + 原始终端模式（`stty raw -echo`，Windows 用 `SetConsoleMode`）；布局 = 左栏会话列表（24 列，Tab 隐藏）+ 主区对话流 + 底部输入框（3 行）；会话列表从 `sessions.list` 拉取按 `last_active_at` 倒序；对话流从 `sessions.read` 拉历史 + `transcript.appended` 事件增量；输入框 Enter 发送（经 `tui.input` 帧）；丢帧检测（event_id 连续性）+ 整段重拉兜底；`q` 退出（输入框空时）；`Ctrl-C` 清空当前输入。
+- 范围：自写 ANSI + 原始终端模式（`stty raw -echo`，Windows 用 `SetConsoleMode`）；布局 = 左栏会话列表（24 列，Tab 隐藏）+ 主区对话流 + 底部输入框（3 行）；会话列表从 `sessions.list` 拉取按 `last_active_at` 倒序；对话流从 `sessions.read` 拉历史 + `transcript.appended` 事件增量；输入框仅对所选 TUI 会话可编辑，Enter 带 `session_key` 经 `tui.input` 帧发送，其他渠道会话只读禁用；以 transcript id 游标检测间隙，发送回执后、5 秒周期及重连时主动 `after_cursor` 对账，发现缺段则重拉去重；`q` 退出（输入框空时）；`Ctrl-C` 清空当前输入。
 - 交付物：TUI 前端 + spec（用 IO 注入模拟终端）+ 手动验收脚本。
 - 依赖：M6.5-WP2、M6.5-WP4。
-- 验收：启动后列出全部会话；选中会话显示历史 transcript；输入「你好」Enter 发送，agent 回复出现在对话流；丢帧后自动重拉。
+- 验收：启动后列出全部会话；选中会话显示历史 transcript；非 TUI 会话不能发送；选中 TUI 会话输入「你好」Enter 发送，agent 回复出现在对话流；队列丢帧、断线与静默丢失最后一条事件均经对账补齐，不重复渲染。
 - 风险：终端兼容性（Windows Terminal / iTerm2 / tmux）——首版只承诺主流终端，异常终端降级为逐行打印模式。[推演]
 
 **M6.5-WP6 TUI 前端：审批问答 + 控制命令发送**（0.5–1 pd）
