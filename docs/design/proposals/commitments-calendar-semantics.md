@@ -169,7 +169,7 @@
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
 | T12 | waiting_condition → cancelled | 条件永久失效或用户取消 | — |
-| T12b | waiting_condition → overdue | 硬截止已过且所等条件仍未满足 | 无硬截止（须有 due_at 才能判逾期） |
+| T12b | waiting_condition → overdue | 截止已过且所等条件仍未满足。判定：有 due_at 时按 due_at（UTC）；仅有墙钟截止时按 due_wall + due_tz 换算的当地日期末尾（23:59:59 当地）与当地当前时刻比较，过当日即逾期 | 无 due_at 且无墙钟截止（无从判逾期；此时仅继续等待条件） |
 | T13 | ready → active | 用户或 agent 开始执行 | 容量不足（保持 ready 并提示，见提案 §3.4） |
 | T14 | ready → at_risk | 剩余时长 < estimate 且未开始，或容量判定不足 | 无硬截止且无容量约束（无从判 risk） |
 | T15 | ready → overdue | 硬截止已过仍未开始 | 无硬截止的卡不得 overdue |
@@ -188,7 +188,8 @@
 
 伴随规则（CR：区分「失效撤销」「用户取消」与「无变化静默」）：
 
-- **失效撤销类**（T09/T11/T12——条件失效、澄清超时）：该 Commitment 全部 `state=scheduled` 的未投递 Delivery 置 superseded；无替代者的撤销可空 supersedes（提案 §3.2「撤销尚未投递的过时提醒」仅适用于这些失效路径）。
+- **失效撤销类**（T09/T12——澄清超时、条件失效放弃）：该 Commitment 全部 `state=scheduled` 的未投递 Delivery 置 superseded；无替代者的撤销可空 supersedes（提案 §3.2「撤销尚未投递的过时提醒」仅适用于这些失效路径）。
+- **例外——T11 条件失效转 dormant**：仅撤销因该已失效条件而排程的 Delivery（其 trigger_reason 关联失效条件）；仍有效的未来截止提醒（due_at/due_wall 类）**保留**或改排替代投递——T11 语义是「暂不跟进」而非「意图失效」，漏掉截止提醒即违反提案 §3.2「错过期限」场景。
 - **用户取消类**（T06/T16/T20/T23/T25）：同样将全部 `state=scheduled` 未投递 Delivery 置 superseded 并逐条回填 supersedes 关联（取消属用户可见动作，替代关联用于审计对账）。
 - **静默类**（T26 无变化续眠）：**不得**撤销仍有效的未来唤醒与 scheduled Delivery——无新信息时原计划继续有效。
 - **完成类**（T17/T24/T27）：completed/cancelled 使未来唤醒失去效力（提案 §3.3），已 sent/seen 的历史 Delivery 保留原状态与 sent_at。
