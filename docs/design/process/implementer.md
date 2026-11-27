@@ -233,8 +233,14 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
    它们只说明这一轮没审成，不构成放行。处置是把必检恢复成能跑出结论的状态
    （修好 draft 状态、等审查方恢复、必要时重跑 run），再等到 success 才合并。
    failure 必须整改后重推。
-7. head 上存在本轮的审查记录（review 或明确的 skipped 说明）。
+7. 确认门闸那一次 success 是**等到审查结束之后**才得出的，不是赶到空列表就放行。
+   两件事都能证明：该 head 上已有 review 记录，或日志里有
+   `审查已完成：CodeRabbit conclusion=` 且其后的判定为放行。
    **只有「没有 thread」不构成通过**——review 未到达时 thread 恒为零。
+
+   注意：CodeRabbit 无整改项时**不写 review 正文**（实测 26 个 PR / 91 条
+   带标记的 review 里没有一例 `N=0`）。所以「head 上必须有 review」这条
+   对干净 PR 永远不成立，只能作为正向证据之一，不能当必要条件。
 
 Implementer **不能自己验收**：核验与终验两阶段必须在与实现者不同的独立上下文中运行（#124 起 Reviewer 并入 Verifier，两阶段分离进程）。
 `gh pr merge` 是写操作，没有 dry-run；执行前必须先跑上面的 `--pre`。
