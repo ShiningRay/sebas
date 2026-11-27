@@ -4660,6 +4660,35 @@ class PlanCommandTest < Minitest::Test
     end
   end
 
+  # aborted 遗留记录是认领未确认的异常态（F3/F4）：claim --apply 的迁移
+  # 不得自动搬走它解除容量钳制——认领被拒，记录原地保留待人工对账。
+  def test_claim_refuses_when_legacy_aborted_record_unreconciled
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      sebas_dir = File.join(dir, ".sebas-agent")
+      Dir.mkdir(sebas_dir)
+      legacy = File.join(sebas_dir, "run.json")
+      File.write(legacy, JSON.generate(
+        {"issue" => 1, "phase" => "aborted", "status_written" => true, "schema" => 1}
+      ), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        # --apply 才触发迁移（CR-0 只读路径不迁移）；迁移在可认领性判定前
+        # 执行，aborted 记录即在此处被拒。
+        status, out, = run_cli(["claim", "2", "--snapshot", path, "--apply"])
+        assert_equal 1, status
+        assert_includes JSON.parse(out)["error"]["message"], "aborted"
+        # 记录原地保留，迁移窗口（容量钳制）不解除
+        assert File.exist?(legacy)
+        assert_equal 1, JSON.parse(File.read(legacy, encoding: "UTF-8"))["schema"]
+      end
+    end
+  end
+
   def test_cli_plan_invalid_plan_exits_refused
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1])),
