@@ -1,8 +1,10 @@
 # Windows-only FFI（M3-WP5，#17）：Job Object 承载插件子进程树。
 #
-# 仓库约定：Windows-only FFI 独立文件。runner 在 Spawn 后把解释器进程
-# 指派进 job；JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE + 显式 Terminate 双保险，
-# ProcessMemoryLimit 承载 §12.4 的 OS 级内存上限（POSIX 走 ulimit 包装）。
+# 仓库约定：Windows-only FFI 独立文件。每次插件调用创建**调用级 Job**——
+# 指派本调用的解释器进程，终止时 TerminateJobObject 只及本调用的进程树，
+# 不伤并发活动调用；KILL_ON_JOB_CLOSE + 显式 Close 双保险。
+# ProcessMemoryLimit（0x100 每进程上限）承载 §12.4 的 OS 级内存约束
+# （POSIX 走 ulimit 包装）。
 #
 # 状态：本文件按 Win32 ABI 编写，CI 只保证编译；job 语义的实际行为
 # （后代一并终止/内存超限终止）属 Windows 实测项，在 WP5 验收的
@@ -11,8 +13,8 @@
   module Sebas
     module Platform
       module ProcessTree
-        # Win32 常量（minwinbase / winbase）
-        private JOB_OBJECT_LIMIT_PROCESS_MEMORY        = 0x00000200_u32
+        # Win32 常量（minwinbase / winbase；SDK 口径）
+        private JOB_OBJECT_LIMIT_PROCESS_MEMORY        = 0x00000100_u32 # 每进程上限（配 ProcessMemoryLimit；0x200 是 Job 总量）
         private JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE     = 0x00002000_u32
         private JobObjectExtendedLimitInformationClass =              9 # JobObjectExtendedLimitInformation
         private PROCESS_SET_QUOTA                      = 0x00000100_u32
@@ -38,7 +40,7 @@
             active_process_limit : UInt32
             affinitized_processes : Pointer(Void)
             process_priority_class : UInt32
-            reserved : StaticArray(UInt32, 4)
+            scheduling_class : UInt32 # SDK：PriorityClass 后单个 DWORD（reserved[4] 会错位扩展结构偏移）
           end
 
           struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
@@ -50,69 +52,56 @@
             peak_job_memory_used : LibC::SizeT
           end
 
-          fun create_job_object_w(lp_job_attributes : Void*, lp_name : Void*) : Void*
-          fun set_information_job_object(h_job : Void*, info_class : Int32,
+          # 显式绑定 Win32 导出名（Crystal fun 无别名时按小写符号查找，Windows 链接必败）
+          fun create_job_object_w = CreateJobObjectW(lp_job_attributes : Void*, lp_name : Void*) : Void*
+          fun set_information_job_object = SetInformationJobObject(h_job : Void*, info_class : Int32,
                                          lp_info : JOBOBJECT_EXTENDED_LIMIT_INFORMATION*,
                                          cb_info : UInt32) : Int32
-          fun assign_process_to_job_object(h_job : Void*, h_process : Void*) : Int32
-          fun terminate_job_object(h_job : Void*, exit_code : UInt32) : Int32
-          fun close_handle(h_object : Void*) : Int32
+          fun assign_process_to_job_object = AssignProcessToJobObject(h_job : Void*, h_process : Void*) : Int32
+          fun terminate_job_object = TerminateJobObject(h_job : Void*, exit_code : UInt32) : Int32
+          fun close_handle = CloseHandle(h_object : Void*) : Int32
         end
 
         module JobObject
           Log = Sebas::Log.for("platform.job_object")
 
-          @@mutex = Mutex.new
-          @@job : Void*? = nil
-
-          # 每进程一个 job：首个插件进程 Spawn 前惰性创建，进程退出即随
-          # KILL_ON_JOB_CLOSE 清理（不显式 CloseHandle——句柄泄漏面最小化）。
-          def self.handle : Void*
-            @@mutex.synchronize do
-              @@job ||= begin
-                h = LibJob.create_job_object_w(nil, nil)
-                raise "CreateJobObjectW failed" if h.null? || h == INVALID_HANDLE_VALUE
-                info = LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION.new
-                info.basic_limit_information.limit_flags =
-                  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                ok = LibJob.set_information_job_object(h, JobObjectExtendedLimitInformationClass,
-                  pointerof(info), sizeof(LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32)
-                raise "SetInformationJobObject failed" unless ok != 0
-                h
-              end
-            end
-          end
-
-          # 设内存上限（字节）：幂等覆盖 limit_flags 的 PROCESS_MEMORY 位。
-          def self.set_memory_limit(bytes : UInt64) : Nil
-            h = handle
+          # 创建调用级 Job：可带每进程内存上限（字节）。失败抛错——调用方
+          # （runner）回收刚 spawn 的进程并返回装配错误。
+          def self.create(memory_bytes : UInt64?) : Void*
+            h = LibJob.create_job_object_w(nil, nil)
+            raise "CreateJobObjectW failed" if h.null? || h == INVALID_HANDLE_VALUE
             info = LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION.new
-            info.basic_limit_information.limit_flags =
-              JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-            info.process_memory_limit = LibC::SizeT.new(bytes)
+            flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if memory_bytes
+              flags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY
+              info.process_memory_limit = LibC::SizeT.new(memory_bytes)
+            end
+            info.basic_limit_information.limit_flags = flags
             ok = LibJob.set_information_job_object(h, JobObjectExtendedLimitInformationClass,
               pointerof(info), sizeof(LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32)
-            Log.warn { "SetInformationJobObject memory limit failed" } unless ok != 0
+            unless ok != 0
+              LibJob.close_handle(h)
+              raise "SetInformationJobObject failed"
+            end
+            h
           end
 
           # Spawn 后指派：子进程句柄按 pid 打开（需要 PROCESS_SET_QUOTA | TERMINATE；
-          # Crystal Process 不暴露句柄）。
-          def self.assign(pid : UInt32) : Bool
+          # Crystal Process 不暴露句柄）。失败由调用方终止回收。
+          def self.assign(job : Void*, pid : UInt32) : Bool
             opened = open_process(pid)
             return false if opened.nil?
-            LibJob.assign_process_to_job_object(handle, opened) != 0
+            LibJob.assign_process_to_job_object(job, opened) != 0
           ensure
             close(opened) if opened
           end
 
-          # 终止 pid（job 内进程随 TerminateJobObject 一并终止；进程已退出
-          # 时 OpenProcess 失败返回 false——幂等）。
-          def self.terminate_by_pid(pid : UInt32 | Int32) : Bool
-            opened = open_process(pid.to_u32)
-            return false if opened.nil?
-            LibJob.terminate_job_object(handle, 1_u32) != 0
-          ensure
-            close(opened) if opened
+          # 终止调用级 Job 内全部进程（本调用的进程树，含后代与收养态），
+          # 随后关闭句柄。
+          def self.terminate_and_close(job : Void*) : Bool
+            ok = LibJob.terminate_job_object(job, 1_u32) != 0
+            LibJob.close_handle(job)
+            ok
           end
 
           private def self.open_process(pid : UInt32) : Void*?
