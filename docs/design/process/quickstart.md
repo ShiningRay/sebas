@@ -159,6 +159,7 @@ Scribe 拆出的工作包卡选卡，Proposal 本身不进实现选卡。
 
 ```sh
 ruby tools/sebas-process next                 # 输出单一动作
+ruby tools/sebas-process plan                 # 只读多候选视图（#218）：全部就绪候选 + 枚举排除集
 ruby tools/sebas-process claim 39 --dry-run   # 校验是否可认领
 ruby tools/sebas-process claim 39 --apply     # 认领：写本地记录 + status=In progress 并回读
 ruby tools/sebas-process resume 39            # 续跑本机已认领卡
@@ -175,6 +176,17 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
 `next` 返回 `claim_issue` / `resume_pr` / `wait` / `blocked` / `needs_human` /
 `invalid_plan` / `handoff_release` / `idle` 之一，见
 [implementer-loop.md](implementer-loop.md) §4。
+
+`plan`（只读，dry-run 默认）：与 `next` 同快照同策略，输出 JSON——
+`candidates`（`issue/title/order/scope_conflict/selected`，`scope_conflict`
+本期恒为 `null` 未判定）、`excluded`（`issue/reason/detail`，`reason` 为枚举码：
+`depends_on_unmet` / `has_pr` / `needs_human` / `already_in_progress` /
+`missing_automation` / `non_work_kind` / `invalid_plan` / `proposal` /
+`metadata_invalid`，`detail` 为与 `next` 一致的原因文本）、`capacity`（固定 1）、
+`verifier_queue_depth`（open PR 数，验证背压可观察）、`next_action`/`next_issue`
+（与 `next` 恒等的首选）。退出码 0 正常、1 `invalid_plan`、2 参数错误。
+不改任何写行为；在途状态（在途 PR / 已认领 / needs:human）下 `candidates`
+为空，对应卡进 `excluded`。
 
 ### Verifier
 

@@ -3,15 +3,36 @@
 module SebasAgents
   module Policy
     # 选卡策略：同一快照必须得到同一动作。无网络、无 Git、无模型调用。
+    #
+    # 两条公开入口共用同一路由与同一 milestone 评估结果（单一事实源）：
+    # - `select_action`：单一动作（§4 输出契约），excluded 只含 issue/reason；
+    # - `plan`（M4x-Parallel-WP1，#218）：只读多候选视图，返回全部就绪候选
+    #   与带枚举码的排除集（reason=枚举码，detail=与 next 一致的人类可读
+    #   原因），capacity 固定 1。首选恒等由「共用同一评估结果」构造保证。
     module Selection
       require "set"
 
       # design 卡由 Scribe 执行，与 tracking / manual 一样不进 Implementer 选卡。
       NON_WORK_KINDS = %w[tracking manual design].freeze
 
+      # 单个 milestone 的评估结果（select_action 与 plan 共用）。
+      # excluded 条目：{issue:, reason:, code:}——reason 与 next 的 excluded
+      # 文本逐字一致，code 是 plan 的枚举码（depends_on_unmet/has_pr/
+      # needs_human/already_in_progress/...）。
+      MilestoneOutcome = Data.define(
+        :milestone, :label, :ready, :excluded, :metadata_gaps,
+        :candidate_count, :blocked_reason, :invalid_reason
+      )
+
       module_function
 
-      def select_action(snapshot, record: nil)
+      # ---- 路由（在途状态优先于 milestone 评估，§3.2）----
+
+      Routing = Data.define(:observed, :milestones, :action)
+
+      # 返回 Routing：action 非 nil 表示命中在途/冲突分支，调用方直接采用，
+      # 不再评估 milestone。
+      def routing(snapshot, record)
         milestones = Milestones.normalize(snapshot.milestones)
         observed = snapshot.main_sha
 
@@ -24,19 +45,22 @@ module SebasAgents
 
         in_progress = snapshot.in_progress_issues
         if in_progress.length > 1
-          return invalid(observed, "存在 #{in_progress.length} 张执行中 issue（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}")
+          return Routing.new(observed: observed, milestones: milestones,
+            action: invalid(observed, "存在 #{in_progress.length} 张执行中 issue（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}"))
         end
 
         claimed = in_progress.first
         if claimed && record && record["issue"] && record["issue"].to_i != claimed.number
-          return invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突")
+          return Routing.new(observed: observed, milestones: milestones,
+            action: invalid(observed, "本地记录 issue ##{record["issue"]} 与远端认领 ##{claimed.number} 冲突"))
         end
 
         # aborted 表示认领未被确认：必须在任何恢复分支之前对账。
         # 不依赖 claimed——暂停恢复与在途 PR 分支可能在无远端标签时触发。
         if record && record["phase"] == "aborted"
           target = claimed || (record["issue"] && snapshot.issue(record["issue"].to_i))
-          return reconcile_aborted(target, record, observed)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: reconcile_aborted(target, record, observed))
         end
 
         # §3.2：needs:human 且已有 agent:resume → 恢复。未建 PR 的暂停会释放认领，
@@ -46,39 +70,60 @@ module SebasAgents
         end
         if paused_resume
           if claimed && claimed.number != paused_resume.number
-            return invalid(observed,
-              "恢复目标 ##{paused_resume.number} 与当前认领 ##{claimed.number} 冲突")
+            return Routing.new(observed: observed, milestones: milestones,
+              action: invalid(observed,
+                "恢复目标 ##{paused_resume.number} 与当前认领 ##{claimed.number} 冲突"))
           end
-          return resume_paused(paused_resume, record, observed)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: resume_paused(paused_resume, record, observed))
         end
 
         # §3.2：needs:human 期间保持原有归属，等待人工指令，不推进合并。
         # 未建 PR 的暂停会释放认领，此时也必须报 needs_human，而不是去开别的卡。
         if claimed&.label?(Model::HUMAN_LABEL)
-          return action("needs_human", observed,
-            "## #{claimed.number} 处于 #{Model::HUMAN_LABEL}，等待 Maintainer 解除暂停",
-            issue: claimed.number, milestone: claimed.milestone)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: action("needs_human", observed,
+              "## #{claimed.number} 处于 #{Model::HUMAN_LABEL}，等待 Maintainer 解除暂停",
+              issue: claimed.number, milestone: claimed.milestone))
         end
 
         pending_pause = snapshot.issues.find do |issue|
           issue.open? && issue.label?(Model::HUMAN_LABEL)
         end
         if pending_pause
-          return action("needs_human", observed,
-            "## #{pending_pause.number} 处于 #{Model::HUMAN_LABEL}，等待 Maintainer 加 #{Model::RESUME_LABEL}",
-            issue: pending_pause.number, milestone: pending_pause.milestone)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: action("needs_human", observed,
+              "## #{pending_pause.number} 处于 #{Model::HUMAN_LABEL}，等待 Maintainer 加 #{Model::RESUME_LABEL}",
+              issue: pending_pause.number, milestone: pending_pause.milestone))
         end
 
         own_pr = own_pull_request(snapshot, record, claimed)
         if own_pr && own_pr.unresolved_threads.empty? && own_pr.merge_state_status == "CLEAN"
           # 合并仍需人工/独立验收放行；这里只报告可合并，不自动 squash。
-          return action("resume_pr", observed,
-            "在途 PR ##{own_pr.number} 已 CLEAN；核验 Verifier/Reviewer/Evidence 后再合并",
-            issue: own_pr.closing_issues.first)
+          return Routing.new(observed: observed, milestones: milestones,
+            action: action("resume_pr", observed,
+              "在途 PR ##{own_pr.number} 已 CLEAN；核验 Verifier/Reviewer/Evidence 后再合并",
+              issue: own_pr.closing_issues.first))
         end
-        return classify_pr(own_pr, claimed, observed) if own_pr
+        if own_pr
+          return Routing.new(observed: observed, milestones: milestones,
+            action: classify_pr(own_pr, claimed, observed))
+        end
 
-        return resume_claimed(claimed, record, observed) if claimed
+        return Routing.new(observed: observed, milestones: milestones,
+          action: resume_claimed(claimed, record, observed)) if claimed
+
+        Routing.new(observed: observed, milestones: milestones, action: nil)
+      end
+
+      # ---- 入口一：单一动作（§4 输出契约）----
+
+      def select_action(snapshot, record: nil)
+        routing = routing(snapshot, record)
+        return routing.action if routing.action
+
+        observed = routing.observed
+        milestones = routing.milestones
 
         state, milestone = Milestones.active(milestones, open_issue_counts: open_counts(snapshot, milestones))
         case state
@@ -89,7 +134,7 @@ module SebasAgents
           return action("handoff_release", observed, "主线工作卡已清、仍有 open milestone，进入门禁/发版收口")
         end
 
-        main_action = evaluate_milestone(milestone, snapshot, observed, "active 主线")
+        main_action = milestone_action(evaluate_milestone(milestone, snapshot, "active 主线"), observed)
         # 只有「暂时没有就绪卡」才允许并行轨补位。
         # invalid_plan 是配置错误，必须暴露给 Maintainer，不能靠换轨掩盖。
         return main_action unless main_action.action == "blocked"
@@ -97,13 +142,91 @@ module SebasAgents
         select_parallel(snapshot, milestones, observed) || main_action
       end
 
-      # 在并行轨上按序号找第一条能选出卡的轨；都无就绪卡则返回 nil，交给调用方决定。
+      # ---- 入口二：只读多候选视图（M4x-Parallel-WP1，#218）----
+
+      # 返回 Data(next_action:, next_issue:, ready:, excluded:, invalid_reason:, milestone:)。
+      # ready 为全部就绪候选（含注入的 automation），按计划顺序升序；
+      # excluded 条目 {issue:, reason: 枚举码, detail: 与 next 一致的原因文本}。
+      # 路由与 milestone 解析和 select_action 逐分支一致：首选恒等由共用
+      # evaluate_milestone 结果构造保证。
+      def plan(snapshot, record: nil)
+        routing = routing(snapshot, record)
+        if routing.action
+          return PlanView.new(next_action: routing.action.action,
+            next_issue: routing.action.issue,
+            ready: [], excluded: in_flight_excluded(routing.action),
+            invalid_reason: routing.action.action == "invalid_plan" ? routing.action.reason : nil,
+            milestone: routing.action.milestone)
+        end
+
+        observed = routing.observed
+        milestones = routing.milestones
+
+        state, milestone = Milestones.active(milestones, open_issue_counts: open_counts(snapshot, milestones))
+        case state
+        when :idle
+          return PlanView.new(next_action: "idle", next_issue: nil, ready: [], excluded: [],
+            invalid_reason: nil, milestone: nil)
+        when :handoff_release
+          return PlanView.new(next_action: "handoff_release", next_issue: nil, ready: [], excluded: [],
+            invalid_reason: nil, milestone: milestone&.number)
+        end
+
+        main = evaluate_milestone(milestone, snapshot, "active 主线")
+        if main.invalid_reason
+          return PlanView.new(next_action: "invalid_plan", next_issue: nil, ready: [], excluded: [],
+            invalid_reason: main.invalid_reason, milestone: milestone&.number)
+        end
+
+        unless main.ready.empty?
+          return PlanView.new(next_action: "claim_issue", next_issue: main.ready.first.number,
+            ready: main.ready, excluded: main.excluded, invalid_reason: nil,
+            milestone: milestone&.number)
+        end
+
+        # 主线 blocked：并行轨按序补位（与 select_parallel 逐分支一致；
+        # invalid_plan 不换轨掩盖，全部 blocked 时维持 main 的 excluded）。
+        excluded = main.excluded
+        Milestones.parallel_tracks(milestones, open_issue_counts: open_counts(snapshot, milestones)).each do |track|
+          outcome = evaluate_milestone(track, snapshot, "并行轨")
+          if outcome.invalid_reason
+            return PlanView.new(next_action: "invalid_plan", next_issue: nil, ready: [],
+              excluded: excluded, invalid_reason: outcome.invalid_reason,
+              milestone: track.number)
+          end
+          unless outcome.ready.empty?
+            return PlanView.new(next_action: "claim_issue", next_issue: outcome.ready.first.number,
+              ready: outcome.ready, excluded: outcome.excluded, invalid_reason: nil,
+              milestone: track.number)
+          end
+        end
+
+        PlanView.new(next_action: "blocked", next_issue: nil, ready: [], excluded: excluded,
+          invalid_reason: nil, milestone: milestone&.number)
+      end
+
+      PlanView = Data.define(:next_action, :next_issue, :ready, :excluded, :invalid_reason, :milestone)
+
+      # 在途动作 → plan 的 excluded 行（枚举码口径见 quickstart plan 条目）。
+      def in_flight_excluded(action)
+        code = case action.action
+               when "needs_human" then "needs_human"
+               when "resume_pr", "resume_issue", "wait" then "already_in_progress"
+               end
+        return [] unless code && action.issue
+
+        [{"issue" => action.issue, "reason" => action.reason, "code" => code}]
+      end
+
+      # ---- 在并行轨上按序号找第一条能选出卡的轨 ----
+
+      # 都无就绪卡则返回 nil，交给调用方决定。
       # blocked 可以继续试下一轨（只是这条轨暂无可做卡），
       # 但 invalid_plan 是配置错误，必须立即上报——跳过它会掩盖非法依赖图。
       def select_parallel(snapshot, milestones, observed)
         Milestones.parallel_tracks(milestones, open_issue_counts: open_counts(snapshot, milestones)).each do |track|
-          result = evaluate_milestone(track, snapshot, observed, "并行轨")
-          return result unless result.action == "blocked"
+          outcome = milestone_action(evaluate_milestone(track, snapshot, "并行轨"), observed)
+          return outcome unless outcome.action == "blocked"
         end
 
         nil
@@ -204,7 +327,11 @@ module SebasAgents
         action("resume_issue", observed, reason, issue: issue.number, milestone: issue.milestone)
       end
 
-      def evaluate_milestone(milestone, snapshot, observed, label)
+      # ---- milestone 评估（select_action 与 plan 的单一事实源）----
+
+      # 返回 MilestoneOutcome：ready 按计划顺序升序；excluded 条目带枚举码；
+      # invalid_reason 非空表示依赖图/候选证据非法（覆盖一切就绪语义）。
+      def evaluate_milestone(milestone, snapshot, label)
         excluded = []
         candidates = []
         # 已被任意 open PR 关联的卡不得再认领（§3.3 第 2 步）。
@@ -212,29 +339,32 @@ module SebasAgents
 
         snapshot.issues.select { |issue| issue.open? && issue.milestone == milestone.number }.each do |issue|
           if pr_issue_numbers.include?(issue.number)
-            excluded << {"issue" => issue.number, "reason" => "已有 open PR 关联，禁止重复开工"}
+            excluded << {"issue" => issue.number, "reason" => "已有 open PR 关联，禁止重复开工",
+                         "code" => "has_pr"}
             next
           end
 
-          reason = exclusion_reason(issue)
-          if reason
-            excluded << {"issue" => issue.number, "reason" => reason}
+          text, code = exclusion_reason(issue)
+          if text
+            excluded << {"issue" => issue.number, "reason" => text, "code" => code}
             next
           end
 
           begin
             automation = Dependencies.automation_for(issue)
           rescue InvalidPlan => e
-            excluded << {"issue" => issue.number, "reason" => e.message}
+            excluded << {"issue" => issue.number, "reason" => e.message, "code" => "invalid_plan"}
             next
           end
 
           if automation.nil?
-            excluded << {"issue" => issue.number, "reason" => "缺 Automation 块，元数据未补齐"}
+            excluded << {"issue" => issue.number, "reason" => "缺 Automation 块，元数据未补齐",
+                         "code" => "missing_automation"}
             next
           end
           if NON_WORK_KINDS.include?(automation["kind"])
-            excluded << {"issue" => issue.number, "reason" => "kind=#{automation["kind"]}"}
+            excluded << {"issue" => issue.number, "reason" => "kind=#{automation["kind"]}",
+                         "code" => "non_work_kind"}
             next
           end
 
@@ -244,32 +374,51 @@ module SebasAgents
         problem_rows = Dependencies.validate_graph(candidates, snapshot)
         unless problem_rows.empty?
           detail = problem_rows.map { |number, message| "##{number} #{message}" }.join("；")
-          return invalid(observed, "依赖图非法：#{detail}")
+          return MilestoneOutcome.new(milestone: milestone.number, label: label, ready: [], excluded: excluded,
+            metadata_gaps: metadata_gaps(milestone, snapshot), candidate_count: candidates.length,
+            blocked_reason: nil, invalid_reason: "依赖图非法：#{detail}")
         end
 
         evaluated = candidates.map { |issue| [issue, Dependencies.evaluate(issue, snapshot)] }
         invalid = evaluated.select { |_issue, result| result.invalid? }
         unless invalid.empty?
           detail = invalid.map { |issue, result| "##{issue.number} #{result.reasons.join("；")}" }.join("；")
-          return invalid(observed, "候选证据非法：#{detail}")
+          return MilestoneOutcome.new(milestone: milestone.number, label: label, ready: [], excluded: excluded,
+            metadata_gaps: metadata_gaps(milestone, snapshot), candidate_count: candidates.length,
+            blocked_reason: nil, invalid_reason: "候选证据非法：#{detail}")
         end
 
         excluded.concat(
           evaluated.reject { |_issue, result| result.ready? }.map do |issue, result|
-            {"issue" => issue.number, "reason" => result.reasons.join("；")}
+            {"issue" => issue.number, "reason" => result.reasons.join("；"), "code" => "depends_on_unmet"}
           end
         )
 
         ready = evaluated.select { |_issue, result| result.ready? }.map(&:first)
-        if ready.empty?
-          reason = candidates.empty? ? "#{label}内无可执行工作包（元数据未补齐）" : "#{label}内候选均被前置阻塞"
-          return action("blocked", observed, reason, milestone: milestone.number,
-            excluded: excluded, metadata_gaps: metadata_gaps(milestone, snapshot))
+        ready.sort_by! { |issue| issue.automation["order"] }
+        blocked_reason = if ready.empty?
+          candidates.empty? ? "#{label}内无可执行工作包（元数据未补齐）" : "#{label}内候选均被前置阻塞"
+        end
+        MilestoneOutcome.new(milestone: milestone.number, label: label, ready: ready, excluded: excluded,
+          metadata_gaps: metadata_gaps(milestone, snapshot), candidate_count: candidates.length,
+          blocked_reason: blocked_reason, invalid_reason: nil)
+      end
+
+      # MilestoneOutcome → next 的单一动作（excluded 剥掉 code，保持 §4 契约形状）。
+      def milestone_action(outcome, observed)
+        excluded = outcome.excluded.map { |entry| {"issue" => entry["issue"], "reason" => entry["reason"]} }
+        if outcome.invalid_reason
+          return invalid(observed, outcome.invalid_reason)
+        end
+        if outcome.ready.empty?
+          return action("blocked", observed, outcome.blocked_reason,
+            milestone: outcome.milestone, excluded: excluded,
+            metadata_gaps: outcome.metadata_gaps)
         end
 
-        chosen = ready.min_by { |issue| issue.automation["order"] }
-        action("claim_issue", observed, "#{label}内无前置阻塞的可执行工作包中计划顺序最小",
-          milestone: milestone.number, issue: chosen.number, excluded: excluded)
+        chosen = outcome.ready.first
+        action("claim_issue", observed, "#{outcome.label}内无前置阻塞的可执行工作包中计划顺序最小",
+          milestone: outcome.milestone, issue: chosen.number, excluded: excluded)
       end
 
       # 隐形卡：看起来是工作包，但元数据不全导致选择器无从调度。
@@ -340,13 +489,15 @@ module SebasAgents
         collected.join
       end
 
+      # 返回 [原因文本, 枚举码]：文本与 next 的 excluded 逐字一致；
+      # 码供 plan 输出（needs_human/metadata_invalid/proposal/already_in_progress）。
       def exclusion_reason(issue)
-        return "#{Model::HUMAN_LABEL} 等待人工" if issue.label?(Model::HUMAN_LABEL)
-        return Model::INVALID_LABEL if issue.label?(Model::INVALID_LABEL)
+        return ["#{Model::HUMAN_LABEL} 等待人工", "needs_human"] if issue.label?(Model::HUMAN_LABEL)
+        return [Model::INVALID_LABEL, "metadata_invalid"] if issue.label?(Model::INVALID_LABEL)
         # 与 in_progress_issues 同口径：Proposal 不是 Implementer 的工作对象，
         # 即使带合法 work_package Automation 块也不得进入候选。
-        return "proposal 不进入 Implementer 选卡" if issue.proposal?
-        return "status=#{issue.status} 已认领" if issue.working?
+        return ["proposal 不进入 Implementer 选卡", "proposal"] if issue.proposal?
+        return ["status=#{issue.status} 已认领", "already_in_progress"] if issue.working?
 
         nil
       end
