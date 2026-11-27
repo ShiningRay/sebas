@@ -115,7 +115,7 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 | 编号 | 判据 | 实现位置 | 测试 |
 |---|---|---|---|
 | F1–F4 | claim 各写入点崩溃 | `claim` 的写后回读与 `aborted` 对账 | `test_lease_coordinator.rb` |
-| F5 | worker 进程消失 | `RunRecord#heartbeat!`（每次写心跳同时记 pid）/ `#heartbeat_expired?` / `#worker_alive?`；路由侧 `worker_state` 双证据：心跳新鲜或本机 pid 存活 → `wait` 不接管；心跳过期且本机 pid 不存在 → `resume_issue`；跨机 → 不接管（F6）；缺心跳字段的旧记录不判死 | `test_fault_matrix.rb` |
+| F5 | worker 进程消失 | `RunRecord#heartbeat!`（锁内复核 lease_id/phase，记录 worker 的 pid）与 `#heartbeat_expired?`；路由侧 `Policy::Worker.state` 双证据：心跳新鲜或本机 pid 存活 → `wait` 不接管；心跳过期且本机 pid 不存在 → `resume_issue`；跨机或**缺 host** → `wait`；证据不足（缺 pid / 旧记录无心跳）→ `wait` 并交人决定 | `test_fault_matrix.rb`、`test_cli_queue.rb` |
 | F6 / F7 | 异机租约 / 有标签无凭据 | 逐租约 `owned?` + `claim` 的租约预检 | `test_selection_scheduling.rb`、`test_lease.rb` |
 | F8 | 记录与远端认领不是同一张卡 | `routing` 的 orphan 判定（`settled_record?` 排除已合并待释放） | `test_fault_matrix.rb`、`test_queue_regressions.rb` |
 | F9 | 同一张卡两份有效凭据 | `Lease.active_lease` 唯一性 | `test_lease.rb` |
