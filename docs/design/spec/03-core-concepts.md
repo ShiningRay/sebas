@@ -11,7 +11,7 @@
 | 概念 | 定义 | 不包含 |
 |---|---|---|
 | **Account（账号）** | 一个渠道账号实例：`{account_id, channel_type, platform/base_url, credentials, token_ref, receive_mode}`。是「连接 + 凭据」的载体，只负责收发消息（渠道笔记设计启示 1） | 不含任何智能/人格/记忆 |
-| **Agent（大脑）** | 一个人格化 agent 实例：人格（SOUL/system prompt）+ 记忆 + 会话库 + 工具集 + 模型配置 + 私有 cron（OpenClaw §9 agentId 语义；Hermes profile 的「完整 agent」减去凭据） | **不含渠道凭据**（与 Hermes profile 的关键差异：凭据归 Account，两轴正交） |
+| **Agent（大脑）** | 一个人格化 agent 实例：人格（SOUL/system prompt）+ 记忆 + 会话库 + 工具集 + 模型配置 + 私有 cron + 管理面元数据（分类与标签 `category`/`tags`，配置为真相源，实例首建时固化，见 §3.4；[提案 agent-category-tags.md](../proposals/agent-category-tags.md)）（OpenClaw §9 agentId 语义；Hermes profile 的「完整 agent」减去凭据） | **不含渠道凭据**（与 Hermes profile 的关键差异：凭据归 Account，两轴正交） |
 | **Binding（绑定）** | 路由表：把入站事件 `(channel_type, account_id, peer)` 映射到 `agent_id`，most-specific 优先（OpenClaw §9 binding 层级） | 不是配置的唯一真相源（只管路由） |
 
 「哪个账号收」（transport）与「哪个 agent 执行」（runtime）是**两个可独立配置的轴**（Hermes RoutingIdentity：`transport_profile` / `runtime_profile`）。典型用法：两个企微账号（公司 A、公司 B）的消息都路由给同一个工作 agent；或一个 email 账号按发件人分流给两个 agent。
@@ -99,6 +99,8 @@ agents:                              # Agent：大脑，可多实例
   main:
     provider: deepseek               # 引用 providers.<name>
     model: deepseek-chat             # 裸模型名（不再用 <provider>/ 前缀编码厂商）
+    category: general                # 管理面分类（可省；[a-z0-9][a-z0-9-]* 1..64）
+    tags: [assistant, triage]        # 管理面标签（多值可省；同词法，重复报错不去重）
     persona_file: agents/main/SOUL.md
     memory: { window: 50 }
     tools: { allow: ["*"] }
