@@ -89,6 +89,14 @@ module Sebas
           if interpreter = config.plugins.interpreter
             errors << "plugins.interpreter must not be empty" if interpreter.strip.empty?
           end
+          # OS 配额（M3-WP5 review）：非法值启动期报错——不让带非法配置的
+          # 插件面以「无资源限制」形态装配（fail-closed）
+          if mb = config.plugins.memory_mb
+            errors << "plugins.memory_mb must be positive (got #{mb})" unless mb > 0
+          end
+          if sec = config.plugins.cpu_seconds
+            errors << "plugins.cpu_seconds must be positive (got #{sec})" unless sec > 0
+          end
         end
 
         # provider 层校验（#214）：protocol 枚举、base_url 可解析（缺省时须规格表

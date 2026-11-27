@@ -50,20 +50,13 @@ module Sebas
 
           interpreter = config.plugins.interpreter || "mruby"
           args = config.plugins.interpreter_args || [] of String
-          # 生产装配也承载 OS 配额（M3-WP5 review）：非法值 from_config
-          # fail-closed（装配失败 → plugins face wiring failed → 停用插件面）
-          limits = begin
-            ::Sebas::Plugins::ResourceLimits.from_config(config.plugins.memory_mb,
-              config.plugins.cpu_seconds)
-          rescue ex
-            Log.error { "plugins limits invalid: #{ex.message}" }
-            nil
-          end
-          if limits || (config.plugins.memory_mb.nil? && config.plugins.cpu_seconds.nil?)
-            runner = ::Sebas::Plugins::Runner.new([interpreter] + args, limits: limits)
-          else
-            runner = ::Sebas::Plugins::Runner.new([interpreter] + args)
-          end
+          # 生产装配也承载 OS 配额（M3-WP5 review）：非法值 fail-closed——
+          # 局部 rescue 吞掉异常会把「无资源限制」的插件面放行（与注释约定
+          # 相反）。重抛给方法级 rescue：plugins face wiring failed → 整面
+          # 停用（loader 启动期校验是第一道，此处是热更新路径的第二道）。
+          limits = ::Sebas::Plugins::ResourceLimits.from_config(config.plugins.memory_mb,
+            config.plugins.cpu_seconds)
+          runner = ::Sebas::Plugins::Runner.new([interpreter] + args, limits: limits)
           dispatch = ::Sebas::Plugins::Dispatch.new(registry, runner)
           @plugin_dispatch = dispatch
           @plugin_tool_names = dispatch.register_tools_into(tools)
