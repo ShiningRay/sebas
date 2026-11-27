@@ -21,10 +21,12 @@
         private PROCESS_TERMINATE                      = 0x00000001_u32
         private INVALID_HANDLE_VALUE                   = Pointer(Void).new(-1_i64)
 
-        lib LibC
+        lib ::LibC
           # Crystal Windows LibC 缺 TerminateJobObject——补绑真名
-          # （Create/SetInformation/AssignProcess/CloseHandle 已在 LibC
-          # jobapi2.cr / handleapi.cr 声明，直接复用，不再重定义）
+          # （Create/SetInformation/AssignProcess/CloseHandle 已在根级 LibC
+          # jobapi2.cr / handleapi.cr 声明，直接复用，不再重定义）。
+          # 必须写 ::LibC：嵌套 lib（ProcessTree::LibC）不重开根级，
+          # 其内无法解析 HANDLE/DWORD/BOOL 与 JobObject 的 LibC.* 引用。
           fun TerminateJobObject(h_job : HANDLE, exit_code : DWORD) : BOOL
         end
 
@@ -102,7 +104,7 @@
               info.process_memory_limit = LibC::SizeT.new(memory_bytes)
             end
             info.basic_limit_information.limit_flags = flags
-            ok = LibC.SetInformationJobObject(h, JobObjectExtendedLimitInformationClass,
+            ok = LibC.SetInformationJobObject(h, ::LibC::JOBOBJECTINFOCLASS::ExtendedLimitInformation,
               pointerof(info), sizeof(LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32)
             unless ok != 0
               LibC.CloseHandle(h)
