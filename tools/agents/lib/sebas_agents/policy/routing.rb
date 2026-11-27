@@ -64,6 +64,12 @@ module SebasAgents
             action: invalid(observed, "存在 #{in_progress.length} 张执行中 issue，超过容量 #{snapshot.capacity}（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}"))
         end
 
+        # 已合并待释放：PR 已合并、或卡已以 completed 关闭，但本地记录还没走到
+        # released。这是「合并 → unclaim」之间的正常状态，不是所有权冲突——
+        # 判成 orphan 会让另一张在途卡（B）连带 invalid_plan。
+        settled = owned_records.select { |data| settled_record?(data, snapshot) }
+        owned_records -= settled
+
         # 本地记录与远端冲突：只在远端**确实有**认领时判。远端无认领说明
         # 卡被释放或从未确认，那是 aborted 与续做分支的事，不是所有权冲突。
         orphan = owned_records.find do |data|
@@ -135,8 +141,31 @@ module SebasAgents
             action: action("wait", observed, waiting.reason, issue: waiting.issue))
         end
 
+        # 有已合并待释放的记录、且没有别的在途卡可推进：先收口（释放租约），
+        # 否则记录会一直挂着，下一轮仍要重新判断。
+        unless settled.empty?
+          pending = settled.first
+          return Routing.new(observed: observed, milestones: milestones, leases: leases,
+            action: action("release_ready", observed,
+              "## #{pending["issue"]} 的 PR 已合并、Evidence 待升级；升级后跑 unclaim 释放租约",
+              issue: pending["issue"].to_i))
+        end
+
         # 容量还有空位（含「本机一张在等、容量 2」）：落到 milestone 评估补位（§7.1）。
         Routing.new(observed: observed, milestones: milestones, leases: leases, action: nil)
+      end
+
+      # 记录已进入「等释放」态：PR 已合并，或卡已以 completed 关闭。
+      # 两种都说明工作已完成，只是还没 unclaim；不该因此拖累其他租约。
+      def settled_record?(data, snapshot)
+        issue = snapshot.issue(data["issue"].to_i)
+        return true if issue&.completed?
+
+        pr_number = data["pr"].to_i
+        return false unless pr_number.positive?
+
+        pr = snapshot.pull_request(pr_number)
+        pr&.merged? || false
       end
 
       # 合并 record（单条，兼容）与 records（多条），并剥掉已释放的。

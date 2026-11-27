@@ -224,7 +224,10 @@ ruby tools/sebas-process queue --apply        # 推进队首一步（只做「�
 （`verify_pre` / `changelog` / `merge` / `evidence` / `release`）与 `blocked_by`。
 `--apply` 会先跑 `verify merge --pre`，再重读一次 PR 的 base 与 head，
 然后用 `gh pr merge --squash --match-head-commit <已核验 head>` 合并，最后复核 MERGED。
-只做一张、一步：不合 Evidence、不循环——下一张由 coordinator 重跑 `queue` 决定。
+只做一张、一步：`changelog` 步追加条目，`merge` 步先 `--pre` 再绑 head 合并；
+`verify_pre`/`evidence`/`release` 三步不做写（只报原因）。不循环——下一张由 coordinator
+重跑 `queue` 决定。只要本机有「PR 已合并但 Evidence 未升级」的记录，队列会以
+`step=evidence` 阻塞，不给可合并项。
 
 写守卫：`:merge_pr` 与 `:update_branch` 是两条独立写意图，合并命令必须同时带
 `--repo`、`--squash`、`--match-head-commit`；多余参数（如 `--admin`）一律不匹配。

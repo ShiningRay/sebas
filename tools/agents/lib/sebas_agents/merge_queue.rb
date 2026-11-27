@@ -83,8 +83,12 @@ module SebasAgents
     end
 
     # 入口标识：条目必须自带 PR 引用，幂等与核验都按它判（Proposal §7.2）。
+    # 两种写法都要求编号后是边界：`(#50)` / 行尾 / 非数字，否则
+    # `/pull/501` 会被当成 `#50` 的条目，导致漏追加。
     def entry_for?(line, pr_number)
-      line.include?("(#%d)" % pr_number) || line.include?("/pull/#{pr_number}")
+      text = line.to_s
+      text.match?(/\(##{pr_number}\)/) ||
+        text.match?(%r{/pull/#{pr_number}(?!\d)})
     end
 
     # CHANGELOG 内容里是否已写入本 PR 的条目。
@@ -95,12 +99,48 @@ module SebasAgents
       text.lines.any? { |line| entry_for?(line, pr_number) }
     end
 
+    UNRELEASED = "## [Unreleased]"
+
+    # 把条目追加进 `[Unreleased]` 段，返回新正文。纯函数，不做 IO。
+    # - 已有本 PR 引用（幂等）→ 原样返回
+    # - 找不到 `[Unreleased]` 段 → 抛 InvalidPlan（结构坏了不能猜位置）
+    # - 条目插在该段标题之后的第一行（紧邻标题、在既有条目之前），
+    #   与「最新在上」的惯例一致
+    def append_entries(content, entries, pr_number)
+      text = content.to_s
+      lines = Array(entries).map(&:rstrip).reject(&:empty?)
+      return text if lines.empty? || changelog_recorded?(text, pr_number)
+
+      rows = text.lines
+      index = rows.index { |row| row.strip == UNRELEASED }
+      raise InvalidPlan, "CHANGELOG.md 缺 `#{UNRELEASED}` 段，无法追加" if index.nil?
+
+      # 标题后先空一行再写条目，保持 Keep a Changelog 的段落格式。
+      insert_at = index + 1
+      insert_at += 1 while insert_at < rows.length && rows[insert_at].strip.empty?
+      payload = lines.map { |line| "#{line}\n" }
+      payload = ["\n"] + payload if insert_at == index + 1
+      (rows[0...insert_at] + payload + rows[insert_at..].to_a).join
+    end
+
     # 规划合并队列。
     #
     # leases 为逐租约动作表（Policy::Selection::LeaseAction）；只取 merge_ready。
     # snapshot 提供 PR 的 head/thread/check 事实；changelog 为 CHANGELOG.md 正文
     # （nil 表示调用方没读，队列按「未核验」处理而不是当作已写入）。
-    def plan(leases, snapshot, changelog: nil)
+    #
+    # pending_evidence 为本机记录里「PR 已合并但 Evidence 尚未升级」的 issue 列表
+    # （由调用方从本地记录与快照算出）。非空时整队阻塞：串行单位是
+    # 「合并 → 等 Evidence 升级 → 下一张」，前一张没升级就不许后一张合。
+    def plan(leases, snapshot, changelog: nil, pending_evidence: [])
+      blocking = Array(pending_evidence)
+      unless blocking.empty?
+        head = blocking.first
+        return QueuePlan.new(entries: [], head: head, step: "evidence",
+          blocked_by: "## #{head} 的 PR 已合并但 Evidence 未升级（merged_into_main != true），" \
+            "队列按串行单位等它完成再处理下一张")
+      end
+
       ready = Array(leases).select { |lease| lease.action == "merge_ready" }
       entries = ready.map do |lease|
         pr = snapshot.pull_request(lease.pr.to_i)

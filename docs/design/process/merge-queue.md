@@ -60,9 +60,22 @@ ruby tools/sebas-process queue --apply      # 推进队首一步（只做「合�
 | `evidence` | merge commit 的 CI 成功、`merged_into_main: true` | 异步，由 `evidence-register.yml` 写 |
 | `release` | 释放租约（`unclaim`） | 收口，要求 PR 已合并且 issue completed |
 
-`--apply` 只做**一张、一步**：不循环、不追加 CHANGELOG、不等 Evidence。Evidence 升级是
-异步的，下一张必须由 coordinator 重跑 `queue` 决定——这就是「串行单位延到 Evidence 升级
-完成」的落地方式。
+`--apply` 只做**一张、一步**，且只推进队列自己能完成的那两步：
+
+| 队首 step | `--apply` 做什么 |
+|---|---|
+| `changelog` | 把 PR 正文的条目追加进 `[Unreleased]`（幂等） |
+| `merge` | 先 `verify merge --pre`，再绑定 head squash 合并，合并后复核 |
+| `verify_pre` | 不做写，报出阻塞原因 |
+| `evidence` | 不做写：Evidence 升级由 workflows 完成，重跑 `queue` 看是否已解锁 |
+| `release` | 不做写：`unclaim` 是收口动作，需 PR 已合并 + issue completed |
+
+**串行单位**由 `evidence` 这一步表达：只要有本机记录处于「PR 已合并、Evidence 未升级」，
+`queue` 直接以 `step=evidence` 报队首，不给出任何可合并项。持续等到 `merged_into_main`
+为 `true` 才回到正常队列——这就是「等 Evidence 升级完再处理下一张」的落地。
+
+CHANGELOG 追加由**队列**执行（§6.3 裁决的唯一执行者），不是 worker：worker 不改
+`CHANGELOG.md`，只把条目写进 PR 正文。
 
 ### 3.2 三次核对目标分支
 

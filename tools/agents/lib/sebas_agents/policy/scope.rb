@@ -32,8 +32,10 @@ module SebasAgents
             raise InvalidPlan, "#{prefix}automation.scope 条目必须是非空字符串"
           end
           raise InvalidPlan, "#{prefix}automation.scope 不允许 `..`（#{value.inspect}）" if value.include?("..")
-          # 归一 ./ 前缀（./docs 与 docs 同义，须先归一再判冲突）
-          value = value.sub(%r{\A\./}, "")
+          # 归一 ./ 前缀（./docs 与 docs 同义，须先归一再判冲突）。
+          # 必须**反复**剥离：`././src/` 只剥一次会剩 `./src/`，它与 `src/`
+          # 前缀互不包含，冲突判定就会漏判。
+          value = value.sub(%r{\A(?:\./)+}, "")
           raise InvalidPlan, "#{prefix}automation.scope 不允许以 / 开头（#{value.inspect}）" if value.start_with?("/")
           raise InvalidPlan, "#{prefix}automation.scope 条目不能只剩空（#{value.inspect}）" if value.empty?
 

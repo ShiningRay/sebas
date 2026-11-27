@@ -141,7 +141,12 @@ module SebasAgents
     # 迁移窗口（legacy run.json 仍在）内保持容量 1：出现多份活动记录即
     # invalid_plan（Q10=B 迁移期语义不变）。
     def active_records_for(options)
-      return [] if options[:record]
+      # 显式 --record 不是「没有记录」：路由据此判 owned，返回空数组会把
+      # 本机持有的租约当成异机租约（容量满时误报 wait）。
+      if options[:record]
+        data = RunRecord.new(path: options[:record]).load
+        return data && !data.empty? ? [data] : []
+      end
 
       active = RunRecord.active_records
       migration_window = File.exist?(RunRecord::DEFAULT_PATH)
@@ -232,7 +237,8 @@ end
       records = active_records_for(options)
       view = Policy::Selection.plan(snap, record: records.first, records: records)
       changelog = read_changelog(options)
-      queue = MergeQueue.plan(view.leases, snap, changelog: changelog)
+      queue = MergeQueue.plan(view.leases, snap, changelog: changelog,
+        pending_evidence: pending_evidence_issues(snap, records))
 
       payload = {
         "ok" => true,
@@ -257,6 +263,15 @@ end
 
       entry = queue.entries.first
       pr = snap.pull_request(entry.pr)
+
+      # CHANGELOG 追加是队列自己的一步（§6.3 裁决）：否则带 marker 的 PR 会
+      # 永远停在 changelog，重跑队列仍是同一步。追加后再走一次标准合并路径。
+      if entry.step == "changelog"
+        result = append_changelog!(options, entry, snap)
+        Output.emit(payload.merge(result), out: @out)
+        return result["ok"] ? EXIT_OK : EXIT_REFUSED
+      end
+
       if entry.step != "merge"
         payload["status"] = "blocked"
         payload["step"] = entry.step
@@ -312,6 +327,16 @@ end
         Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
+      # 第三次核对目标分支：gh pr merge 绑不住 base，写前复核与合并之间仍可能被改。
+      # 这里只能发现错误，不能撤销已完成的合并——所以要求人工核对，不报 merged。
+      unless merged.base.to_s.empty? || merged.base == "main"
+        payload["status"] = "aborted"
+        payload["ok"] = false
+        payload["reasons"] = ["合并后复核：PR ##{pr.number} 的目标分支是 #{merged.base.inspect}，" \
+                              "已合并但可能未进入 main，须人工核对"]
+        Output.emit(payload, out: @out)
+        return EXIT_REFUSED
+      end
 
       payload["status"] = "merged"
       payload["pr"] = pr.number
@@ -319,6 +344,87 @@ end
       payload["head_sha"] = pr.head_sha
       Output.emit(payload, out: @out)
       EXIT_OK
+    end
+
+    # 「PR 已合并但 Evidence 还没升级」的 issue 列表（§7.2 的串行单位）。
+    # 判据只看本机记录里的卡：记录里仍有 PR、快照显示该 PR 已合并，且快照里
+    # 该 issue 的 Evidence 还没有 merged_into_main=true。缺 Evidence 事实时
+    # 不猜——不列入，交由 verify merge --pre 在合并前拦。
+    def pending_evidence_issues(snap, records)
+      Array(records).filter_map do |record|
+        next if record["phase"].to_s == "released"
+        pr_number = record["pr"].to_i
+        next unless pr_number.positive?
+
+        pr = snap.pull_request(pr_number)
+        next unless pr&.merged?
+
+        issue = snap.issue(record["issue"].to_i)
+        next unless issue
+
+        merged_into_main = snap_evidence_merged?(snap, issue.number)
+        # 未知（nil）同样按未完成处理：串行单位宁可多等一轮，也不抢先合下一张。
+        issue.number unless merged_into_main == true
+      end
+    end
+
+    # 从快照读 issue 自己正文里的 Evidence 块（与 Policy::Evidence 同源；
+    # gates/externals 只存 gate:/external: 登记，不能混用）。
+    # 未登记或解析失败返回 nil（未知），调用方按「未升级」处理。
+    def snap_evidence_merged?(snap, issue_number)
+      issue = snap.issue(issue_number)
+      return nil unless issue
+
+      block = begin
+        JsonBlock.one(issue.body, "evidence", subject: "issue ##{issue_number}")
+      rescue InvalidPlan
+        nil
+      end
+      return nil unless block.is_a?(Hash)
+
+      block["merged_into_main"]
+    end
+
+    # 把 PR 正文携带的条目追加进 CHANGELOG 并推到租约分支。
+    # 幂等：已有本 PR 引用时跳过（重跑队列不会重复追加）。
+    def append_changelog!(options, entry, snap)
+      entries = entry.changelog_pending
+      payload = {"ok" => false, "status" => "aborted", "step" => "changelog"}
+      if entries.nil? || entries.empty?
+        payload["reasons"] = ["PR ##{entry.pr} 声明了待追加条目但解析为空，需人工补正文"]
+        return payload
+      end
+
+      path = File.join(root(options), "CHANGELOG.md")
+      unless File.exist?(path)
+        payload["reasons"] = ["找不到 #{path}"]
+        return payload
+      end
+
+      content = File.read(path, encoding: "UTF-8")
+      if MergeQueue.changelog_recorded?(content, entry.pr)
+        payload["ok"] = true
+        payload["status"] = "skipped"
+        payload["reasons"] = ["CHANGELOG 已有本 PR 条目，跳过追加（幂等）"]
+        return payload
+      end
+
+      updated = begin
+        MergeQueue.append_entries(content, entries, entry.pr)
+      rescue InvalidPlan => e
+        payload["reasons"] = [e.message]
+        return payload
+      end
+
+      File.write(path, updated, encoding: "UTF-8")
+      record = RunRecord.new(issue: entry.issue)
+      current = record.load || {}
+      record.save(current.merge("phase" => "merging", "changelog_appended" => true)) if current["issue"]
+
+      payload["ok"] = true
+      payload["status"] = "changelog_appended"
+      payload["appended"] = entries
+      payload
     end
 
     def read_changelog(options)
