@@ -31,7 +31,7 @@
 | 编排 | `workflows.list / create / update / delete / enable`；`runs.list / get / replay`（账本回放）；`runs.cancel` |
 | 审批 | `approvals.list / approve / deny`（含 pending 队列、超时策略展示） |
 | 事件流 | `events.subscribe`（SSE / NDJSON 推送，按域过滤） |
-| 会话 | `sessions.list / read`（只读查看，转录归档；`sessions.read` 返回 transcript id 游标并支持 `after_cursor` 对账） |
+| 会话 | `sessions.list / read`（只读查看，转录归档；list 合并生命周期与 transcript 来源，read 返回 transcript id 游标并支持 `after_cursor` 对账）；`sessions.ensure {session_key, peer}`（TUI 写命令，预登记空历史会话，见 TUI 提案 §2） |
 | 插件 | `plugins.list / get / validate / install / enable / disable / activate / rollback / uninstall`；安装/升级传本地包路径，新增 capability 必须显式确认；卸载前执行引用检查（§12.7~§12.10） |
 | 系统 | `system.health`（进程、SQLite、fiber 概况） |
 | 配置 | `config.reload`（触发 §11.2 先验后换管线，返回接受/拒绝与原因）；`config.status`（当前配置摘要哈希、最近 reload 结果、restart 类待生效项） |

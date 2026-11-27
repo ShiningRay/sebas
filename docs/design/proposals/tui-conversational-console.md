@@ -49,7 +49,9 @@ Sebas 当前的用户可见入口：
 - 崩溃恢复（`store.recover!` + `Recovery.recover_stale`）；
 - 幂等三件套（intents + memo + ledger）。
 
-**零 binding 启动**：首次 `sebas tui` 若检测无 `channel: tui` 的 binding，给出明确错误 + 配置示例，不静默失败。默认 binding 的引导与 #145（初始安装配置引导）协同，不在本期范围。
+**零 binding 启动**：`sebas tui` 启动时先解析本机 `tui/local/<peer>` 的 binding。无 binding、目标 agent 不存在或配置无效时，给出明确错误 + 配置示例，**不创建空会话、不进入可输入状态**。默认 binding 的引导与 #145（初始安装配置引导）协同，不在本期范围。
+
+**首个会话预登记**：binding 有效但会话列表没有该 peer 的 TUI 会话时，TUI 在发送第一条消息前调用认证写命令 `sessions.ensure {session_key, peer}`。服务端重新解析 binding，校验它与 `session_key` 的 agent/account/channel/peer 四段一致，然后调用 `Sessions::Lifecycle::Store#touch` 将 active 会话 upsert 到 `sessions` 表；该操作只预登记生命周期，不写 transcript、不创建 intent、不触发 agent turn。`sessions.list` 合并 `sessions` 表与既有 transcript 会话键并去重，因此空历史会话也能列出、选中并满足 §3.1 的输入契约。`sessions.ensure` 只支持 `local:tui` 目标，重复调用幂等，归档会话返回错误；不借它预建其他渠道会话。
 
 ## 3. IPC 协议扩展
 
@@ -61,7 +63,7 @@ Sebas 当前的用户可见入口：
 {"type": "tui.input", "id": "...", "session_key": "agent:main:local:tui:operator", "peer": "operator", "content": "帮我看下昨天 cron 跑的结果"}
 ```
 
-- `session_key`：**必填**，取 TUI 当前选中会话；服务端校验其五段结构中的 `account_id="local"` 且 `channel_type="tui"`，并以 `peer` 段等于帧内 `peer` 为准。校验失败返回 `error_response("tui.input requires the selected tui session")`，**不创建 intent、不入 bus**；email/telegram 等会话只读，不能借 TUI 输入框跨渠道发言；
+- `session_key`：**必填**，取 TUI 当前选中会话；服务端校验其五段结构中的 `account_id="local"` 且 `channel_type="tui"`，`peer` 段等于帧内 `peer`，且 `agent` 段等于按 `tui/local/peer` 实时解析出的 binding agent。校验失败返回 `error_response("tui.input requires the selected tui session")`，**不创建 intent、不入 bus**；binding 热换导致旧选中会话与新 agent 不一致时同样拒绝，TUI 提示重新选择/预登记会话。email/telegram 等会话只读，不能借 TUI 输入框跨渠道发言；
 - `peer`：TUI 侧用户标识，默认 `"operator"`，多 TUI 实例可各起 peer 隔离会话；`session_key` 与 `peer` 同时发送是为显式绑定当前选中项，不是任选会话的旁路；
 - `content`：原始输入文本；
 - 响应：标准 `ok_response`，附 `event_id`（admission 接受后）或 `error_response`（目标非 TUI 会话 / 无 binding / 容量满 / 归档会话）。binding 仍按 `tui/local/peer` 解析 agent，`session_key` 不用于绕过路由指定 agent。
@@ -104,7 +106,7 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 - 经 `@ipc.tap.publish(Admin::IPC.event_line("transcript.appended", ...))` 广播；
 - **间隙检测**：TUI 为每个会话保存 `last_cursor`。首次加载、重连或切换会话时以 `sessions.read` 全量对账；增量帧仅当 `cursor > last_cursor` 时处理。收到 `cursor > last_cursor + 1` 不直接断言丢帧——其他会话的 transcript 也消耗全局 id——而是调 `sessions.read(session_key, after_cursor=last_cursor)` 补齐该会话缺段，再更新游标；
 - **静默丢失最后一条事件**：不能依赖后续帧触发检测。TUI 每次发送/收到本会话输入回执后、周期性（建议 5 秒）以及 IPC 重连后都做轻量对账：`sessions.read(after_cursor=last_cursor)`，有新增行则按序补渲染；若客户端只看到部分旧历史，直接全量 `sessions.read` 后按 cursor 去重重绘。事件只是提示，SQLite transcript 才是权威；
-- EventTap 满则丢弃策略不变。上述「持久游标 + 主动对账」覆盖队列丢弃、断线和最后一条静默丢失，不承诺事件流自身可靠送达。
+- EventTap 满则丢弃策略不变。上述「持久游标 + 主动对账」只恢复 **transcript 状态**，覆盖 transcript 事件的队列丢弃、断线和最后一条静默丢失；审批待决状态按 §4.2 独立对账。
 
 ### 4.2 `approval.requested` / `approval.decided`（新增）
 
@@ -117,7 +119,8 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 ```
 
 - **不得在持锁路径上同步 publish**——`Approvals::Center` 内部 Mutex 区域外发事件；
-- TUI 收到 `approval.requested` 弹模态卡片，`y`/`n` 决策 → 已有 `approvals.approve/deny` 命令。
+- TUI 收到 `approval.requested` 弹模态卡片，`y`/`n` 决策 → 已有 `approvals.approve/deny` 命令；
+- **审批对账独立于 transcript**：TUI 启动、IPC 重连及与 transcript 同周期的 5 秒对账时都调用只读 `approvals.pending`，以服务端待决队列替换本地审批卡片集；新出现的 id 弹卡，已显示但不在 pending 中的 id 立即移除。`approval.requested/decided` 仅用于降低延迟，不作为可靠送达保证，队列丢弃或断线不会遗留永久等待的不可见审批。
 
 ## 5. 控制命令入口
 
@@ -164,7 +167,7 @@ TUI 主区对话流订阅 `transcript.appended`；`tui.output` 主要用于跨 T
 
 ### 6.1 布局
 
-- **左栏会话列表**（宽 24 列，可 `Tab` 隐藏）：从 `sessions.list` / `sessions.lifecycle` 拉取，按 `last_active_at` 倒序；选中切换主区。
+- **左栏会话列表**（宽 24 列，可 `Tab` 隐藏）：从 `sessions.list` / `sessions.lifecycle` 拉取，按 `last_active_at` 倒序；选中切换主区。启动时若当前 peer 尚无 TUI 会话且 binding 有效，经 §2 的 `sessions.ensure` 预登记后选中；binding 无效则保持只读并显示配置引导。
 - **主区对话流**：从 `sessions.read` 拉历史 transcript（首屏最近 50 行，向上滚动分页）；新消息通过 `transcript.appended` 事件增量推送。
 - **底部输入框**（高 3 行）：仅对选中的 `agent:*:local:tui:*` 会话可编辑，发送时带该 `session_key`；选中 email/telegram 等会话时显示「只读：不能从 TUI 向其他渠道会话发言」，禁用发送。Enter 发送；`/steer` `/stop` `/flush` 由服务端解析；`Ctrl-C` 清空当前输入，`q`（输入框空时）退出 TUI。
 - **审批弹层**：模态卡片覆盖主区，显示 tool/args_summary/deadline，`y` 批准 / `n` 拒绝 / `Esc` 稍后决策。

@@ -119,7 +119,7 @@
 
 **M6.5-WP4 TUI channel：TuiBridge + IPC tui.input/tui.output**（1.5–2 pd）
 - 目标：TUI 作为 channel_type="tui" 与 email/telegram 对等。
-- 范围：`src/channels/tui/bridge.cr`（或内联进 `src/admin/ipc/server.cr`，由实现者按体量判断）实现 `ChannelAdapter` 接口；`start` = 空操作（TUI 主动连 IPC，无独立 fiber）；`send(peer, content)` = IPC 推 `tui.output` 帧；IPC 收到 `tui.input` 帧先校验 `session_key` 属于所选 `local:tui:peer` 会话，再包装为 `InboundMessage(channel_type: "tui", account_id: "local", peer, content)` 推 bus，非 TUI 会话拒绝且不入 bus；`spawn_adapters` 装配 TuiBridge；`Routing::BindingRule` 支持 `channel: tui`；`apply_config` 账号增删覆盖 tui。
+- 范围：`src/channels/tui/bridge.cr`（或内联进 `src/admin/ipc/server.cr`，由实现者按体量判断）实现 `ChannelAdapter` 接口；`start` = 空操作（TUI 主动连 IPC，无独立 fiber）；`send(peer, content)` = IPC 推 `tui.output` 帧；新增 `sessions.ensure` 先校验 binding 四段一致再 `Lifecycle#touch` 预登记空历史 TUI 会话，`sessions.list` 合并 sessions 与 transcripts 来源；IPC 收到 `tui.input` 帧校验 `session_key` 属于所选 `local:tui:peer` 会话且 agent 段等于实时 binding 结果，再包装为 `InboundMessage(channel_type: "tui", account_id: "local", peer, content)` 推 bus，不一致或非 TUI 会话拒绝且不创建 intent、不入 bus；`spawn_adapters` 装配 TuiBridge；`Routing::BindingRule` 支持 `channel: tui`；`apply_config` 账号增删覆盖 tui。
 - 交付物：TuiBridge + IPC 协议扩展 + binding 路由 + spec（入站走完整链路 + 出站回传 + 多 peer 不串扰）。
 - 依赖：M6.5-WP1。
 - 验收：`tui.input {session_key: "agent:main:local:tui:a", peer: "a", content: "hello"}` 触发 agent turn 且 transcript 落该会话；选中 email 会话的输入被拒绝且不创建 intent；agent `message.send` 后 IPC 推 `tui.output {peer: "a"}`；两 peer 并发不串会话；`channel: tui` 的 binding 路由正确解析。
@@ -127,7 +127,7 @@
 
 **M6.5-WP5 TUI 前端：终端渲染 + 会话列表 + 对话流 + 输入框**（1.5–2 pd）
 - 目标：`src/admin/tui/` 从事件流监视器升级为对话界面。
-- 范围：自写 ANSI + 原始终端模式（`stty raw -echo`，Windows 用 `SetConsoleMode`）；布局 = 左栏会话列表（24 列，Tab 隐藏）+ 主区对话流 + 底部输入框（3 行）；会话列表从 `sessions.list` 拉取按 `last_active_at` 倒序；对话流从 `sessions.read` 拉历史 + `transcript.appended` 事件增量；输入框仅对所选 TUI 会话可编辑，Enter 带 `session_key` 经 `tui.input` 帧发送，其他渠道会话只读禁用；以 transcript id 游标检测间隙，发送回执后、5 秒周期及重连时主动 `after_cursor` 对账，发现缺段则重拉去重；`q` 退出（输入框空时）；`Ctrl-C` 清空当前输入。
+- 范围：自写 ANSI + 原始终端模式（`stty raw -echo`，Windows 用 `SetConsoleMode`）；布局 = 左栏会话列表（24 列，Tab 隐藏）+ 主区对话流 + 底部输入框（3 行）；会话列表从 `sessions.list` 拉取按 `last_active_at` 倒序，空历史会话经 `sessions.ensure` 预登记后可选中；对话流从 `sessions.read` 拉历史 + `transcript.appended` 事件增量；输入框仅对所选 TUI 会话可编辑，Enter 带 `session_key` 经 `tui.input` 帧发送，其他渠道会话只读禁用；以 transcript id 游标检测间隙，发送回执后、5 秒周期及重连时主动 `after_cursor` 对账，发现缺段则重拉去重；`q` 退出（输入框空时）；`Ctrl-C` 清空当前输入。
 - 交付物：TUI 前端 + spec（用 IO 注入模拟终端）+ 手动验收脚本。
 - 依赖：M6.5-WP2、M6.5-WP4。
 - 验收：启动后列出全部会话；选中会话显示历史 transcript；非 TUI 会话不能发送；选中 TUI 会话输入「你好」Enter 发送，agent 回复出现在对话流；队列丢帧、断线与静默丢失最后一条事件均经对账补齐，不重复渲染。
@@ -135,10 +135,10 @@
 
 **M6.5-WP6 TUI 前端：审批问答 + 控制命令发送**（0.5–1 pd）
 - 目标：L3 审批问答内嵌 + `/steer` `/stop` `/flush` 从输入框发出。
-- 范围：收到 `approval.requested` 事件弹模态卡片（tool/args_summary/deadline），`y` 批准 / `n` 拒绝 / `Esc` 稍后决策；输入框 `/steer <text>` `/stop` `/flush` 原样作为 `tui.input` 的 content 发送（**TUI 端零解析**，见提案 §5.4）。
+- 范围：收到 `approval.requested` 事件弹模态卡片（tool/args_summary/deadline），`y` 批准 / `n` 拒绝 / `Esc` 稍后决策；启动、IPC 重连及 5 秒周期调用 `approvals.pending` 替换本地卡片集，移除已不在 pending 的卡片；输入框 `/steer <text>` `/stop` `/flush` 原样作为 `tui.input` 的 content 发送（**TUI 端零解析**，见提案 §5.4）。
 - 交付物：审批弹层 + spec。
 - 依赖：M6.5-WP5。
-- 验收：agent 触发 L3 工具时弹出审批卡片，`y` 批准后工具继续；`/steer` 注入当前 turn；`/stop` 停止活跃 turn；`/flush` 立即 seal。
+- 验收：agent 触发 L3 工具时弹出审批卡片，`y` 批准后工具继续；审批事件丢弃/断线后经 `approvals.pending` 恢复，已决卡片在对账后移除；`/steer` 注入当前 turn；`/stop` 停止活跃 turn；`/flush` 立即 seal。
 - 风险：审批卡片与输入框焦点竞争——模态时输入框禁用。[推演]
 
 **M6.5-WP7 CLI `sebas tui` 接线 + 端到端验收 + 文档回写**（0.5 pd）
