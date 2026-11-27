@@ -180,4 +180,16 @@ class QueueCommandTest < Minitest::Test
     end
   end
 
+
+  # help 必须写明 --pid 是 --apply 的必填项：否则读者会以为不带 pid 也能写。
+  def test_help_documents_heartbeat_pid_requirement
+    status, out, = run_cli(["help"])
+    assert_equal 0, status
+    assert_includes out, "heartbeat <issue> [--pid"
+    assert_includes out, "--apply 才写，且此时 --pid 必填"
+    # 只读模式不要求 pid：说明必须写清，否则读者会以为连查询也要 pid
+    assert_includes out, "只读模式不给 --pid 也能用"
+    assert_includes out, "--ttl 只作判据提示，不写入记录"
+  end
+
 end
