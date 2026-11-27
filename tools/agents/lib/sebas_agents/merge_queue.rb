@@ -124,6 +124,19 @@ module SebasAgents
       (rows[0...insert_at] + payload + rows[insert_at..].to_a).join
     end
 
+    # 验收背压（#221 §4 / Proposal §7.4）：待验收的 PR 数量。
+    #
+    # 口径不是「open PR 数」——那只反映有多少 PR 存在，不反映有多少**在等
+    # 独立核验**。这里只数队列真正要处理的那部分：租约动作是 `merge_ready`
+    # 的 PR（已 CLEAN、thread 清零，就等核验与合并）。`wait`/`needs_human`
+    # 的卡还没到验收这一步，算进去会让背压指标虚高、掩盖真实排队。
+    #
+    # 为什么单独给方法而不是在调用方写 `count`：`plan` 与 `queue` 两处都要，
+    # 口径必须同源，否则「一个说 3 一个说 5」。
+    def verifier_queue_depth(leases)
+      Array(leases).count { |lease| lease.action == "merge_ready" && lease.pr }
+    end
+
     # 规划合并队列。
     #
     # leases 为逐租约动作表（Policy::Selection::LeaseAction）；只取 merge_ready。

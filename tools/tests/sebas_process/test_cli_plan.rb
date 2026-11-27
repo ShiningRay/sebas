@@ -139,6 +139,19 @@ class PlanCommandTest < Minitest::Test
     assert_includes view.invalid_reason, "计划顺序"
   end
 
+  # 验收背压口径（#221 §4）：只数待核验的 merge_ready，不是 open PR 数。
+  def test_verifier_queue_depth_counts_only_merge_ready
+    mq = SebasAgents::MergeQueue
+    leases = [
+      SebasAgents::Policy::Routing::LeaseAction.new(issue: 1, action: "merge_ready", reason: "x", pr: 10),
+      SebasAgents::Policy::Routing::LeaseAction.new(issue: 2, action: "merge_ready", reason: "x", pr: 11),
+      SebasAgents::Policy::Routing::LeaseAction.new(issue: 3, action: "wait", reason: "y", pr: 12),
+      SebasAgents::Policy::Routing::LeaseAction.new(issue: 4, action: "needs_human", reason: "z", pr: nil),
+      SebasAgents::Policy::Routing::LeaseAction.new(issue: 5, action: "resume_pr", reason: "w", pr: 13)
+    ]
+    assert_equal 2, mq.verifier_queue_depth(leases), "只有 merge_ready 且带 PR 的才算待验收"
+  end
+
   # CLI 级：离线快照 + JSON 契约字段 + 退出码。
   def test_cli_plan_emits_contract_payload
     data = snapshot(issues: [
@@ -157,7 +170,9 @@ class PlanCommandTest < Minitest::Test
       payload = JSON.parse(out)
       assert_equal true, payload["ok"]
       assert_equal 1, payload["capacity"]
-      assert_equal 1, payload["verifier_queue_depth"]
+      # 该 PR 的卡 #9 不在快照里，队列没有 merge_ready 租约 → 背压为 0。
+      # 口径是「待独立核验的 merge_ready 数」，不是 open PR 数。
+      assert_equal 0, payload["verifier_queue_depth"]
       assert_equal "claim_issue", payload["next_action"]
       assert_equal 2, payload["next_issue"]
       assert_equal [2, 1], payload["candidates"].map { |c| c["issue"] }

@@ -209,7 +209,8 @@ def run_plan(argv)
     # 背压可观察（#221 §2）：used/limit 并存，便于直接算剩余槽位。
     "capacity_used" => snap.in_progress_issues.length,
     "capacity_limit" => snap.capacity,
-    "verifier_queue_depth" => snap.pull_requests.count(&:open?),
+    # 验收背压口径见 MergeQueue.verifier_queue_depth：只数待核验的 merge_ready。
+    "verifier_queue_depth" => MergeQueue.verifier_queue_depth(view.leases),
     "next_action" => view.next_action,
     "next_issue" => view.next_issue,
     "candidates" => candidates,
@@ -314,7 +315,8 @@ end
         "capacity" => snap.capacity,
         "capacity_used" => snap.in_progress_issues.length,
         "capacity_limit" => snap.capacity,
-        "verifier_queue_depth" => snap.pull_requests.count(&:open?),
+        # 验收背压口径见 MergeQueue.verifier_queue_depth：只数待核验的 merge_ready。
+    "verifier_queue_depth" => MergeQueue.verifier_queue_depth(view.leases),
         "observed_main" => snap.main_sha,
         "changelog_loaded" => !changelog.nil?,
         "queue" => queue.to_h
