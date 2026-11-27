@@ -53,8 +53,13 @@ class AwaitReviewSubprocessTest < Minitest::Test
     # 启动竞态：后代可能还没写出 PID 就被 1s 超时整组杀掉，PID 文件因此缺失。
     # 那不是终止逻辑的错，但会让下面的「已消失」断言没法做——所以包一层
     # popen2e：等后代写出就绪信号（PID 文件）后，再把管道与 wait_thr 交给
-    # run_command。超时仍从「已就绪」起算，1s 真实超时原样保留。
+    # run_command。1s 真实超时原样保留。
+    #
+    # 计时起点必须在就绪确认之后：就绪等待最多 10s，若算进 elapsed，
+    # 慢机器上「就绪 9.5s + 正常 1s 超时」也会撞破 elapsed < 10 的断言，
+    # 让正确实现误报失败。
     ready = false
+    started = nil
     Open3.singleton_class.alias_method(:__orig_popen2e, :popen2e)
     Open3.define_singleton_method(:popen2e) do |*cmd, **opts, &block|
       Open3.__orig_popen2e(*cmd, **opts) do |input, stdout, wait_thr|
@@ -72,11 +77,12 @@ class AwaitReviewSubprocessTest < Minitest::Test
           raise "后代就绪等待超时，测试环境太慢（非终止逻辑问题）"
         end
 
+        # 只统计命令执行 + 终止耗时。
+        started = Time.now
         block.call(input, stdout, wait_thr)
       end
     end
 
-    started = Time.now
     error = assert_raises(RuntimeError) do
       AwaitReview.run_command("sh", "-c", script)
     end
