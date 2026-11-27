@@ -35,8 +35,10 @@ PR 上的门闸是 `await-review`：CodeRabbit 审完，spec 与 ameba 才起跑
 需整改项时矩阵直接不跑**（读 review 正文的 `Actionable comments posted: N`）。
 排序阶段 fail-open——draft、超时、审查中断都放行并打 warning；整改阶段是真判定，
 判出问题 job 就红，靠 `await-review` 本身是分支保护必检来保证 skip 不等于放行。
-用 thread 手动 resolve 不影响判定。详见
-[development-workflow.md §4](docs/design/process/development-workflow.md)。
+同一 head 上多轮 review 取最新一条（不求和）；用 thread 手动 resolve 不影响判定，
+不改代码就解不开整改——拒判须推空 commit 让门闸在新 head 上重判。
+review 写入晚于 check run 时由 `await-review-rerun.yml` 重跑该 head 的 CI 补判。
+详见 [pr-gate.md](docs/design/process/pr-gate.md)。
 
 ## 目录结构
 
@@ -71,7 +73,7 @@ tools/
   check_docs.rb        # 文档质量门禁
   tests/               # 工具层测试：run.rb 统一入口，按域分子目录（见其 README）
 .github/
-  workflows/           # ci.yml / release.yml / auto-release.yml / mruby-sandbox.yml / dependency-check.yml
+  workflows/           # ci.yml / verify.yml / await-review-rerun.yml / evidence-register.yml / release.yml / auto-release.yml / mruby-sandbox.yml / dependency-check.yml
   actions/setup/       # composite setup action
 scripts/
   release.sh           # 人工发版脚本（major/minor）
@@ -93,11 +95,14 @@ scripts/
 
 ## 分支与 PR
 
-- 主分支 `main`，受保护：squash-only + 5 项必检（spec×3 + ameba + verify）+ strict + conversation resolution。
+- 主分支 `main`，受保护：squash-only + 6 项必检（spec×3 + ameba + verify + await-review）+ strict + conversation resolution。
 - 分支命名：`feat/…` / `fix/…` / `docs/…` / `ci/…`，从 main 切出，合并即删。
 - PR body 写 `Fixes #<issue号>` 自动关联关闭。
 - commit 用 Conventional Commits（`feat(orchestration): …`）。
-- auto-merge 已开启：CI 绿 + thread 全 resolve 即可 `gh pr merge --auto --squash`。
+- auto-merge 只用于 dependabot / docs / 小修：`gh pr merge --auto --squash`，CI 绿即合。
+  其余（feature / 架构改动）逐轮推进，合并前先跑 `verify merge --pre` 退出码 0，
+  且 head 上 `await-review` 为 success、本轮 review 已交付——`thread 全 resolve`
+  在 review 未到达时恒成立，不能当通过条件。
 - BEHIND 时 `gh pr update-branch` 重跑 CI，不 force-push。
 
 ## 里程碑与排期

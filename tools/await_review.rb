@@ -46,7 +46,8 @@
 #
 # thread 可以被人手动 resolve 掉而代码未改；`Actionable comments posted: N`
 # 是审查方自己的原始判断，不受人工操作影响。代价是耦合了 CodeRabbit 的文案，
-# 所以匹配失败时按「无整改项」处理（fail-open）。
+# 所以匹配失败时按「无整改项」处理（fail-open）。同一 head 上多轮 review 取
+# 最新一条而非求和，以及迟到 review 的重判入口，见 pr-gate.md。
 
 require "json"
 require "open3"
@@ -197,7 +198,8 @@ module AwaitReview
     reviews = fetch_reviews(repo, pr_number, sha, app_slug: app_slug)
     return pass_open(out, "读不到 #{sha[0, 8]} 上的 review，无法判断是否需整改") if reviews.nil?
 
-    actionable = reviews.sum { |review| actionable_count(review) }
+    latest = latest_marked_review(reviews)
+    actionable = latest ? actionable_count(latest) : 0
     if actionable.zero?
       out.puts "审查未提出需整改项（#{sha[0, 8]}），放行"
       return 0
@@ -206,6 +208,19 @@ module AwaitReview
     out.puts "::error::审查提出 #{actionable} 条需整改项（#{sha[0, 8]}），矩阵不跑"
     post_block_comment(repo, pr_number, sha, actionable, out) if comment
     1
+  end
+
+  # 同一 head 上可能有多条带 actionable 文案的 review（上一轮意见未处理完又在
+  # 同一 head 上 `@coderabbitai review` / `full review` 时，旧记录不会消失）。
+  # 取**最新一条**而非求和：正文不可编辑，求和会让数字单调不减，整改完也回不到
+  # 0（PR #282 head 07f46473 实测 1+2=3，门闸连红到换 head）。
+  #
+  # 只挑**带该文案的** review：CodeRabbit 常在主 review 后补发 pre-merge 提示与
+  # commentary，那些正文没有该文案，也不撤销先前结论。最新按 submitted_at 比，
+  # 同秒用 id 兜底。
+  def latest_marked_review(reviews)
+    marked = reviews.select { |review| ACTIONABLE_PATTERN.match?(review["body"].to_s) }
+    marked.max_by { |review| [review["submitted_at"].to_s, review["id"].to_i] }
   end
 
   # nil 表示读取失败（区别于「读到空列表」）。
