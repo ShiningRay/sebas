@@ -25,6 +25,8 @@
 - **能力声明**：`memory.backend` 等扩展点和 capability 由 manifest 静态声明，宿主按 active 版本及授权快照派发。外部服务由宿主 driver 执行，agent/session scope 由宿主注入。
 - **单入口、无原生依赖**：首版只有 `plugin.rb`，不支持包内 DLL/so、安装脚本、自动依赖下载或其他 `require` 文件。复杂插件的受控多文件、显式初始化和按插件常驻 worker 属于后续演进，见[插件复杂化演进规划](../review/plugin-evolution.md)，不改变当前包契约或 M3 验收。
 
+- **产品化线协议（M3-WP4 实装，#16）**：runner 每次调用合成「prelude（`on_action`/`on_hook`/`capability` DSL + 请求引导）+ `plugin.rb` + 派发尾段」程序文件经 argv 传入裁剪解释器；request 为 stdin 单行 JSON（字段闭集：`protocol_version/request_id/plugin_id/action/context/payload/config/idempotency_key`）。stdout 帧序 `registered → capability_call×n → result`（恰好一个 result，其后任何输出拒绝）；`result` 形如 `{type,request_id,ok:true,value}` 或 `{type,request_id,ok:false,error:{code,message}}`；host-call 应答帧 `{type:capability_result,call_id,ok,result|error}`。帧字段闭集、单帧 1 MiB、stdout 总量 8 MiB、单次调用 host-call ≤ 64、超时取 manifest `timeout_ms` 与宿主上限较小者。沙箱 gembox：`mruby-sebas-stdio`（`sebas_print`/`sebas_read` 双管道）+ `mruby-sebas-json`（帧编解码，自研 C gem）+ compiler/error/exit/bin-mruby——无 IO/socket/正则；解释器由 `mruby-sandbox` workflow 在干净 Windows CI 构建发布（pin mruby 4.0.0 @ 831da26），插件 spec 以 `SEBAS_PLUGIN_INTERPRETER` 注入解释器直跑验收。
+
 ### 12.3 初始化与生命周期边界
 
 首版采用**显式 action，不引入隐式全局 `init`**，避免“每次 hook 都执行一遍 init”的语义歧义：

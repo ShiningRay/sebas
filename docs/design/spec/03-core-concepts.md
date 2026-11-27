@@ -117,6 +117,10 @@ bindings:                            # Binding：路由表（数组，most-speci
 
 workflows: [ /* 编排定义，见 §7.6 */ ]
 
+plugins:                             # 插件面（M3-WP4，§12；缺省关闭）
+  dir: plugins                       # 开发/源码布局目录；未配置 = 不扫描不注册
+  interpreter: mruby                 # 裁剪解释器（mruby-sandbox 构建发布）
+
 gateway:
   http: { bind: 127.0.0.1, port: 18790, auth: token }
   ipc: auto                          # NDJSON/IPC，见 §9

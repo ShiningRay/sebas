@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "unregistered",
+  "version": "1.0.0",
+  "api_version": "1",
+  "actions": ["ping"],
+  "timeout_ms": 5000
+}

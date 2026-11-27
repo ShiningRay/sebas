@@ -28,6 +28,8 @@ require "../../agents/runtime"
 require "./gateway_dispatch"
 require "./gateway_steer"
 require "./gateway_hooks"
+require "./gateway_reload"
+require "./gateway_plugins"
 require "./gateway_scheduling_admin"
 require "./gateway_collaboration"
 require "../../tools/executor"
@@ -61,6 +63,8 @@ module Sebas
         include GatewaySchedulingAdmin
         include GatewaySecrets
         include GatewayCollaboration
+        include GatewayReload
+        include GatewayPlugins
 
         Log = Sebas::Log.for("gateway")
 
@@ -107,7 +111,9 @@ module Sebas
           @bus = Bus::Bus.new
           @channels = Channels::Registry.new
           @providers = Providers::Pool.new
-          @executor = Tools::Executor.new(Tools.default_registry(@channels), @channels)
+          @tools_registry = Tools.default_registry(@channels)
+          @executor = Tools::Executor.new(@tools_registry, @channels)
+          wire_plugins(@config) # 插件面装配（M3-WP4）：先于 pool/agent 工具面构建
           @rules = build_rules(config)
           @pool = build_pool
           @scheduling = Sessions::Scheduling::Registry.new(@store)
@@ -180,21 +186,6 @@ module Sebas
           spawn_adapters
         end
 
-        def reload_result_payload(result : Config::ReloadResult) : Hash(String, JSON::Any)
-          {
-            "accepted"         => JSON::Any.new(result.accepted),
-            "errors"           => JSON::Any.new(result.errors.map { |e| JSON::Any.new(e) }),
-            "restart_required" => JSON::Any.new(result.restart_required.map { |e| JSON::Any.new(e) }),
-          }
-        end
-
-        def trigger_reload : Hash(String, JSON::Any)
-          manager = @reload_manager
-          return {"accepted" => JSON::Any.new(false), "errors" => JSON::Any.new([JSON::Any.new("no config path; reload unavailable")]), "restart_required" => JSON::Any.new([] of JSON::Any)} if manager.nil?
-          result = manager.reload_from_file
-          reload_result_payload(result)
-        end
-
         def run : Nil
           @ipc.listen
           @http.listen
@@ -253,6 +244,8 @@ module Sebas
 
           # Telegram 账号热换（M3-WP8 装配）：增删=监督体启停
           reapply_telegram_accounts(new_config)
+
+          wire_plugins(new_config) # 插件面热更新（M3-WP4 数据类）：每动作新进程，重扫即生效
 
           @config = new_config
           restart_required

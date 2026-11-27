@@ -41,10 +41,11 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
             mingw-w64-ucrt-x86_64-ruby
-      - name: Vendor sandbox gem and build config
+      - name: Vendor sandbox gems and build config
         shell: pwsh
         run: |
           Copy-Item sebas/tools/mruby-build/mrbgems/mruby-sebas-stdio -Destination mruby/mrbgems/ -Recurse
+          Copy-Item sebas/tools/mruby-build/mrbgems/mruby-sebas-json -Destination mruby/mrbgems/ -Recurse
           Copy-Item sebas/tools/mruby-build/mrb_cr.rb -Destination mruby/build_config/
       - name: Build interpreter
         # MRUBY_CONFIG=mrb_cr：只构建沙箱裁剪配置（minirake 默认会构建
@@ -55,9 +56,10 @@ jobs:
         run: |
           cd mruby
           ruby minirake
-      - name: Smoke verification chain (feasibility §四)
+      - name: Smoke verification chain (feasibility §四 + M3-WP4 扩展)
         # 沙箱 gembox 无 mruby-print：唯一的输出通道是 sebas_print（C gem）；
-        # 数字转字符串用核心 to_s。
+        # 数字转字符串用核心 to_s。M3-WP4 起另有 sebas_read（stdin 行读）与
+        # mruby-sebas-json（帧编解码）——runner 协议的两条依赖通道。
         run: |
           MRUBY=./mruby/build/host/bin/mruby.exe
           echo "--- -e 通道（sebas_print）---"
@@ -70,9 +72,30 @@ jobs:
           # mruby 的 defined? 对未定义常量抛 NameError（与 CRuby 不同），改用 rescue 探测
           test "$($MRUBY -e "sebas_print (begin; File.inspect; rescue NameError; 'nil'; end)")" = "nil"
           test "$($MRUBY -e "sebas_print (begin; IO.inspect; rescue NameError; 'nil'; end)")" = "nil"
+          test "$($MRUBY -e "sebas_print (begin; Regexp.inspect; rescue NameError; 'nil'; end)")" = "nil"
           echo "--- sebas_print 输出 ---"
           test "$($MRUBY -e "sebas_print 'sebas-ok'")" = "sebas-ok"
+          echo "--- sebas_read（stdin 行读，M3-WP4）---"
+          test "$(echo "hello-line" | $MRUBY -e "sebas_print sebas_read")" = "hello-line"
+          test "$(printf '' | $MRUBY -e "sebas_print sebas_read.inspect")" = "nil"
+          echo "--- JSON 帧编解码（mruby-sebas-json，M3-WP4）---"
+          test "$($MRUBY -e "sebas_print JSON.generate({\"a\" => [1, 2.5, \"x\\n\", true, nil], \"b\" => {\"k\" => -3}})")" = '{"a":[1,2.5,"x\n",true,null],"b":{"k":-3}}'
+          test "$(echo '{"ok":true,"nums":[1,2,3]}' | $MRUBY -e "v = JSON.parse(sebas_read); sebas_print JSON.generate({\"ok\" => v[\"ok\"], \"n\" => v[\"nums\"][1]})")" = '{"ok":true,"n":2}'
           echo "ALL SMOKE CHECKS PASSED"
+      - name: Setup Crystal for plugin e2e
+        uses: ./sebas/.github/actions/setup
+      - name: Install shards
+        shell: pwsh
+        run: |
+          cd sebas
+          shards install --frozen
+      - name: Plugin runner e2e（M3-WP4 验收：注入真解释器直跑验收 spec）
+        shell: pwsh
+        env:
+          SEBAS_PLUGIN_INTERPRETER: ${{ github.workspace }}\mruby\build\host\bin\mruby.exe
+        run: |
+          cd sebas
+          crystal spec spec/plugins --no-color
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mruby-sandbox-windows
