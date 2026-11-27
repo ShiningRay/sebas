@@ -65,6 +65,9 @@ Commitment 的这些维度，不自带——评估以 Commitment 的跟进策略
 | escalate_budget | integer | ✓ | 升级预算（剩余升级次数） |
 | due_at | timestamptz | — | 提醒时间（与 Checkpoint 分离存储） |
 
+验收维度：经 commitment_id **继承**所属 Commitment 的 owner/来源/权限与跟进策略；
+不自带完成条件——Delivery 状态变迁不构成完成（不变式 3）。 |
+
 ### 2.4 NotificationDelivery（一次渠道投递）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -105,6 +108,9 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 | wall_start / tz | timestamp / text | ✓ | 原墙钟开始 + IANA 时区 |
 | wall_end / duration | timestamp / interval | ✓ | 原墙钟结束或时长（二者择一存储，语义全文一致）——相同开始与时区的不同会议由此区分各自的结束与 busy 时段 |
 
+验收维度：Event 自带来源（provider/external_id 经 ExternalLink 关联）与权限（access/busy）；
+完成条件不适用——外部事件完成不等于关联 Commitment 完成（不变式 3）。
+
 ### 2.7 WorkSession（一次计划执行时间）
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -112,6 +118,9 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 | task_id | uuid | ✓ | 所属任务（可多条） |
 | kind | enum | ✓ | fixed / locked / skipped / external_mapped |
 | planned_start / planned_end | timestamptz | ✓ | 计划时段 |
+
+验收维度：owner/来源继承所属 Task；完成条件不适用（WorkSession 是计划执行时段，
+执行结果由 ActualTime/Run 记录）；跟进策略继承所属 Commitment。
 
 ### 2.8 Projection（临时预计，非承诺）
 
@@ -177,7 +186,7 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 | T06 | dormant → cancelled | 用户显式取消 | 已 completed——completed 不可撤销，重开需新开 Commitment 并以 ExternalLink 关联旧卡（不引用 T19） |
 | T07 | needs_clarification → dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready。补全后的关注时间不得晚于硬截止（同 T01 拒绝条件，提示调整） | 补全后仍缺必填项；关注时间晚于硬截止 |
 | T08 | needs_clarification → dormant | 用户选择「暂缓，稍后再补」；clarify_by 期限内补全 → 按 T07 逻辑重判目标态（dormant/waiting_condition/ready 均可，按补全后的跟进依据判定）；**逾期仍未补全走 T09 取消（暂缓不豁免期限）** | 已过 clarify_by 且仍缺字段（走 T09） |
-| T09 | needs_clarification → cancelled | clarify_by 到期仍未补全（系统自动）；补全前不得经任何路径进入 ready。到期判定以 clarify_by 时刻为准：到期后的补全不豁免取消（补全内容保留为记录） | 到期前已补全（应走 T07） |
+| T09 | needs_clarification/dormant（T08 暂缓路径）→ cancelled | clarify_by 到期仍未补全（系统自动，含经 T08 暂缓转入 dormant 的承诺）；补全前不得经任何路径进入 ready。到期判定以 clarify_by 时刻为准：到期后的补全不豁免取消（补全内容保留为记录） | 到期前已补全（应走 T07） |
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
 | T12 | waiting_condition → cancelled | 条件永久失效或用户取消 | — |
@@ -203,7 +212,7 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 
 - **失效撤销类**（T09/T12——澄清超时、条件失效放弃）：该 Commitment 全部 `state=scheduled` 的未投递 Delivery 置 superseded；无替代者的撤销可空 supersedes（提案 §3.2「撤销尚未投递的过时提醒」仅适用于这些失效路径）。
 - **例外——T11 条件失效转 dormant**：Delivery 侧仅撤销因该已失效条件而排程的投递（trigger_reason 关联失效条件），仍有效的未来截止提醒（due_at/due_wall 类）**保留**或改排替代投递——T11 语义是「暂不跟进」而非「意图失效」，漏掉截止提醒即违反提案 §3.2「错过期限」场景。调度侧同理：撤销因失效条件排程的 WakeSchedule，保留截止类唤醒（WakeSchedule 属 M5.1 持久调度交付，与 Delivery 分开处理）。
-- **用户取消类**（T06/T16/T20/T23/T25）：同样将全部 `state=scheduled` 未投递 Delivery 置 superseded 并逐条回填 supersedes 关联（取消属用户可见动作，替代关联用于审计对账）。
+| T07 | needs_clarification 或 dormant（T08 暂缓路径）→ dormant/waiting_condition/ready | 用户补全全部缺失字段后，**按补全后的跟进依据重判目标态**：clarify_by 已过 → 拒绝 T07（走 T09 超时取消，补全不豁免期限）；关注时间在未来 → dormant；仍等待可观察外部条件 → waiting_condition；仅当立即可行动 → ready。补全后的关注时间不得晚于硬截止（同 T01 拒绝条件，提示调整） | 补全后仍缺必填项；关注时间晚于硬截止 |
 - **静默类**（T26 无变化续眠）：**不得**撤销仍有效的未来唤醒与 scheduled Delivery——无新信息时原计划继续有效。
 - **完成类**（T17/T24/T27）：completed/cancelled 使未来唤醒失去效力（提案 §3.3），已 sent/seen 的历史 Delivery 保留原状态与 sent_at。
 
@@ -245,7 +254,9 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 
 配套规则：
 
-- supersedes 关联**不影响** §4.2 的同键计数——计数只看 sent_at；
+- **键** = (commitment_id, trigger_reason, plan_version)。更新类后条沿用原键
+  （仅内容/时间更新）；键变更（如换计划版本）产生的是新投递序列，不受本式约束；
+- supersedes 关联**不影响**本式的同键计数——计数只看 sent_at；
 - 未发送的前条（scheduled）被后条替代：前条置 superseded（无 sent_at），
   后条正常发送 → 同键 sent 计数 = 1，**不违反**（属「未发送替代」）；
 - 同键两条都曾发送（sent_at 均非空）→ 直接违反**本判定式**
