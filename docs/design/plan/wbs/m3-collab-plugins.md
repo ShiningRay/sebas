@@ -43,6 +43,7 @@
 - 依赖：M3-WP4；M2-WP2（task 生命周期）、M1-WP9（gateway 管理边界）。会话压缩若实现时仍无生产压缩器，先交付明确的 `SessionCompactor` 接口与协议完整实现，不能用假 hook 声称完成生产压缩。
 - 验收：**插件死循环被 watchdog 超时终止不卡宿主**（§14 M3 验收第 4 条）；未授权 capability 拒绝；22 个 hook 按目录逐一验证精确派发与 payload schema；gate 异常/超时 deny、observe 异常跳过；transform 不越权；task 重放 memo 不重复副作用；资源上限与后代进程清理有实测证据。
 - 风险：OS 资源限制/进程树终止的 Windows 行为须实测；LLM/工具/消息 hook 可能接触敏感内容，须按 manifest capability 最小化 payload 并脱敏。
+- 实施注记（#17 进行中）：22 钩子目录/payload schema 机读权威在 `src/plugins/hooks.cr`；派发语义与预算见 `hook_dispatcher.cr`；进程树清扫 POSIX 走 pgrep 树遍历（wait 前执行——退出后后代被收养即失联）、Windows 走 Job Object FFI（编译口径，行为待 Windows 实测登记）；内存上限 POSIX 以 `ulimit -v` 包装承载（macOS 上 RLIMIT_AS 为 no-op，内存爆实测仅 Linux），CPU 走 `ulimit -t` 双平台可测。
 
 **M3-WP6 插件包、热重载与生命周期**（3–5 pd）
 - 目标：单文件插件可分发、免重启开发重载，安装/升级/卸载不破坏配置与数据。

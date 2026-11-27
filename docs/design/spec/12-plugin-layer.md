@@ -223,3 +223,19 @@ on_hook "tool.call.after" do |event|
   nil
 end
 ```
+
+**WP5 落地注记（M3-WP5，#17）**：22 钩子目录与 payload schema 的机读权威是
+`src/plugins/hooks.cr`（含本表未列字段在实现期按上述规则的定稿值）；派发语义
+（priority 排序、gate/transform 链、预算与 memo）见 `src/plugins/hook_dispatcher.cr`。
+四项实现期定稿与本文的差异均已按本规则收口：
+
+- transform/gate_transform 的处理器**返回替换后的完整 payload**（§12.11 示例的
+  `modify(entry)` 细化为 whole-payload 语义 + `modify!` 语法糖），宿主按同一
+  payload schema 重校验，非法形态（如裸标量）按 `invalid_result` deny；
+- `deny!(code, reason)` 以结构化错误承载（`hook_deny`，message 编码为
+  `code: reason`），gate 停链、transform fail-closed；
+- hook 优先级经 manifest 独立字段 `hook_priorities`（键为已声明 hook 名，
+  缺省 0），保持 WP4 既有 manifest 形状向后兼容；
+- `session.compact.*` 由 `SessionCompactor` 接口 + `CompactionRunner` 协议承载
+  （无生产压缩器，WBS 依赖节口径）；`memory.remember.*` 由受控 memory.driver
+  （进程内过渡实现）承载，生产持久化随 memory.backend 选择机制接入。
