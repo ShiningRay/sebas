@@ -161,10 +161,13 @@ end
           joined = argv.join(" ")
           # 租约唯一性预检要读已发评论：返回空数组（尚无租约）。
           return [] if joined.include?("/comments?")
-          # 回读：status 与 label 都按「已写入」回答，只让标签写入那一步失败。
-          return {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS}} if joined.exclude?("/comments")
 
-          []
+          # 单卡回读（status? / label_present?）的形状必须合法：早先这里写成
+          # `joined.exclude?("/comments")`，exclude? 是 ActiveSupport 扩展，
+          # 纯 Ruby 下会 NoMethodError——本用例的标签失败路径走不到该行，
+          # 静默掩盖了它，但仍属不可达的错误代码。
+          {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS},
+           "labels" => [{"name" => SebasAgents::Model::IN_PROGRESS_LABEL}]}
         end
       end
 
@@ -176,6 +179,8 @@ end
       payload = JSON.parse(out.string)
 
       refute_equal "claimed", payload["claim"], "标签写入失败不得声称 claimed"
+      assert(payload["reasons"].join.include?("label boom"),
+        "必须走到标签写入失败路径，而不是替身自身报错：#{payload["reasons"].inspect}")
       assert_equal 1, status
       saved = JSON.parse(File.read(record, encoding: "UTF-8"))
       assert_equal "aborted", saved["phase"]
@@ -185,6 +190,48 @@ end
   end
 
   # 快照仓库与 --repo 不一致时必须拒绝写入，否则会认领到没校验过的仓库。
+# 回读路径必须被真正执行：标签写入成功但回读说没生效时，不得声称 claimed。
+# 与上一条（写入失败）互补——那条走不到回读，这条才覆盖 status?/label_present?
+# 与 lease 三段回读的组合。
+def test_claim_label_readback_mismatch_records_aborted
+  data = snapshot(issues: [issue(1, body: automation)])
+  Dir.mktmpdir do |dir|
+    path = File.join(dir, "snapshot.json")
+    record = File.join(dir, "run.json")
+    File.write(path, JSON.generate(data), encoding: "UTF-8")
+
+    # 所有写入都成功；回读单卡时说「标签不在」，制造不一致。
+    fake = Class.new(SebasAgents::CommandRunner) do
+      def run!(*argv, chdir: Dir.pwd)
+        ""
+      end
+
+      def json!(*argv, chdir: Dir.pwd)
+        joined = argv.join(" ")
+        return [] if joined.include?("/comments?")
+
+        {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS}, "labels" => []}
+      end
+    end
+
+    cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+    cli.define_singleton_method(:runner) { |_options| fake.new(dry_run: false) }
+    out = StringIO.new
+    cli.instance_variable_set(:@out, out)
+    status = cli.run(["claim", "1", "--snapshot", path, "--record", record, "--apply"])
+    payload = JSON.parse(out.string)
+
+    assert_equal 1, status
+    refute_equal "claimed", payload["claim"], "回读不一致不得声称 claimed"
+    assert_includes payload["reasons"].join, "readback=false",
+      "必须落到回读确认失败，而不是别的分支：#{payload["reasons"].inspect}"
+    saved = JSON.parse(File.read(record, encoding: "UTF-8"))
+    assert_equal "aborted", saved["phase"]
+    assert_equal true, saved["status_written"]
+    assert_equal true, saved["label_written"], "写入步骤都成功，失败在回读确认"
+  end
+end
+
   def test_claim_rejects_repo_mismatch
     data = snapshot(issues: [issue(1, body: automation)])
     Dir.mktmpdir do |dir|
