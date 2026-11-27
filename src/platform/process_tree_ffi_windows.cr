@@ -52,14 +52,17 @@
             peak_job_memory_used : LibC::SizeT
           end
 
-          # 显式绑定 Win32 导出名（Crystal fun 无别名时按小写符号查找，Windows 链接必败）
-          fun create_job_object_w = CreateJobObjectW(lp_job_attributes : Void*, lp_name : Void*) : Void*
-          fun set_information_job_object = SetInformationJobObject(h_job : Void*, info_class : Int32,
-                                                                   lp_info : JOBOBJECT_EXTENDED_LIMIT_INFORMATION*,
-                                                                   cb_info : UInt32) : Int32
-          fun assign_process_to_job_object = AssignProcessToJobObject(h_job : Void*, h_process : Void*) : Int32
-          fun terminate_job_object = TerminateJobObject(h_job : Void*, exit_code : UInt32) : Int32
-          fun close_handle = CloseHandle(h_object : Void*) : Int32
+          # 显式绑定 Win32 导出名：Crystal 的 LibC 在 Windows 已声明
+          # CreateJobObjectW 等（jobapi2.cr）——同 lib 内再定义会签名冲突
+          # （fun redefinition）。独立 lib LibJob 内用 sebas_* 前缀别名绑定
+          # 真实导出名，既不撞 LibC 又保留显式绑定（链接正确性）。
+          fun sebas_create_job_object_w = CreateJobObjectW(lp_job_attributes : Void*, lp_name : Void*) : Void*
+          fun sebas_set_information_job_object = SetInformationJobObject(h_job : Void*, info_class : Int32,
+                                                                         lp_info : JOBOBJECT_EXTENDED_LIMIT_INFORMATION*,
+                                                                         cb_info : UInt32) : Int32
+          fun sebas_assign_process_to_job_object = AssignProcessToJobObject(h_job : Void*, h_process : Void*) : Int32
+          fun sebas_terminate_job_object = TerminateJobObject(h_job : Void*, exit_code : UInt32) : Int32
+          fun sebas_close_handle = CloseHandle(h_object : Void*) : Int32
         end
 
         module JobObject
