@@ -1,0 +1,119 @@
+name: Await review rerun
+
+# 迟到的 review 让门闸重判。
+#
+# ## 为什么需要这个 workflow
+#
+# `ci.yml` 的 `await-review` 只在 push / pull_request 上跑，判完即固化。
+# 而 CodeRabbit 的 check run 完成与 review 写入之间没有顺序保证：
+#
+# | PR | head | check run 完成 | review 写入 | 差 |
+# |---|---|---|---|---|
+# | #280 | `595b54c7` | 10:11:05 | 10:14:15 | +190s |
+# | #283 | `0653ae26` | 11:48:19 | 13:13:18 | +5099s |
+# | #284 | `e7b1cbd3` | 13:46:15 | 13:39:32 | 早 403s |
+#
+# 门闸在 check run 完成的那一刻读 review，读到空就放行；等 review 真的写进来，
+# 已经没有任何 job 会再看一眼。于是「审查提出了整改项」这件事被静默吞掉，
+# PR 看起来全绿、可以合并——正是「直接开始等自动合并」的成因之一。
+#
+# ## 只做一件事：重跑一次主 CI
+#
+# 本 workflow 不解析 actionable 之外的任何语义，也不 checkout PR 内容。
+# 判定「这条 review 有没有整改项」用 review 正文里的 `Actionable comments posted: N`，
+# 与 `tools/await_review.rb` 同一口径；N>0 就重跑该 head 上最近一次 CI run，
+# 让 `await-review` 在同一个 sha 上重新读一次 review。
+#
+# 重跑的代价很小：门闸一旦判红，`spec` / `ameba` 会因 needs 失败被 skip，
+# 实际只多跑 changes / await-review / docs / verify 四个秒级 job——
+# 这正是 pr-gate.md 设计的拦截形态。
+#
+# ## 安全边界
+#
+# - `pull_request_review` 的 workflow 定义取自 base 分支，PR 无法改写它；
+# - 不 checkout、不执行任何 PR 内文件，只用 `gh api` 读事件与重跑 run；
+# - 作者必须等于基线的审查方 login，别人发的 review 不触发任何动作
+#   （否则任何人都能伪造一条 `Actionable comments posted: 99` 反复烧 runner，
+#   与 CWE-345 同型）；
+# - rerun 不会产生新的 review 事件，不会自我循环。
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  # 重跑 CI run 需要 actions: write。fork PR 上 GitHub 会把它降为只读，
+  # 那种情况下本 job 只打 warning，不失败——门闸漏判一次不该让 PR 卡在
+  # 一个执行不了的动作上（与 await_review.rb 的 fail-open 同向）。
+  actions: write
+  pull-requests: read
+
+concurrency:
+  # 与 ci.yml 的 `ci-<ref>` 分组区分开：这里重跑的是主 CI，不是自己。
+  group: await-review-rerun-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    name: await-review-rerun
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 已合并 / 已关闭的 PR 不再重跑：那个 head 上的 pull_request 事件已失效。
+    if: |
+      github.event.review.user.login == 'coderabbitai[bot]' &&
+      github.event.pull_request.state == 'open'
+    steps:
+      - name: Read actionable count from the review
+        id: review
+        shell: bash
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+
+          # 事件正文走文件而不是 env 变量：review 正文可能很长且含任意字符，
+          # 展开进 shell 变量既有长度上限也会引入注入面。
+          count="$(jq -r '.review.body // ""' "$EVENT_PATH" \
+            | grep -oE 'Actionable comments posted:[[:space:]]*[0-9]+' \
+            | grep -oE '[0-9]+$' \
+            | sort -n | tail -1 || true)"
+
+          if [ -z "$count" ]; then
+            echo "该 review 没有 actionable 文案，无需重判"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "actionable=${count}"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Rerun the review gate on the current head
+        if: steps.review.outputs.count != '0'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+
+          sha="$(jq -r '.pull_request.head.sha' "$EVENT_PATH")"
+          # 只取该 head 上已完成的 pull_request run：进行中的 run 不允许 rerun
+          # （接口返回 403），而它本来就会读到这条新 review，不必干预。
+          run_id="$(gh api \
+            "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=pull_request&per_page=20" \
+            --jq '[.workflow_runs[] | select(.status == "completed")] | first | .id // ""')"
+
+          if [ -z "$run_id" ]; then
+            echo "::warning::$sha 上没有已完成的 CI run，跳过重判"
+            exit 0
+          fi
+
+          if gh api -X POST "repos/$REPO/actions/runs/$run_id/rerun" >/dev/null; then
+            echo "已重跑 CI run $run_id（head $sha），门闸将重新读取 review"
+          else
+            # 典型原因：fork PR 的 token 只读、run 已被清理。不失败——
+            # 重判是补漏，不是门禁本身；让这里红只会淹没真正的门闸结论。
+            echo "::warning::重跑 CI run $run_id 失败，需人工确认 $sha 上的 review 是否已处理"
+          fi

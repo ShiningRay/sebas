@@ -30,13 +30,45 @@ class AwaitReviewGateTest < Minitest::Test
     assert_includes @out.string, "未提出需整改项"
   end
 
-  # 多条 review 的 actionable 求和：CodeRabbit 每轮可能只报一部分。
-  def test_actionable_counts_are_summed
+  # 同一 head 上重审时旧的 review 记录不会消失。取最新一条，不求和：
+  # 求和会让 actionable 数单调不减，整改完也回不到 0（PR #282 实测 1+2=3）。
+  def test_latest_review_wins_over_earlier_rounds
     stop_sleeping
-    reviews = [actionable_review(count: 2), review(body: ""), actionable_review(count: 1)]
+    reviews = [
+      actionable_review(count: 1, submitted_at: "2026-01-01T00:00:00Z", id: 1),
+      review(body: "", submitted_at: "2026-01-01T00:00:05Z", id: 2),
+      actionable_review(count: 2, submitted_at: "2026-01-01T00:00:10Z", id: 3)
+    ]
 
     assert_equal 1, run_with([success_run], reviews: reviews)
-    assert_includes @out.string, "3 条需整改项"
+    assert_includes @out.string, "2 条需整改项"
+    refute_includes @out.string, "3 条需整改项"
+  end
+
+  # marker 之后的 review 常常没有 `Actionable comments posted` 文案（CodeRabbit 的
+  # pre-merge 提示、commentary 都是这种形态）。它们不撤销先前提出的整改要求，
+  # 所以判定取「最新一条带 marker 的 review」，而不是「最新一条 review」。
+  def test_later_review_without_marker_does_not_clear_pending_actionables
+    stop_sleeping
+    reviews = [
+      actionable_review(count: 5, submitted_at: "2026-01-01T00:00:00Z", id: 1),
+      review(body: "Failed pre-merge checks: Linked Issues", submitted_at: "2026-01-01T00:05:00Z", id: 2)
+    ]
+
+    assert_equal 1, run_with([success_run], reviews: reviews)
+    assert_includes @out.string, "5 条需整改项"
+  end
+
+  # 同一秒提交两条（summary 与 review 可能并发）时用 id 兜底取后者。
+  def test_same_timestamp_falls_back_to_review_id
+    stop_sleeping
+    reviews = [
+      actionable_review(count: 4, submitted_at: "2026-01-01T00:00:00Z", id: 100),
+      actionable_review(count: 1, submitted_at: "2026-01-01T00:00:00Z", id: 101)
+    ]
+
+    assert_equal 1, run_with([success_run], reviews: reviews)
+    assert_includes @out.string, "1 条需整改项"
   end
 
   # 只看当前 head：旧 commit 的意见不该挡住已修过的新 commit。

@@ -11,6 +11,7 @@
 
 实现：[tools/await_review.rb](../../../tools/await_review.rb)。
 门禁位置：`ci.yml` 的 `await-review` job，`spec` 与 `ameba` 的 `needs` 含它。
+迟到 review 的重判入口：[`await-review-rerun.yml`](../../../.github/workflows/await-review-rerun.yml)。
 
 ## 排序阶段（fail-open）
 
@@ -51,6 +52,54 @@
 
 整改清单评论带 `<!-- await-review:blocked -->` marker，重跑时 PATCH 同一条，
 不会刷屏；找旧评论要翻页（PR 评论过百时旧评论落第二页）。
+
+### 同一 head 上多轮 review 取最新一条
+
+review 正文不可编辑，同一 head 上被重审时（`@coderabbitai review` / `full review`）
+旧记录不会消失。**不能求和**：
+
+| 时间 | 事件 | 该 head 上留下的记录 |
+|---|---|---|
+| 12:54 | 自动审 | `N=1` |
+| 13:02 | 人工发 `@coderabbitai full review` | 旧记录仍在 |
+| 13:08 | full review 产出 | `N=2` |
+
+求和得 3（PR #282 实测），而 full review 的语义是「无视已有评论、重新完整审阅」，
+`N=2` 才是当前全量结论。求和还让数字单调不减：整改完也回不到 0，PR 只能靠新
+commit 脱身。
+
+判定取**最新一条带该文案的 review**（按 `submitted_at`，同秒用 `id` 兜底）。
+注意是「最新一条**带文案**的」，不是「最新一条 review」：CodeRabbit 常在主 review
+之后补发 pre-merge 提示或 commentary，那些正文没有该文案，也不撤销先前结论。
+
+### 迟到的 review 要重判
+
+`check run completed` 与 review 写入之间没有顺序保证：
+
+| PR | head | check run 完成 | 首条 review 写入 | 差 |
+|---|---|---|---|---|
+| #280 | `595b54c7` | 10:11:05 | 10:14:15 | +190s |
+| #284 | `e7b1cbd3` | 13:46:15 | 13:39:32 | 早 403s |
+| #283 | `0653ae26` | 11:48:19 | 13:13:18 | **+5099s**（PR 已合并） |
+
+门闸在 check run 完成那一刻读 review，读到空就放行，此后不再回头。#283 那条
+整改意见就这样被静默吞掉——PR 看起来全绿、可以合并。
+
+补漏机制：`await-review-rerun.yml` 监听 `pull_request_review: [submitted]`，
+按 head sha 找到该 head 上最近一次已完成的 `ci.yml` run 并 `rerun`，
+让门闸在同一个 sha 上重新读 review。
+
+边界：
+
+- 只对基线审查方（`coderabbitai[bot]`）的 review 生效。别人发的 review 不触发
+  任何动作，否则任何人都能伪造一条 `Actionable comments posted: 99` 反复烧
+  runner（与 CWE-345 同型）。
+- N=0 或无该文案时不重跑：无整改项本来就不该多烧一轮。
+- 重跑落在同一 head 上（按 `head_sha=` 查 run），不换 sha。
+- rerun 失败只打 warning：重判是补漏、不是门禁本身，让它红会淹没真正的门闸结论。
+- concurrency 分组与主 CI 的 `ci-<ref>` 分开，避免抢槽位。
+- 只重跑已完成的 run：进行中的 run 不允许 rerun（接口 403），而它本来就会读到
+  这条新 review。
 
 ## 为什么门闸可以红（与早期口径相反）
 

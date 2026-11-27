@@ -78,11 +78,15 @@ module AwaitReviewHelpers
   end
 
   # 默认 author 写成审查方：门闸只认 app_slug 对应的作者（防伪造）。
-  def review(commit: "a" * 40, body: "", author: "coderabbitai[bot]")
+  # submitted_at / id 用于「同 head 多轮 review 取最新」的判定。
+  def review(commit: "a" * 40, body: "", author: "coderabbitai[bot]",
+    submitted_at: "2026-01-01T00:00:00Z", id: 1)
     {
       "commit_id" => commit,
       "body" => body,
       "state" => "COMMENTED",
+      "submitted_at" => submitted_at,
+      "id" => id,
       "user" => {"login" => author}
     }
   end
@@ -92,8 +96,9 @@ module AwaitReviewHelpers
     review(body: "**Actionable comments posted: #{count}**", author: author)
   end
 
-  def actionable_review(count: 2, commit: "a" * 40)
-    review(commit: commit, body: "**Actionable comments posted: #{count}**\n\n详情")
+  def actionable_review(count: 2, commit: "a" * 40, submitted_at: "2026-01-01T00:00:00Z", id: 1)
+    review(commit: commit, body: "**Actionable comments posted: #{count}**\n\n详情",
+      submitted_at: submitted_at, id: id)
   end
 
   def success_run

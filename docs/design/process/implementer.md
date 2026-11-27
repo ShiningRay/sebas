@@ -52,8 +52,8 @@ ruby tools/sebas-process next              # 确定唯一动作，别自己挑
   → 从 main 拉分支 feat/… 或 fix/… 或 docs/…
   → 实现，跑本地三门禁（crystal spec / format --check / ameba）
   → 提 PR，body 写 "Fixes #<issue号>"
-  → 处理 CodeRabbit review：逐条修 → reply → resolve
-  → 循环直到 unresolved=0 且 mergeStateStatus=CLEAN
+  → 等本轮 CodeRabbit 结论 → 逐条修 / 拒判 → reply → resolve → 再 push
+  → 循环到本轮无待整改项，且 await-review 与 mergeStateStatus 都是绿
   → Verifier 核验 + Verifier 终验（独立进程阶段） + Evidence 回填（缺一不合并）
   → squash 合并
   → 回 issue 填「证据」节
@@ -61,26 +61,80 @@ ruby tools/sebas-process next              # 确定唯一动作，别自己挑
 
 ### 2. Review 意见修复
 
-CodeRabbit 每推一个新 commit 都可能开新 thread。Implementer 必须循环：
+CodeRabbit 每推一个新 commit 都可能开新 thread。Implementer 必须循环——
+**循环条件是「本轮审查已交付且无待整改项」，不是「当前没有未解决 thread」**：
 
 ```
-while unresolved_threads > 0:
-  读 thread 内容
+每轮固定四步，顺序不能换：
+  1. push → 等 head 上的 CodeRabbit check run status=completed
+  2. 读该 head 的 review：有 `Actionable comments posted: N`（N>0）→ 逐条处理 → 回到 1
+  3. 本轮没有待整改项 → 等 await-review 结论 success
+  4. 才进入合并前置
+逐条处理：
   判断是 bug / 建议 / 误报
   bug → 修代码 + reply 说明改了什么 + resolve
   建议 → 采纳则修，不采纳则 reply 说明理由 + resolve
   误报 → reply 给出证据 + resolve
 ```
 
+`unresolved_threads == 0` 只是必要条件，不是通过条件：review 还没到时它恒成立，
+按它推进就会「一提交 PR 就开始等合并」。判据必须落在**审查已经产出结论**之后。
+
 **批量修、单次推**：先把本轮所有 thread 一次改完，再 push 一个 commit。
 每推一次都会触发新的一轮审阅（单轮 4-8 分钟），逐条 push 等于把等待时间乘以轮数。
 实测 #231 十一轮 push、118 分钟完成，其中大半是轮次之间的串行等待。
 
-收尾判据是 `mergeStateStatus=CLEAN` 且 unresolved thread 为 0。**不看 `CodeRabbit`
-这条 check 的进度**：它只表示「本轮审阅进行中」，不在分支保护的必需检查里，
-选择器与 Evidence 预登记都已把它排除出「CI 未完成」判定（见
-[`tools/agents/lib/sebas_agents/advisory_checks.rb`](../../../tools/agents/lib/sebas_agents/advisory_checks.rb)）。
-只豁免进行中——它已完成而结论是 failure/cancelled 时仍按失败处理。
+收尾判据是 `mergeStateStatus=CLEAN`、本轮 review 已交付且无待整改项、
+`await-review` 结论 success、unresolved thread 为 0。
+
+**两类检查要分清，别一起忽略**：
+
+- `CodeRabbit` 这条 check 的**进行中**状态可以忽略。它只表示「本轮审阅进行中」，
+  不在分支保护的必需检查里，选择器与 Evidence 预登记都已把它排除出「CI 未完成」
+  判定（见 [`advisory_checks.rb`](../../../tools/agents/lib/sebas_agents/advisory_checks.rb)）。
+  只豁免进行中——它已完成而结论是 failure/cancelled 时仍按失败处理。
+- `await-review` 是**分支保护必检**，它的 failure 不能忽略。那正是「本轮审查提出了
+  待整改项」的机器结论（规则见 [pr-gate.md](pr-gate.md)）。看到它红就去读 PR 上
+  带 `<!-- await-review:blocked -->` 的清单评论，或直接读最新一条 review 正文。
+
+#### resolve 不是整改完成
+
+门闸读的是 review 正文，不是 thread 状态——thread 可以被人手动 resolve 而代码未改，
+正文不能编辑。因此**只 resolve 不推代码，门闸不会变绿**：
+
+| 你的动作 | 门闸能否变绿 |
+|---|---|
+| 修代码并 push 新 commit | 能，新 head 重新判定 |
+| 决定不改，reply 写拒判理由 + resolve | **不能**，同一 head 的正文还是 N>0 |
+| `@coderabbitai full review` | 不能，它只产生 CodeRabbit 自己的 check run |
+| `@coderabbitai resolve` | 不能，同上 |
+
+决定不采纳某条意见时，除了 reply 写清「位置 / 代价 / 建议」三件（见
+[implementer-loop.md](implementer-loop.md) §3.5 的拒判登记位），还必须让门闸在新
+head 上重判一次：
+
+```sh
+git commit --allow-empty -m "chore: 触发门闸重判（拒判 #<评论id>）"
+git push
+```
+
+空 commit 的意义是把「本轮的判定结论」重新绑定到一个新 head，而不是绕过门闸——
+新 head 上的审查仍然会跑，仍然可能再提意见。
+
+#### 迟到的 review
+
+CodeRabbit 的 check run 完成与 review 写入之间没有顺序保证，实测差 190s、403s，
+最多一次 5099s（PR #283 上 review 在 PR 合并后才写入）。门闸在 check run 完成那一刻
+读到空就放行，此后没有 job 会再看一眼。
+
+补救机制：[`.github/workflows/await-review-rerun.yml`](../../../.github/workflows/await-review-rerun.yml)
+在每次 `pull_request_review` 提交时按 head sha 重跑该 head 上最近一次 CI run，让门闸
+重新读一次 review。它只对审查方本人的 review 生效，且只在 `Actionable comments posted: N`
+且 N>0 时才重跑。
+
+这不替代自查：重跑有延迟，且 `await-review` 判红后矩阵会被 skip，轮次代价仍然存在。
+**判断「这轮审完了没有」永远以 head 上有没有本轮的 review 记录为准**，不要以
+「check run 绿了」或「等了 10 分钟」为准。
 
 review 的提示质量由仓库根的 [`.coderabbit.yaml`](../../../.coderabbit.yaml) 决定：它把
 Crystal 三平台隔离、单文件体量三项、文档不用行号锚、workflow 的 SHA 钉版红线等约定
@@ -175,6 +229,10 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
    两阶段登记（#126）下合并前的块是 `merged_into_main: false`、`merge_commit: null`，
    门禁接受这种形态；若块已声称 `merged_into_main: true` 而 PR 未合并，一律判伪造并阻断。
 5. `mergeStateStatus=CLEAN` 且未解决 review thread 为 0。
+6. head 上的 `await-review` 结论为 success。failure 必须整改后重推；
+   skipped / cancelled 视为未审，需在 PR 写明理由再合并。
+7. head 上存在本轮的审查记录（review 或明确的 skipped 说明）。
+   **只有「没有 thread」不构成通过**——review 未到达时 thread 恒为零。
 
 Implementer **不能自己验收**：核验与终验两阶段必须在与实现者不同的独立上下文中运行（#124 起 Reviewer 并入 Verifier，两阶段分离进程）。
 `gh pr merge` 是写操作，没有 dry-run；执行前必须先跑上面的 `--pre`。
