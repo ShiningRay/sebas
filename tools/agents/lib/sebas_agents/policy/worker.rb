@@ -62,12 +62,15 @@ module SebasAgents
       end
 
       # pid 归一：save 写整数，外部手改可能是字符串。非正整数一律 nil。
+      # 字符串必须与整数同口径检查 positive?：`"0"` 转成 0 后
+      # `Process.kill(0, 0)` 探测的是**当前进程组**，会让过期记录被判成存活。
       def pid_of(record)
         pid = record && record["pid"]
-        case pid
-        when Integer then pid.positive? ? pid : nil
-        when String then pid.match?(/\A\d+\z/) ? pid.to_i : nil
-        end
+        value = case pid
+                when Integer then pid
+                when String then pid.match?(/\A\d+\z/) ? pid.to_i : nil
+                end
+        value&.positive? ? value : nil
       end
 
       # `kill(0, pid)`：ESRCH = 不存在；EPERM = 存在但无权发信号（活着）。

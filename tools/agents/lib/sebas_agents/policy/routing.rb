@@ -39,9 +39,6 @@ module SebasAgents
 
       # 动作优先级：越小越先执行。合并就绪排最前（有时效：main 每前进一次就
       # BEHIND，越晚合并成本越高）；needs_human 排最后，它等的是人。
-      # 心跳 TTL 的唯一来源在 Worker::TTL；这里保留别名只为调用点可读。
-      WORKER_TTL = Worker::TTL
-
       ACTION_PRIORITY = {
         "merge_ready" => 0,
         "resume_pr" => 1,
@@ -266,7 +263,7 @@ module SebasAgents
 
         # F5：worker 还活着就不能派第二个 worker 做同一张卡。这是 F5 真正要防的
         # 事故——双开两个 worker 写同一分支，比「晚一点续做」贵得多。
-        state, detail = Worker.state(record, now: now, ttl: WORKER_TTL)
+        state, detail = Worker.state(record, now: now)
         if state == :alive
           return LeaseAction.new(issue: number, action: "wait", owned: owned,
             reason: "worker 仍在运行（#{detail}）：不接管，等它自己推进或退出")
@@ -277,10 +274,21 @@ module SebasAgents
           return LeaseAction.new(issue: number, action: "wait", owned: owned,
             reason: "非本机租约（#{detail}）：不接管，占容量等对方 coordinator 收口")
         end
+        # :unknown 也不能续做：F5 契约只允许「心跳过期 **且** 同机 pid 不存活」
+        # 才恢复。缺 pid 或旧记录没有心跳字段都不满足该条件——没有「原 worker
+        # 已停」的证据就派工，会让两个 worker 同时写同一分支。
+        # 旧记录的处理另设一条出路：先跑一次 `heartbeat --apply --pid <pid>`
+        # 补上字段，之后就能按双证据判定。
+        if state == :unknown
+          return LeaseAction.new(issue: number, action: "wait", owned: owned,
+            reason: "worker 状态不可判定（#{detail}）：不自动接管。" \
+              "确认原 worker 已停后，用 resume <issue> --apply 显式续跑；" \
+              "worker 仍在跑则让它先 heartbeat --apply --pid <pid> 补上证据")
+        end
 
-        reason = "续做已认领卡，沿用 worktree #{(record && record["worktree"]).inspect}"
-        reason = "worker 已失联（#{detail}）：沿用原 worktree 续做" if state == :gone
-        LeaseAction.new(issue: number, action: "resume_issue", owned: owned, reason: reason)
+        # 到这里只剩 :gone：心跳过期且本机 pid 已不存在，可以沿用原 worktree 续做。
+        LeaseAction.new(issue: number, action: "resume_issue", owned: owned,
+          reason: "worker 已失联（#{detail}）：沿用原 worktree 续做")
       end
 
       # 找本 Implementer 的在途 PR：优先本地记录，其次「任一认领/记录关联」，再退到
@@ -372,7 +380,6 @@ module SebasAgents
         end
         action("resume_issue", observed, reason, issue: issue.number, milestone: issue.milestone)
       end
-
 
       # 动作构造器：唯一定义处（Selection 转调这里，保持两处形状一致）。
       # 此前本文件重复定义了两份，Ruby 用后者覆盖前者——行为一致但重复定义

@@ -6,6 +6,8 @@
 require_relative "../support/boot"
 require_relative "../../agents/lib/sebas_agents"
 
+require "socket"
+
 class PlanCommandTest < Minitest::Test
   include SnapshotHelpers
   include CliHelpers

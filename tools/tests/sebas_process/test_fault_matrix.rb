@@ -449,7 +449,9 @@ class FaultMatrixTest < Minitest::Test
     record = {"issue" => 1, "phase" => "claimed", "branch" => "feat/1",
               "host" => Socket.gethostname, "pid" => 999_999}
     result = SebasAgents::Policy::Selection.plan(data, records: [record])
-    assert_equal "resume_issue", result.next_action
+    # 不判死：缺心跳字段 → :unknown → wait（不是 resume_issue，也不是 invalid）
+    assert_equal "wait", result.leases.first.action
+    assert_includes result.leases.first.reason, "不可判定"
     refute_includes result.leases.first.reason.to_s, "已失联"
   end
 
@@ -462,4 +464,67 @@ class FaultMatrixTest < Minitest::Test
       assert_equal Process.pid, data["pid"]
     end
   end
+  # --- F5 补充：锁内身份复核 / pid 口径 ---
+
+  # 心跳写入前必须在锁内复核 lease_id：调用方读到写入之间卡可能被重新认领，
+  # 不复核就会把旧 worker 的 pid 写进新租约的记录。
+  def test_heartbeat_rejects_lease_mismatch
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({
+        "schema" => 2, "issue" => 1, "phase" => "claimed", "lease_id" => "L2"
+      }), encoding: "UTF-8")
+      record = SebasAgents::RunRecord.new(path: path)
+      assert_nil record.heartbeat!(pid: 123, expect_lease_id: "L1")
+
+      assert_equal "lease_mismatch", record.heartbeat_refusal
+      # 记录未被污染
+      refute JSON.parse(File.read(path)).key?("last_heartbeat_at")
+    end
+  end
+
+  # 已释放的记录不写心跳。
+  def test_heartbeat_rejects_released_record
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({
+        "schema" => 2, "issue" => 1, "phase" => "released", "lease_id" => "L1"
+      }), encoding: "UTF-8")
+      record = SebasAgents::RunRecord.new(path: path)
+      assert_nil record.heartbeat!(pid: 123, expect_lease_id: "L1")
+      assert_equal "released", record.heartbeat_refusal
+    end
+  end
+
+  # 锁被占与身份不符必须分开报告：前者稍后重试，后者说明卡已换主。
+  def test_heartbeat_reports_locked_separately
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      File.write(path, JSON.generate({"schema" => 2, "issue" => 1, "phase" => "claimed"}),
+        encoding: "UTF-8")
+      File.write("#{path}.lock", Process.pid.to_s)
+
+      record = SebasAgents::RunRecord.new(path: path)
+      assert_nil record.heartbeat!(pid: 123)
+      assert_equal "locked", record.heartbeat_refusal
+    end
+  end
+
+  # 字符串 "0" 与整数 0 同口径：`kill(0, 0)` 探测的是当前进程组，
+  # 会把手误写的 0 当成「活着」。两者都必须归一为 nil。
+  def test_zero_pid_is_not_treated_as_alive
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "1.json")
+      ["0", 0, "000"].each do |pid|
+        File.write(path, JSON.generate({
+          "schema" => 2, "issue" => 1, "phase" => "claimed",
+          "host" => Socket.gethostname, "pid" => pid,
+          "last_heartbeat_at" => "2020-01-01T00:00:00Z"
+        }), encoding: "UTF-8")
+        assert_nil SebasAgents::Policy::Worker.pid_of(JSON.parse(File.read(path))),
+          "pid #{pid.inspect} 必须被归一为 nil"
+      end
+    end
+  end
+
 end

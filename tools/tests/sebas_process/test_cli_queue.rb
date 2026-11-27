@@ -72,8 +72,11 @@ class QueueCommandTest < Minitest::Test
       # queue 的路由需要本地记录才认为租约属于本机
       runs = File.join(dir, ".sebas-agent", "runs")
       FileUtils.mkdir_p(runs)
+      # verified_head 必须与 PR 当前 head 一致：队列以「当前 head 已核验」作为
+      # 进入 changelog / merge 的前置，缺它一律回 verify_pre。
       File.write(File.join(runs, "1.json"), JSON.generate({
-        "schema" => 2, "issue" => 1, "branch" => "feat/1", "phase" => "claimed", "pr" => 50
+        "schema" => 2, "issue" => 1, "branch" => "feat/1", "phase" => "claimed", "pr" => 50,
+        "verified_head" => "sha50"
       }), encoding: "UTF-8")
 
       Dir.chdir(dir) do

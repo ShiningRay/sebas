@@ -146,7 +146,12 @@ module SebasAgents
     # pending_evidence 为本机记录里「PR 已合并但 Evidence 尚未升级」的 issue 列表
     # （由调用方从本地记录与快照算出）。非空时整队阻塞：串行单位是
     # 「合并 → 等 Evidence 升级 → 下一张」，前一张没升级就不许后一张合。
-    def plan(leases, snapshot, changelog: nil, pending_evidence: [])
+    #
+    # `verified_heads` 是「本机记录里这张卡的 PR 上一次通过 verify merge --pre
+    # 的 head」，由调用方从运行记录读（`verified_head` 字段）。队列据此判断
+    # 「当前 head 是否已核验」——没有它，`update_branch` 改完 head 后只要 CI
+    # 绿、Evidence 仍是 accepted，队列就会直接给 merge，把旧结论用到新 head 上。
+    def plan(leases, snapshot, changelog: nil, pending_evidence: [], verified_heads: {})
       blocking = Array(pending_evidence)
       unless blocking.empty?
         head = blocking.first
@@ -160,7 +165,8 @@ module SebasAgents
         pr = snapshot.pull_request(lease.pr.to_i)
         body = pr&.body
         pending_entries = changelog_entries(body)
-        step, blocked = next_step(pr, pending_entries, changelog)
+        step, blocked = next_step(pr, pending_entries, changelog,
+          verified_head: verified_heads[lease.issue.to_i])
         QueueEntry.new(
           issue: lease.issue,
           pr: pr&.number || lease.pr,
@@ -182,7 +188,7 @@ module SebasAgents
 
     # 单张 PR 的下一步。顺序与 §7.2 的链一致：核对归属 → verify --pre →
     # CHANGELOG 追加 → 合并 → 等 Evidence 升级 → 释放租约。
-    def next_step(pr, pending_entries, changelog)
+    def next_step(pr, pending_entries, changelog, verified_head: nil)
       return ["verify_pre", "PR 不在快照内或已不是 open，先重新取快照"] if pr.nil?
 
       unless pr.open?
@@ -221,6 +227,17 @@ module SebasAgents
         return ["verify_pre",
           "PR ##{pr.number} 的合并状态是 #{pr.merge_state_status.inspect}，只有 CLEAN 才可合并" \
           "（DIRTY=有冲突需先解决；BLOCKED=缺审批或分支保护未满足）"]
+      end
+
+      # head 必须已有核验记录。这是 update_branch / changelog 追加的直接后果：
+      # 两者都改 head，旧 head 上的 `verify merge --pre` 结论随之作废。没有这道
+      # 判定，「CI 全绿 + Evidence 仍 accepted」就能把新 head 直接合并——
+      # 而 Evidence 是 issue 级的，不绑定 head，拦不住这件事。
+      #
+      # 无核验记录（nil）同样不放行：合并前必须有一次针对这个 head 的核验。
+      if verified_head.nil? || verified_head != pr.head_sha
+        detail = verified_head.nil? ? "尚无核验记录" : "已核验的是 #{verified_head[0, 8]}，当前是 #{pr.head_sha[0, 8]}"
+        return ["verify_pre", "PR ##{pr.number} 的 head 需要重新核验（#{detail}）：跑 verify merge --pre 与独立核验"]
       end
 
       # 「先 verify 再追加 CHANGELOG」：追加会改 head，追加之后的提交必须重新核验，

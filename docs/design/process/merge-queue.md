@@ -57,9 +57,16 @@ ruby tools/sebas-process queue --apply      # 推进队首一步（update-branch
 | 步骤 | 判定 | 为什么在这一步 |
 |---|---|---|
 | `update_branch` | `merge_state_status=BEHIND` | main 前进后旧 base 上的核验结论全部作废，必须先 `gh pr update-branch`；它改 head，所以之后必须重跑 `verify merge --pre` 与独立核验 |
-| `verify_pre` | 归属、目标分支（必须明确 `main`）、失败检查、未完成检查、未解决 thread、`merge_state_status=CLEAN` | `verify merge --pre` 是合并前唯一能判定的门禁；DIRTY/BLOCKED/UNKNOWN 一律不能进入合并 |
+| `verify_pre` | 归属、目标分支（必须明确 `main`）、失败检查、未完成检查、未解决 thread、`merge_state_status=CLEAN`、**当前 head 已有核验记录** | `verify merge --pre` 是合并前唯一能判定的门禁；DIRTY/BLOCKED/UNKNOWN 一律不能进入合并 |
 | `changelog` | PR 正文声明了条目而 `[Unreleased]` 还没有本 PR 的引用行 | 追加会改 head，必须排在核验之后、合并之前 |
 | `merge` | `gh pr merge --squash --match-head-commit <head>` | head 绑定让 GitHub 拒绝合并未核验的提交 |
+
+**head 核验绑定**：`update_branch` 与 `changelog` 都改 head，旧 head 上的
+`verify merge --pre` 结论随之作废。本机运行记录的 `verified_head` 存「上一次
+通过 `--pre` 的 head」，队列要求它与 PR 当前 head 一致才进入 `merge`；两者都在
+改 head 之后把 `verified_head` 清空。没有这道判定，「CI 全绿 + Evidence 仍
+accepted」就能把新 head 直接合掉——Evidence 是 issue 级的，不绑定 head，
+拦不住这件事。
 | `evidence` | merge commit 的 CI 成功、`merged_into_main: true` | 异步，由 `evidence-register.yml` 写 |
 | `release` | 释放租约（`unclaim`） | 收口，要求 PR 已合并且 issue completed |
 

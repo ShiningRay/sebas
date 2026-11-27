@@ -94,7 +94,10 @@ class QueueRegressionsTest < Minitest::Test
       SebasAgents::Model::Snapshot.from_hash(data),
       records: [
         {"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 60},
-        {"issue" => 2, "phase" => "claimed", "branch" => "feat/2"}
+        # 卡 2 要测「另一张在途卡仍能拿到动作」，补上 worker 已失联的证据
+        {"issue" => 2, "phase" => "claimed", "branch" => "feat/2",
+         "host" => Socket.gethostname, "pid" => 999_999,
+         "last_heartbeat_at" => "2020-01-01T00:00:00Z"}
       ])
     refute_equal "invalid_plan", view.next_action,
       "合并后未 unclaim 是正常中间态，不该连带另一张判 invalid"
@@ -117,7 +120,6 @@ class QueueRegressionsTest < Minitest::Test
     assert_equal "invalid_plan", view.next_action
     assert_includes view.invalid_reason, "冲突"
   end
-end
 
   # --- BEHIND 必须先 update-branch 再核验（#221 §3）---
 
@@ -154,7 +156,7 @@ end
       "head_sha" => "abc12345", "base_ref_name" => "main",
       "checks" => [], "review_threads" => [], "closing_issues" => [1]
     )
-    step, = MQ.next_step(pr, nil, "## [Unreleased]\n")
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: pr.head_sha)
     assert_equal "merge", step
   end
 
@@ -168,3 +170,41 @@ end
     assert_equal "verify_pre", step
     assert_includes reason, "不可判定"
   end
+  # --- head 核验绑定（update_branch / CHANGELOG 追加都会改 head）---
+
+  # 没有核验记录不得进入 merge：Evidence 是 issue 级的，不绑定 head，拦不住这件事。
+  def test_unverified_head_blocks_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "new12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: nil)
+    assert_equal "verify_pre", step
+    assert_includes reason, "尚无核验记录"
+  end
+
+  # update-branch 后 head 变了：旧核验结论失效，必须重核验。
+  def test_changed_head_invalidates_verification
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "new12345", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, reason = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "old12345")
+    assert_equal "verify_pre", step
+    assert_includes reason, "需要重新核验"
+  end
+
+  # 核验记录与当前 head 一致才放行。
+  def test_matching_head_reaches_merge
+    pr = SebasAgents::Model::PullRequest.from_hash(
+      "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
+      "head_sha" => "same1234", "base_ref_name" => "main",
+      "checks" => [], "review_threads" => [], "closing_issues" => [1]
+    )
+    step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "same1234")
+    assert_equal "merge", step
+  end
+
+end

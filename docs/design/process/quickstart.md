@@ -200,10 +200,14 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
   在无在途租约时认领。共享文件（`CHANGELOG.md`、`src/store/schema.cr`、
   `.github/workflows/`）要改就写进自己的 scope，于是改同一文件的卡自然不并行。
   `plan` 与 `claim` 用同一判定，人工 `claim` 不是绕过预算的后门。
-- **心跳（F5）**：`heartbeat <issue> --apply` 写 `last_heartbeat_at` 并记写入者 pid；
-  `--ttl <秒>` 只附带过期判定，不写进记录（阈值属全局策略）。coordinator 判失联看
-  两个证据：**心跳过期** 且 **本机 pid 不存在**；只有一个成立不接管——长跑的 worker
-  可能暂时没写心跳，pid 也可能被复用。跨机租约不接管（F6）。
+- **心跳（F5）**：`heartbeat <issue> --apply --pid <worker pid>` 写 `last_heartbeat_at`
+  与 worker 的 pid；`--ttl <秒>` 只附带过期判定，不写进记录（阈值属全局策略）。
+  `--pid` 在 `--apply` 时必填：本命令的 pid 写完即退出，用它会让仍在跑的长任务被判成
+  已死。写入在锁内复核 `lease_id` 与 `phase`，不符则拒绝（卡可能已被重新认领）。
+  coordinator 判失联看两个证据：**心跳过期** 且 **本机 pid 不存在**；只有一个成立
+  不接管——长跑的 worker 可能暂时没写心跳，pid 也可能被复用。证据不足（缺 pid、
+  旧记录无心跳字段）时给 `wait` 并由人决定：确认原 worker 已停后 `resume <issue>
+  --apply` 显式续跑。跨机租约不接管（F6）。
 - **故障排查**：认领 aborted → 看 run 记录 `label_written` 与卡上租约评论；
   有标签无凭据（F7）、双凭据（F9）均 invalid_plan，交 Maintainer。
 
