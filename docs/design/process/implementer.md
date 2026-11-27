@@ -233,14 +233,29 @@ Evidence `status=accepted` 且无未实测项、review thread 全部解决。必
    它们只说明这一轮没审成，不构成放行。处置是把必检恢复成能跑出结论的状态
    （修好 draft 状态、等审查方恢复、必要时重跑 run），再等到 success 才合并。
    failure 必须整改后重推。
-7. 确认门闸那一次 success 是**等到审查结束之后**才得出的，不是赶到空列表就放行。
-   两件事都能证明：该 head 上已有 review 记录，或日志里有
-   `审查已完成：CodeRabbit conclusion=` 且其后的判定为放行。
-   **只有「没有 thread」不构成通过**——review 未到达时 thread 恒为零。
+7. 确认门闸那一次 success 是**等审查结束之后**才得出的，不是赶到空列表就放行。
+   判据是时间顺序：该 run 里 `await-review` job 的 `completed_at`
+   **晚于** CodeRabbit check run 的 `completed_at`，且日志有
+   `审查已完成：CodeRabbit conclusion=`。两者都取自**同一次** run，
+   合并前置第 6 条的 success 也必须是这一次。
 
-   注意：CodeRabbit 无整改项时**不写 review 正文**（实测 26 个 PR / 91 条
-   带标记的 review 里没有一例 `N=0`）。所以「head 上必须有 review」这条
-   对干净 PR 永远不成立，只能作为正向证据之一，不能当必要条件。
+   这一步目前要人工核对，`verify merge --pre` 的快照不含 check run 的完成时刻：
+
+   ```sh
+   pr=288; run=$(gh pr checks $pr --json name,link --jq '.[]|select(.name=="await-review")|.link' | sed 's#.*/runs/##; s#/job/.*##')
+   gh api "repos/{owner}/{repo}/actions/runs/$run/jobs" --jq '.jobs[]|select(.name=="await-review")|"gate=\(.completed_at)"'
+   gh api "repos/{owner}/{repo}/commits/$(gh pr view $pr --json headRefOid --jq .headRefOid)/check-runs" \
+     --jq '.check_runs[]|select(.name=="CodeRabbit")|"rabbit=\(.completed_at)"'
+   gh run view "$run" --log | grep "审查已完成"
+   ```
+
+   「head 上有 review 记录」**不是**证据：记录在、不等于门闸读过它——
+   review 可能写于门闸判完之后（本 PR 的 #283 实测差 5099s）。
+   它只能作为「本 head 确实被审过」的旁证。
+
+   **只有「没有 thread」不构成通过**——review 未到达时 thread 恒为零。
+   另注意 CodeRabbit 无整改项时**不写 review 正文**（实测 26 个 PR / 91 条
+   带标记的 review 里没有一例 `N=0`），所以也不能反过来要求 head 上必须有 review。
 
 Implementer **不能自己验收**：核验与终验两阶段必须在与实现者不同的独立上下文中运行（#124 起 Reviewer 并入 Verifier，两阶段分离进程）。
 `gh pr merge` 是写操作，没有 dry-run；执行前必须先跑上面的 `--pre`。
