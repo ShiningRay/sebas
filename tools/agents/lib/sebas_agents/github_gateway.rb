@@ -197,7 +197,8 @@ end
         externals: discovered["externals"].merge(external_records),
         trusted_bots: trusted_bots,
         source_bodies: resolve_bodies(blocks),
-        proposal_evidence: proposal_evidence
+        proposal_evidence: proposal_evidence,
+        capacity: capacity
       )
     rescue StandardError
       # 任一流抛错时其余线程可能仍在跑：先收干净再让原始异常穿透，
@@ -1013,6 +1014,28 @@ end
     end
 
     public
+
+    # 在途租约容量上限（recovery §5 / Q3）：.github/agents.yml 的 `capacity` 键。
+    # 缺键即 1——任何机器上的行为都与单卡容量一致；显式配置才提升。
+    # 仅接受正整数：显式 null、浮点、字符串等非法原始值在转换前直接
+    # fail-closed（Integer 对浮点会截断、对数字字符串会放行，均不合法）。
+    def capacity
+      @capacity ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return 1 unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        return 1 unless data && data.key?("capacity")
+
+        raw = data["capacity"]
+        unless raw.is_a?(Integer) && raw >= 1
+          raise CommandError.new(".github/agents.yml 的 capacity 必须是正整数：#{raw.inspect}", command: ["read", path])
+        end
+
+        raw
+      end
+    end
 
     # 授权可发/改租约评论的 coordinator 身份（M4x-WP2，#220 §5.2）。
     # 缺省为空：未显式授权时任何租约凭据都判作者越权，仍是 fail-closed。
