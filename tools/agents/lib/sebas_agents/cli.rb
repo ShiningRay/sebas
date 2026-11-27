@@ -1548,7 +1548,8 @@ end
                           写存活心跳（F5）。--apply 才写，且此时 --pid 必填：
                           它必须是 worker 自己的 pid（别用 shell 的 $$）。
                           只读模式不给 --pid 也能用：--ttl <秒> 返回是否已过期；
-                          写入结果不附过期判定。
+                          写入结果不附过期判定。--ttl 只作判据提示，不写入记录
+                          （阈值属全局策略，按卡配置会变成「谁喊得久谁不死」）。
           claim <issue>   校验并认领一张卡；--apply 才写本地记录
           resume <issue>  续跑本机已认领卡；--apply 写回 phase
           unclaim <issue> 收口后释放认领；要求 PR 已合并且 issue completed

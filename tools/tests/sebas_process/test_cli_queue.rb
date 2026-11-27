@@ -189,6 +189,7 @@ class QueueCommandTest < Minitest::Test
     assert_includes out, "--apply 才写，且此时 --pid 必填"
     # 只读模式不要求 pid：说明必须写清，否则读者会以为连查询也要 pid
     assert_includes out, "只读模式不给 --pid 也能用"
+    assert_includes out, "--ttl 只作判据提示，不写入记录"
   end
 
 end
