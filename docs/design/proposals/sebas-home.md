@@ -40,7 +40,7 @@
 - 省略键不向 YAML 配置树注入机器相关绝对路径，热更新仍比较配置本身的语义；
 - 显式 `--config` 不会把默认数据目录改到该文件旁边。
 
-首期纳入 `agents.<name>.persona_file`：相对路径与相对 `data_dir` 一样，以实际配置文件目录为基准。校验和实际读取必须使用同一解析结果，不允许校验一套、运行另一套。
+首期纳入 `agents.<name>.persona_file` 的**校验基准**：相对路径与相对 `data_dir` 一样，以实际配置文件目录为基准。现状核实（2026-11-27）：`persona_file` 只有 `Config::Loader` 的悬空引用校验与 `RegistryDualView` 的元数据透传，**运行期没有读取该文件的消费者**（agent 人格实际来自 `data_dir/agents/<id>/SOUL.md`）。因此本包只统一校验基准，不声称既有运行期读取链会随之改变；若要让配置人格生效，另立接线范围。
 
 `plugins.dir` 同样按配置目录解析；`plugins.interpreter` 是程序查找规则，不是数据目录，本期不强制改成 `home` 下路径。其他尚无统一配置字段的资源路径，不借“所有路径”名义隐式扩张。
 
@@ -60,7 +60,7 @@
 
 - Loader 增加携带配置目录的入口；无路径上下文的纯内容入口保留既有显式路径测试语义，不能私自读取真实主目录。
 - Gateway 接收解析后的绝对数据路径；vault、SQLite、会话、工作流和 IPC discovery 继续以该路径为根。
-- 相对 persona 在 loader 校验及运行期加载处共用同一个解析函数。
+- 相对 persona 的 loader 校验使用同一基准；本包不新增 persona 运行期读取（现状无消费者，见 §2.2）。
 - `home` 与解析后的数据路径是启动资源，不属于可热更新配置。热更新重新解析同一配置文件内的相对资源路径，但不重新读取 `SEBAS_HOME`，也不改换数据库、vault 或 IPC discovery；`data_dir` 变更一律标记 restart-required，不允许半途换根。环境变量变更需重启。
 - `help` / `version` 保持无副作用；`gateway` 与未来 `setup` 等需要配置的命令共用 resolver。`crashwrite` 的显式演练路径不变。
 - POSIX 目录权限过宽只告警，不新增拒启；Windows 不假装具备等价 ACL 校验。现有配置、vault 与数据库校验不放宽。

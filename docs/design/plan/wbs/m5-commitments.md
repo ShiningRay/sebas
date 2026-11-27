@@ -33,8 +33,9 @@
 - 目标：统一配置与持久数据的启动路径，使直接运行二进制和服务管理器启动不依赖偶然的工作目录。
 - 范围：新增 `src/platform/config/paths.cr`；解析 `SEBAS_HOME > ~/.sebas`，默认配置 `<home>/config.yaml`，省略 `data_dir` 时为 `<home>/data`；显式 `--config` 不改 `home`，显式相对 `data_dir`、`persona_file` 与 `plugins.dir` 相对实际配置目录；空白环境变量、缺配置与受限旧 CWD 配置回退按提案执行。根目录与数据路径启动时固定，热更新不重读环境变量或换库。
 - 交付物：路径 resolver + CLI/Loader/Gateway/插件目录接线 + 跨平台 spec + README/CLI help/示例配置/§3.4、§13 路径说明。`setup` 实现另在 #145 消费同一 resolver，本包不实现 setup 或 dotenv。
-- 依赖：无代码级前置；可独立于承诺与提醒链实施。M5.0-WP1/WP2 的语义闸不包含本包。
+- 依赖：无代码级前置；可独立于承诺与提醒链实施。**本包不参与 M5.0 期级语义闸**：WP1/WP2 的文档评审与 M5.1 开工闸不受 WP3 进度影响，反之 WP3 也不因 M5.0 语义定稿而完工。
 - 验收：覆盖默认值、`SEBAS_HOME` 覆盖、显式 CLI/YAML 优先级、相对与绝对路径、`~`、空白值、含空格路径、旧布局警告与热更新稳定；临时目录上真实初始化 gateway。全部 spec 显式隔离 `HOME` / `SEBAS_HOME`，不得读写真实 `~/.sebas`，环境恢复与无越界写入有断言。
+- persona 边界：现状 `persona_file` 只有 loader 悬空引用校验，没有运行期读取消费者；本包只统一校验基准，不声称人格加载链路随之生效。
 - 风险：旧 CWD 配置省略 `data_dir` 时，新默认数据位置与旧配置位置不同；回退警告须同时显示两者，绝不自动搬移数据库或 vault。
 - 关联：Proposal #274（accepted-design）；设计契约 [proposals/sebas-home.md](../../proposals/sebas-home.md)。
 

@@ -17,7 +17,7 @@
 | M8 | [渠道补齐（WeCom + Lark + Slack + email 健壮性）](m8-channels.md) | — | 20–33.5 pd | v0.6.0；企微回调/AIBot 长连接 + 飞书 WS + Slack Socket Mode 多账号收发 + email IDLE 健壮性 |
 | M4x | [插件与平台演进（并行轨）](m4x-platform.md) | — | 按卡估算 | 平台能力扩展；交互式初始化 #145 已细化 |
 
-合计 164–263.5 pd（M0–M8 全程序，不含 M6.5 TUI 追加；含 M5.0-WP3 路径包 1–2 pd），逐周排期见 [B.2](../schedule/weekly.md)，依赖图见 [B.1](../schedule/dag.md)。
+合计**待整体重排**（M0–M8 全程序；逐期区间见上表。M5 含 M5.0-WP3 路径包 1–2 pd，M6 含 M6.5 TUI，M8 含 email 两包；本行不另造与逐期区间不一致的总数），逐周排期见 [B.2](../schedule/weekly.md)，依赖图见 [B.1](../schedule/dag.md)。
 
 ## 期与版本的对应
 

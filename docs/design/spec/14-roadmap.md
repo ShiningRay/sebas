@@ -17,7 +17,7 @@
 >
 > **2026-11-27 调整**：M6 追加「对话式 TUI」范围（M6.5-WP1–WP7，6–9 pd）——TUI 作为新 channel（`channel_type="tui"`）接入完整对话链路，提供「会话列表 + 单会话对话流 + 输入框」+ L3 审批问答 + `/steer` `/stop` `/flush` 控制命令。期验收条目追加：「`sebas tui` 启动 → 会话列表 → 对话 → 审批 → 控制命令全链路通过；email 与 tui 双渠道同口径」。**M6.4-WP1 打 v0.4.0 tag 前须取得 M6.5-WP7 端到端手动验收证据**；CalDAV 顺延例外不豁免 TUI。提案 [tui-conversational-console.md](../proposals/tui-conversational-console.md)。
 
-> **2026-11-27 M5 路径追加**：#274 将 `~/.sebas` / `SEBAS_HOME` 纳入 v0.3.0，见 [sebas-home.md](../proposals/sebas-home.md)。验收覆盖默认路径、显式优先级、旧 CWD 配置受限回退、热更新不换数据根，以及三平台测试对真实主目录的隔离；实现承载为 M5.0-WP3，发版门禁为 M5.4-WP1。
+> **2026-11-27 M5 路径追加**：#274 将 `~/.sebas` / `SEBAS_HOME` 纳入 v0.3.0，见 [sebas-home.md](../proposals/sebas-home.md)。验收覆盖默认路径、显式优先级、旧 CWD 配置受限回退、热更新不换数据根，以及三平台测试对真实主目录的隔离；实现承载为 M5.0-WP3，发版门禁为 M5.4-WP1。`persona_file` 当前只有 loader 校验、没有运行期读取消费者，本项只统一校验基准。
 
 排期依据：热更新排 **M1**——「加账号」本身就是热更新组件矩阵的一行（账号增删=监督体 fiber 启停，§11.3），M1 核心验收要求账号数组「加了就生效」，四正交件必须同期落地（Hermes 无热重载的教训是「账号体系与重载割裂则用户必烦」）。插件层排 **M3**——可选模块后置：M0-M2 的扩展需求由 SKILL.md（A7）承接（§12.1 分工），主链路先稳。fork/join 排 **M4**——依赖 §8 协作层既有件（subagent 键先例、信号量、busy-interrupt 取消通道）与调度输入接口冻结（M4.1 开工条件 = 调度 WP1/WP2 已合或 admission/envelope 接口冻结，Q5 裁断）；语义定稿已随 M4.0 完成（[fork-join-semantics.md](../proposals/fork-join-semantics.md) 九问裁断 Q1–Q9）。
 
