@@ -49,7 +49,7 @@ Sebas 当前的用户可见入口：
 - 崩溃恢复（`store.recover!` + `Recovery.recover_stale`）；
 - 幂等三件套（intents + memo + ledger）。
 
-**零 binding 启动**：`sebas tui` 启动时先解析本机 `tui/local/<peer>` 的 binding。无 binding、目标 agent 不存在或配置无效时，给出明确错误 + 配置示例，**不创建空会话、不进入可输入状态**。默认 binding 的引导与 #145（初始安装配置引导）协同，不在本期范围。
+**零 binding 启动**：`sebas tui` 启动时先解析本机 `tui/local/<peer>` 的 binding。无 binding、目标 agent 不存在或配置无效时，显示 `Run sebas setup --config <path>` 与配置示例，**不创建空会话、不进入可输入状态**。默认 binding 的交互引导由 #145 与 [interactive-setup.md](interactive-setup.md) 承接，不在 TUI 内复制配置写入逻辑。
 
 **首个会话预登记**：binding 有效但会话列表没有该 peer 的 TUI 会话时，TUI 在发送第一条消息前调用认证写命令 `sessions.ensure {session_key, peer}`，契约如下：
 
