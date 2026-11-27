@@ -12,6 +12,8 @@
 
 require "minitest/autorun"
 require "stringio"
+require "tmpdir"
+require "fileutils"
 require_relative "await_review"
 
 class AwaitReviewTest < Minitest::Test
@@ -248,26 +250,65 @@ class AwaitReviewTest < Minitest::Test
     assert_includes source, "pgroup: true", "必须用独立进程组，才能整组终止"
   end
 
-  # 超时终止必须真的生效：用会被杀掉的真实子进程（sleep）驱动生产代码路径，
-  # 而不是在测试里复制一份实现。断言「1s 上限、<5s 返回」——若回归成
-  # capture3 那套写法，这里会等满 sleep 时长而失败。
+  # 超时终止必须真的杀掉子进程，包括忽略 TERM 的后代。
+  # 这条是行为级证据：用 `sh -c` 起一个忽略 TERM 的后代并记录其 PID，
+  # 断言超时返回后该 PID 已消失。只断言耗时不够——`sh -c "sleep 10"` 可能被
+  # shell 直接 exec 掉，没有后代可杀，测试就永远绿（CodeRabbit 在 PR #280 指出）。
   def test_hanging_command_is_actually_killed
-    stop_sleeping
-    stub_timeout = 1
+    skip "需要 POSIX 进程组语义" if Gem.win_platform?
+
+    dir = Dir.mktmpdir
+    pid_file = File.join(dir, "descendant.pid")
+    # 后代忽略 TERM 并常驻；外壳同样忽略 TERM，确保只有 KILL 能收场。
+    script = <<~SH
+      trap '' TERM
+      sh -c 'trap "" TERM; echo $ > #{pid_file}; sleep 30' &
+      wait
+    SH
+
     original = AwaitReview::GH_CALL_TIMEOUT_SECONDS
-    silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, stub_timeout) }
+    silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, 1) }
 
     started = Time.now
     error = assert_raises(RuntimeError) do
-      AwaitReview.gh_json_with("sh", "-c", "sleep 10")
+      AwaitReview.run_command("sh", "-c", script)
     end
     elapsed = Time.now - started
 
     assert_includes error.message, "超时"
-    assert_operator elapsed, :<, 5,
-      "超时必须杀掉子进程；实测 #{elapsed.round(2)}s 说明仍在等 sleep 10 自然退出"
+    assert_operator elapsed, :<, 10,
+      "超时必须真的终止进程组；实测 #{elapsed.round(2)}s 说明还在等 sleep 30 自然退出"
+
+    # 最多等 2s 让 /proc 语义的系统完成回收可见性
+    deadline = Time.now + 2
+    sleep 0.05 while descendant_alive?(pid_file) && Time.now < deadline
+    refute descendant_alive?(pid_file),
+      "忽略 TERM 的后代仍存活：说明只杀了组长，没有升级到 KILL 整组"
   ensure
     silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, original) } if original
+    cleanup_pid(pid_file)
+    FileUtils.remove_entry(dir) if dir && Dir.exist?(dir)
+  end
+
+  def descendant_alive?(pid_file)
+    pid = File.exist?(pid_file) ? File.read(pid_file).to_i : 0
+    return false unless pid.positive?
+
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def cleanup_pid(pid_file)
+    return unless pid_file && File.exist?(pid_file)
+
+    pid = File.read(pid_file).to_i
+    Process.kill("KILL", pid) if pid.positive?
+  rescue Errno::ESRCH, Errno::EPERM
+    nil
   end
 
   def silence_warnings

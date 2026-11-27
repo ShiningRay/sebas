@@ -55,6 +55,10 @@ module AwaitReview
   # 单次 gh api 的硬超时。gh 无默认请求超时，挂住的 fetch 会一路拖到 job 超时，
   # 而 job 被杀 = 下游必检 skipped = 可能不阻塞合并。
   GH_CALL_TIMEOUT_SECONDS = 60
+  # 超时终止的宽限：先 TERM 给进程体面退出的时间，宽限用完仍在就 KILL。
+  # 两者都很短——这是「已经超时」的清理路径，不该再占着步骤时间。
+  TERM_GRACE_SECONDS = 2.0
+  KILL_GRACE_SECONDS = 1.0
 
   class << self
     # 测试注入点：生产为 nil，走真实 gh 与真实时钟。
@@ -244,29 +248,81 @@ module AwaitReview
     [out, status]
   end
 
-  # 先 TERM 后 KILL 整个进程组：gh 可能自己再拉起子进程（凭据助手、分页跟随），
-  # 只杀直接子进程会留下孤儿继续占着管道。进程组已消失时 kill 会 EPERM/ESRCH，
-  # 那是「已经死了」，不是错误。
+  # 终止一个「超时命令」的整个进程组。
+  #
+  # 为什么不能只 kill 直接子进程：gh 会再拉起子进程（凭据助手、分页跟随），
+  # 只杀组长会留下孤儿继续占着管道；而 Open3.popen2e 的块退出会 join 组长，
+  # 组长若忽略 TERM 就一路等到它自己退出，60s 硬超时形同虚设
+  # （CodeRabbit 在 PR #280 两轮指出这一点）。
+  #
+  # 步骤：TERM 整组 → 宽限期内轮询组长是否退出 → 仍在就 KILL 整组 →
+  # 回收组长 → 确认整组消失（`kill(0, -pid)` 探测）。任一步发现组已空即快速返回。
   def terminate(pid)
-    %w[TERM KILL].each do |signal|
-      begin
-        Process.kill(signal, -pid)
-      rescue Errno::ESRCH, Errno::EPERM
-        return
-      end
-      begin
-        Process.waitpid(pid, Process::WNOHANG)
-        return
-      rescue Errno::ECHILD
-        return
-      end
-      sleep(0.3)
+    signal_group("TERM", pid)
+    reaped = wait_reap(pid, TERM_GRACE_SECONDS)
+    # 只有「组长已回收 且 组里也没有后代」才算彻底结束；
+    # 任一未满足都必须升级 KILL，否则忽略 TERM 的进程会把超时拖失效。
+    unless reaped && group_alive?(pid) == false
+      signal_group("KILL", pid)
+      reaped = wait_reap(pid, KILL_GRACE_SECONDS) || reaped
     end
-    # 兜底回收，避免留下僵尸进程拖着 job 结束。
-    begin
-      Process.waitpid(pid)
-    rescue Errno::ECHILD
-      nil
+    ensure_group_gone(pid)
+    reaped || reap_blocking(pid)
+  end
+
+  # 和进程组无关的单个 pid 也用同一套语义：先确认它是否还在，再决定是否升级。
+  def signal_group(signal, pid)
+    Process.kill(signal, -pid)
+    true
+  rescue Errno::ESRCH, Errno::EPERM
+    # 组已经空了（ESRCH）或没有权限（EPERM，理论上不会发生在自己的子进程上）。
+    false
+  end
+
+  # 在宽限期内轮询组长，返回是否已回收。
+  def wait_reap(pid, grace_seconds)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + grace_seconds
+    loop do
+      return true if reap_nonblocking(pid)
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep(0.05)
+    end
+  end
+
+  def reap_nonblocking(pid)
+    Process.waitpid(pid, Process::WNOHANG).nil? ? false : true
+  rescue Errno::ECHILD
+    true # 已被回收（或本就是别人的子进程）
+  end
+
+  def reap_blocking(pid)
+    Process.waitpid(pid)
+    true
+  rescue Errno::ECHILD
+    true
+  end
+
+  # kill(0, -pid) 只做权限/存在性检查，不投递信号。
+  # true = 组里还有进程，false = 组已空，nil = 无法判断（当作已空，避免死等）。
+  def group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    nil
+  end
+
+  # 最后确认：仍活着就再 KILL 一次并短暂等待，不无限重试——
+  # 僵尸进程需父进程回收，卡在这里反而会拖住 job。
+  def ensure_group_gone(pid)
+    return unless group_alive?(pid)
+
+    signal_group("KILL", pid)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + KILL_GRACE_SECONDS
+    while group_alive?(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      sleep(0.05)
     end
   end
 
