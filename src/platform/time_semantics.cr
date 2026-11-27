@@ -155,6 +155,9 @@ module Sebas
 
       # 次日（简单日历推进，月末日进位；不处理时区——由调用方拿结果再锚定）。
       def self.next_day(d : LocalDate) : LocalDate
+        unless d.year.in?(1..9999) && d.month.in?(1..12)
+          raise ArgumentError.new("日期字段非法：#{d}")
+        end
         days_in_month = {0, 31, leap?(d.year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}[d.month]
         if d.day < days_in_month
           LocalDate.new(d.year, d.month, d.day + 1)
@@ -170,11 +173,16 @@ module Sebas
       end
 
       private def self.validate!(w : LocalWall) : Nil
+        # 先判字段范围再查月长表：越界月份不得触发元组越界（契约是 ArgumentError）
+        unless w.year.in?(1..9999) && w.month.in?(1..12) && w.hour.in?(0..23) &&
+               w.minute.in?(0..59) && w.second.in?(0..59) &&
+               w.nanosecond.in?(0..999_999_999)
+          raise ArgumentError.new("墙钟字段非法：#{w}")
+        end
         days = {0, 31, leap?(w.year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}[w.month]
-        valid = w.month.in?(1..12) && w.day.in?(1..days) && w.hour.in?(0..23) &&
-                w.minute.in?(0..59) && w.second.in?(0..59) &&
-                w.nanosecond.in?(0..999_999_999) && w.year.in?(1..9999)
-        raise ArgumentError.new("墙钟字段非法：#{w}") unless valid
+        unless w.day.in?(1..days)
+          raise ArgumentError.new("墙钟字段非法：#{w}")
+        end
       end
 
       private def self.wall_matches?(candidate : Time, w : LocalWall, tz : Time::Location) : Bool

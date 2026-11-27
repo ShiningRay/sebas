@@ -49,13 +49,24 @@
 
 存储层排序约定：所有「下一评估时刻」类查询（M5.1-WP2 按时间窗、M5.1-WP3 唤醒）以 UTC instant 为排序键；WallClock/AllDay 在**写入时**即算出下一 instant 锚存独立列（`next_wake_at` 类），原话列只作来源保留——查询永不现场解析墙钟。
 
+**缓存锚的失效与重算**（tzdata 变化会使已缓存锚过期，例如纽约 12:00 写入时为 EDT 缓存 `16:00Z`，规则改为 `−05:00` 后正确锚是 `17:00Z`）：
+
+1. **失效触发条件**（满足其一即标记 `next_wake_at` 待重算）：①启动时检测到 tzdata 版本较上次写入更新（记录写入时的 tzdata 版本号或对时区规则做摘要比对）；②该行 `*_tz`/墙钟原话/重复规则被显式修改；③评估器发现锚与按原话现算值不一致（对账即重算）。
+2. **重算路径**：从保留的 WallClock/AllDay 原话列按 §2 规则**重新解析**（歧义取早、缺口拒绝交用户选择），回写 `next_wake_at`；重算发生在启动对账或该行评估时，不在查询热路径。
+3. **重算完成前不得使用旧锚**：待重算的行不参与唤醒排序与触发（视为「锚不可信」），只参与原话展示；缺列 `wake_anchor_stale`（boolean）承载该标记，评估器/调度器查询过滤之。
+
 ## 4. RRULE/RDATE/EXDATE 原文保留与 Occurrence 生成边界
 
 1. **原文保留**：重复系列存 RFC 5545 `RRULE/RDATE/EXDATE` 原文（TEXT 列），另存结构化摘要列（`freq`/`interval`）供查询过滤；未知属性与原文一起保留，不规范化。
 2. **按窗口生成**：Occurrence 只在唤醒需求窗口 `[window_start, window_end]` 内按需展开（提案 §4.2「不把无限重复展开为无限行」）；窗口外不生成行。
-3. **EXDATE 匹配口径**：按**原墙钟值**匹配（系列展开出的各 occurrence 保留其原墙钟字段），EXDATE 命中即跳过该次；UTC 时刻恰因 tzdata 变化而漂移不影响匹配。
+3. **EXDATE/RDATE 匹配口径**：先按**属性自身的时间表示**解释每个值，再换算到系列的匹配表示：
+   - 值带 `Z` 后缀 → **UTC 时刻**，按对应 UTC 时刻匹配（例：纽约系列中 `EXDATE:20260601T160000Z` 排除的是当地 12:00 那次，不是当地 16:00）；不得直接当作当地墙钟；
+   - 值带 `TZID=` 参数 → 按**该 IANA 时区**的当地墙钟解释；
+   - `DATE-TIME` 无 `Z` 无 `TZID`（RFC 5545 floating）→ 按系列 `*_tz` 的当地墙钟解释；
+   - `DATE` 值（VALUE=DATE）→ 按日历日整日匹配。
+   匹配针对系列展开出的各 occurrence 的原墙钟字段；命中即跳过该次。tzdata 变化导致的 UTC 时刻漂移不影响原墙钟匹配。
 4. **Occurrence 稳定身份**：`schedule_id + slot`（一次性：`once:<utc>`；周期：`cron:<原始表达式>:<本轮起始 UTC>`）——身份生成规则归 M5.1-WP3，本文只约定「身份字段必须可由原文与窗口重算」。
-5. **RDATE/EXDATE 与时区**：以 `*_tz` 的当地墙钟解释；解析遇 §2 缺口/歧义按 §2 口径处理（歧义取早、缺口该 occurrence 置 `invalid` 并要求用户选择，不静默跳过）。
+5. **缺口与歧义 occurrence**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。`invalid` 不静默跳过，须用户选择（改时间/跳过/换时区）。
 
 ## 5. 首版表结构草案（M5.1 六表）
 
@@ -85,6 +96,7 @@ CREATE TABLE IF NOT EXISTS commitments (
   missing_fields      TEXT,                      -- json 数组；needs_clarification 态必非空
   clarify_by          TEXT,                      -- UTC ISO8601；needs_clarification 态必填
   next_wake_at        TEXT,                      -- §3 排序键：写入时算出的下一 UTC 锚（查询用）
+  wake_anchor_stale   INTEGER NOT NULL DEFAULT 0,-- §3 缓存锚失效标记：1=待重算，重算前不参与唤醒排序
   ambiguous_local_time INTEGER NOT NULL DEFAULT 0, -- §2 口径②：歧义标注
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
@@ -125,7 +137,7 @@ CREATE TABLE IF NOT EXISTS reminders (
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_commitment ON reminders (commitment_id, state);
 
--- notification_deliveries：一次渠道投递（§2.4；不变式 1 由部分唯一索引强制）
+-- notification_deliveries：一次渠道投递（§2.4；不变式 1 由触发器 DB 级强制）
 CREATE TABLE IF NOT EXISTS notification_deliveries (
   id             TEXT PRIMARY KEY,
   reminder_id    TEXT NOT NULL REFERENCES reminders(id),
@@ -139,10 +151,39 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
   sent_at        TEXT,                        -- 置 sent 时写入，变迁不清除
   created_at     TEXT NOT NULL
 );
--- 不变式 1（同意图最多一个未决通知）：DB 级强制，非应用层检查
-CREATE UNIQUE INDEX IF NOT EXISTS uq_deliveries_pending
+-- 不变式 1（同意图最多一个未决通知，§4.1 口径 = 未被后续投递替代的
+-- scheduled/sent/seen 计一条）：纯部分唯一索引无法表达「已被 supersedes
+-- 豁免」，故用 BEFORE INSERT/UPDATE 触发器 DB 级强制，非应用层检查。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deliveries_scheduled
   ON notification_deliveries (commitment_id)
-  WHERE state IN ('scheduled');
+  WHERE state = 'scheduled';                 -- 快路径：scheduled 永远至多一条
+CREATE TRIGGER IF NOT EXISTS trg_deliveries_invariant1_insert
+BEFORE INSERT ON notification_deliveries
+WHEN NEW.state IN ('scheduled','sent','seen') AND EXISTS (
+  SELECT 1 FROM notification_deliveries d
+  WHERE d.commitment_id = NEW.commitment_id
+    AND d.state IN ('scheduled','sent','seen')
+    AND d.id != NEW.supersedes                       -- 被新投递实际替代者豁免
+    AND NOT EXISTS (SELECT 1 FROM notification_deliveries s
+                    WHERE s.supersedes = d.id)       -- 已有替代者的历史投递豁免
+)
+BEGIN
+  SELECT RAISE(ABORT, '不变式 1：同一意图已存在未决投递（scheduled/sent/seen 且无替代者）');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_deliveries_invariant1_update
+BEFORE UPDATE OF state ON notification_deliveries
+WHEN NEW.state IN ('scheduled','sent','seen') AND OLD.state NOT IN ('scheduled','sent','seen')
+  AND EXISTS (
+  SELECT 1 FROM notification_deliveries d
+  WHERE d.commitment_id = NEW.commitment_id AND d.id != NEW.id
+    AND d.state IN ('scheduled','sent','seen')
+    AND d.id != NEW.supersedes
+    AND NOT EXISTS (SELECT 1 FROM notification_deliveries s
+                    WHERE s.supersedes = d.id)
+)
+BEGIN
+  SELECT RAISE(ABORT, '不变式 1：同一意图已存在未决投递（scheduled/sent/seen 且无替代者）');
+END;
 CREATE INDEX IF NOT EXISTS idx_deliveries_reminder ON notification_deliveries (reminder_id, state);
 
 -- wake_schedules：唤醒定义（提案 §5.3 职责分离：不承载长期目标）
@@ -157,19 +198,23 @@ CREATE TABLE IF NOT EXISTS wake_schedules (
   created_at    TEXT NOT NULL
 );
 
--- occurrences：一次应发生的唤醒（稳定身份 + 原子 claim）
+-- occurrences：一次应发生的唤醒（稳定身份 + 原子 claim；缺口实例可持久化待用户选择）
 CREATE TABLE IF NOT EXISTS occurrences (
   id            TEXT PRIMARY KEY,             -- §4 稳定身份：schedule_id + slot
   schedule_id   TEXT NOT NULL REFERENCES wake_schedules(id),
   slot          TEXT NOT NULL,                -- once:<utc> / cron:<expr>:<本轮起始 UTC>
-  due_at        TEXT NOT NULL,                -- 本次唤醒 UTC 时刻（排序键）
+  due_at        TEXT,                         -- 本次唤醒 UTC 时刻（排序键）；state='invalid' 时可为空
   state         TEXT NOT NULL CHECK (state IN
-                  ('pending','claimed','done','skipped','merged')),
+                  ('pending','claimed','done','skipped','merged','invalid')),
+  original_wall TEXT,                         -- §4.5：缺口实例的原始墙钟（不可解析时的持久化恢复信息）
+  original_tz   TEXT,                         -- 缺口实例的 IANA 时区
   claimed_by    TEXT,                         -- 原子 claim：持有者
   claim_expires_at TEXT,                      -- lease 到期（可回收）
   generated_for TEXT,                         -- 生成窗口标记（补跑/合并审计用）
   created_at    TEXT NOT NULL,
-  UNIQUE (schedule_id, slot)
+  UNIQUE (schedule_id, slot),
+  CHECK (state != 'invalid' OR (original_wall IS NOT NULL AND original_tz IS NOT NULL)),
+  CHECK (state = 'invalid' OR due_at IS NOT NULL)   -- 正常待唤醒实例必须有有效 UTC 时刻
 );
 CREATE INDEX IF NOT EXISTS idx_occurrences_due ON occurrences (state, due_at);
 ```
@@ -179,7 +224,7 @@ CREATE INDEX IF NOT EXISTS idx_occurrences_due ON occurrences (state, due_at);
 ## 6. 迁移方案（`PRAGMA user_version` + 有序迁移）
 
 1. **版本承载**：SQLite `PRAGMA user_version`（单整数，0=未初始化）。迁移列表为代码内有序数组 `MIGRATIONS = [{version: 1, statements: [...]}...]`，每个版本一组**单语句数组**——Crystal sqlite3 绑定一次只接受一条语句（store.cr 既有注释），迁移器逐条 exec。
-2. **执行序**：启动时读 `user_version` → 依序应用 `(当前版本, 目标版本]` 的迁移 → 每个版本单事务（`BEGIN/COMMIT`，成功后写新 `user_version`）→ 失败回滚且版本号不前进（半途不留脏态，M5.1-WP1 验收口径）。
+2. **执行序**：启动时读 `user_version` → 依序应用 `(当前版本, 目标版本]` 的迁移。**每个版本严格按此顺序单事务执行**：`BEGIN` → 逐条执行迁移语句 → **写新 `user_version`** → `COMMIT`；任一步失败即 `ROLLBACK`——结构变更与版本号要么一起提交、要么一起回滚（若先 COMMIT 再写版本号，两步之间进程终止会导致重启后重跑已提交的语句，违背「半途不留脏态」）。M5.1-WP1 验收口径不变。
 3. **新库直达最新**：`user_version=0` 的全新库按序跑全部迁移；**存量库零手工动作**（v1 基线快照迁移动作由 M5.1-WP1 实装，本文定契约）。
 4. **幂等**：连续两次 migrate 第二次为 no-op（版本已最新）；同一版本内语句用 `IF NOT EXISTS`/幂等写法兜底重入。
 5. **与 `make release` 兼容**：迁移只动 `data_dir` 下的库文件，不写配置目录（M5.0-WP3 应用根契约：数据根启动时固定，热更新不迁移）。
@@ -196,10 +241,10 @@ CREATE INDEX IF NOT EXISTS idx_occurrences_due ON occurrences (state, due_at);
 | RRULE 口径与 Occurrence 边界 | §4（文本契约；展开实现归 M5.1-WP3/M6） | 本文 §4 |
 | 表草案覆盖 M5.1 全部仓储字段、无悬空外键 | §5 六表 + 外键自查 | 本文 §5 |
 | `PRAGMA user_version` 迁移方案 | §6（契约；迁移器实装归 M5.1-WP1） | 本文 §6 |
-| 调度四条在模块上全绿 | `crystal spec` 16 例 + `crystal tool format --check` + ameba 0 issues | PR CI + 本地输出 |
+| 代码质量门禁 | `crystal tool format --check` + ameba 0 issues + 全量 `crystal spec` 回归 | PR CI + 本地输出（18 例时间语义 spec 全绿；文档部分验收按 issue #64 ⓐ 以评审通过为准，不因 spec 未绿判本期 No-Go） |
 
 ## 8. 待评审裁决点
 
 1. ±48h 探测窗口的历史角落边界（§2 末）是否接受为已知限制。
-2. `next_wake_at` 冗余列（§5 commitments）与「查询永不现场解析墙钟」（§3.7）配套——评估器写路径承担解析职责，是否认可该分工。
+2. **M5.0 期门禁中调度四条的取舍**：WBS B.9（[m5-commitments.md](../plan/wbs/m5-commitments.md) 期门禁节）写「M5.0 期门禁 = 文档评审 + 调度四条全绿（含 `make spec`）」，issue #64 验收 ⓐ 写「文档部分以评审通过为准、不因 spec 未绿判本期 No-Go」——两者对 `make spec` 的处理冲突。§14 roadmap 按后者口径书写；**是否保留 format/lint/release 而剔除 spec、并同步修订 WBS 与 gates.md，待计划负责人裁决**（本文不代裁决）。
 3. Occurrence 身份字段格式（§4.4）在 M5.1-WP3 实装前是否需要冻结更细的 slot 文法。

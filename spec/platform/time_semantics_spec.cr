@@ -134,6 +134,20 @@ describe Sebas::Platform::TimeSemantics do
   end
 
   describe "非法输入（fail-closed）" do
+    it "月份 13 先判范围抛 ArgumentError（不触发元组越界）" do
+      expect_raises(ArgumentError) do
+        Sebas::Platform::TimeSemantics.resolve_wall(
+          Sebas::Platform::TimeSemantics::LocalWall.new(2026, 13, 1, 12, 0), ny)
+      end
+    end
+
+    it "next_day 对非法月份抛 ArgumentError" do
+      expect_raises(ArgumentError) do
+        Sebas::Platform::TimeSemantics.next_day(
+          Sebas::Platform::TimeSemantics::LocalDate.new(2026, 13, 1))
+      end
+    end
+
     it "墙钟字段越界抛 ArgumentError" do
       expect_raises(ArgumentError) do
         Sebas::Platform::TimeSemantics.resolve_wall(
