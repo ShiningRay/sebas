@@ -260,14 +260,16 @@ module SebasAgents
         if pr
           # 越界检测（§6 / F14）：PR 变更文件必须落在租约 scope 内。scope 是
           # 调度预算，靠事后检测兜底——越界即停本卡，不继续推进合并。
-          # 只在「已取回文件清单」时判：快照未取 files 时按不可判定处理，
-          # 由 verify merge --pre 的路径检查兜住，不在这里伪造结论。
-          unless pr.files.nil?
-            lease_scope = Policy::Scope.lease_of(issue)[:scope]
-            if (violation = Policy::Scope.violations(pr.files, lease_scope))
-              return LeaseAction.new(issue: number, action: "needs_human", pr: pr.number,
-                owned: owned, reason: "##{number} 越界（#{violation}）：本租约暂停，等 Maintainer 裁决")
-            end
+          #
+          # 无条件调用：files 为 nil（快照未取）时 Scope.violations 也会返回
+          # 「无法判定」，这里照样转 needs_human。理由与 §6.2 一致：安全边界不押在
+          # 「没取到就等于没违规」上。代价是快照缺 files 的在途 PR 会停下来——
+          # 这是有意的，让 coordinator 去补取，而不是默默放行。
+          lease_scope = Policy::Scope.lease_of(issue)[:scope]
+          violation = Policy::Scope.violations(pr.files, lease_scope)
+          if violation
+            return LeaseAction.new(issue: number, action: "needs_human", pr: pr.number,
+              owned: owned, reason: "##{number} 越界（#{violation}）：本租约暂停，等 Maintainer 裁决")
           end
 
           classified = classify_pr(pr, issue, observed)

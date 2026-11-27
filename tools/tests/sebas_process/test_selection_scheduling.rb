@@ -65,7 +65,7 @@ class SelectionSchedulingTest < Minitest::Test
   # 而不是被当成 wait 或转去开新卡。
   def test_in_flight_needs_human_reports_needs_human
     data = snapshot(issues: [
-      issue(1, body: automation, labels: ["needs:human"], status: "In progress"),
+      issue(1, body: automation(scope: ["src/"]), labels: ["needs:human"], status: "In progress"),
       issue(2, body: automation(order: [4]))
     ])
     action = select(data, record: {"issue" => 1, "phase" => "claimed"})
@@ -77,7 +77,7 @@ class SelectionSchedulingTest < Minitest::Test
   # 续做路由对准本地记录持有的那张卡，而不是固定首卡。
   def test_multiple_in_progress_allowed_within_capacity
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
+      issue(1, body: automation(scope: ["src/"]), status: "In progress"),
       issue(2, body: automation, status: "In progress")
     ], capacity: 2)
     action = select(data, record: {"issue" => 2, "phase" => "claimed"})
@@ -87,7 +87,7 @@ class SelectionSchedulingTest < Minitest::Test
 
   def test_capacity_exceeded_is_invalid
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
+      issue(1, body: automation(scope: ["src/"]), status: "In progress"),
       issue(2, body: automation, status: "In progress"),
       issue(3, body: automation, status: "In progress")
     ], capacity: 2)
@@ -98,7 +98,7 @@ class SelectionSchedulingTest < Minitest::Test
 
   def test_record_not_matching_any_in_progress_is_invalid
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
+      issue(1, body: automation(scope: ["src/"]), status: "In progress"),
       issue(2, body: automation, status: "In progress")
     ], capacity: 2)
     action = select(data, record: {"issue" => 99, "phase" => "claimed"})
@@ -123,6 +123,7 @@ class SelectionSchedulingTest < Minitest::Test
   # Q4=A 强制：在途租约缺 scope 时无法判定重叠 → 不认领新卡，即使容量有空位。
   def test_missing_scope_on_active_lease_blocks_new_claims
     data = snapshot(issues: [
+      # 在途卡故意不声明 scope：缺 scope 独占容量，这才是本用例要测的语义
       issue(1, body: automation, status: "In progress"),
       issue(2, body: automation(order: [4, 2], scope: ["src/bus/"]))
     ], capacity: 2)
@@ -161,7 +162,7 @@ class SelectionSchedulingTest < Minitest::Test
   # 不误续跑他人 PR、也不误判 F7 invalid（routing 快照无凭据事实）。
   def test_foreign_claim_waits_at_default_capacity
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
+      issue(1, body: automation(scope: ["src/"]), status: "In progress"),
       issue(2, body: automation(order: [4, 2]))
     ])
     action = select(data)
@@ -193,10 +194,10 @@ class SelectionSchedulingTest < Minitest::Test
     pr = {
       "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
       "merge_state_status" => "BEHIND", "checks" => [],
-      "closing_issues" => [1], "review_threads" => []
+      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress"), issue(2, body: automation(order: [4, 2]))],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress"), issue(2, body: automation(order: [4, 2]))],
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 50, "phase" => "claimed"})
@@ -208,10 +209,10 @@ class SelectionSchedulingTest < Minitest::Test
     pr = {
       "number" => 50, "state" => "OPEN", "merge_state_status" => "UNKNOWN",
       "checks" => [{"name" => "spec", "status" => "IN_PROGRESS", "conclusion" => nil}],
-      "closing_issues" => [1], "review_threads" => []
+      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress")],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       pull_requests: [pr]
     )
     assert_equal "wait", select(data, record: {"issue" => 1, "pr" => 50}).action
@@ -227,10 +228,10 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
       ],
-      "closing_issues" => [1], "review_threads" => []
+      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress")],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 50})
@@ -247,10 +248,10 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "IN_PROGRESS", "conclusion" => nil},
         {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
       ],
-      "closing_issues" => [1], "review_threads" => []
+      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress")],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       pull_requests: [pr]
     )
     assert_includes select(data, record: {"issue" => 1, "pr" => 50}).reason, "等待 CI"
@@ -265,10 +266,10 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "COMPLETED", "conclusion" => "CANCELLED"}
       ],
-      "closing_issues" => [1], "review_threads" => []
+      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress")],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       pull_requests: [pr]
     )
     action = select(data, record: {"issue" => 1, "pr" => 50})
@@ -285,17 +286,17 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "BOGUS", "conclusion" => nil}
       ],
-      "closing_issues" => [1], "review_threads" => []
+      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress")],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       pull_requests: [pr]
     )
     assert_includes select(data, record: {"issue" => 1, "pr" => 50}).reason, "等待 CI"
   end
 
   def test_claiming_interruption_resumes
-    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    data = snapshot(issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")])
     action = select(data, record: {"issue" => 1, "phase" => "claiming"})
     assert_equal "resume_issue", action.action
     assert_includes action.reason, "claiming"
@@ -309,7 +310,7 @@ class SelectionSchedulingTest < Minitest::Test
   end
 
   def test_local_remote_conflict_is_invalid
-    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    data = snapshot(issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")])
     assert_equal "invalid_plan", select(data, record: {"issue" => 99}).action
   end
 
@@ -317,11 +318,11 @@ class SelectionSchedulingTest < Minitest::Test
   # 远端随后认领别的卡时不得报假冲突（否则 next 永久堵死）。
   def test_released_record_does_not_conflict_with_new_claim
     data = snapshot(
-      issues: [issue(1, body: automation, status: "In progress")],
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       pull_requests: [{
         "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
         "merge_state_status" => "CLEAN", "checks" => [],
-        "closing_issues" => [1], "review_threads" => []
+        "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
       }]
     )
     action = select(data, record: {"issue" => 99, "phase" => "released"})
@@ -332,7 +333,7 @@ class SelectionSchedulingTest < Minitest::Test
   # 必须同时断言原因含「冲突」——否则 claiming/aborted 等会经 resume_claimed /
   # reconcile_aborted 返回同样 invalid_plan 的动作，把冲突检查的回归掩盖掉。
   def test_holding_phases_still_conflict_with_other_claim
-    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    data = snapshot(issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")])
     %w[claiming claimed paused aborted].each do |phase|
       action = select(data, record: {"issue" => 99, "phase" => phase})
       assert_equal "invalid_plan", action.action, "phase=#{phase} 必须判冲突"
@@ -346,7 +347,7 @@ class SelectionSchedulingTest < Minitest::Test
   # 注意：降级后若远端确实有认领而本地无记录，会走 resume_claimed 的
   # 「已认领但缺本地运行记录」fail-closed 分支——那是既有正确行为，不是本缺陷。
   def test_released_record_is_not_reused_as_resume_state
-    data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
+    data = snapshot(issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")])
     action = select(data, record: {"issue" => 99, "phase" => "released", "worktree" => "/tmp/old-99"})
 
     assert_equal "wait", action.action,
@@ -497,7 +498,7 @@ def test_excluded_lists_every_blocked_candidate
 
   def test_multiple_in_progress_is_invalid
     data = snapshot(issues: [
-      issue(1, body: automation, status: "In progress"),
+      issue(1, body: automation(scope: ["src/"]), status: "In progress"),
       issue(2, body: automation, status: "In progress")
     ])
     assert_equal "invalid_plan", select(data).action

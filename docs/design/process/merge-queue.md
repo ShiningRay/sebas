@@ -112,7 +112,7 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 | F10 | PR 已建、记录未回填 | `lease_action` 按 `closing_issues` 找 PR；`branch` 与记录一致才续做，不一致 `invalid_plan` | `test_lease_actions.rb` |
 | F11 | 别的 PR 关联了本卡 / 一个 PR 关联多张卡 | `lease_action` 的归属校验（多卡、base、分支三项） | `test_lease_actions.rb`、`test_fault_matrix.rb` |
 | F12 | 合并后 unclaim 失败 | `unclaim` 幂等 + `release_lease_comment!` | `test_lease_coordinator.rb` |
-| F14 | worker 越界写 | `Scope.violations`（缺输入即不可判定；重命名查原路径与新路径） | `test_fault_matrix.rb` |
+| F14 | worker 越界写 | `Scope.violations`：非数组 / 缺清单 / 缺 scope / 解析不出路径一律不可判定即 `needs_human`；重命名同时查原路径与新路径 | `test_fault_matrix.rb` |
 | F15 | 合并中途崩溃（`phase=merging`） | `reconcile_merging`：已合并 → `release_ready`；仍 open → 重核验；异常 → `invalid_plan` | `test_fault_matrix.rb` |
 
 **F13（main CI 被取消）不在上表**：它的处置是重跑被取消的 CI run 或补登记，属人工动作，

@@ -12,7 +12,7 @@ class FaultMatrixTest < Minitest::Test
   include SnapshotHelpers
 
   def pr(number: 50, issue: 1, state: "OPEN", merged: false, base: "main",
-    head: "sha", checks: [], threads: [], files: nil)
+    head: "sha", checks: [], threads: [], files: [{"filename" => "src/x.cr"}])
     {
       "number" => number, "head_ref_name" => "feat/#{issue}", "base_ref_name" => base,
       "head_sha" => head, "state" => state, "merged" => merged,
@@ -93,15 +93,17 @@ class FaultMatrixTest < Minitest::Test
     assert_includes result.excluded.first["reason"], "越界"
   end
 
-  # 快照未取 files 时不在这里判越界（交给 verify merge --pre 的路径检查）。
-  def test_unknown_files_does_not_block_here
+  # 快照未取 files 也判不可判定 → needs_human。从而不把「没取到」当成「没违规」。
+  # 真实快照对 open PR 一定取 files，所以这条只影响离线夹具与提案快照路径。
+  def test_unknown_files_goes_needs_human
     snapshot = snap(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
       prs: [pr(files: nil)],
       capacity: 2
     )
     result = view(snapshot, [{"issue" => 1, "phase" => "claimed", "branch" => "feat/1", "pr" => 50}])
-    assert_equal "merge_ready", result.next_action
+    assert_equal "needs_human", result.next_action
+    assert_includes result.excluded.first["reason"], "无法判定越界"
   end
 
   # --- F15：合并中途崩溃（phase=merging）---

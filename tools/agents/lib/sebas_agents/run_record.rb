@@ -230,9 +230,12 @@ module SebasAgents
       end
     end
 
-    # 残留判定：读得到 pid 且该进程已不存在 → 残留；读不到 pid 或进程仍在 → 活跃。
-    # 「读不到 pid」按活跃处理（保守）：锁刚创建、还没写入 pid 的窗口里删它
-    # 会破坏别人的互斥。
+    # 残留判定：读得到 pid 且该进程已不存在 → 残留；其余一律按活跃。
+    #
+    # 只有 `Errno::ESRCH`（进程不存在）才是残留证据。`EPERM` 表示进程存在但
+    # 无权限发信号——**那是活跃持有者**，删它的锁会破坏互斥，必须按活跃处理。
+    # 读不到 pid、pid 非法、文件已消失同样按活跃：锁刚创建还没写 pid 的窗口
+    # 里删它会伤到别人。
     def stale_lock?(lock)
       pid = File.read(lock, encoding: "UTF-8").strip
       return false if pid.empty?
@@ -241,7 +244,7 @@ module SebasAgents
       false
     rescue Errno::ESRCH
       true
-    rescue ArgumentError, Errno::ENOENT, Errno::EACCES
+    rescue ArgumentError, Errno::ENOENT, Errno::EACCES, Errno::EPERM
       false
     end
 

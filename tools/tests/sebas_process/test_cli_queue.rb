@@ -31,7 +31,8 @@ class QueueCommandTest < Minitest::Test
       "number" => number, "head_ref_name" => "feat/#{issue}", "base_ref_name" => "main",
       "head_sha" => "sha#{number}", "state" => "OPEN", "merged" => false,
       "merge_state_status" => "CLEAN", "checks" => [],
-      "closing_issues" => [issue], "review_threads" => [], "body" => body
+      "closing_issues" => [issue], "review_threads" => [], "body" => body,
+      "files" => [{"filename" => "src/x.cr"}]
     }
   end
 
