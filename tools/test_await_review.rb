@@ -44,11 +44,14 @@ class AwaitReviewTest < Minitest::Test
     }.merge(overrides)
   end
 
-  def run_with(pages)
+  # reviews 默认空列表（= 无整改项）。测整改拦截时传 with_reviews。
+  def run_with(pages, reviews: [])
     queue = pages.dup
     AwaitReview.gh_reader = lambda do |path|
-      # 每个 PR 状态请求固定返回非 draft；check-runs 请求按队列推进。
-      next({"draft" => false}) if path.include?("/pulls/")
+      # /pulls/N/reviews 也含 "/pulls/"，必须先判 reviews，
+      # 否则 review 请求会拿到 {"draft"=>false} 这种形状不符的哈希。
+      next reviews if path.include?("/reviews")
+      next({"draft" => false}) if path.match?(%r{/pulls/\d+\z})
 
       page = queue.shift
       raise "测试数据用尽：#{path}" if page.nil?
@@ -353,16 +356,146 @@ class AwaitReviewTest < Minitest::Test
     assert_includes @out.string, "cancelled", "应以最新那条为准，而不是旧的 success"
   end
 
-  # --- 门闸本身不判质量 ---
+  # --- 审查提出整改时挡住矩阵 ---
+
+  def review(commit: "a" * 40, body: "")
+    {"commit_id" => commit, "body" => body, "state" => "COMMENTED"}
+  end
+
+  def actionable_review(count: 2, commit: "a" * 40)
+    review(commit: commit, body: "**Actionable comments posted: #{count}**\n\n详情")
+  end
+
+  def success_run
+    runs_page([check_run(status: "completed", conclusion: "success")])
+  end
+
+  def test_actionable_reviews_block_the_matrix
+    stop_sleeping
+    code = run_with([success_run], reviews: [actionable_review(count: 2)])
+
+    assert_equal 1, code
+    assert_includes @out.string, "2 条需整改项"
+    assert_includes @out.string, "矩阵不跑"
+  end
+
+  def test_review_without_actionable_passes
+    stop_sleeping
+    code = run_with([success_run], reviews: [review(body: "已跳过某些文件")])
+
+    assert_equal 0, code
+    assert_includes @out.string, "未提出需整改项"
+  end
+
+  # 多条 review 的 actionable 求和：CodeRabbit 每轮可能只报一部分。
+  def test_actionable_counts_are_summed
+    stop_sleeping
+    reviews = [actionable_review(count: 2), review(body: ""), actionable_review(count: 1)]
+
+    assert_equal 1, run_with([success_run], reviews: reviews)
+    assert_includes @out.string, "3 条需整改项"
+  end
+
+  # 只看当前 head：旧 commit 的意见不该挡住已修过的新 commit。
+  def test_actionable_on_older_commit_is_ignored
+    stop_sleeping
+    stale = actionable_review(count: 5, commit: "b" * 40)
+
+    assert_equal 0, run_with([success_run], reviews: [stale])
+    assert_includes @out.string, "未提出需整改项"
+  end
+
+  # 审查没跑成时不读 actionable：那是 fail-open 的领地。
+  def test_actionable_is_not_consulted_when_review_failed
+    stop_sleeping
+    failed = runs_page([check_run(status: "completed", conclusion: "cancelled")])
+
+    assert_equal 0, run_with([failed], reviews: [actionable_review(count: 9)])
+    assert_includes @out.string, "fail-open"
+    refute_includes @out.string, "需整改项"
+  end
+
+  # 读 reviews 失败也必须放行：拿不到结论 ≠ 确认有问题。
+  def test_unreadable_reviews_pass_open
+    stop_sleeping
+    AwaitReview.gh_reader = lambda do |path|
+      raise "HTTP 500" if path.include?("/reviews")
+      next({"draft" => false}) if path.match?(%r{/pulls/\d+\z})
+
+      success_run
+    end
+
+    assert_equal 0, AwaitReview.run(env: env, out: @out)
+    assert_includes @out.string, "fail-open"
+  end
+
+  # 评论只发一次：重跑更新同一条，避免刷屏。
+  # 评论只发一次：重跑更新同一条，避免刷屏。
+  def test_comment_is_updated_not_duplicated
+    stop_sleeping
+    writes = []
+    AwaitReview.gh_writer = ->(method, path, payload) { writes << [method, path, payload] }
+
+    existing = [{"id" => 42, "body" => "#{AwaitReview::COMMENT_MARKER}\n旧内容"}]
+    AwaitReview.gh_reader = lambda do |path|
+      # 顺序要紧：/issues/N/comments、/pulls/N/reviews 都要先于 PR 状态判断。
+      next existing if path.include?("/comments")
+      next [actionable_review] if path.include?("/reviews")
+      next({"draft" => false}) if path.match?(%r{/pulls/\d+\z})
+
+      success_run
+    end
+    AwaitReview.run(env: env, out: @out)
+
+    assert_equal 1, writes.length, "应只写一次（更新既有评论）"
+    assert_equal "PATCH", writes[0][0]
+    assert_includes writes[0][1], "/issues/comments/42"
+  ensure
+    AwaitReview.gh_writer = nil
+  end
+
+  def test_comment_is_skipped_when_disabled
+    stop_sleeping
+    writes = []
+    AwaitReview.gh_writer = ->(method, path, payload) { writes << [method, path, payload] }
+
+    code = run_with([success_run], reviews: [actionable_review])
+    assert_equal 1, code
+    refute_empty writes, "默认应发评论"
+
+    writes.clear
+    AwaitReview.run(env: env("GATE_COMMENT" => "false"), out: @out)
+    assert_empty writes, "GATE_COMMENT=false 时不该贴评论"
+  ensure
+    AwaitReview.gh_writer = nil
+  end
+
+  def test_actionable_pattern_parses_counts
+    assert_equal 3, AwaitReview::ACTIONABLE_PATTERN.match("Actionable comments posted: 3")[1].to_i
+    assert_nil AwaitReview::ACTIONABLE_PATTERN.match("no actionable comments")
+    assert_equal 0, AwaitReview::ACTIONABLE_PATTERN.match("Actionable comments posted: 0")[1].to_i
+  end
+
+  # 找旧评论必须翻页：PR 评论过百时旧评论落第二页，只看首页会重复发布。
+  # gh_reader 是测试桩看不出参数化行为，所以同时钉住源码里的 --paginate。
+  def test_find_comment_paginates
+    source = File.read(File.expand_path("await_review.rb", __dir__), encoding: "UTF-8")
+    assert_includes source, "paginate: true", "find_comment 必须传 paginate: true"
+    assert_includes source, '"--paginate"', "gh_json 必须真的加 --paginate"
+  end
+
+  # --- success 的语义 ---
 
   # conclusion=success 只代表审查流程跑完；有可修意见也照样放行，
   # 意见由 PR 评论与 review thread 承载。
-  def test_success_is_not_a_quality_verdict
+  # success 只代表审查跑完；是否放行取决于 actionable 标记（见整改用例）。
+  def test_success_without_actionable_passes_quietly
     stop_sleeping
     page = runs_page([check_run(status: "completed", conclusion: "success")])
 
     assert_equal 0, run_with([page])
     refute_includes @out.string, "fail-open"
+    assert_includes @out.string, "未提出需整改项"
   end
 
   def test_defaults_are_used_when_env_is_absent

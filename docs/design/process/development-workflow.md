@@ -221,55 +221,28 @@ issue 开工（status: Todo → In progress，tools/sebas-process claim）
 
 - squash-only（`allow_merge_commit=false`，`allow_squash_merge=true`）
 - `delete_branch_on_merge=true`
-- 必检 contexts：`spec / ubuntu-latest`、`spec / macos-latest`、`spec / windows-latest`、`ameba`、`verify`
+- 必检 contexts：`spec / ubuntu-latest`、`spec / macos-latest`、`spec / windows-latest`、`ameba`、`verify`、`await-review`
 - `strict=true`（要求 PR 与 main 同步）
 - `enforce_admins=true`（admin 也逃不过保护）
 - `required_approving_review_count=0`（不需要人工 approve）
 - `required_conversation_resolution=true`（所有 review thread 必须 resolve）
 
-### 顺序：先 review，再跑 CI
+### 门闸：先 review，再跑 CI；有问题就先整改
 
-三平台矩阵与 ameba 都排在 `await-review` 门闸之后（`ci.yml` 的 `needs`），
-即 PR 的 head commit 上 CodeRabbit 的 check run 走完，才起跑矩阵。
+`await-review` 是 PR 门闸：CodeRabbit 审完，三平台矩阵与 ameba 才起跑；
+审查提出需整改项时矩阵直接不跑，等改完再 push。两条都为了不把 runner
+烧在废稿上（矩阵 1-2 分钟就绿，审查要 5-7 分钟）。
 
-动机是成本：矩阵常 1-2 分钟就绿，审查要 5-7 分钟（实测 PR #230/#231/#237/#238）。
-并行时实现方按绿灯推进、收到意见再推 commit，一整轮三平台白烧。
+判定分两段：排序阶段 fail-open（draft、超时、审查中断都放行），
+整改阶段是真判定（读当前 head 的 review，匹配 `Actionable comments posted: N`，
+N>0 即 job 红）。判出问题时贴一条带 marker 的清单评论，重跑更新同一条。
 
-门闸由 [tools/await_review.rb](../../../tools/await_review.rb) 实现，规则是 **fail-open**：
+门闸变红是安全的，因为 `await-review` 本身已是分支保护必检——
+否则 GitHub 会把「依赖失败导致下游 skip」当成不阻塞合并，等于放行。
+这两条互为条件，改动任一处都要核对另一处。
 
-| 情形 | 处理 |
-|---|---|
-| 审查 check run `status=completed` 且 `conclusion=success` | 正常放行 |
-| PR 是 draft（`.coderabbit.yaml` 的 `drafts=false`，本就不审） | 放行 + warning |
-| 5 分钟内 check run 始终没出现（不在审查范围） | 放行 + warning |
-| 出现后 15 分钟内仍未完成 | 放行 + warning |
-| 审查结论为 failure / cancelled / timed_out / skipped | 放行 + warning |
-| 连续 3 次读 check-runs 失败 | 放行 + warning |
-
-两个时间窗分开口径：「审查方压根不审这个 PR」（path_filters 全排除、App 未启用）
-与「审查跑得慢」是两件事。实测 check run 创建延迟 18–23s、偶发 113s，故给 5 分钟宽限；
-出现之后按 15 分钟等结论。
-
-fail-open 的理由：这是**顺序门闸**，不是校验器，不判定任何质量结论。
-卡住 PR 的代价（draft 永远等不到、审查方被卸载、接口抖动）远大于「这一轮矩阵白跑」。
-质量门禁仍由 spec / ameba / verify 承担。与 tools/** 的 fail-closed 纪律不冲突——
-那条针对的是授权与身份校验，`await_review.rb` 是其中显式声明的例外
-（`.coderabbit.yaml` 的 tools/** 审阅指令里也写明，免得审查方把它报成缺陷）。
-
-三层超时各管一段：脚本的 `REVIEW_APPEAR_SECONDS`（300s）管「审查方没打算审」，
-`REVIEW_TIMEOUT_SECONDS`（900s）管「审得慢」，单次 `gh api` 硬超时（60s）管
-「调用挂住」，步骤 `timeout-minutes`（16）管「脚本整体卡死」，job（20）兜最后一层。
-
-门闸 job 的每个步骤都带 `continue-on-error`，让 job 恒为 success。
-这不是偷懒，而是堵一个真漏洞：GitHub 文档写明「依赖失败 job 的 job 会被 skipped
-且可能不阻塞合并」。若门闸把自己搞红，spec / ameba 会跟着 skip，PR 反而能在没有 spec
-的情况下合入——省 runner 的门闸顺手放走了一个真门禁。宁可退化成「照常跑矩阵」。
-
-一个反直觉的边界：**见过 check run 之后遇到接口错误，不能退回「等出现」的口径**。
-否则第 280s 读到 `in_progress`、第 320s 读失败时，会按已过期的出现窗直接放行，
-矩阵在审查未完时起跑。已见的审查一律按主上限重试。
-
-`docs` 与 `verify` 不进等待链：它们数秒完成，文档与锚点的反馈早给更有用。
+完整规则（两阶段表、时间窗、超时分层、为什么不能退回出现窗）见
+[pr-gate.md](pr-gate.md)。
 
 ### 合并自动化层级
 

@@ -77,18 +77,33 @@ class CiWorkflowTest < Minitest::Test
     refute jobs.dig(GATE, "if"), "门闸不能用 job-level if 跳过，否则非 PR 事件会连带 skip 下游"
   end
 
-  # 门闸崩了绝不能让 job 变红：GitHub 文档明确写着「依赖失败 job 的 job 会被
-  # skipped 且可能不阻塞合并」。若门闸红，spec/ameba 被 skip，PR 反而能在没有
-  # spec 的情况下合入。所以每个可能失败的步骤都必须 continue-on-error。
-  def test_gate_steps_never_fail_the_job
-    jobs.dig(GATE, "steps").each do |step|
-      next unless step["uses"] || step["run"]
-      # 非 PR 短路步骤只是一句 echo，不可能失败，不必加 continue-on-error。
-      next if step["name"].to_s.include?("Not a pull request")
+  # 门闸现在是真判定：脚本判出 actionable 时 job 必须变红，下游矩阵才不跑。
+  # 所以等待步骤绝不能带 continue-on-error——那会把「有问题」吞成「照常跑」。
+  def test_wait_step_is_not_masked
+    refute_equal true, wait_step["continue-on-error"],
+      "等待步骤一旦 continue-on-error，判出整改也会被吞成 success"
+  end
 
-      assert_equal true, step["continue-on-error"],
-        "步骤 #{step["name"].inspect} 失败会让下游必检被 skip，进而可能不阻塞合并"
-    end
+  # 门闸会红，靠「加进必检」保证 skip 不等于放行。
+  # GitHub 文档：依赖失败 job 的 job 会被 skipped 且可能不阻塞合并。
+  # 因此这份契约必须与分支保护同步，docs 是它的记录处。
+  def test_gate_is_documented_as_required_check
+    # 必检 contexts 留在 development-workflow.md §4，门闸细节搬到了 pr-gate.md。
+    doc = File.read(File.join(ROOT, "docs/design/process/development-workflow.md"), encoding: "UTF-8")
+    gate_doc = File.read(File.join(ROOT, "docs/design/process/pr-gate.md"), encoding: "UTF-8")
+
+    assert_includes doc, GATE,
+      "必检 contexts 里必须记录 #{GATE}，否则门闸变红时下游 skip 会被当成放行"
+    assert_includes gate_doc, "必检",
+      "pr-gate.md 要说明「门闸自身必须是必检」这条前提"
+  end
+
+  # 门闸要贴整改清单评论，必须有 PR 写权限；其余仍是只读。
+  def test_gate_can_write_pr_comments
+    perms = jobs.dig(GATE, "permissions") || {}
+    assert_equal "write", perms["pull-requests"], "贴整改清单评论需要 PR 写权限"
+    assert_equal "read", perms["contents"], "门闸不需要写代码"
+    assert_equal "read", perms["checks"], "门闸只需读 check run"
   end
 
   def test_gate_short_circuits_on_non_pull_request
@@ -122,9 +137,10 @@ class CiWorkflowTest < Minitest::Test
   def test_wait_step_has_its_own_timeout
     step = wait_step
     refute_nil step["timeout-minutes"], "等待步骤必须声明 timeout-minutes"
-    assert_equal true, step["continue-on-error"], "超时被杀时也不能让 job 变红"
+    # 超时被杀时 job 会红（这是新语义：门闸没判定完就不该放行下游）。
+    refute_equal true, step["continue-on-error"], "超时不能被吞成 success"
 
-    # 步骤超时要大于脚本等待，否则脚本的 fail-open 永远来不及触发。
+    # 步骤超时要大于脚本等待，否则脚本自己的 fail-open 永远来不及触发。
     assert_operator step["timeout-minutes"] * 60, :>, AwaitReview::DEFAULT_TIMEOUT_SECONDS
     assert_operator step["timeout-minutes"], :<, jobs.dig(GATE, "timeout-minutes"),
       "步骤超时必须小于 job 超时，才能在 job 被杀前先落地"
@@ -150,8 +166,13 @@ class CiWorkflowTest < Minitest::Test
   # --- 权限与钉版 ---
 
   def test_gate_permissions_are_minimal
-    assert_equal({"contents" => "read", "checks" => "read"}, jobs.dig(GATE, "permissions"),
-      "门闸只读代码与 check run，不需要写权限")
+    perms = jobs.dig(GATE, "permissions")
+    # 写权限仅限贴评论；代码与 check run 都是只读。
+    assert_equal "read", perms["contents"]
+    assert_equal "read", perms["checks"]
+    assert_equal "write", perms["pull-requests"]
+    assert_equal %w[checks contents issues pull-requests].sort, perms.keys.sort,
+      "门闸不该申请多余权限"
   end
 
   def test_top_level_permissions_stay_read_only

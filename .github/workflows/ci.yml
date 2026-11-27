@@ -88,23 +88,24 @@ jobs:
 
           echo "Changed files:" && printf '%s\n' "$changed"
 
-  # 「先 review，再跑 CI」的顺序门闸。
+  # 「先 review，再跑 CI」的门闸：审查没跑完不跑矩阵；审查提出整改项也不跑。
   #
-  # 动机：原先 CodeRabbit 与三平台矩阵同时起跑，矩阵 1-2 分钟就绿，审查还没出结论，
-  # 于是按绿灯推进（auto-merge 甚至直接合），收到意见后再推 commit，一整轮矩阵白烧。
-  # 把审查摆到前面，"要改什么"在烧掉三个平台之前就暴露。
+  # 动机：原先 CodeRabbit 与矩阵并行，矩阵 1-2 分钟就绿、审查要 5-7 分钟
+  # （实测 PR #230/#231/#237/#238），实现方按绿灯推进、收到意见再推 commit，
+  # 一整轮三平台白烧。更糟的是先跑完才发现要改，等于把 runner 烧在废稿上。
   #
-  # 判定与放行规则见 tools/await_review.rb；核心是 fail-open：审查方不审 draft、
-  # 按 path_filters 全跳过、服务中断、接口抖动时一律放行，绝不让顺序门闸卡死 PR。
+  # 判定逻辑见 tools/await_review.rb。本 job 现在是**真判定**：脚本返回非 0
+  # 时 job 红，下游 spec / ameba 不跑。
   #
-  # 所有步骤一律 `continue-on-error: true`，让本 job 恒为 success。理由见
-  # tools/await_review.rb 头注释：GitHub 文档明确写着「依赖失败 job 的 job 会被
-  # skipped 且可能不阻塞合并」，若门闸把自己搞红，spec / ameba 会跟着 skip，
-  # PR 反而能在没有 spec 的情况下合入——门闸省 runner 的同时放走了一个真门禁。
-  # 这里宁可退化成「照常跑矩阵」。
+  # 为什么敢让它红（此前口径正相反）：GitHub 文档写明「依赖失败 job 的 job 会
+  # 被 skipped 且可能不阻塞合并」。所以只有把 await-review 本身加进分支保护的
+  # 必检清单，skip 才不会变成「放行」。仓库已把它设为必检（见
+  # docs/design/process/development-workflow.md §4 的必检 contexts）。
+  # 若这道必检被移除，请同时把下面的 continue-on-error 改回 true——
+  # 否则矩阵被 skip 而 PR 仍可能合入，等于绕过 spec/ameba。
   #
   # 非 PR 事件（push:main / workflow_dispatch）没有待审对象，job 直接成功：
-  # 这里不能用 job-level `if` 跳过，needs 视 skipped 为不满足，下游矩阵会跟着 skip。
+  # 这里不能用 job-level `if` 跳过，needs 视 skipped 为不满足，下游会跟着 skip。
   await-review:
     name: await-review
     runs-on: ubuntu-latest
@@ -115,6 +116,9 @@ jobs:
     permissions:
       contents: read
       checks: read
+      # 整改清单评论要写在 PR 上；只在判定出问题时用。
+      pull-requests: write
+      issues: write
     steps:
       - name: Not a pull request
         if: github.event_name != 'pull_request'
@@ -122,7 +126,6 @@ jobs:
 
       - name: Checkout
         if: github.event_name == 'pull_request'
-        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
@@ -132,7 +135,6 @@ jobs:
       # 刻意不抽 composite action——它是门闸的启动路径，少一层间接更好查。
       - name: Select preinstalled Ruby
         if: github.event_name == 'pull_request'
-        continue-on-error: true
         shell: bash
         run: |
           want="$(cat .ruby-version)"
@@ -150,7 +152,7 @@ jobs:
           done
 
           if [ -z "$best" ]; then
-            echo "::warning::镜像未预装 Ruby >= $want_minor（pin $want），门闸跳过、矩阵照常跑"
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want），门闸无法判定"
             exit 1
           fi
           echo "$best/bin" >> "$GITHUB_PATH"
@@ -158,10 +160,9 @@ jobs:
 
       - name: Await review on the head commit
         if: github.event_name == 'pull_request'
-        continue-on-error: true
         # 脚本自己会 fail-open，但它只在两次轮询之间检查 deadline，
-        # 拦不住一次挂住的 gh 调用。步骤级超时兜底：超时被杀后
-        # continue-on-error 仍让 job success，矩阵照常起跑。
+        # 拦不住一次挂住的 gh 调用。步骤级超时兜住这种情形：超时被杀
+        # 算 job 失败，但那时 gh 已经挂死，宁可让门闸红一次也不占着队列。
         timeout-minutes: 16
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
