@@ -8,6 +8,7 @@
 src/platform/
   cli/                     # 命令行入口（setup 初始化 / gateway 起 / 账号管理 / 审批）
   config/                  # 配置加载、schema（宏生成账号样板与校验，§4.2）；reload 管线（先验后换+Atomic 换引用，§11）；setup 事务写入
+                           # paths.cr：~/.sebas / SEBAS_HOME 与配置内相对路径解析（#274，待实现）
   bus/                     # 事件总线：有界 Channel + 账号上下文路由
   supervisor/              # 账号监督器：fiber-per-account、退避重连、健康上报
   store/                   # SQLite(WAL) 持久层：会话/任务/账本/审批 + FTS5

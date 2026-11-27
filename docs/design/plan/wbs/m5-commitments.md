@@ -1,8 +1,8 @@
-# development-plan M5 · 持久意图、唤醒与提醒闭环（22–36 pd）
+# development-plan M5 · 持久意图、唤醒与提醒闭环（23–38 pd）
 
 > 导航：[设计总览](../../design.md) ｜ [文档索引](../../README.md) ｜ [计划总览](../../development-plan.md) ｜ 上一节：[M4](m4-fork-join.md) ｜ 下一节：[M6](m6-calendar-mirror.md)
 
-### M5 · 持久意图、唤醒与提醒闭环——估时合计 22–36 pd（2026-11-20 追加，v0.3.0）
+### M5 · 持久意图、唤醒与提醒闭环——估时合计 23–38 pd（2026-11-20 追加，v0.3.0）
 
 > 依据：[proposals/commitments-calendar-integration.md](../../proposals/commitments-calendar-integration.md) §1–§5、§8–§9（提案已随 PR #61 合入 main）。本节只做工作包、依赖、估时与验收；**不新造设计决策**——语义有变更回写提案与 design.md，不在本计划内定。
 > 期定位：把 cron 从「用户产品层」降到「唤醒基础设施层」（提案 §5），新增 Commitment/Checkpoint/Reminder/NotificationDelivery 领域对象与持久 WakeSchedule/Occurrence/Run 链路。**本期不含任何外部日历/TODO 接入**（M6/M7 承接），也不做 tombstone 式 UI。
@@ -28,6 +28,16 @@
   - 三类边界用例各给确定期望值，不接受文档描述式验收：①春季缺口（`America/New_York` 2026-03-08 02:30 不存在）→ 拒绝该本地时刻并返回「需用户选择」错误码；②秋季重复（同日 2026-11-01 01:30 出现两次：先 EDT `−04:00`、后 EST `−05:00`）→ 取**第一次，即 UTC 偏移较大者 `−04:00`**（对应较早的 UTC 时刻），并在对象上标注 `ambiguous_local_time`；判定式写成「比较两候选的 UTC 时刻，取较早者」，不得写成「偏移较小者」——`−05:00` 数值更小但对应第二次；③全天跨时区（`Asia/Shanghai` 建全天 `DATE`，以 `America/Los_Angeles` 读取）→ 仍为同一 `DATE`，不发生日期漂移。另：表草案覆盖 M5.1 全部仓储字段，无悬空外键。
 - 说明：模块与 spec 由本包交付（不另设包、不外推到 M5.1）。**口径统一以本包验收为准**，B.3「M5–M7 期门禁口径」与 M5 期门禁头的表述与之冲突时按本条读。[推演]
 - 风险：时区规则依赖 tzdata 更新——首版以「显式拒绝无法表示的本地时刻并要求用户选择」替代自动猜测。[推演]
+
+**M5.0-WP3 `~/.sebas` / `SEBAS_HOME` 路径约定与测试主目录隔离**（1–2 pd，2026-11-27 追加）
+- 目标：统一配置与持久数据的启动路径，使直接运行二进制和服务管理器启动不依赖偶然的工作目录。
+- 范围：新增 `src/platform/config/paths.cr`；解析 `SEBAS_HOME > ~/.sebas`，默认配置 `<home>/config.yaml`，省略 `data_dir` 时为 `<home>/data`；显式 `--config` 不改 `home`，显式相对 `data_dir`、`persona_file` 与 `plugins.dir` 相对实际配置目录；空白环境变量、缺配置与受限旧 CWD 配置回退按提案执行。根目录与数据路径启动时固定，热更新不重读环境变量或换库。
+- 交付物：路径 resolver + CLI/Loader/Gateway/插件目录接线 + 跨平台 spec + README/CLI help/示例配置/§3.4、§13 路径说明。`setup` 实现另在 #145 消费同一 resolver，本包不实现 setup 或 dotenv。
+- 依赖：无代码级前置；可独立于承诺与提醒链实施。**本包不参与 M5.0 期级语义闸**：WP1/WP2 的文档评审与 M5.1 开工闸不受 WP3 进度影响，反之 WP3 也不因 M5.0 语义定稿而完工。
+- 验收：覆盖默认值、`SEBAS_HOME` 覆盖、显式 CLI/YAML 优先级、相对与绝对路径、`~`、空白值、含空格路径、旧布局警告与热更新稳定；临时目录上真实初始化 gateway。全部 spec 显式隔离 `HOME` / `SEBAS_HOME`，不得读写真实 `~/.sebas`，环境恢复与无越界写入有断言。
+- persona 边界：现状 `persona_file` 只有 loader 悬空引用校验，没有运行期读取消费者；本包只统一校验基准，不声称人格加载链路随之生效。
+- 风险：旧 CWD 配置省略 `data_dir` 时，新默认数据位置与旧配置位置不同；回退警告须同时显示两者，绝不自动搬移数据库或 vault。
+- 关联：Proposal #274（accepted-design）；设计契约 [proposals/sebas-home.md](../../proposals/sebas-home.md)。
 
 **M5.1-WP1 store schema 版本化与增量迁移**（1–2 pd）
 - 目标：为后续新表提供可演进底座（现状只有幂等全量建表，无版本概念）。
@@ -129,9 +139,9 @@
 
 **M5.4-WP1 M5 门禁与 v0.3.0 发布**（1–2 pd）
 - 目标：期收口与版本落定。
-- 范围：M-gate 五项（B.3）+ 调度四条；`docs/design/review/m5-gate.md` 记录证据与边界；tag `v0.3.0` 触发既有 release workflow。
+- 范围：M-gate 五项（B.3）+ 调度四条；`docs/design/review/m5-gate.md` 记录证据与边界；tag `v0.3.0` 触发既有 release workflow；路径追加项随 M5.0-WP3 验收，包含三平台主目录隔离证据。
 - 交付物：m5-gate.md + tag。
-- 依赖：M5.3 门禁。
-- 验收：提案 §9 首闭环第 1/2/4/5 条逐条有可复现证据；Go/No-Go 明确。
+- 依赖：M5.3 门禁 + M5.0-WP3。
+- 验收：提案 §9 首闭环第 1/2/4/5 条逐条有可复现证据；#274 默认目录、环境覆盖、显式路径优先级及测试不接触真实主目录均有证据；Go/No-Go 明确。
 - **冻结口径裁断（CodeRabbit 问：仅冻结态交付是否挡 v0.3.0）**：**不挡**——若 M5.2-WP2 因 E.1#8 未满足只交付「Source 扩展 + 接口冻结断言」形态（无真实联动），v0.3.0 仍可发，但须同时满足三条件，缺一即 No-Go 改判：①m5-gate.md 单列「未并入 admission」项并写明影响面（提醒独立通道，不与用户消息共用批次与字节预算）；②产品面（Today 与提醒）显式标注该限制，不呈现「已与用户消息统一调度」；③该限制条目同步记入 design.md §15.1。**不接受的形态**：把冻结断言当联动证据、或把「提醒走独立通道」写成已达成的设计目标。
 - 风险：M5.2-WP2 若受调度轨阻塞，门禁须显式列「未验证项」而非默认通过。[推演]
