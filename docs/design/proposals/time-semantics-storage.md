@@ -73,7 +73,12 @@
    - **有效实例**（有 UTC 时刻）：slot = `inst:<utc>`——来源无关：一次性 DTSTART、RRULE 展开、RDATE 附加共用同一文法；RRULE 与 RDATE 各自产出的同一 UTC 时刻天然去重，不再因来源前缀不同而重复入库；
    - **缺口实例**（无 UTC 时刻）：slot = `gap:<wall>@<tz>`——按原墙钟 + IANA 时区判身份（来源无关；同一缺口墙钟在任意窗口重展开都映射到同一 slot）。
    生成窗口只决定「哪些实例被展开」，不参与 slot 取值。
-5. **缺口与歧义 occurrence**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。缺口实例 slot 统一为 `gap:<wall>@<tz>`（§4.4，与来源和窗口无关；如 `gap:2026-03-08T02:30:00@America/New_York`）。`invalid` 不静默跳过，须用户选择：改时间/换时区 → 按新值重解析转 `pending`（slot 换为 `inst:<新utc>`）；**跳过 → 置 `skipped` 并保留原墙钟（`due_at` 保持空，不伪造 UTC 时刻）**。
+5. **缺口与歧义 occurrence**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。缺口实例 slot 统一为 `gap:<wall>@<tz>`（§4.4，与来源和窗口无关；如 `gap:2026-03-08T02:30:00@America/New_York`）。`invalid` 不静默跳过，须用户选择：**改时间/换时区 → 原 gap slot 置一条 `skipped` 墓碑行（保留原墙钟，占住 slot），新解实例以 `inst:<新utc>` 另起一行转 `pending`**——墓碑使重叠窗口重展开命中既有 slot 而不再复活用户已处理的原缺口；**跳过 → 本行直接置 `skipped` 并保留原墙钟（`due_at` 保持空，不伪造 UTC 时刻）**。
+6. **tzdata 变化对已持久化 occurrence 的失效与对账**（保证同一墙钟实例最多一次唤醒）：
+   - **展开时记录来源墙钟**：所有有效实例行写入 `source_wall` + `source_tz`（展开器手握墙钟值，落列即可）——使任一行都可独立重解析，不依赖 slot 反推；
+   - **失效触发**：§3 的 tzdata 版本变更检测点同步标记受影响 schedule 为「occurrence 对账中」，对账完成前该 schedule 的未完成 occurrence 暂停唤醒（schedule 级 stale，同 §3 缓存锚口径）；
+   - **对账规则**：对每条未完成（pending/claimed）行按 `source_wall`+`source_tz` 现算新 UTC 时刻——与旧 `due_at` 一致则不动；不一致则**旧行置 `superseded`**（状态集合见 §5，调度器只取 pending/claimed，旧时刻不再触发），新时刻由下一窗口展开以 `inst:<新utc>` 正常生成；
+   - 对账由启动对账或该 schedule 下次评估执行（§3 重算路径同源），不在查询热路径。
 
 ## 5. 首版表结构草案（M5.1 六表）
 
@@ -177,13 +182,16 @@ WHEN NEW.state IN ('scheduled','sent','seen') AND EXISTS (
 BEGIN
   SELECT RAISE(ABORT, '不变式 1：同一意图已存在未决投递（scheduled/sent/seen 且无替代者）');
 END;
--- 触发器 2a：NEW 自身已有替代者（无论替代者处于何种状态）时，不得转入未决态。
+-- 触发器 2a：从非未决态转入未决态时，NEW 自身已有替代者（无论替代者处于
+-- 何种状态）则拒绝。已在未决态内部的迁移（如 sent→seen 迟到回执）不增加
+-- 未决数量，放行记录——故限定 OLD.state 不在未决集合内才检查。
 -- 独立触发器而非 invariant1_update 的 WHEN 条件——放进 WHEN 只会「抑制触发」
 -- （条件为假 → 不检查 → 更新照常成功），而这里需要的是「拒绝更新」。
 -- 例：A、B(supersedes=A) 均 unknown，A→sent 被本触发器拦下。
 CREATE TRIGGER IF NOT EXISTS trg_deliveries_no_pending_with_successor
 BEFORE UPDATE OF state, supersedes, commitment_id ON notification_deliveries
 WHEN NEW.state IN ('scheduled','sent','seen')
+  AND OLD.state NOT IN ('scheduled','sent','seen')
   AND EXISTS (SELECT 1 FROM notification_deliveries s
               WHERE s.supersedes = NEW.id)
 BEGIN
@@ -236,11 +244,13 @@ CREATE TABLE IF NOT EXISTS occurrences (
   id            TEXT PRIMARY KEY,             -- §4 稳定身份：schedule_id + slot
   schedule_id   TEXT NOT NULL REFERENCES wake_schedules(id),
   slot          TEXT NOT NULL,                -- 实例身份（§4.4）：inst:<utc> / gap:<wall>@<tz>，与窗口无关
-  due_at        TEXT,                         -- 本次唤醒 UTC 时刻（排序键）；state='invalid' 时可为空
+  due_at        TEXT,                         -- 本次唤醒 UTC 时刻（排序键）；缺口来源行可为空
   state         TEXT NOT NULL CHECK (state IN
-                  ('pending','claimed','done','skipped','merged','invalid')),
-  original_wall TEXT,                         -- §4.5：缺口实例的原始墙钟（不可解析时的持久化恢复信息）
+                  ('pending','claimed','done','skipped','merged','invalid','superseded')),
+  original_wall TEXT,                         -- 缺口实例的原始墙钟（不可解析时的持久化恢复信息）
   original_tz   TEXT,                         -- 缺口实例的 IANA 时区
+  source_wall   TEXT,                         -- 有效实例的来源墙钟（展开时记录，tzdata 对账重解析用，§4.6）
+  source_tz     TEXT,                         -- 有效实例的来源时区
   claimed_by    TEXT,                         -- 原子 claim：持有者
   claim_expires_at TEXT,                      -- lease 到期（可回收）
   generated_for TEXT,                         -- 生成窗口标记（补跑/合并审计用）
