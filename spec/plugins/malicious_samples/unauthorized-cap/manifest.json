@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "unauthorized-cap",
+  "version": "1.0.0",
+  "api_version": "1",
+  "hooks": [
+    "memory.remember.before"
+  ],
+  "capabilities": [
+    "hooks.sensitive"
+  ]
+}

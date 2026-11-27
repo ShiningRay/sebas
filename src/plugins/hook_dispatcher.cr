@@ -240,8 +240,9 @@ module Sebas
               return revalidated(hook, sub, replacement) || Verdict.allow(current)
             end
           end
-          if transformable && value && !value.as_h?.nil?
-            # 裸返回值 = 替换后的 payload（DSL modify 语义），宿主重新校验
+          if transformable && value
+            # 裸返回值 = 替换后的 payload（DSL modify 语义），宿主重新校验——
+            # 非对象形态（如裸标量）在重校验处按 invalid_result deny
             replacement = JSON::Any.new(value.raw)
             revalidated(hook, sub, replacement) || Verdict.allow(current)
           else
