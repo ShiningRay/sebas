@@ -64,6 +64,18 @@ module SebasAgents
             action: invalid(observed, "存在 #{in_progress.length} 张执行中 issue，超过容量 #{snapshot.capacity}（status 为 In progress/In review）：#{in_progress.map(&:number).join("、")}"))
         end
 
+        # F15 先于 settled 判定：merging 记录即使 PR 已合并也要走自己的对账
+        # （要抓目标分支被改写、PR 关闭未合并这两种），否则会被 settled 静默吞掉。
+        # 记录停在 merging 说明 coordinator 在合并步骤中途崩溃：
+        # - PR 已合并：目标分支不是 main → 人工；否则等 Evidence 升级后 unclaim
+        # - PR 仍 open：从归属校验与 --pre 重来（不沿用崩溃前的核验结论）
+        merging = owned_records.find { |data| data["phase"] == "merging" }
+        if merging
+          resume = reconcile_merging(merging, snapshot, observed)
+          return Routing.new(observed: observed, milestones: milestones, leases: [],
+            action: resume) if resume
+        end
+
         # 已合并待释放：PR 已合并、或卡已以 completed 关闭，但本地记录还没走到
         # released。这是「合并 → unclaim」之间的正常状态，不是所有权冲突——
         # 判成 orphan 会让另一张在途卡（B）连带 invalid_plan。
@@ -155,6 +167,37 @@ module SebasAgents
         Routing.new(observed: observed, milestones: milestones, leases: leases, action: nil)
       end
 
+      # F15 的对账：返回 Action 或 nil（记录不自洽，交给后续通用分支）。
+      def reconcile_merging(record, snapshot, observed)
+        number = record["issue"].to_i
+        pr_number = record["pr"].to_i
+        pr = pr_number.positive? ? snapshot.pull_request(pr_number) : nil
+
+        if pr.nil?
+          return action("invalid_plan", observed,
+            "## #{number} 的记录为 merging 但找不到 PR ##{pr_number}：需人工核对远端后再恢复",
+            issue: number)
+        end
+
+        if pr.merged?
+          unless pr.base.to_s.empty? || pr.base == "main"
+            return action("invalid_plan", observed,
+              "## #{number} 的 PR ##{pr_number} 已合并但目标分支是 #{pr.base.inspect}，" \
+              "可能未进入 main，须人工核对",
+              issue: number)
+          end
+          return action("release_ready", observed,
+            "## #{number} 的 PR ##{pr_number} 已合并（崩溃前已完成）：等 Evidence 升级后跑 unclaim",
+            issue: number)
+        end
+
+        return nil if pr.open?
+
+        action("invalid_plan", observed,
+          "## #{number} 的记录为 merging 但 PR ##{pr_number} 是 #{pr.state} 且未合并：需人工裁决",
+          issue: number)
+      end
+
       # 记录已进入「等释放」态：PR 已合并，或卡已以 completed 关闭。
       # 两种都说明工作已完成，只是还没 unclaim；不该因此拖累其他租约。
       def settled_record?(data, snapshot)
@@ -215,6 +258,18 @@ module SebasAgents
         end
 
         if pr
+          # 越界检测（§6 / F14）：PR 变更文件必须落在租约 scope 内。scope 是
+          # 调度预算，靠事后检测兜底——越界即停本卡，不继续推进合并。
+          # 只在「已取回文件清单」时判：快照未取 files 时按不可判定处理，
+          # 由 verify merge --pre 的路径检查兜住，不在这里伪造结论。
+          unless pr.files.nil?
+            lease_scope = Policy::Scope.lease_of(issue)[:scope]
+            if (violation = Policy::Scope.violations(pr.files, lease_scope))
+              return LeaseAction.new(issue: number, action: "needs_human", pr: pr.number,
+                owned: owned, reason: "##{number} 越界（#{violation}）：本租约暂停，等 Maintainer 裁决")
+            end
+          end
+
           classified = classify_pr(pr, issue, observed)
           return LeaseAction.new(issue: number, action: classified.action, pr: pr.number,
             owned: owned, reason: classified.reason)

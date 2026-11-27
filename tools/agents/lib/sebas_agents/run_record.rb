@@ -151,6 +151,30 @@ module SebasAgents
       FileUtils.rm_f(@path)
     end
 
+    # 心跳（§F5）：worker 存活证明。只写本卡记录，不动其他租约。
+    def heartbeat!(now: Time.now.utc)
+      data = load
+      return nil if data.nil? || data.empty?
+
+      save(data.merge("last_heartbeat_at" => now.iso8601))
+    end
+
+    # 心跳是否过期（§F5）。缺 last_heartbeat_at 时不判过期：老记录没有心跳
+    # 字段，按过期处理会让升级当次的每张在途卡都被判死。
+    # 判据只有时间——pid 在跨机/容器场景不可靠，不作为唯一依据。
+    def heartbeat_expired?(ttl_seconds, now: Time.now.utc)
+      data = load
+      return false if data.nil? || data.empty?
+
+      stamp = data["last_heartbeat_at"]
+      return false if stamp.to_s.empty?
+
+      Time.iso8601(stamp.to_s) < now - ttl_seconds
+    rescue ArgumentError
+      # 时间戳非法：当作过期处理（fail-closed），交恢复路径核对。
+      true
+    end
+
     private
 
     def read_v2(path)

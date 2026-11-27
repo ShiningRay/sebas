@@ -97,6 +97,29 @@ module SebasAgents
         {issue: issue.number, scope: scope}
       end
 
+      # 越界检测（§6 §F14）：PR 变更文件必须落在租约 scope 内。
+      # scope 是调度预算、不是沙箱——这里只做事后检测，越界即停本卡。
+      #
+      # 缺失一律 fail-closed：PR 未带 files（快照未取）或租约缺 scope 时
+      # 都返回「不可判定」，调用方按越界处理。理由与 §6.2 同：安全边界不押在
+      # 「没看到就等于没违规」上。
+      # 返回 nil（未越界）或错误描述字符串。
+      def violations(files, lease_scope)
+        return "租约未声明 scope，无法判定越界" if lease_scope.nil?
+        return "PR 变更文件清单未取回，无法判定越界" if files.nil?
+
+        outside = Array(files).filter_map do |file|
+          path = file.is_a?(Hash) ? (file["filename"] || file[:path]) : file
+          next if path.nil?
+
+          path unless lease_scope.any? { |prefix| path.start_with?(prefix) }
+        end
+        return nil if outside.empty?
+
+        "变更文件不在 scope 内：#{outside.first(5).join("、")}" \
+          "#{outside.length > 5 ? " 等 #{outside.length} 个" : ""}"
+      end
+
       def leases_of(issues)
         Array(issues).map { |issue| lease_of(issue) }
       end
