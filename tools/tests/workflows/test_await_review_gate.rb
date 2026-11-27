@@ -32,12 +32,15 @@ class AwaitReviewGateTest < Minitest::Test
 
   # 同一 head 上重审时旧的 review 记录不会消失。取最新一条，不求和：
   # 求和会让 actionable 数单调不减，整改完也回不到 0（PR #282 实测 1+2=3）。
+  #
+  # 数据刻意让两个排序键**反向**：最新的那条 id 最小、且排在数组首位。
+  # 若实现改成按 id 或按数组顺序取，选出来的就不是这条，断言会红。
   def test_latest_review_wins_over_earlier_rounds
     stop_sleeping
     reviews = [
-      actionable_review(count: 1, submitted_at: "2026-01-01T00:00:00Z", id: 1),
-      review(body: "", submitted_at: "2026-01-01T00:00:05Z", id: 2),
-      actionable_review(count: 2, submitted_at: "2026-01-01T00:00:10Z", id: 3)
+      actionable_review(count: 2, submitted_at: "2026-01-01T00:00:10Z", id: 1),
+      review(body: "", submitted_at: "2026-01-01T00:00:05Z", id: 9),
+      actionable_review(count: 1, submitted_at: "2026-01-01T00:00:00Z", id: 99)
     ]
 
     assert_equal 1, run_with([success_run], reviews: reviews)
