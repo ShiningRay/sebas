@@ -81,18 +81,22 @@ class AwaitReviewRerunWorkflowTest < Minitest::Test
     assert_includes text, "在等待窗口内未完成", "等不到要降级为 warning"
   end
 
-  # 重跑要有明确的先决条件：门闸在 review 提交之前就判完了。否则默认已读到，
-  # 不必多烧一轮。取不到门闸时刻时按「没读到」处理，宁严勿松。
-  def test_only_reruns_when_the_gate_completed_before_the_review
-    assert_includes text, "gate_at=", "必须查门闸完成时刻"
-    assert_includes text, "submitted=", "必须查 review 提交时刻"
-    assert_includes text, "视为已读到，不重跑", "门闸晚于 review 时不该重跑"
+  # 重跑要有明确的先决条件。判据必须是**门闸 job 的启动时刻**（started_at），
+  # 不是完成时刻：completed_at 晚于 fetch_reviews，证明不了「那时已读到」。
+  # 提交不晚于启动 => 必然读到；落在 [started_at, completed_at] 内 => 不确定，
+  # 保守重跑。取不到时刻时同样按未读处理。
+  def test_rerun_requires_the_review_to_be_younger_than_the_gate_start
+    assert_includes text, "started_at=", "判据必须用门闸启动时刻"
+    assert_includes text, "submitted=", "必须取 review 提交时刻"
+    assert_includes text, "必然读到，不重跑", "早于启动必须短路"
+    refute_includes text, "gate_at=", "不能再用 completed_at 当判据"
   end
 
-  # 防循环：同一 run 重跑有上限，超了交人工，不能空转烧 runner。
-  def test_rerun_is_bounded
+  # 防循环：同一 run 重跑有上限；查不到 attempt 时不默认成 1（那会让上限失效）。
+  def test_rerun_is_bounded_and_missing_attempt_blocks
     assert_includes text, "run_attempt", "上限要按 run_attempt 记"
-    assert_includes text, "不再自动重跑", "超过上限必须停手并 warning"
+    assert_includes text, "无法防循环", "查不到 attempt 必须交人工"
+    refute_includes text, '"${attempt:-1}"', "不能把未知次数默认成 1"
   end
 
   def test_closed_pull_requests_are_skipped
@@ -132,5 +136,157 @@ class AwaitReviewRerunWorkflowTest < Minitest::Test
     group = workflow["concurrency"]["group"].to_s
     assert_includes group, "await-review-rerun"
     refute_equal "ci-${{ github.ref }}", group
+  end
+
+  # bash 允许变量名含非 ASCII，`$foo，` 会把中文标点并入变量名，`set -u` 下报
+  # unbound。这个坑在本 PR 里踩了两次（`$submitted，`、`$started_at，`），
+  # 其中一处只在真实执行时才暴露。改为机械扫描：任何 CJK 相邻的变量引用
+  # 都必须写成 `${foo}`。
+  def test_variables_adjacent_to_cjk_use_braces
+    offenders = []
+    text.each_line.with_index(1) do |line, no|
+      next unless line.include?("$")
+      line.scan(/\$([A-Za-z_][A-Za-z0-9_]*)(?=[^\x00-\x7f])/) { offenders << "#{no}: #{Regexp.last_match(0)}" }
+    end
+    assert_empty offenders, "这些变量后面紧跟非 ASCII 字符，必须写成 ${var}：\n#{offenders.join("\n")}"
+  end
+
+  # 行为测试：把两个 step 的脚本抽出来，stub 掉 `gh` 与 `sleep`，断言**实际**
+  # 发没发 POST、退出码与 warning 文案。静态断言区分不了时间比较方向写反、
+  # 上限差一这类错误——只有真跑一遍才行。
+  # ---------------------------------------------------------------------------
+
+  def step_script(name_fragment)
+    step = workflow.dig("jobs", "rerun", "steps").find { |s| s["name"].to_s.include?(name_fragment) }
+    refute_nil step, "找不到步骤：#{name_fragment}"
+    step["run"]
+  end
+
+  def rerun_script = step_script("Rerun the review")
+
+  # 跑 rerun 步骤：gh 的响应由 scenario 决定，返回 [stdout, exit_status]。
+  # attempt 用 `run_attempt` 输出，started/done 用 job 的 started_at/completed_at。
+  def run_rerun(scenario)
+    dir = Dir.mktmpdir("await-rerun")
+    bindir = File.join(dir, "bin")
+    Dir.mkdir(bindir)
+
+    jobs_start = scenario[:jobs_fails] ? 'echo "boom" >&2; exit 1' : "echo '#{scenario[:started_at]}'"
+    jobs_done = scenario[:jobs_fails] ? 'echo "boom" >&2; exit 1' : "echo '#{scenario[:completed_at]}'"
+    File.write(File.join(bindir, "gh"), <<~SH)
+      #!/bin/bash
+      args="$*"
+      case "$args" in
+        *"/jobs?"*)
+          n=$(cat "#{dir}/jobcalls" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "#{dir}/jobcalls"
+          if [ "$n" -eq 1 ]; then
+            #{jobs_start}
+          else
+            #{jobs_done}
+          fi
+          ;;
+        *"/runs?"*)
+          #{scenario[:listing_fails] ? 'echo "boom" >&2; exit 1' : "echo '#{scenario[:listing]}'"}
+          ;;
+        *"/rerun")
+          echo "POST-RERUN" >> "#{dir}/calls"
+          ;;
+        *"/actions/runs/"*)
+          #{scenario[:attempt_fails] ? 'echo "boom" >&2; exit 1' : "echo '#{scenario[:attempt]}'"}
+          ;;
+        *) echo "" ;;
+      esac
+    SH
+    File.write(File.join(bindir, "sleep"), "#!/bin/bash\nexit 0\n")
+    File.chmod(0o755, File.join(bindir, "gh"))
+    File.chmod(0o755, File.join(bindir, "sleep"))
+
+    event = File.join(dir, "event.json")
+    File.write(event, JSON.generate(
+      "review" => { "submitted_at" => scenario[:submitted], "body" => "Actionable comments posted: 1" },
+      "pull_request" => { "head" => { "sha" => "abc123" } }
+    ))
+
+    script = File.join(dir, "step.sh")
+    File.write(script, rerun_script)
+
+    out = IO.popen(
+      { "PATH" => "#{bindir}:#{ENV.fetch('PATH')}", "REPO" => "o/r", "GH_TOKEN" => "x", "EVENT_PATH" => event },
+      ["bash", script], err: [:child, :out], &:read
+    )
+    status = $?.exitstatus
+    [out, status, File.exist?(File.join(dir, "calls"))]
+  ensure
+    FileUtils.remove_entry(dir) if dir
+  end
+
+  # 提交早于门闸启动 => 必然读到 => 不重跑，退出 0。
+  def test_review_submitted_before_gate_start_does_not_rerun
+    out, status, posted = run_rerun(
+      submitted: "2026-11-27T16:00:00Z", started_at: "2026-11-27T16:10:00Z",
+      completed_at: "2026-11-27T16:20:00Z", listing: "111 completed 1", attempt: "1"
+    )
+    assert_equal 0, status, out
+    refute posted, "提交早于启动时不该重跑；输出：#{out}"
+    assert_includes out, "必然读到，不重跑"
+  end
+
+  # 提交晚于门闸完成 => 必然没读到 => 重跑。
+  def test_review_submitted_after_gate_done_reruns
+    out, status, posted = run_rerun(
+      submitted: "2026-11-27T16:30:00Z", started_at: "2026-11-27T16:00:00Z",
+      completed_at: "2026-11-27T16:10:00Z", listing: "222 completed 1", attempt: "1"
+    )
+    assert_equal 0, status, out
+    assert posted, "提交晚于门闸完成时必须重跑；输出：#{out}"
+  end
+
+  # 提交落在门闸运行窗口内 => 读没读到不确定 => 保守重跑。
+  def test_review_inside_gate_window_reruns_conservatively
+    out, status, posted = run_rerun(
+      submitted: "2026-11-27T16:05:00Z", started_at: "2026-11-27T16:00:00Z",
+      completed_at: "2026-11-27T16:10:00Z", listing: "333 completed 1", attempt: "1"
+    )
+    assert_equal 0, status, out
+    assert posted, "窗口内提交必须保守重跑；输出：#{out}"
+  end
+
+  # 上限：第 2 次运行仍可重跑，第 3 次起停手。
+  def test_attempt_two_reruns_and_three_stops
+    _, _, posted2 = run_rerun(
+      submitted: "2026-11-27T16:30:00Z", started_at: "2026-11-27T16:00:00Z",
+      completed_at: "2026-11-27T16:10:00Z", listing: "444 completed 2", attempt: "2"
+    )
+    assert posted2, "第 2 次运行应允许重跑"
+
+    out3, status3, posted3 = run_rerun(
+      submitted: "2026-11-27T16:30:00Z", started_at: "2026-11-27T16:00:00Z",
+      completed_at: "2026-11-27T16:10:00Z", listing: "555 completed 3", attempt: "3"
+    )
+    assert_equal 0, status3, out3
+    refute posted3, "第 3 次运行必须停手；输出：#{out3}"
+    assert_includes out3, "::warning::"
+  end
+
+  # 元数据查询失败 => 不重跑、退出 0、有 warning（不能因 set -e 变红）。
+  def test_metadata_query_failure_warns_without_rerun
+    out, status, posted = run_rerun(
+      submitted: "2026-11-27T16:30:00Z", started_at: "", completed_at: "",
+      listing: "666 completed 1", attempt: "", jobs_fails: true
+    )
+    assert_equal 0, status, "查询失败不能让步骤红：#{out}"
+    refute posted, "拿不到元数据不该盲重跑"
+    assert_match(/::warning::/, out)
+  end
+
+  # 拿不到 run_attempt 时不能默认成 1（上限会失效），直接交人工。
+  def test_unknown_attempt_blocks_rerun
+    out, status, posted = run_rerun(
+      submitted: "2026-11-27T16:30:00Z", started_at: "2026-11-27T16:00:00Z",
+      completed_at: "2026-11-27T16:10:00Z", listing: "777 completed 1", attempt: ""
+    )
+    assert_equal 0, status, out
+    refute posted, "未知 attempt 不能当作第 1 次就重跑"
+    assert_includes out, "无法防循环"
   end
 end

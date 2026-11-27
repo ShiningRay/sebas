@@ -157,25 +157,47 @@ jobs:
             exit 0
           fi
 
-          # 该 run 的门闸是否在 review 提交**之前**就判完了？是则肯定没读到，
-          # 需要重跑；否则默认已读到，不必再烧一轮。取不到门闸完成时刻时按
-          # 「没读到」处理——宁可多烧一轮，也不让整改意见被静默吞掉；
-          # 下面的防循环上限会兜住这个偏保守的默认值。
-          gate_at="$(gh api "repos/$REPO/actions/runs/$completed_id/jobs?per_page=100" \
+          # 判据要比的是**门闸读取 review 的时刻**，而 job 的 completed_at 比它晚，
+          # 不能当作「读过了」的凭据（CodeRabbit 在 PR #288 指出）。设 job 区间
+          # [started_at, completed_at]，读取发生在区间内某点 F：
+          #
+          # - review 提交时刻 <= started_at：F 必然晚于提交 => 读到了，不重跑；
+          # - 提交发生在 (started_at, completed_at] 内：F 可能在提交之前（读到的是
+          #   空列表）也可能之后，**不确定，保守重跑**；
+          # - 提交晚于 completed_at：F 必然更早 => 没读到，重跑。
+          #
+          # 没有 started_at（还排队）时下一步会等它跑；取不到时刻则按「不确定」
+          # 处理，宁可多烧一轮也不让整改意见被静默吞掉——上限会兜住。
+          started_at="$(gh api "repos/$REPO/actions/runs/$completed_id/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name == "await-review") | .started_at // empty] | first // ""' 2>/dev/null || true)"
+          gate_done="$(gh api "repos/$REPO/actions/runs/$completed_id/jobs?per_page=100" \
             --jq '[.jobs[] | select(.name == "await-review") | .completed_at // empty] | first // ""' 2>/dev/null || true)"
-          if [ -n "$gate_at" ] && [ -n "$submitted" ] && [[ ! "$gate_at" < "$submitted" ]]; then
-            echo "门闸 $gate_at 不早于 review ${submitted}，视为已读到，不重跑"
+
+          if [ -z "$submitted" ]; then
+            echo "::warning::事件里读不到 review 提交时刻，无法判定是否读过，需人工确认 $sha"
             exit 0
           fi
-          echo "门闸 ${gate_at:-读取失败} 早于 review ${submitted:-读取失败}，需重判"
+          if [ -z "$started_at" ]; then
+            echo "::warning::查不到 $completed_id 里 await-review 的启动时刻，按未读处理（保守重跑）"
+          elif [[ ! "$submitted" > "$started_at" ]]; then
+            # ISO8601 UTC 定长格式，字符串比较等价于时间比较。
+            echo "review ${submitted} 不晚于门闸启动 ${started_at}，必然读到，不重跑"
+            exit 0
+          fi
+          echo "review ${submitted} 落在门闸读取不确定窗口内（门闸结束 ${gate_done:-未知}），重判"
 
           # 防循环：rerun 不产生新的 review 事件，正常不会自循环。上限按
-          # run_attempt 记（首次运行为 1，每 rerun 一次加 1），留在第 3 次之前，
-          # 即同一 head 最多自动重跑 2 轮；再多就交人工，不再空转。
+          # run_attempt 记（首次运行为 1，每 rerun 一次加 1），第 3 次起停手。
           # attempt 单独查：走过等待分支时 listing 是等待前的快照，已过期。
+          # 查询失败或字段缺失时**不默认成 1**——那会让上限形同虚设，
+          # 直接交人工（CodeRabbit 在 PR #288 第 3 轮指出）。
           attempt="$(gh api "repos/$REPO/actions/runs/$completed_id" \
             --jq '.run_attempt' 2>/dev/null || true)"
-          if [ "${attempt:-1}" -ge 3 ]; then
+          if ! [[ "$attempt" =~ ^[0-9]+$ ]]; then
+            echo "::warning::查不到 $completed_id 的 run_attempt（得到「${attempt}」），无法防循环，需人工确认 $sha"
+            exit 0
+          fi
+          if [ "$attempt" -ge 3 ]; then
             echo "::warning::run $completed_id 已是第 ${attempt} 次运行，不再自动重跑，需人工确认 $sha"
             exit 0
           fi

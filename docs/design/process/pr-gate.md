@@ -95,17 +95,19 @@ commit 脱身。
 
 重跑不是无条件触发的：
 
-| 观察到的状态 | 动作 |
+| 观察到的情况（review 提交时刻 vs `await-review` job 的 `started_at`） | 动作 |
 |---|---|
-| head 上有已完成的 run，且其 `await-review` 完成时刻**早于** review 提交时刻 | 重跑那个 run |
-| head 上有已完成的 run，但门闸完成时刻不早于 review 提交 | 视为已读到，不重跑 |
-| head 上只有进行中的 run | 有界等待（最多 150s）它结束，再按上面两行判 |
-| 等待超时 / 查不到门闸时刻 / 查不到 run | warning 交人工，不静默放行 |
-| 目标 run 已是第 3 次运行（`run_attempt >= 3`） | 不再自动重跑，warning 交人工 |
+| 提交 **不晚于** `started_at` | 必然读到，不重跑 |
+| 提交落在 `(started_at, completed_at]` 窗口内 | 读没读到不确定，**保守重跑** |
+| 提交晚于 `completed_at` | 必然没读到，重跑 |
+| head 上只有进行中的 run | 有界等待（最多 150s）它结束，再按上面三行判 |
+| 等待超时 / 取不到 `started_at` / 取不到 `submitted_at` / 查不到 run | warning 交人工，不静默放行 |
+| 目标 run 已是第 3 次运行（`run_attempt >= 3`），或取不到 `run_attempt` | 不再自动重跑，warning 交人工 |
 
-「门闸完成时刻早于 review」是重跑的唯一充分条件：门闸判完那一刻读到的
-review 列表里没有这条，这条就必然没被读过。反过来门闸晚于 review，
-说明它读到了，再跑一遍只是多烧 runner。
+判据用 `started_at` 而不是 `completed_at`：job 的完成时刻晚于门闸内部
+`fetch_reviews` 的那一刻，拿它当「读过了」的凭据会把窗口内提交的 review
+误判成已读。只有「提交早于 job 启动」才必然读到；其余情形一律偏向重跑，
+用 `run_attempt` 上限兜住多烧的代价。
 
 边界：
 
