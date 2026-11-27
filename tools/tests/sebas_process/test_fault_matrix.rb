@@ -54,7 +54,12 @@ class FaultMatrixTest < Minitest::Test
   # 租约缺 scope **不算**越界：Q4=A 的「独占容量」在认领侧生效，若这里也判
   # 越界，存量缺 scope 的租约永久 needs_human（不能开新卡也不能合并已有 PR）。
   def test_missing_lease_scope_is_not_a_violation
-    assert_nil SebasAgents::Policy::Scope.violations([{"filename" => "src/x"}], nil)
+    scope = SebasAgents::Policy::Scope
+    assert_nil scope.violations([{"filename" => "src/x"}], nil)
+    # 没有越界可判，但清单形状仍必须先校验：缺 scope 不能成为绕过 fail-closed 的后门
+    refute_nil scope.violations(nil, nil), "缺 scope 也要拒缺清单"
+    refute_nil scope.violations({}, nil), "缺 scope 也要拒非数组"
+    refute_nil scope.violations([{}], nil), "缺 scope 也要拒解析不出路径的条目"
   end
 
   # 非数组输入不能被 Array() 静默折成空数组：{} 会变成 [] = 零变更 = 放行。
