@@ -142,6 +142,41 @@ class FaultMatrixTest < Minitest::Test
     assert_includes result.invalid_reason, "人工核对"
   end
 
+  # base 缺失不构成放行理由：目标分支是安全边界，缺失即不可判定。
+  def test_merging_record_with_missing_base_is_invalid
+    snapshot = snap(
+      issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
+      prs: [pr(state: "MERGED", merged: true, base: nil)],
+      capacity: 2
+    )
+    result = view(snapshot, [{"issue" => 1, "phase" => "merging", "branch" => "feat/1", "pr" => 50}])
+    assert_equal "invalid_plan", result.next_action
+    assert_includes result.invalid_reason, "不可判定"
+  end
+
+  # 多条 merging 记录必须逐条对账：只取第一条会漏掉后面的那条。
+  def test_second_merging_record_is_reconciled_when_first_is_inconclusive
+    snapshot = snap(
+      issues: [
+        issue(1, body: automation(scope: ["src/store/"]), status: "In progress"),
+        issue(2, body: automation(scope: ["src/keys/"]), status: "In progress")
+      ],
+      prs: [
+        # 第一条：PR 仍 open → reconcile_merging 返回 nil，不能就此结束
+        pr(number: 50, issue: 1, files: [{"filename" => "src/store/x.cr"}]),
+        # 第二条：已合并 → 必须被对账到
+        pr(number: 51, issue: 2, state: "MERGED", merged: true, files: [{"filename" => "src/keys/y.cr"}])
+      ],
+      capacity: 2
+    )
+    result = view(snapshot, [
+      {"issue" => 1, "phase" => "merging", "branch" => "feat/1", "pr" => 50},
+      {"issue" => 2, "phase" => "merging", "branch" => "feat/2", "pr" => 51}
+    ])
+    assert_equal "release_ready", result.next_action, "第二条 merging 记录不能被漏掉"
+    assert_equal 2, result.next_issue
+  end
+
   def test_merging_record_with_closed_unmerged_pr_is_invalid
     snapshot = snap(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],

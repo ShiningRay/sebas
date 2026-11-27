@@ -69,11 +69,14 @@ module SebasAgents
         # 记录停在 merging 说明 coordinator 在合并步骤中途崩溃：
         # - PR 已合并：目标分支不是 main → 人工；否则等 Evidence 升级后 unclaim
         # - PR 仍 open：从归属校验与 --pre 重来（不沿用崩溃前的核验结论）
-        merging = owned_records.find { |data| data["phase"] == "merging" }
-        if merging
+        # 逐条对账：只取第一条会漏掉后面的 merging 记录（多租约并行下常见）。
+        # 首个能判定的结果立即返回；nil 表示该记录尚不自洽，交给下一条。
+        owned_records.select { |data| data["phase"] == "merging" }.each do |merging|
           resume = reconcile_merging(merging, snapshot, observed)
+          next unless resume
+
           return Routing.new(observed: observed, milestones: milestones, leases: [],
-            action: resume) if resume
+            action: resume)
         end
 
         # 已合并待释放：PR 已合并、或卡已以 completed 关闭，但本地记录还没走到
@@ -180,10 +183,10 @@ module SebasAgents
         end
 
         if pr.merged?
-          unless pr.base.to_s.empty? || pr.base == "main"
+          unless pr.base == "main"
             return action("invalid_plan", observed,
               "## #{number} 的 PR ##{pr_number} 已合并但目标分支是 #{pr.base.inspect}，" \
-              "可能未进入 main，须人工核对",
+              "可能未进入 main（base 缺失同样不可判定），须人工核对",
               issue: number)
           end
           return action("release_ready", observed,
@@ -233,11 +236,12 @@ module SebasAgents
             return LeaseAction.new(issue: number, action: "invalid_plan", pr: pr.number, owned: owned,
               reason: "PR ##{pr.number} 关联了 #{pr.closing_issues.length} 张卡（#{pr.closing_issues.join("、")}），一个 PR 只允许关联一张卡")
           end
-          # base 为空表示快照未取该字段（离线夹具/旧快照），不能据此判非法；
-          # 取到了就必须是 main（§7.2 三次核对里的第一处）。
-          unless pr.base.to_s.empty? || pr.base == "main"
+          # base 必须明确是 main（§7.2 三次核对里的第一处）。
+          # 缺失/空串不构成「未取到故放行」的理由：目标分支是安全边界，宁可
+          # 停下来补取。这与 files 缺失按不可判定处理同一口径。
+          unless pr.base == "main"
             return LeaseAction.new(issue: number, action: "invalid_plan", pr: pr.number, owned: owned,
-              reason: "PR ##{pr.number} 的目标分支是 #{pr.base.inspect}，只允许 main")
+              reason: "PR ##{pr.number} 的目标分支是 #{pr.base.inspect}（只允许 main；缺失即不可判定）")
           end
           expected = record && record["branch"].to_s
           if expected && !expected.empty? && pr.branch != expected

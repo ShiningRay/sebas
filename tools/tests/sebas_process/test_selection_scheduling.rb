@@ -194,7 +194,7 @@ class SelectionSchedulingTest < Minitest::Test
     pr = {
       "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
       "merge_state_status" => "BEHIND", "checks" => [],
-      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress"), issue(2, body: automation(order: [4, 2]))],
@@ -209,7 +209,7 @@ class SelectionSchedulingTest < Minitest::Test
     pr = {
       "number" => 50, "state" => "OPEN", "merge_state_status" => "UNKNOWN",
       "checks" => [{"name" => "spec", "status" => "IN_PROGRESS", "conclusion" => nil}],
-      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
@@ -228,7 +228,7 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
       ],
-      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
@@ -248,7 +248,7 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "IN_PROGRESS", "conclusion" => nil},
         {"name" => "CodeRabbit", "status" => "IN_PROGRESS", "conclusion" => nil}
       ],
-      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
@@ -266,7 +266,7 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "COMPLETED", "conclusion" => "CANCELLED"}
       ],
-      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
@@ -286,7 +286,7 @@ class SelectionSchedulingTest < Minitest::Test
         {"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"},
         {"name" => "CodeRabbit", "status" => "BOGUS", "conclusion" => nil}
       ],
-      "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+      "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
     }
     data = snapshot(
       issues: [issue(1, body: automation(scope: ["src/"]), status: "In progress")],
@@ -322,7 +322,7 @@ class SelectionSchedulingTest < Minitest::Test
       pull_requests: [{
         "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
         "merge_state_status" => "CLEAN", "checks" => [],
-        "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
+        "base_ref_name" => "main", "base_ref_name" => "main", "base_ref_name" => "main", "closing_issues" => [1], "review_threads" => [], "files" => [{"filename" => "src/x.cr"}]
       }]
     )
     action = select(data, record: {"issue" => 99, "phase" => "released"})
