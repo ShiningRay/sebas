@@ -189,19 +189,18 @@ completion_condition——完成 Task 不会自动完成 Commitment（后者单�
 | T09 | needs_clarification/dormant（T08 暂缓路径）→ cancelled | clarify_by 到期仍未补全（系统自动，含经 T08 暂缓转入 dormant 的承诺）；补全前不得经任何路径进入 ready。到期判定以 clarify_by 时刻为准：到期后的补全不豁免取消（补全内容保留为记录） | 到期前已补全（应走 T07） |
 | T10 | waiting_condition → ready | 条件满足且计划确认仍有效 | 条件观察记录缺失（不得凭空判定满足） |
 | T11 | waiting_condition → dormant | 条件失效且未撤销原意图 | 条件仍在观察中 |
-| T12 | waiting_condition → cancelled | 条件永久失效或用户取消 | — |
+| T12 | waiting_condition → cancelled | 条件永久失效或用户取消 | 存在未撤销的 scheduled Delivery 且失效撤销对账失败（同失效撤销规则对账不上时不得直接取消） |
 | T12b | waiting_condition → overdue | 截止已过且所等条件仍未满足。判定：有 due_at 时按 due_at（UTC）；仅有墙钟截止时按 due_wall + due_tz 换算的当地日期末尾（23:59:59 当地）与当地当前时刻比较，过当日即逾期 | 无 due_at 且无墙钟截止（无从判逾期；此时仅继续等待条件） |
 | T28 | dormant → overdue | 经 T11 转入 dormant 后硬截止到达且用户未改期/未取消；到达前有效截止提醒照常投递（提醒用户期限已到） | 无硬截止；或用户已改期（新开 Commitment 并链接旧卡） |
 | T13 | ready → active | 用户或 agent 开始执行 | 容量不足（保持 ready 并提示，见提案 §3.4） |
 | T14 | ready → at_risk | 剩余时长 < estimate 且未开始，或容量判定不足 | 无硬截止且无容量约束（无从判 risk） |
 | T15 | ready → overdue | 硬截止已过仍未开始 | 无硬截止的卡不得 overdue |
-| T16 | ready → cancelled | 用户取消 | — |
+| T16 | ready → cancelled | 用户取消 | agent 正在执行该承诺的 turn 时，须先确认副作用结果并记 outcome_unknown（与 T20 同款，不存在绕过确认的无条件取消） |
 | T17 | active → completed | completion_condition 满足且有证据（不变式 3） | 仅 Delivery 状态变化（sent/seen/actioned/snoozed 不构成完成） |
-| T18 | active → at_risk | 进度落后于计划或容量恶化 | — |
+| T18 | active → at_risk | 进度落后于计划或容量恶化 | 无 plan/estimate 基线（无从判「落后」） |
 | T19 | active → overdue | 硬截止已过仍在执行 | 无硬截止 |
 | T20 | active → cancelled | 用户取消 | 副作用执行中（须先确认结果，outcome_unknown 记录） |
-| T20b | ready → cancelled | 用户取消 | 与 T20 同款副作用确认：执行中副作用先确认结果并记 outcome_unknown |
-| T21 | at_risk → active | 缓解措施生效，回到正轨 | — |
+| T21 | at_risk → active | 缓解措施生效（剩余容量/进度回到阈值以上） | 缓解措施未生效（容量或进度仍在阈值以下） |
 | T22 | at_risk → overdue | 风险成为现实（截止已过） | 无硬截止 |
 | T27 | at_risk → completed | completion_condition 满足且有完成证据（同 T17 拒绝条件；T21 缓解回正轨行为保留） | 仅 Delivery 状态变化（同 T17） |
 | T23 | at_risk → cancelled | 降低承诺或取消 | 副作用执行中（同 T20：先确认结果，outcome_unknown 记录） |
