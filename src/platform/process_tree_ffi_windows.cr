@@ -21,6 +21,13 @@
         private PROCESS_TERMINATE                      = 0x00000001_u32
         private INVALID_HANDLE_VALUE                   = Pointer(Void).new(-1_i64)
 
+        lib LibC
+          # Crystal Windows LibC 缺 TerminateJobObject——补绑真名
+          # （Create/SetInformation/AssignProcess/CloseHandle 已在 LibC
+          # jobapi2.cr / handleapi.cr 声明，直接复用，不再重定义）
+          fun TerminateJobObject(h_job : HANDLE, exit_code : DWORD) : BOOL
+        end
+
         lib LibJob
           struct IO_COUNTERS
             read_operation_count : UInt64
@@ -52,17 +59,10 @@
             peak_job_memory_used : LibC::SizeT
           end
 
-          # 显式绑定 Win32 导出名：Crystal 的 LibC 在 Windows 已声明
-          # CreateJobObjectW 等（jobapi2.cr）——同 lib 内再定义会签名冲突
-          # （fun redefinition）。独立 lib LibJob 内用 sebas_* 前缀别名绑定
-          # 真实导出名，既不撞 LibC 又保留显式绑定（链接正确性）。
-          fun sebas_create_job_object_w = CreateJobObjectW(lp_job_attributes : Void*, lp_name : Void*) : Void*
-          fun sebas_set_information_job_object = SetInformationJobObject(h_job : Void*, info_class : Int32,
-                                                                         lp_info : JOBOBJECT_EXTENDED_LIMIT_INFORMATION*,
-                                                                         cb_info : UInt32) : Int32
-          fun sebas_assign_process_to_job_object = AssignProcessToJobObject(h_job : Void*, h_process : Void*) : Int32
-          fun sebas_terminate_job_object = TerminateJobObject(h_job : Void*, exit_code : UInt32) : Int32
-          fun sebas_close_handle = CloseHandle(h_object : Void*) : Int32
+          # （Win32 函数声明全部复用 LibC：CreateJobObjectW/SetInformationJobObject/
+          # AssignProcessToJobObject 在 jobapi2.cr，CloseHandle 在 handleapi.cr，
+          # TerminateJobObject 由上方 LibC 补绑——fun 绑定名是全局符号级检查，
+          # 任何 lib 内再定义同名 fun 即 redefinition 编译失败）
         end
 
         module JobObject
@@ -93,7 +93,7 @@
           # 创建调用级 Job：可带每进程内存上限（字节）。失败抛错——调用方
           # （runner）回收刚 spawn 的进程并返回装配错误。
           def self.create(memory_bytes : UInt64?) : Void*
-            h = LibJob.sebas_create_job_object_w(nil, nil)
+            h = LibC.CreateJobObjectW(nil, nil)
             raise "CreateJobObjectW failed" if h.null? || h == INVALID_HANDLE_VALUE
             info = LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION.new
             flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -102,10 +102,10 @@
               info.process_memory_limit = LibC::SizeT.new(memory_bytes)
             end
             info.basic_limit_information.limit_flags = flags
-            ok = LibJob.sebas_set_information_job_object(h, JobObjectExtendedLimitInformationClass,
+            ok = LibC.SetInformationJobObject(h, JobObjectExtendedLimitInformationClass,
               pointerof(info), sizeof(LibJob::JOBOBJECT_EXTENDED_LIMIT_INFORMATION).to_u32)
             unless ok != 0
-              LibJob.sebas_close_handle(h)
+              LibC.CloseHandle(h)
               raise "SetInformationJobObject failed"
             end
             h
@@ -116,7 +116,7 @@
           def self.assign(job : Void*, pid : UInt32) : Bool
             opened = open_process(pid)
             return false if opened.nil?
-            LibJob.sebas_assign_process_to_job_object(job, opened) != 0
+            LibC.AssignProcessToJobObject(job, opened) != 0
           ensure
             close(opened) if opened
           end
@@ -125,8 +125,8 @@
           # 随后关闭句柄。经 JobHandle 调用——直接持裸句柄调用只限
           # create/assign 失败的同步回收路径（句柄尚未共享）。
           def self.terminate_and_close(job : Void*) : Bool
-            ok = LibJob.sebas_terminate_job_object(job, 1_u32) != 0
-            LibJob.sebas_close_handle(job)
+            ok = LibC.TerminateJobObject(job, 1_u32) != 0
+            LibC.CloseHandle(job)
             ok
           end
 
@@ -136,7 +136,7 @@
           end
 
           private def self.close(handle : Void*?) : Nil
-            LibJob.sebas_close_handle(handle) if handle
+            LibC.CloseHandle(handle) if handle
           end
         end
       end
