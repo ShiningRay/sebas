@@ -73,11 +73,15 @@
    - **有效实例**（有 UTC 时刻）：slot = `inst:<utc>`——来源无关：一次性 DTSTART、RRULE 展开、RDATE 附加共用同一文法；RRULE 与 RDATE 各自产出的同一 UTC 时刻天然去重，不再因来源前缀不同而重复入库；
    - **缺口实例**（无 UTC 时刻）：slot = `gap:<wall>@<tz>`——按原墙钟 + IANA 时区判身份（来源无关；同一缺口墙钟在任意窗口重展开都映射到同一 slot）。
    生成窗口只决定「哪些实例被展开」，不参与 slot 取值。
-5. **缺口与歧义 occurrence**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。缺口实例 slot 统一为 `gap:<wall>@<tz>`（§4.4，与来源和窗口无关；如 `gap:2026-03-08T02:30:00@America/New_York`）。`invalid` 不静默跳过，须用户选择：**改时间/换时区 → 原 gap slot 置一条 `skipped` 墓碑行（保留原墙钟，占住 slot），新解实例以 `inst:<新utc>` 另起一行转 `pending`**——墓碑使重叠窗口重展开命中既有 slot 而不再复活用户已处理的原缺口；**跳过 → 本行直接置 `skipped` 并保留原墙钟（`due_at` 保持空，不伪造 UTC 时刻）**。
+5. **缺口与歧义 occurrence**：
+   - **生成**：解析遇 §2 缺口 → 该 occurrence 置 `state=invalid`，**不生成 UTC `due_at`**，但必须持久化原始墙钟信息（`original_wall` + `original_tz` 列）供用户决策后重解析；歧义按 §2 取较早者正常生成并标 `ambiguous_local_time`。缺口实例 slot 统一为 `gap:<wall>@<tz>`（§4.4，与来源和窗口无关；如 `gap:2026-03-08T02:30:00@America/New_York`）。
+   - **用户选择——改时间/换时区**：原 gap slot 置一条 `skipped` 墓碑行（保留原墙钟，占住 slot）；新解实例以 `inst:<新utc>` 另起一行转 `pending`，并记录 `resolves_slot`（指向被其墓碑化的 gap slot，见 §4.6 对账）——墓碑使重叠窗口重展开命中既有 slot 而不再复活用户已处理的原缺口。
+   - **用户选择——跳过**：本行直接置 `skipped` 并保留原墙钟（`due_at` 保持空，不伪造 UTC 时刻）。
 6. **tzdata 变化对已持久化 occurrence 的失效与对账**（保证同一墙钟实例最多一次唤醒）：
    - **展开时记录来源墙钟**：所有有效实例行写入 `source_wall` + `source_tz`（展开器手握墙钟值，落列即可）——使任一行都可独立重解析，不依赖 slot 反推；
    - **失效触发**：§3 的 tzdata 版本变更检测点同步标记受影响 schedule 为「occurrence 对账中」，对账完成前该 schedule 的未完成 occurrence 暂停唤醒（schedule 级 stale，同 §3 缓存锚口径）；
    - **对账规则**：对每条未完成（pending/claimed）行按 `source_wall`+`source_tz` 现算新 UTC 时刻——与旧 `due_at` 一致则不动；不一致则**旧行置 `superseded`**（状态集合见 §5，调度器只取 pending/claimed，旧时刻不再触发），新时刻由下一窗口展开以 `inst:<新utc>` 正常生成；
+   - **用户修正线独立对账**：带 `resolves_slot` 的实例（用户修正缺口产生）按**修正后的 source_wall/source_tz** 重算与重生成，其 lineage 与原墙钟展开路径互不干扰——tzdata 变化不会经原 gap 墓碑把用户已选的时间吞掉；
    - 对账由启动对账或该 schedule 下次评估执行（§3 重算路径同源），不在查询热路径。
 
 ## 5. 首版表结构草案（M5.1 六表）
@@ -251,6 +255,7 @@ CREATE TABLE IF NOT EXISTS occurrences (
   original_tz   TEXT,                         -- 缺口实例的 IANA 时区
   source_wall   TEXT,                         -- 有效实例的来源墙钟（展开时记录，tzdata 对账重解析用，§4.6）
   source_tz     TEXT,                         -- 有效实例的来源时区
+  resolves_slot TEXT,                         -- 用户修正缺口产生：指向被墓碑化的 gap slot（修正线独立对账，§4.5/§4.6）
   claimed_by    TEXT,                         -- 原子 claim：持有者
   claim_expires_at TEXT,                      -- lease 到期（可回收）
   generated_for TEXT,                         -- 生成窗口标记（补跑/合并审计用）
@@ -296,5 +301,8 @@ CREATE INDEX IF NOT EXISTS idx_occurrences_due ON occurrences (state, due_at);
 ## 8. 待评审裁决点
 
 1. ±48h 探测窗口的历史角落边界（§2 末）是否接受为已知限制。
-2. **M5.0 期门禁中调度四条的取舍**：WBS B.9（[m5-commitments.md](../plan/wbs/m5-commitments.md) 期门禁节）写「M5.0 期门禁 = 文档评审 + 调度四条全绿（含 `make spec`）」，issue #64 验收 ⓐ 写「文档部分以评审通过为准、不因 spec 未绿判本期 No-Go」——两者对 `make spec` 的处理冲突。§14 roadmap 按后者口径书写；**是否保留 format/lint/release 而剔除 spec、并同步修订 WBS 与 gates.md，待计划负责人裁决**（本文不代裁决）。
+2. **M5.0 期门禁中调度四条的取舍**——两个权威来源冲突：
+   - WBS B.9（[m5-commitments.md](../plan/wbs/m5-commitments.md) 期门禁节）：「M5.0 期门禁 = 文档评审 + 调度四条全绿（含 `make spec`）」；
+   - issue #64 验收 ⓐ：「文档部分以评审通过为准、不因 spec 未绿判本期 No-Go」。
+   §14 roadmap 按后者口径书写；**是否保留 format/lint/release 而剔除 spec、并同步修订 WBS 与 gates.md，待计划负责人裁决**（本文不代裁决）。
 3. Occurrence 身份字段格式（§4.4）在 M5.1-WP3 实装前是否需要冻结更细的 slot 文法。
