@@ -14,7 +14,7 @@
   - CHANGELOG 改由队列追加：PR 正文 marker 块携带条目，按 `(#PR)` 引用幂等识别；`scribe.md` §5 同步修订。
   - 写守卫新增 `:merge_pr` / `:update_branch` 两条独立意图，形态完整匹配才放行（多余参数如 `--admin` 一律拦）。
 - **故障矩阵收敛与越界/心跳判据**（[#221](https://github.com/ShiningRay/sebas/issues/221) §5/§6，[#294](https://github.com/ShiningRay/sebas/pull/294)）：
-  - F14 越界检测：`Scope.violations` 判 PR 变更文件是否落在租约 `scope` 内。缺清单、非数组、租约缺 scope、条目解析不出路径一律按**不可判定**处理（fail-closed），越界即转 `needs_human`。重命名同时查原路径与新路径。队列自有的 `CHANGELOG.md` 由 `Scope.without_queue_owned` 先行剔除（空路径条目不被剔除，仍走不可判定）。
+  - F14 越界检测：`Scope.violations` 判 PR 变更文件是否落在租约 `scope` 内。缺清单、非数组、条目解析不出路径按**不可判定**处理（fail-closed），越界即转 `needs_human`。**租约缺 scope 不算越界**——那是认领侧的「独占容量」，若在越界侧再判一次，存量缺 scope 的租约就会永久 `needs_human`：既不许开新卡也不许合并已有 PR。重命名同时查原路径与新路径。队列自有的 `CHANGELOG.md` 由 `Scope.without_queue_owned` 先行剔除（空路径条目不被剔除，仍走不可判定）。
   - F5 心跳：`RunRecord#heartbeat!` / `#heartbeat_expired?`——缺 `last_heartbeat_at` 不判过期（兼容老记录），非法/空时间戳判过期；写入用 `O_CREAT|O_EXCL` 跨进程锁，活跃持有者跳过且不删锁，pid 已退出则接管（`ESRCH` 才算残留，`EPERM` 视为活跃）。
   - F15 合并中途崩溃：`reconcile_merging` 先于 settled 判定，逐条对账每条 `phase=merging` 记录。已合并且 base 明确为 main → `release_ready`；base 缺失/非 main → `invalid_plan`；PR 仍 open → 重走核验，但卡已 completed 时属矛盾态 → `invalid_plan`；已关闭未合并 → `invalid_plan`。
   - `release_ready` 动作写入 `role_prompts`、`implementer.md`、`implementer-loop.md`；`merge-queue.md` 新增故障矩阵覆盖表（F1–F15 逐条对到实现与测试，并说明 F13 为何不入表）。
