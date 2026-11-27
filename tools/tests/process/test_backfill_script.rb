@@ -2,10 +2,11 @@
 
 # backfill_m4_automation.rb 的幂等性回归。
 # 脚本修改线上 issue body，必须保证重复运行不改变结果。
-require "minitest/autorun"
+
+require_relative "../support/boot"
 
 class BackfillScriptTest < Minitest::Test
-  SCRIPT = File.expand_path("backfill_m4_automation.rb", __dir__)
+  SCRIPT = RepoPaths.join("tools", "backfill_m4_automation.rb")
 
   # 只加载纯函数，不执行文件末尾的 PLAN 循环。
   def self.load_helpers

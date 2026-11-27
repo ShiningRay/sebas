@@ -62,6 +62,7 @@ docs/
   examples/            # 示例插件与配置
 tools/
   check_docs.rb        # 文档质量门禁
+  tests/               # 工具层测试：run.rb 统一入口，按域分子目录（见其 README）
 .github/
   workflows/           # ci.yml / release.yml / auto-release.yml / mruby-sandbox.yml / dependency-check.yml
   actions/setup/       # composite setup action

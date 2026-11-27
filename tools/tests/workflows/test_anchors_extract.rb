@@ -1,11 +1,9 @@
 # frozen_string_literal: true
 
-# anchors_extract 单测（#121）。全部基于 tmpdir，不触网。
-require "minitest/autorun"
-require "json"
-require "tmpdir"
-require "fileutils"
-require_relative "anchors_extract"
+# anchors_extract 单测（#121）：抽取、归一化、越界与去重。全部基于 tmpdir，不触网。
+
+require_relative "../support/boot"
+require_relative "../../anchors_extract"
 
 class AnchorsExtractTest < Minitest::Test
   def with_repo

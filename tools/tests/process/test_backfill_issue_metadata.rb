@@ -2,11 +2,11 @@
 
 # backfill_issue_metadata.rb 的推断规则回归。
 # 脚本要写线上 issue 的 type/status，规则错了会污染整仓元数据，必须锁住。
-require "minitest/autorun"
-require "json"
+
+require_relative "../support/boot"
 
 class IssueMetadataBackfillTest < Minitest::Test
-  SCRIPT = File.expand_path("backfill_issue_metadata.rb", __dir__)
+  SCRIPT = RepoPaths.join("tools", "backfill_issue_metadata.rb")
 
   # 只加载纯函数与正则常量，不执行文件末尾的网络流程。
   # 用「首个顶层语句前截断」的方式取定义区：正则逐函数抽取会漏掉

@@ -1,14 +1,10 @@
 # frozen_string_literal: true
 
-# verify_merge_reports / verify_final_verdict 单测（#122；#124 改名 final-verdict）。
-#
-# 重点覆盖 CodeRabbit 在 PR #129 报的 CWE-636：工具异常被吞掉后放行。
-require "minitest/autorun"
-require "json"
-require "tmpdir"
-require "fileutils"
-require_relative "verify_merge_reports"
-require_relative "verify_final_verdict"
+# verify 汇总层与终验判定：fail-closed（工具挂了 ≠ 核验通过）与结论三级。
+
+require_relative "../support/boot"
+require_relative "../../verify_merge_reports"
+require_relative "../../verify_final_verdict"
 
 class VerifyMergeReportsTest < Minitest::Test
   VMR = VerifyMergeReports
@@ -38,8 +34,6 @@ class VerifyMergeReportsTest < Minitest::Test
   def report_file(dir, name, items)
     write_out(dir, name, JSON.generate({"items" => items}))
   end
-
-  # --- 正常路径 ---
 
   def test_collects_reports_from_both_sources
     with_out do |dir|
@@ -87,8 +81,6 @@ class VerifyMergeReportsTest < Minitest::Test
       assert_equal 1, report["counts"]["blocker"]
     end
   end
-
-  # --- CWE-636：工具异常不得被当成通过 ---
 
   def test_tool_error_response_becomes_blocker
     with_out do |dir|
@@ -291,8 +283,6 @@ class VerifyMergeReportsTest < Minitest::Test
       assert_equal "head222", report["observed"]["head"]
     end
   end
-
-  # --- 结论口径 ---
 
   def test_conclusion_levels
     assert_equal "打回", VMR.conclusion({"blocker" => 1, "must_fix" => 0, "unverified" => 0})

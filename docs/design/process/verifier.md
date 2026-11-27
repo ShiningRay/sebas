@@ -164,7 +164,7 @@ result = SebasAgents::VerifyChecks.rerun(item, fix, root: Dir.pwd) # {passed:, r
 | `src/**` 实质改动而 `spec/**` 无变更 | blocker |
 | `src/**` 实质改动而 `docs/**` 无变更且正文未声明「无行为变更」 | must_fix |
 | `.github/workflows/**` 改动而正文缺「安全边界」说明 | must_fix |
-| `tools/**` 实质改动而 `tools/test_*.rb` 无变更 | blocker |
+| `tools/**` 实质改动而 `tools/tests/**/test_*.rb` 无变更 | blocker |
 | workflow `uses:` 未钉 40 位 SHA / force-push / 分支保护写入 | blocker |
 | 新增行疑似凭据进输出语句（正则近似，误报走可留复核） | must_fix |
 | `policy/evidence.rb` 触碰 `SOURCES`（授权段位变更） | blocker |
@@ -192,7 +192,7 @@ result = SebasAgents::VerifyChecks.rerun(item, fix, root: Dir.pwd) # {passed:, r
 **fail-closed 汇总。** 核验证据先经 `tools/verify_merge_reports.rb` 归一：
 任一非零退出、报告为空文件/非 JSON/缺 `items`/条目非对象/未知 level、
 或本应产出的报告缺失，一律转 `blocker`——「工具挂了」与「核验通过」必须可区分，
-不能把「没看见问题」当成「没有问题」。`tools/test_verify_reports.rb` 逐条覆盖。
+不能把「没看见问题」当成「没有问题」。`tools/tests/workflows/test_verify_reports.rb` 逐条覆盖。
 
 **安全核心：核验脚本取自 base 分支。** PR 可以改 `.github/workflows/**` 与 `tools/**`；
 若直接跑 PR 里的核验脚本，PR 就能改核验逻辑让自己通过。因此 base sha checkout 到
@@ -204,7 +204,7 @@ result = SebasAgents::VerifyChecks.rerun(item, fix, root: Dir.pwd) # {passed:, r
 用 `pull_request_target` 而非 `pull_request`：后者的 workflow 定义取自 PR 的 merge commit，
 可取 PR 任意改写；前者取自 base 分支，PR 改不动。
 
-`tools/test_verify_workflow.rb` 把这两条固定为测试（写法断言 + 篡改脚本的端到端行为验证），
+`tools/tests/workflows/test_verify_workflow.rb` 把这两条固定为测试（写法断言 + 篡改脚本的端到端行为验证），
 **但它与 workflow 同在 PR 可改范围内，因此不能作为绕过 PR 的独立控制**。阻止 PR 替换
 workflow 的独立控制是 `pull_request_target` 本身，以及 `.github/` 的审核红线（AGENTS.md
 「fork PR 的 workflow 改动必须先审 diff 再批准运行」）。

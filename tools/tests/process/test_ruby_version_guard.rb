@@ -2,12 +2,11 @@
 
 # 版本守卫回归：低版本必须在加载任何业务代码之前被拒绝，
 # 且报错要给出可执行的修复方式，而不是内部 NameError。
-require "minitest/autorun"
-require "open3"
-require "tmpdir"
+
+require_relative "../support/boot"
 
 class RubyVersionGuardTest < Minitest::Test
-  ROOT = File.expand_path("..", __dir__)
+  ROOT = RepoPaths::ROOT
   ENTRY = File.join(ROOT, "tools", "sebas-process")
   VERSION_FILE = File.join(ROOT, ".ruby-version")
 

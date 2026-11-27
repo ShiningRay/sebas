@@ -1,34 +1,14 @@
 # frozen_string_literal: true
 
-# verify.yml 的契约测试（#122）。
-#
-# ## 为什么需要这个测试
-#
-# verify.yml 的核心安全属性是「核验脚本取自 base 分支」。这条属性只靠
-# YAML 写法正确来保证——若有人把 `ref:` 改成 `github.event.pull_request.head.sha`，
-# PR 就能改核验逻辑让自己通过，而所有其他测试仍会绿。
-# 所以这里把「安全核心」写成断言：改坏了就红。
-#
-# 行为测试从 workflow 步骤**派生**执行命令（见 derive_anchors_invocation），
-# 不手写命令；否则改动 workflow 不会同步改变测试，断言就形同虚设
-# （CodeRabbit 在 PR #129 指出：手写命令 + 只查 `cd target` 时，
-# `ruby ../target/tools/anchors_extract.rb` 这类写法能骗过全部断言）。
-#
-# 同时验证 shell 片段里的关键逻辑（结论映射、退出码）与 action 钉版。
-#
-# 注意：本测试与 workflow 同在 PR 可改范围内，是回归绊线而**非** PR 时控制；
-# 阻止 PR 替换 workflow 的独立控制是 pull_request_target + .github/ 审核红线。
+# verify.yml 的契约测试（#122）：安全核心是「核验脚本取自 base」。
+# 行为测试从 workflow 步骤派生执行命令，不手写命令——否则改 workflow
+# 不会同步改变断言。
 
-require "minitest/autorun"
-require "json"
-require "open3"
-require "tmpdir"
-require "fileutils"
-require "yaml"
+require_relative "../support/boot"
 
 class VerifyWorkflowTest < Minitest::Test
-  ROOT = File.expand_path("..", __dir__)
-  WORKFLOW = File.join(ROOT, ".github", "workflows", "verify.yml")
+  ROOT = RepoPaths::ROOT
+  WORKFLOW = RepoPaths.join(".github", "workflows", "verify.yml")
 
   def workflow
     @workflow ||= YAML.safe_load_file(WORKFLOW)
@@ -37,8 +17,6 @@ class VerifyWorkflowTest < Minitest::Test
   def text
     @text ||= File.read(WORKFLOW, encoding: "UTF-8")
   end
-
-  # --- 安全核心 ---
 
   # verifier job 的第一个 checkout 必须取 base sha，且落在 trusted/ 目录。
   # 用 head.sha 或 repository 默认分支都等于把核验逻辑交给 PR 控制。
@@ -82,8 +60,6 @@ class VerifyWorkflowTest < Minitest::Test
       "核验对象必须是 target（PR 内容），而不是 trusted"
   end
 
-  # --- 权限与触发 ---
-
   # 顶层只给 contents: read；写权限必须落在需要的 job 上。
   def test_top_level_permissions_are_read_only
     assert_equal({"contents" => "read"}, workflow["permissions"],
@@ -118,8 +94,6 @@ class VerifyWorkflowTest < Minitest::Test
     assert_includes workflow["concurrency"]["group"], "pull_request.number"
   end
 
-  # --- job 结构 ---
-
   def test_final_verdict_depends_on_verifier
     assert_equal ["verifier"], Array(workflow.dig("jobs", "final-verdict", "needs"))
   end
@@ -137,8 +111,6 @@ class VerifyWorkflowTest < Minitest::Test
     assert_equal "always()", step["if"], "核验失败时也要保留报告作为证据"
   end
 
-  # --- action 钉版 ---
-
   def test_all_actions_are_sha_pinned
     unpinned = []
     collect_uses(workflow).each do |path, value|
@@ -147,8 +119,6 @@ class VerifyWorkflowTest < Minitest::Test
     end
     assert_empty unpinned, "所有 action 必须 SHA 钉版：#{unpinned.inspect}"
   end
-
-  # --- 判定逻辑（与 tools 层同口径）---
 
   # 从 workflow 步骤派生「实际执行的脚本 + 工作目录 + 参数」。
   #
@@ -341,8 +311,6 @@ class VerifyWorkflowTest < Minitest::Test
       assert_includes library, word, "VerificationReport 应含结论 #{word}"
     end
   end
-
-  private
 
   def verifier_steps
     workflow.dig("jobs", "verifier", "steps") || []

@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 
 # oneline.md 的每一行必须与 RolePrompts::ONELINE 完全一致，避免速查表与工具漂移。
-require "minitest/autorun"
-require_relative "agents/lib/sebas_agents"
+
+require_relative "../support/boot"
+require_relative "../../agents/lib/sebas_agents"
 
 class OnelineSheetTest < Minitest::Test
-  SHEET = File.expand_path("../docs/design/process/oneline.md", __dir__)
+  SHEET = RepoPaths.join("docs", "design", "process", "oneline.md")
 
   def sheet
     @sheet ||= File.read(SHEET, encoding: "UTF-8")

@@ -3,10 +3,9 @@
 # Proposal 文档路径守卫的回归。
 # 规则：docs/design/proposals/ 与 proposal 模板只能由 Maintainer/Scribe 一方改动。
 # 边界如实记录：白名单按登录名校验，Scribe 与 Maintainer 同账号，无法区分二者。
-require "minitest/autorun"
-require "tmpdir"
-require "fileutils"
-require_relative "check_proposal_paths"
+
+require_relative "../support/boot"
+require_relative "../../check_proposal_paths"
 
 class CheckProposalPathsTest < Minitest::Test
   P = ProposalPaths

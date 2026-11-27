@@ -24,8 +24,9 @@ module EvidenceRegister
     # 非门禁的第三方审阅 check（如 CodeRabbit）：只表示「本轮审阅进行中」。
     # 本文件被 evidence-register.yml 以 `ruby tools/evidence_register.rb` 直接加载，
     # 不经过 agents 库，因此这里保留一份名单；由
-    # test_evidence_register.rb 的 test_advisory_lists_stay_in_sync 锁住与
-    # SebasAgents::AdvisoryChecks::NAMES 一致，防止两处漂移。
+    # tools/tests/evidence/test_evidence_pre_register.rb 的
+    # test_advisory_lists_stay_in_sync 锁住与 SebasAgents::AdvisoryChecks::NAMES
+    # 一致，防止两处漂移。
     ADVISORY_CHECK_NAMES = ["CodeRabbit"].freeze
 
     # GitHub 只定义这三种 check run 状态。未知取值一律拒绝：advisory 被整类

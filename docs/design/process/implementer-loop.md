@@ -319,7 +319,7 @@ tools/sebas-process                    # CLI 入口，默认 dry-run
 tools/agents/lib/sebas_agents.rb       # 加载器
 tools/agents/lib/sebas_agents/policy/  # 纯函数：milestone、依赖、证据、选卡
 tools/agents/lib/sebas_agents/*.rb     # gh 适配器、Verifier、Reviewer、Triager、Release
-tools/test_sebas_process.rb            # 固定快照的 minitest
+tools/tests/sebas_process/            # 固定快照的 minitest，按主题分文件
 ```
 
 核心接口（可直接 `require`）：

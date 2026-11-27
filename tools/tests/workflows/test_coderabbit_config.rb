@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-require "minitest/autorun"
-require "yaml"
-
 # .coderabbit.yaml 的结构校验（#116）。
 # 这份配置只影响 review 提示质量，不是门禁；但路径写错会让指令静默失效，
 # 所以用测试锁住关键结构。
+
+require_relative "../support/boot"
+
 class CoderabbitConfigTest < Minitest::Test
-  PATH = File.expand_path("../.coderabbit.yaml", __dir__)
+  PATH = RepoPaths.join(".coderabbit.yaml")
 
   def config
     @config ||= YAML.safe_load_file(PATH)

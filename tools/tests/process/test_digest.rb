@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
-  # Proposal 置顶索引（digest）的纯逻辑回归。
-  # 工具只做机械汇总：判定时间线可确定性提取；「已达成 / 待裁决」是语义判断，永不覆盖人工区。
-require "minitest/autorun"
-require "json"
-require_relative "agents/lib/sebas_agents"
+# Proposal 置顶索引（digest）的纯逻辑回归。
+# 工具只做机械汇总：判定时间线可确定性提取；「已达成 / 待裁决」是语义判断，
+# 永不覆盖人工区。
+
+require_relative "../support/boot"
+require_relative "../../agents/lib/sebas_agents"
 
 class DigestTest < Minitest::Test
   D = SebasAgents::Digest

@@ -2,12 +2,12 @@
 
 # 把 docs/design/process 里的 Ruby 示例当代码跑：保证文档指向的标识符真实存在。
 # 只做静态存在性检查（不执行示例），避免文档与 tools/agents 漂移。
-require "minitest/autorun"
-require "json"
-require_relative "agents/lib/sebas_agents"
+
+require_relative "../support/boot"
+require_relative "../../agents/lib/sebas_agents"
 
 class DocsExamplesTest < Minitest::Test
-  ROOT = File.expand_path("..", __dir__)
+  ROOT = RepoPaths::ROOT
   PROCESS_DIR = File.join(ROOT, "docs", "design", "process")
 
   # 文档中出现、且必须真实存在的入口。

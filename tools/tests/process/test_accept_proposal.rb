@@ -2,15 +2,14 @@
 
 # accept-proposal 的离线测试：只测纯函数与失败前置条件，不打 GitHub。
 
-require "minitest/autorun"
-require "tmpdir"
-require "fileutils"
+require_relative "../support/boot"
+
 # accept-proposal 无 .rb 扩展名，require_relative 不认；用绝对路径 load。
-load File.expand_path("accept-proposal", __dir__)
+load File.expand_path("../../accept-proposal", __dir__)
 
 class AcceptProposalTest < Minitest::Test
   def test_verdict_comment_has_marker_on_own_line_and_reason
-    assert_equal File.expand_path("..", __dir__), REPO_ROOT
+    assert_equal RepoPaths::ROOT, REPO_ROOT
     body = AcceptProposal.verdict_comment("方向成立，排期另议。\n")
     assert body.start_with?("<!-- proposal-verdict: accepted-design -->\n")
     assert_includes body, "方向成立，排期另议。"
