@@ -233,19 +233,20 @@ class QueueRegressionsTest < Minitest::Test
     assert_equal 1, queue.head
   end
 
-  # 端到端：核验通过后必须能从 verify_pre 走到 merge（verified_head 有写入点）。
+  # 核验记录到位后必须能进入 merge。真正的写入点由 CLI 级用例覆盖
+  # （test_cli_queue.rb 的 test_queue_apply_verify_pre_records_verified_head
+  # 走 queue --apply，删掉 remember_verified_head 会失效）；这里只锁定
+  # next_step 对 verified_head 的判定本身。
   def test_verified_head_unblocks_merge_in_queue
     pr = SebasAgents::Model::PullRequest.from_hash(
       "number" => 50, "state" => "OPEN", "merge_state_status" => "CLEAN",
       "head_sha" => "sha50", "base_ref_name" => "main",
       "checks" => [], "review_threads" => [], "closing_issues" => [1]
     )
-    # 无核验记录 → verify_pre
     step, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: nil)
     assert_equal "verify_pre", step
-    # 核验记录写入后 → merge
     step2, = MQ.next_step(pr, nil, "## [Unreleased]\n", verified_head: "sha50")
-    assert_equal "merge", step2, "verify_pre 写入 verified_head 后必须能进入 merge"
+    assert_equal "merge", step2
   end
 
 end

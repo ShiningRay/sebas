@@ -5,6 +5,7 @@
 # 只验证 CLI 契约与退出码；链上判定本身在 test_merge_queue.rb。
 
 require "fileutils"
+require "socket"
 
 require_relative "../support/boot"
 require_relative "../../agents/lib/sebas_agents"
@@ -110,6 +111,72 @@ class QueueCommandTest < Minitest::Test
       end
       # 记录未被污染
       refute JSON.parse(File.read(rec)).key?("pid")
+    end
+  end
+
+
+  # `queue --apply` 走 verify_pre 时，必须真的跑核验并把 head 写进运行记录，
+  # 否则队列永远停在 verify_pre（`next_step` 要求 verified_head 等于当前 head）。
+  #
+  # 这条测试断言的是「写入点存在且被调用」——上一版只直调 next_step 并手传
+  # verified_head，删掉 cli.rb 里的 remember_verified_head 也照样通过。
+  def test_queue_apply_verify_pre_records_verified_head
+    Dir.mktmpdir do |dir|
+      pr_data = pr(number: 50, issue: 1)
+      # verify --pre 的几项硬要求，缺一即 fail-closed：
+      # - 有 CI 检查记录（否则「没看见」不能当通过）
+      # - 变更文件带 patch（否则路径联动不可判定）
+      # - src/ 改动需配 spec/ 与 docs/ 变更，或 PR 正文声明「无行为变更」
+      pr_data["checks"] = [{"name" => "spec / ubuntu-latest", "status" => "COMPLETED", "conclusion" => "SUCCESS"}]
+      pr_data["files"] = [
+        {"filename" => "src/x.cr", "patch" => "@@ -1 +1 @@"},
+        {"filename" => "spec/x_spec.cr", "patch" => "@@ -1 +1 @@"},
+        {"filename" => "docs/x.md", "patch" => "@@ -1 +1 @@"}
+      ]
+      # scope 必须覆盖被测的每个变更目录，否则 F14 会先判越界（needs_human），
+      # 走不到 verify_pre。
+      scope = ["src/", "spec/", "docs/"]
+      data = snapshot(
+        issues: [issue(1, body: automation(scope: scope), status: "In progress")],
+        pull_requests: [pr_data],
+        capacity: 2
+      )
+      # Evidence 必须 accepted 才能过 verify --pre
+      data["issues"][0]["body"] = automation(scope: scope) +
+                                  evidence(subject: "issue:1", merged: false)
+
+      runs = File.join(dir, ".sebas-agent", "runs")
+      FileUtils.mkdir_p(runs)
+      record_path = File.join(runs, "1.json")
+      File.write(record_path, JSON.generate({
+        "schema" => 2, "issue" => 1, "branch" => "feat/1", "phase" => "claimed",
+        "pr" => 50, "host" => Socket.gethostname, "pid" => 999_999,
+        "last_heartbeat_at" => "2020-01-01T00:00:00Z"
+      }), encoding: "UTF-8")
+
+      snap_path = write_snapshot(dir, data)
+      changelog = File.join(dir, "CHANGELOG.md")
+      File.write(changelog, "## [Unreleased]\n", encoding: "UTF-8")
+
+      Dir.chdir(dir) do
+        status, out, = run_cli(["queue", "--snapshot", snap_path, "--changelog", changelog, "--apply"])
+        payload = JSON.parse(out)
+        # 规划阶段给出 verify_pre（尚无核验记录）
+        assert_equal "verify_pre", payload["queue"]["step"]
+        # 执行阶段真的跑了核验并落了记录
+        assert_equal "verified", payload["status"], payload["reasons"].inspect
+        assert_equal 0, status
+
+        # 写入点必须真的生效——删掉 remember_verified_head 这里会变成 nil
+        saved = JSON.parse(File.read(record_path))
+        assert_equal "sha50", saved["verified_head"],
+          "queue --apply 走过 verify_pre 后必须把 head 写进运行记录"
+
+        # 再规划一次：核验记录已就位，应能进入 merge
+        _, out2, = run_cli(["queue", "--snapshot", snap_path, "--changelog", changelog])
+        assert_equal "merge", JSON.parse(out2)["queue"]["step"],
+          "核验记录写入后队列必须能推进到 merge"
+      end
     end
   end
 
