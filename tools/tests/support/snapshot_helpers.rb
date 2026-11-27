@@ -77,8 +77,9 @@ module SnapshotHelpers
   end
 
   def snapshot(issues:, milestones: nil, pull_requests: [], maintainers: ["ShiningRay"],
-    source_authors: nil, gates: {}, externals: {}, trusted_bots: [], source_bodies: {})
-    {
+    source_authors: nil, gates: {}, externals: {}, trusted_bots: [], source_bodies: {},
+    capacity: nil)
+    data = {
       "repo" => "o/r",
       "main_sha" => "deadbeef",
       "milestones" => milestones || [
@@ -96,7 +97,11 @@ module SnapshotHelpers
       "trusted_bots" => trusted_bots,
       "source_bodies" => source_bodies
     }
+    # 缺省容量省略字段：from_hash 按缺键回落 1，不依赖非法值降级路径。
+    data["capacity"] = capacity if capacity
+    data
   end
+
 
   def select(data, record: nil)
     SebasAgents::Policy::Selection.select_action(SebasAgents::Model::Snapshot.from_hash(data), record: record)

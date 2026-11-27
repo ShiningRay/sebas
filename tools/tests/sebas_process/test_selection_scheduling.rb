@@ -57,6 +57,83 @@ class SelectionSchedulingTest < Minitest::Test
     assert_equal 1, action.issue
   end
 
+  # 容量 >1（recovery §5 / Q3）：执行中卡数在容量内不再是 invalid；
+  # 续做路由对准本地记录持有的那张卡，而不是固定首卡。
+  def test_multiple_in_progress_allowed_within_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress")
+    ], capacity: 2)
+    action = select(data, record: {"issue" => 2, "phase" => "claimed"})
+    assert_equal "resume_issue", action.action
+    assert_equal 2, action.issue
+  end
+
+  def test_capacity_exceeded_is_invalid
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress"),
+      issue(3, body: automation, status: "In progress")
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "超过容量 2"
+  end
+
+  def test_record_not_matching_any_in_progress_is_invalid
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation, status: "In progress")
+    ], capacity: 2)
+    action = select(data, record: {"issue" => 99, "phase" => "claimed"})
+    assert_equal "invalid_plan", action.action
+    assert_includes action.reason, "冲突"
+  end
+
+  # 异机租约（续篇 F6）：容量未满且在途卡无本地记录时不接管、不续跑
+  # 他人 PR——落到 milestone 评估给出新卡。
+  def test_foreign_claim_falls_through_to_claim_when_capacity_available
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    action = select(data)
+    assert_equal "claim_issue", action.action
+    assert_equal 2, action.issue
+  end
+
+  # 容量 1（缺省）时异机租约占满容量：wait（F6「不接管，占着容量」），
+  # 不误续跑他人 PR、也不误判 F7 invalid（routing 快照无凭据事实）。
+  def test_foreign_claim_waits_at_default_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ])
+    action = select(data)
+    assert_equal "wait", action.action
+    assert_includes action.reason, "非本 coordinator 持有"
+    assert_equal 1, action.issue
+  end
+
+  # 快照 capacity：缺键回落 1；显式存在但非法（null/浮点/非正）→ InvalidPlan，
+  # 不静默降级（降级会让「以为提了容量」的配置假生效）。
+  def test_snapshot_missing_capacity_defaults_to_one
+    snap = SebasAgents::Model::Snapshot.from_hash(snapshot(issues: [issue(1, body: automation)]))
+    assert_equal 1, snap.capacity
+  end
+
+  def test_snapshot_explicit_invalid_capacity_raises
+    data = snapshot(issues: [issue(1, body: automation)], capacity: 2)
+    data["capacity"] = nil
+    assert_raises(SebasAgents::InvalidPlan) { SebasAgents::Model::Snapshot.from_hash(data) }
+
+    data["capacity"] = 2.5
+    assert_raises(SebasAgents::InvalidPlan) { SebasAgents::Model::Snapshot.from_hash(data) }
+
+    data["capacity"] = 0
+    assert_raises(SebasAgents::InvalidPlan) { SebasAgents::Model::Snapshot.from_hash(data) }
+  end
+
   def test_own_pull_request_resumes_before_new_card
     pr = {
       "number" => 50, "head_ref_name" => "feat/1", "state" => "OPEN",
@@ -217,12 +294,14 @@ class SelectionSchedulingTest < Minitest::Test
     data = snapshot(issues: [issue(1, body: automation, status: "In progress")])
     action = select(data, record: {"issue" => 99, "phase" => "released", "worktree" => "/tmp/old-99"})
 
+    assert_equal "wait", action.action,
+      "released 降级 + 异机在途认领应报 wait：#{action.reason}"
     refute_includes action.reason.to_s, "与远端认领",
       "released 记录不得与远端认领判假冲突：#{action.reason}"
     refute_includes action.reason.to_s, "/tmp/old-99",
       "released 记录的 worktree 不得被当作续做状态"
-    assert_includes action.reason.to_s, "缺本地运行记录",
-      "降级后应走既有的「认领但无本地记录」fail-closed 分支：#{action.reason}"
+    assert_includes action.reason.to_s, "非本 coordinator 持有",
+      "降级后应按 F6 异机租约口径等待，不接管也不误判：#{action.reason}"
   end
 
   def test_handoff_release_when_no_open_issues

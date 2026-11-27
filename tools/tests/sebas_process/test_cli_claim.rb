@@ -244,4 +244,119 @@ end
     assert result.success?
     assert_equal [%w[git push origin main]], runner.calls
   end
+  # 容量 >1：在途卡未达容量时第二张可认领；容量 1 保持全仓单卡语义。
+  def test_claim_allows_second_card_within_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["claim", "2", "--snapshot", path, "--record", File.join(dir, "run.json")])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert payload["ok"]
+      assert_equal "ready", payload["status"]
+    end
+  end
+
+  def test_claim_refuses_when_capacity_exhausted
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]), status: "In progress"),
+      issue(3, body: automation(order: [4, 3]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["claim", "3", "--snapshot", path, "--record", File.join(dir, "run.json")])
+      assert_equal 1, status
+      assert_includes JSON.parse(out)["reasons"].join, "达到容量 2"
+    end
+  end
+
+  # resume 按有效容量校验活动卡数：容量 2 下持有两张卡可续跑自己的那张；
+  # 超过容量拒绝。
+  def test_resume_allows_second_card_within_capacity
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]), status: "In progress")
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      record = File.join(dir, "run.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      File.write(record, JSON.generate({"issue" => 2, "phase" => "claimed", "schema" => 2}), encoding: "UTF-8")
+      status, out, = run_cli(["resume", "2", "--snapshot", path, "--record", record])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert payload["ok"]
+      assert_equal "resume_issue", payload["action"]
+    end
+  end
+
+  def test_resume_refuses_when_capacity_exhausted
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]), status: "In progress"),
+      issue(3, body: automation(order: [4, 3]), status: "In progress")
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      record = File.join(dir, "run.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      File.write(record, JSON.generate({"issue" => 3, "phase" => "claimed", "schema" => 2}), encoding: "UTF-8")
+      status, out, = run_cli(["resume", "3", "--snapshot", path, "--record", record])
+      assert_equal 1, status
+      assert_includes JSON.parse(out)["error"]["message"], "达到容量 2"
+    end
+  end
+
+  # 默认记录损坏不得被静默当成「无遗留」放行容量：即使走显式 --record，
+  # 读取默认记录失败也拒绝命令（fail-closed）。
+  def test_claim_refuses_when_default_record_corrupt
+    data = snapshot(issues: [issue(1, body: automation)], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      sebas_dir = File.join(dir, ".sebas-agent")
+      Dir.mkdir(sebas_dir)
+      File.write(File.join(sebas_dir, "run.json"), "{not json", encoding: "UTF-8")
+      Dir.chdir(dir) do
+        status, out, = run_cli(["claim", "1", "--snapshot", path, "--record", File.join(dir, "run.json")])
+        refute_equal 0, status
+      end
+    end
+  end
+
+  # aborted 遗留记录是认领未确认的异常态（F3/F4）：claim --apply 的迁移
+  # 不得自动搬走它解除容量钳制——认领被拒，记录原地保留待人工对账。
+  def test_claim_refuses_when_legacy_aborted_record_unreconciled
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "snapshot.json")
+      File.write(path, JSON.generate(data), encoding: "UTF-8")
+      sebas_dir = File.join(dir, ".sebas-agent")
+      Dir.mkdir(sebas_dir)
+      legacy = File.join(sebas_dir, "run.json")
+      File.write(legacy, JSON.generate(
+        {"issue" => 1, "phase" => "aborted", "status_written" => true, "schema" => 1}
+      ), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        # --apply 才触发迁移（CR-0 只读路径不迁移）；迁移在可认领性判定前
+        # 执行，aborted 记录即在此处被拒。
+        status, out, = run_cli(["claim", "2", "--snapshot", path, "--apply"])
+        assert_equal 1, status
+        assert_includes JSON.parse(out)["error"]["message"], "aborted"
+        # 记录原地保留，迁移窗口（容量钳制）不解除
+        assert File.exist?(legacy)
+        assert_equal 1, JSON.parse(File.read(legacy, encoding: "UTF-8"))["schema"]
+      end
+    end
+  end
+
 end

@@ -18,3 +18,9 @@ trusted_bots:
 # 口径同 trusted_bots：必须与 .github/ 审核红线配套；未列入者一律 invalid（fail-closed）。
 coordinators:
   - ShiningRay
+
+# 在途租约容量上限（recovery §5 / Q3；Maintainer 2026-11-27 指令提升为 2）。
+# 缺键即 1，行为与单卡容量一致；非法值 fail-closed 拒绝启动。
+# 边界：试点 docs-only 双卡豁免仅在容量 1 时生效；v1 运行记录（迁移窗口）
+# 仍持有活动记录时有效容量钳回 1（Q10=B 迁移期容量恒 1）。
+capacity: 2

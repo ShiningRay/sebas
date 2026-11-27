@@ -167,6 +167,52 @@ class PlanCommandTest < Minitest::Test
     end
   end
 
+  # 容量配置（recovery §5 / Q3）：快照 capacity 贯穿到 plan 输出，
+  # capacity_used 为在途卡数；异机在途卡不再把整个视图打成 wait。
+  def test_cli_plan_emits_capacity_fields_from_snapshot
+    data = snapshot(issues: [
+      issue(1, body: automation, status: "In progress"),
+      issue(2, body: automation(order: [4, 2]))
+    ], capacity: 2)
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      status, out, = run_cli(["plan", "--snapshot", snap])
+      assert_equal 0, status
+      payload = JSON.parse(out)
+      assert_equal 2, payload["capacity"]
+      assert_equal 1, payload["capacity_used"]
+      assert_equal "claim_issue", payload["next_action"]
+    end
+  end
+
+  # 迁移期容量恒 1（Q10=B）：v1 遗留记录仍活动时有效容量钳回 1；
+  # released 遗留不构成约束。钳制只影响判定输出，不改快照文件。
+  def test_plan_capacity_clamped_during_migration_window
+    data = snapshot(issues: [issue(1, body: automation)], capacity: 2)
+    Dir.mktmpdir do |dir|
+      snap = File.join(dir, "s.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      sebas_dir = File.join(dir, ".sebas-agent")
+      Dir.mkdir(sebas_dir)
+      legacy = File.join(sebas_dir, "run.json")
+
+      File.write(legacy, JSON.generate({"issue" => 9, "phase" => "claimed", "schema" => 1}), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        status, out, = run_cli(["plan", "--snapshot", snap])
+        assert_equal 0, status
+        assert_equal 1, JSON.parse(out)["capacity"]
+      end
+
+      File.write(legacy, JSON.generate({"issue" => 9, "phase" => "released", "schema" => 1}), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        status, out, = run_cli(["plan", "--snapshot", snap])
+        assert_equal 0, status
+        assert_equal 2, JSON.parse(out)["capacity"]
+      end
+    end
+  end
+
   def test_cli_plan_invalid_plan_exits_refused
     data = snapshot(issues: [
       issue(1, body: automation(order: [4, 1])),
