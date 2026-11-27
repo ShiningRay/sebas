@@ -50,17 +50,44 @@ class AwaitReviewSubprocessTest < Minitest::Test
     original = AwaitReview::GH_CALL_TIMEOUT_SECONDS
     silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, 1) }
 
+    # 启动竞态：后代可能还没写出 PID 就被 1s 超时整组杀掉，PID 文件因此缺失。
+    # 那不是终止逻辑的错，但会让下面的「已消失」断言没法做——所以包一层
+    # popen2e：等后代写出就绪信号（PID 文件）后，再把管道与 wait_thr 交给
+    # run_command。超时仍从「已就绪」起算，1s 真实超时原样保留。
+    ready = false
+    Open3.singleton_class.alias_method(:__orig_popen2e, :popen2e)
+    Open3.define_singleton_method(:popen2e) do |*cmd, **opts, &block|
+      Open3.__orig_popen2e(*cmd, **opts) do |input, stdout, wait_thr|
+        deadline = Time.now + 10
+        sleep 0.02 until File.exist?(pid_file) || Time.now > deadline
+        ready = File.exist?(pid_file)
+        unless ready
+          # 就绪等待失败也要收干净：整组杀掉，避免留下常驻后代；
+          # 然后直接抛，不进 run_command 的超时分支（避免混淆失败原因）。
+          begin
+            Process.kill("KILL", -wait_thr.pid)
+          rescue Errno::ESRCH, Errno::EPERM
+            nil
+          end
+          raise "后代就绪等待超时，测试环境太慢（非终止逻辑问题）"
+        end
+
+        block.call(input, stdout, wait_thr)
+      end
+    end
+
     started = Time.now
     error = assert_raises(RuntimeError) do
       AwaitReview.run_command("sh", "-c", script)
     end
     elapsed = Time.now - started
 
+    assert ready, "后代未在 10s 内写出 PID 文件（就绪等待超时，非终止逻辑问题）"
     assert_includes error.message, "超时"
     assert_operator elapsed, :<, 10,
       "超时必须真的终止进程组；实测 #{elapsed.round(2)}s 说明还在等 sleep 30 自然退出"
 
-    # 先确认后代真的写了合法 PID：否则下面的「已消失」断言会空泛通过。
+    # 就绪已确认，此处再核一次内容合法性：否则「已消失」断言会空泛通过。
     assert File.exist?(pid_file), "后代没有写出 PID 文件，脚本未被真正执行"
     recorded = File.read(pid_file).strip
     assert_match(/\A\d+\z/, recorded, "PID 文件内容非法（应为纯数字）：#{recorded.inspect}")
@@ -72,6 +99,10 @@ class AwaitReviewSubprocessTest < Minitest::Test
     refute alive?(recorded.to_i),
       "忽略 TERM 的后代（pid #{recorded}）仍存活：说明只杀了组长，没有升级到 KILL 整组"
   ensure
+    if Open3.respond_to?(:__orig_popen2e)
+      Open3.singleton_class.alias_method(:popen2e, :__orig_popen2e)
+      Open3.singleton_class.send(:remove_method, :__orig_popen2e)
+    end
     silence_warnings { AwaitReview.const_set(:GH_CALL_TIMEOUT_SECONDS, original) } if original
     cleanup_pid(pid_file)
     FileUtils.remove_entry(dir) if dir && Dir.exist?(dir)

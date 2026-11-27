@@ -29,12 +29,16 @@ class FakeGhStore
 
   def call(argv)
     joined = argv.join(" ")
+    # PATCH 评论：端点形状为 `repos/o/r/issues/comments/<id>`（argv[4]），
+    # 正文在 `-f body=...`。曾误从 argv[6] 取 id——to_i 得 0，永远找不到
+    # 既有评论而静默返回 id:null，使「更新既有租约评论」的用例假通过。
     if argv[0] == "gh" && argv[1] == "api" && argv[2] == "-X" && argv[3] == "PATCH" &&
-       joined.include?("issues/comments/")
-      comment = @comments.find { |item| item["id"] == argv[6].to_i }
+       (m = argv[4].to_s.match(%r{repos/o/r/issues/comments/(\d+)\z}))
+      body_arg = argv.find { |arg| arg.to_s.start_with?("body=") }
+      comment = @comments.find { |item| item["id"] == m[1].to_i }
       return JSON.generate({id: comment ? comment["id"] : nil}) unless comment
 
-      comment["body"] = argv[6].to_s.sub(/\Abody=/, "")
+      comment["body"] = body_arg.to_s.sub(/\Abody=/, "")
       return JSON.generate({id: comment["id"]})
     end
     # POST 评论：登记新评论（作者固定白名单成员）。
@@ -231,6 +235,19 @@ class CoordinatorClaimTest < Minitest::Test
       status = cli.run(["claim", "12", "--snapshot", snap, "--apply"])
       assert_equal 1, status
     end
+  end
+
+  # 夹具契约：PATCH 能按端点 id 找到既有评论并改正文，GET 回读拿到新正文。
+  # 这是 test_readback_failure_recovers_via_lease_id_without_double_lease
+  # 里「复用既有评论」路径成立的前提，单独钉住，避免夹具自身静默失效。
+  def test_fake_store_patch_updates_the_existing_comment
+    store = FakeGhStore.new
+    id = store.manual_post(11, "原始正文")
+    store.call(["gh", "api", "-X", "PATCH", "repos/o/r/issues/comments/#{id}", "-f", "body=更新后的正文"])
+
+    listed = JSON.parse(store.call(["gh", "api", "repos/o/r/issues/11/comments?per_page=100&page=1"]))
+    assert_equal ["更新后的正文"], listed.map { |item| item["body"] },
+      "PATCH 必须命中既有评论并改正文，而不是返回 id:null 后静默不动"
   end
 end
 

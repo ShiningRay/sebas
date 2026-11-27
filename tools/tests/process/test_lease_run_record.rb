@@ -64,32 +64,37 @@ class RunRecordMigrationTest < Minitest::Test
     end
   end
 
+  # 必须打真实的 CLI#record_for：若在本文件复刻一段容量判断，删掉生产判断后
+  # 复刻版照样抛异常，用例仍绿（假通过）。
+  #
+  # record_for 的路径是 CWD 相对的（RunRecord::RUNS_DIR / DEFAULT_PATH），
+  # 因此把夹具按真实布局摆进临时目录再 chdir 进去，且不传 record 选项
+  # （传了会走 explicit.load 提前返回）。
   def test_migration_window_capacity_one_invalid_plan_on_multi_active
     Dir.mktmpdir do |dir|
-      runs = File.join(dir, "runs")
-      FileUtils.mkdir_p(runs)
-      File.write(File.join(runs, "7.json"), JSON.generate({"schema" => 2, "issue" => 7, "phase" => "claimed"}),
-        encoding: "UTF-8")
-      File.write(File.join(runs, "8.json"), JSON.generate({"schema" => 2, "issue" => 8, "phase" => "claimed"}),
-        encoding: "UTF-8")
-      legacy = File.join(dir, "run.json")
-      File.write(legacy, JSON.generate({"schema" => 2, "issue" => 99, "phase" => "claimed"}), encoding: "UTF-8")
+      Dir.chdir(dir) do
+        # 按生产布局摆：RunRecord::RUNS_DIR / DEFAULT_PATH 都相对 CWD。
+        runs = File.join(dir, SebasAgents::RunRecord::RUNS_DIR)
+        FileUtils.mkdir_p(runs)
+        File.write(File.join(runs, "7.json"),
+          JSON.generate({"schema" => 2, "issue" => 7, "phase" => "claimed"}), encoding: "UTF-8")
+        File.write(File.join(runs, "8.json"),
+          JSON.generate({"schema" => 2, "issue" => 8, "phase" => "claimed"}), encoding: "UTF-8")
+        legacy = File.join(dir, SebasAgents::RunRecord::DEFAULT_PATH)
+        File.write(legacy, JSON.generate({"schema" => 2, "issue" => 99, "phase" => "claimed"}),
+          encoding: "UTF-8")
 
-      # 迁移窗口（legacy run.json 在场）内两份活动记录 → 容量 1 → invalid_plan
-      error = assert_raises(SebasAgents::InvalidPlan) do
-        cli_record_for_with_migration(dir, legacy)
+        cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+
+        # 迁移窗口（legacy run.json 在场）内两份活动记录 → 容量 1 → invalid_plan
+        error = assert_raises(SebasAgents::InvalidPlan) { cli.send(:record_for, {}) }
+        assert_includes error.message, "迁移期容量"
+
+        # 旧记录撤掉即离开迁移窗口：同样两份活动记录应正常取到首份（不再报错）。
+        FileUtils.rm(legacy)
+        assert_equal 7, cli.send(:record_for, {})["issue"]
       end
-      assert_includes error.message, "迁移期容量"
     end
-  end
-
-  # 复刻 record_for 的迁移窗口语义：legacy 在场 + runs/ 多活动 → invalid_plan
-  def cli_record_for_with_migration(dir, legacy)
-    active = SebasAgents::RunRecord.active_records(File.join(dir, "runs"))
-    if active.length > 1 && File.exist?(legacy)
-      raise SebasAgents::InvalidPlan, "迁移窗口内存在 #{active.length} 份活动运行记录（迁移期容量 1），需人工确认迁移"
-    end
-    active.first
   end
 
 end

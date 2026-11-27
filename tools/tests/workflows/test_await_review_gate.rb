@@ -174,11 +174,29 @@ class AwaitReviewGateTest < Minitest::Test
   end
 
   # 找旧评论必须翻页：PR 评论过百时旧评论落第二页，只看首页会重复发布。
-  # gh_reader 是测试桩看不出参数化行为，所以同时钉住源码里的 --paginate。
+  #
+  # 不能对整份源码做字符串包含断言：`fetch_reviews` 里也有 `paginate: true`，
+  # 只删掉 find_comment 的那一个仍然全绿。这里替掉最外层 run_command 捕获
+  # 真实 argv，确认 find_comment 发出去的 gh 命令确实带 --paginate。
   def test_find_comment_paginates
-    source = File.read(File.expand_path("../../await_review.rb", __dir__), encoding: "UTF-8")
-    assert_includes source, "paginate: true", "find_comment 必须传 paginate: true"
-    assert_includes source, '"--paginate"', "gh_json 必须真的加 --paginate"
+    captured = []
+    AwaitReview.singleton_class.alias_method(:__orig_run_command, :run_command)
+    AwaitReview.define_singleton_method(:run_command) do |*command, **_opts|
+      captured << command
+      ["[]", Struct.new(:success?).new(true)]
+    end
+
+    begin
+      assert_nil AwaitReview.find_comment("o/r", "1")
+    ensure
+      AwaitReview.singleton_class.alias_method(:run_command, :__orig_run_command)
+      AwaitReview.singleton_class.send(:remove_method, :__orig_run_command)
+    end
+
+    assert_equal 1, captured.length, "find_comment 应只发一次（单页语义由 gh 展开）"
+    assert_includes captured.first, "--paginate", "find_comment 的 gh 调用必须带 --paginate"
+    assert(captured.first.any? { |arg| arg.include?("/issues/1/comments") },
+      "必须查 PR 评论端点：#{captured.first.inspect}")
   end
 
   # conclusion=success 只代表审查流程跑完；有可修意见也照样放行，
