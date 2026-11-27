@@ -132,12 +132,15 @@ concurrency:
 
 **超过 30 天或 50 次上限时**，第 1 条失效。剩下三条路，都由 Maintainer 决定：
 
-- **临时分支重跑**：从该 merge commit 拉一个临时分支（如 `recovery/<sha前8位>`）推上去，
-  触发一次新的 CI run。若测试本身可通过，新 run 成功即产生「head_sha = merge commit」的
-  成功记录；随后走第 2 条补登记，`resolve_checks_url` 在 `url` 为空的分支里用
+- **临时分支重跑**：从该 merge commit 拉一个临时分支（如 `recovery/<sha前8位>`）推上去。
+  注意 `ci.yml` 的 `push` 触发器只监听 `main`，推 recovery 分支**不会**触发 CI——
+  必须手动指定该分支运行：`gh workflow run ci.yml --ref recovery/<sha前8位>`。
+  若测试本身可通过，新 run 成功即产生「head_sha = merge commit」的成功记录；
+  随后走第 2 条补登记，`resolve_checks_url` 在 `url` 为空的分支里用
   `actions/runs?head_sha=<merge_commit_sha>` 查成功 run，能直接命中。用完删分支。
   依据是 `tools/evidence_register.rb` 的两段实现：dispatch 路径按 `head_sha` 查 run，
-  `merged_into_main?` 用 `git merge-base --is-ancestor` 证实该 sha 属于 main。
+  `merged_into_main?` 用 `git merge-base --is-ancestor` 证实该 sha 属于 main；
+  `ci.yml` 的 `workflow_dispatch` 无分支限制，可在任意 ref 上手动运行。
 - **走第 2 条补登记**：要求该 merge commit 已有可查的成功 CI；否则脚本必然拒绝，
   不能降格放行。
 - **人工裁决该卡不可自动解锁**：在 issue 上记 `needs:human` 并写明原因，由 Maintainer
