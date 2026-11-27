@@ -5,7 +5,19 @@
 #       docs/design/process/implementer-loop.md（验收契约）。
 #
 # 注意：本文件只影响 review 的**提示质量**，不构成门禁。
-# 真正的门禁是 CI 四个必检 + `verify merge --pre`。
+# 真正的门禁是 CI 六项必检（spec×3 / ameba / verify / await-review）+ `verify merge --pre`。
+#
+# 门闸约定：CI 的 `await-review` 会等本 App 在 PR head 上的 check run 收尾；
+# 收尾后读本轮 review 正文里的 `Actionable comments posted: N`，N>0 就判整改、
+# 矩阵不跑、job 变红（见 docs/design/process/development-workflow.md §4）。
+# 因此这里的行为会直接影响 PR 的等待与放行：
+#   - `reviews.auto_review.drafts: false` —— draft PR 永远等不到审查，
+#     门闸靠 fail-open 放行（tools/await_review.rb 先判 draft 再等）。
+#   - 若把某项检查从 App 侧配成 skip，对应 PR 会等到超时才放行。
+#   - `path_filters` 把改动全排除时同样不会产生 check run，走超时放行。
+#   - **本文件改掉了 actionable 文案措辞**（如不再写 `Actionable comments posted: N`），
+#     门闸会当作「无整改项」放行——改措辞时请同步 tools/await_review.rb 的正则。
+#   - 用 thread 手动 resolve 不会绕开门闸：判定看的是 review 正文，不是 thread 状态。
 version: 2
 
 language: zh-CN
@@ -79,7 +91,12 @@ reviews:
       instructions: |
         这是 Agent 流程工具，与角色契约强绑定。请特别关注：
         1. **fail-closed**：元数据缺失、身份不可信、结构非法时必须拒绝执行，
-           不得静默放行或降级为「跳过」。
+           不得静默放行或降级为「跳过」。**例外**：`tools/await_review.rb` 是
+           CI 门闸，按 development-workflow.md §4 分两段：排序阶段故意 fail-open
+           （缺环境变量、读接口失败、审查方不出结果、读不到 review 时返回 0 并打
+           warning 是**预期行为**）；整改阶段是真判定（review 里
+           `Actionable comments posted: N` 且 N>0 时返回 1，矩阵不跑）。
+           **不要**把它改成全程 fail-closed，也不要建议去掉整改判定。
         2. **幂等**：重复运行不得产生重复写入（评论、正文块、标签）。
         3. **测试**：新增分支应有对应用例；断言要能真正区分行为差异。
         4. 注释用中文，且解释「为什么」而非复述代码。

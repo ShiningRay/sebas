@@ -203,7 +203,8 @@ issue 开工（status: Todo → In progress，tools/sebas-process claim）
   → 实现，在对应 feat/… / fix/… / docs/… 分支
   → 提 PR，body 写 "Fixes #<issue号>"
   → status 推进到 In review（tools/sebas-process mark-review）
-  → PR 过 CI + CodeRabbit review，thread 全 resolve
+  → PR 过 CodeRabbit review（门闸 await-review 收尾后矩阵才起跑）
+  → CI 全绿 + thread 全 resolve
   → squash 合并进 main
   → GitHub 识别 Fixes #n 自动关闭 issue（status 自动变 Done）
   → 回 issue 的「证据」节填写实际验证结果
@@ -220,11 +221,28 @@ issue 开工（status: Todo → In progress，tools/sebas-process claim）
 
 - squash-only（`allow_merge_commit=false`，`allow_squash_merge=true`）
 - `delete_branch_on_merge=true`
-- 必检 contexts：`spec / ubuntu-latest`、`spec / macos-latest`、`spec / windows-latest`、`ameba`
+- 必检 contexts：`spec / ubuntu-latest`、`spec / macos-latest`、`spec / windows-latest`、`ameba`、`verify`、`await-review`
 - `strict=true`（要求 PR 与 main 同步）
 - `enforce_admins=true`（admin 也逃不过保护）
 - `required_approving_review_count=0`（不需要人工 approve）
 - `required_conversation_resolution=true`（所有 review thread 必须 resolve）
+
+### 门闸：先 review，再跑 CI；有问题就先整改
+
+`await-review` 是 PR 门闸：CodeRabbit 审完，三平台矩阵与 ameba 才起跑；
+审查提出需整改项时矩阵直接不跑，等改完再 push。两条都为了不把 runner
+烧在废稿上（矩阵 1-2 分钟就绿，审查要 5-7 分钟）。
+
+判定分两段：排序阶段 fail-open（draft、超时、审查中断都放行），
+整改阶段是真判定（读当前 head 的 review，匹配 `Actionable comments posted: N`，
+N>0 即 job 红）。判出问题时贴一条带 marker 的清单评论，重跑更新同一条。
+
+门闸变红是安全的，因为 `await-review` 本身已是分支保护必检——
+否则 GitHub 会把「依赖失败导致下游 skip」当成不阻塞合并，等于放行。
+这两条互为条件，改动任一处都要核对另一处。
+
+完整规则（两阶段表、时间窗、超时分层、为什么不能退回出现窗）见
+[pr-gate.md](pr-gate.md)。
 
 ### 合并自动化层级
 

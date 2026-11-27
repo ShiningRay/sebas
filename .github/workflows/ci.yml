@@ -88,6 +88,89 @@ jobs:
 
           echo "Changed files:" && printf '%s\n' "$changed"
 
+  # 「先 review，再跑 CI」的门闸：审查没跑完不跑矩阵；审查提出整改项也不跑。
+  #
+  # 动机：原先 CodeRabbit 与矩阵并行，矩阵 1-2 分钟就绿、审查要 5-7 分钟
+  # （实测 PR #230/#231/#237/#238），实现方按绿灯推进、收到意见再推 commit，
+  # 一整轮三平台白烧。更糟的是先跑完才发现要改，等于把 runner 烧在废稿上。
+  #
+  # 判定逻辑见 tools/await_review.rb。本 job 现在是**真判定**：脚本返回非 0
+  # 时 job 红，下游 spec / ameba 不跑。
+  #
+  # 为什么敢让它红（此前口径正相反）：GitHub 文档写明「依赖失败 job 的 job 会
+  # 被 skipped 且可能不阻塞合并」。所以只有把 await-review 本身加进分支保护的
+  # 必检清单，skip 才不会变成「放行」。仓库已把它设为必检（见
+  # docs/design/process/development-workflow.md §4 的必检 contexts）。
+  # 若这道必检被移除，请同时把下面的 continue-on-error 改回 true——
+  # 否则矩阵被 skip 而 PR 仍可能合入，等于绕过 spec/ameba。
+  #
+  # 非 PR 事件（push:main / workflow_dispatch）没有待审对象，job 直接成功：
+  # 这里不能用 job-level `if` 跳过，needs 视 skipped 为不满足，下游会跟着 skip。
+  await-review:
+    name: await-review
+    runs-on: ubuntu-latest
+    # 同 job 内的等待步骤还有自己的 timeout-minutes（16min），这里留 4 分钟
+    # 给 checkout / Ruby 选择 / 收尾。两层超时都必要：步骤超时管「脚本挂住」，
+    # job 超时管「步骤声明缺失或 checkout 卡住」。
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: read
+      # 整改清单评论要写在 PR 上；只在判定出问题时用。
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Not a pull request
+        if: github.event_name != 'pull_request'
+        run: echo "非 PR 事件，无需等待审查"
+
+      - name: Checkout
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # 与 docs / verify 同口径：tools/** 的解释器统一取自 .ruby-version，
+      # 不用镜像默认 ruby（可能低于下限）。这一段在 ci.yml 内重复出现，
+      # 刻意不抽 composite action——它是门闸的启动路径，少一层间接更好查。
+      - name: Select preinstalled Ruby
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          want="$(cat .ruby-version)"
+          want_minor="$(echo "$want" | cut -d. -f1-2)"
+          ge() { printf '%s\n%s\n' "$2" "$1" | sort -V -C; }
+
+          best=""
+          for dir in /opt/hostedtoolcache/Ruby/*/x64; do
+            [ -x "$dir/bin/ruby" ] || continue
+            version="$("$dir/bin/ruby" -e 'print RUBY_VERSION')"
+            ge "$version" "$want_minor" || continue
+            if [ -z "$best" ] || ge "$version" "$best_version"; then
+              best="$dir"; best_version="$version"
+            fi
+          done
+
+          if [ -z "$best" ]; then
+            echo "::error::镜像未预装 Ruby >= $want_minor（pin $want），门闸无法判定"
+            exit 1
+          fi
+          echo "$best/bin" >> "$GITHUB_PATH"
+          echo "selected Ruby $best_version from $best"
+
+      - name: Await review on the head commit
+        if: github.event_name == 'pull_request'
+        # 脚本自己会 fail-open，但它只在两次轮询之间检查 deadline，
+        # 拦不住一次挂住的 gh 调用。步骤级超时兜住这种情形：超时被杀
+        # 算 job 失败，但那时 gh 已经挂死，宁可让门闸红一次也不占着队列。
+        timeout-minutes: 16
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ruby tools/await_review.rb
+
   # 公开仓库的信任边界：PR 的 workflow 定义来自 PR 的 merge commit，贡献者可以改写它，
   # 所以 pull_request 事件一律用 GitHub 托管的 macos-latest。只有 push:main、tag、
   # workflow_dispatch 这类可信任 ref 才落到 self-hosted 的 macos-ci 上（那台机器上有
@@ -95,7 +178,9 @@ jobs:
   # "spec / macos-latest"。
   spec:
     name: spec / ${{ matrix.runner }}
-    needs: changes
+    # 等审查收尾再起三平台矩阵。docs / verify 不在此列：它们数秒完成，
+    # 先给文档与锚点的反馈比排队等审查更有用。
+    needs: [changes, await-review]
     strategy:
       fail-fast: false
       matrix:
@@ -143,7 +228,7 @@ jobs:
 
   lint:
     name: ameba
-    needs: changes
+    needs: [changes, await-review]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -258,6 +343,8 @@ jobs:
           ruby tools/test_evidence_register.rb
           ruby tools/test_digest.rb
           ruby tools/test_check_proposal_paths.rb
+          ruby tools/test_await_review.rb
+          ruby tools/test_ci_workflow.rb
 
       - name: Smoke test agent CLI
         run: |
