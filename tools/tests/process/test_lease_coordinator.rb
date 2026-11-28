@@ -12,6 +12,8 @@ require_relative "../../agents/lib/sebas_agents"
 
 # 有状态的假 gh：评论写进内存仓库，GET 回读该卡全量。
 class FakeGhStore
+  include RefLockStub
+
   attr_reader :comments, :labels
 
   def initialize(fail_comments_get_on: [])
@@ -28,6 +30,14 @@ class FakeGhStore
   end
 
   def call(argv)
+    # 跨机 ref 锁路由（#306）：claim 写段会先拿锁，未命中走原有评论路由。
+    if (read = ref_lock_read(argv))
+      return JSON.generate(read)
+    end
+    if (write = ref_lock_write(argv))
+      return write
+    end
+
     joined = argv.join(" ")
     # PATCH 评论：端点形状为 `repos/o/r/issues/comments/<id>`（argv[4]），
     # 正文在 `-f body=...`。曾误从 argv[6] 取 id——to_i 得 0，永远找不到

@@ -159,8 +159,30 @@ class QueueCommandTest < Minitest::Test
       File.write(changelog, "## [Unreleased]\n", encoding: "UTF-8")
 
       Dir.chdir(dir) do
-        status, out, = run_cli(["queue", "--snapshot", snap_path, "--changelog", changelog, "--apply"])
-        payload = JSON.parse(out)
+        # --apply 会先拿跨机 ref 锁（#306）：注入带 ref 路由的替身 runner，
+        # 锁的读写不落真 gh。verify_pre 步骤本身只读快照与本地记录。
+        fake = Class.new(SebasAgents::CommandRunner) do
+          include RefLockStub
+
+          def run!(*argv, chdir: Dir.pwd)
+            if (write = ref_lock_write(argv))
+              return write
+            end
+            ""
+          end
+
+          def json!(*argv, chdir: Dir.pwd)
+            read = ref_lock_read(argv)
+            return read if read
+
+            ""
+          end
+        end
+        out = StringIO.new
+        cli = SebasAgents::CLI.new(out: out, err: StringIO.new)
+        cli.define_singleton_method(:runner) { |_options| fake.new(dry_run: false) }
+        status = cli.run(["queue", "--snapshot", snap_path, "--changelog", changelog, "--apply"])
+        payload = JSON.parse(out.string)
         # 规划阶段给出 verify_pre（尚无核验记录）
         assert_equal "verify_pre", payload["queue"]["step"]
         # 执行阶段真的跑了核验并落了记录

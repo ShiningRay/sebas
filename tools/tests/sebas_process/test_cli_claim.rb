@@ -151,13 +151,25 @@ end
 
       # 假 runner：只让 add_label 失败，其余（评论/status/回读）成功。
       fake = Class.new(SebasAgents::CommandRunner) do
+        include RefLockStub
+
         def run!(*argv, chdir: Dir.pwd)
+          # 跨机 ref 锁路由（#306）：claim 写段先拿锁。
+          if (write = ref_lock_write(argv))
+            return write
+          end
+          # 时间真实感：status PATCH 成功后单卡读才返回 In progress——
+          # 认领前的活状态复查（#306）读的是写前状态，必须不是执行中。
+          @status_written = true if argv.include?("-X") && argv.any? { |arg| arg.start_with?("status=") }
           raise SebasAgents::CommandError.new("label boom", command: argv) if argv.include?("--add-label")
 
           ""
         end
 
         def json!(*argv, chdir: Dir.pwd)
+          if (read = ref_lock_read(argv))
+            return read
+          end
           joined = argv.join(" ")
           # 租约唯一性预检要读已发评论：返回空数组（尚无租约）。
           return [] if joined.include?("/comments?")
@@ -166,7 +178,8 @@ end
           # `joined.exclude?("/comments")`，exclude? 是 ActiveSupport 扩展，
           # 纯 Ruby 下会 NoMethodError——本用例的标签失败路径走不到该行，
           # 静默掩盖了它，但仍属不可达的错误代码。
-          {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS},
+          status_name = @status_written ? SebasAgents::Model::STATUS_IN_PROGRESS : SebasAgents::Model::STATUS_TODO
+          {"status" => {"name" => status_name},
            "labels" => [{"name" => SebasAgents::Model::IN_PROGRESS_LABEL}]}
         end
       end
@@ -205,12 +218,20 @@ def test_claim_label_readback_mismatch_records_aborted
     File.write(path, JSON.generate(data), encoding: "UTF-8")
 
     fake = Class.new(SebasAgents::CommandRunner) do
+      include RefLockStub
+
       def initialize(*args, **opts)
         super
         @created_lease_body = nil
       end
 
       def run!(*argv, chdir: Dir.pwd)
+        # 跨机 ref 锁路由（#306）：claim 写段先拿锁。
+        if (write = ref_lock_write(argv))
+          return write
+        end
+        # 时间真实感（#306）：status PATCH 成功后单卡读才返回 In progress。
+        @status_written = true if argv.include?("-X") && argv.any? { |arg| arg.start_with?("status=") }
         # 记下租约评论正文，供后续回读当作既有凭据返回。
         body_arg = argv.find { |arg| arg.to_s.start_with?("body=") }
         @created_lease_body = body_arg.sub(/\Abody=/, "") if body_arg&.include?("sebas-lease")
@@ -218,6 +239,9 @@ def test_claim_label_readback_mismatch_records_aborted
       end
 
       def json!(*argv, chdir: Dir.pwd)
+        if (read = ref_lock_read(argv))
+          return read
+        end
         joined = argv.join(" ")
         if joined.include?("/comments?")
           # 预检阶段尚未发评论 → 空；回读阶段返回刚发出的凭据。
@@ -227,7 +251,8 @@ def test_claim_label_readback_mismatch_records_aborted
         end
 
         # 单卡回读：status 已写入，标签不在——只有这一环为假。
-        {"status" => {"name" => SebasAgents::Model::STATUS_IN_PROGRESS}, "labels" => []}
+        status_name = @status_written ? SebasAgents::Model::STATUS_IN_PROGRESS : SebasAgents::Model::STATUS_TODO
+        {"status" => {"name" => status_name}, "labels" => []}
       end
     end
 
@@ -275,9 +300,12 @@ end
 
       # 用假 runner：写 status 抛错，其余按成功返回。
       fake = Class.new(SebasAgents::CommandRunner) do
+        include RefLockStub
+
         def run!(*argv, chdir: Dir.pwd)
-          if argv.any? { |arg| arg.start_with?("status=") }
-            raise SebasAgents::CommandError.new("boom", command: argv)
+          # 跨机 ref 锁路由（#306）：claim 写段先拿锁。
+          if (write = ref_lock_write(argv))
+            return write
           end
           # 租约唯一性预检要读 issue comments（M4x-WP2）：分页 GET 返回空数组即可。
           if argv.first == "gh" && argv[1] == "api" &&
@@ -285,8 +313,22 @@ end
              argv.none? { |arg| %w[-X -f].include?(arg) }
             return "[]"
           end
-
+          # 单卡读（认领前的活状态复查 #306）：写前返回 Todo。
+          if argv.first == "gh" && argv[1] == "api" && !argv.include?("-X") &&
+             argv[2].to_s.match?(%r{repos/[^/]+/[^/]+/issues/\d+\z})
+            return JSON.generate({"status" => {"name" => SebasAgents::Model::STATUS_TODO}, "labels" => []})
+          end
+          if argv.include?("-X") && argv.any? { |arg| arg.start_with?("status=") }
+            raise SebasAgents::CommandError.new("boom", command: argv)
+          end
           ""
+        end
+
+        def json!(*argv, chdir: Dir.pwd)
+          read = ref_lock_read(argv)
+          return read if read
+
+          super
         end
       end
 

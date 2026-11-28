@@ -36,7 +36,7 @@ module SebasAgents
               mergeStateStatus
               url
               isCrossRepository
-              closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number } }
+              closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number repository { nameWithOwner } } }
             }
           }
         }
@@ -740,6 +740,25 @@ end
         elsif item["state"].to_s.casecmp?("OPEN")
           fetch_checks(item["number"], expected_head: item["headRefOid"])
         end
+        # closingIssuesReferences 可含**跨仓库** issue（`Fixes owner/repo#N`
+        # 有效，实证 hive-mind#2561 → start#263）：按 nameWithOwner 拆分，
+        # 本仓编号进 closing_issues（既有消费方按同仓语义使用），异仓编号
+        # 进 foreign_issues 供仓库级背压扫描排除（#307 五轮 review）。
+        # 比较忽略大小写（@repo 来自 origin/SEBAS_REPO/--repo，大小写未
+        # 规范化，#307 七轮 review）；归属缺失按结构非法拒绝，不静默归异仓。
+        closing_refs = Array(item["closingIssuesReferences"])
+        closing_refs.each do |ref|
+          next if ref["number"].is_a?(Integer) &&
+                  ref.dig("repository", "nameWithOwner").is_a?(String) &&
+                  !ref.dig("repository", "nameWithOwner").empty?
+
+          raise CommandError.new(
+            "PR ##{item["number"]} 的 closingIssuesReferences 节点缺编号或仓库归属：#{ref.inspect[0, 160]}",
+            command: ["gh", "api", "graphql"]
+          )
+        end
+        closing, foreign = closing_refs.map { |ref| [ref["number"], ref.dig("repository", "nameWithOwner")] }
+          .partition { |_number, owner| owner.casecmp?(@repo) }
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -749,7 +768,8 @@ end
           "merge_state_status" => item["mergeStateStatus"],
           "checks" => checks,
           "review_threads" => threads,
-          "closing_issues" => Array(item["closingIssuesReferences"]).map { |ref| ref["number"] },
+          "closing_issues" => closing.map(&:first),
+          "foreign_issues" => foreign.map(&:first),
           "url" => item["url"]
         ).merge_pr_details(details)
       end
@@ -846,7 +866,9 @@ end
         "headRefOid" => node["headRefOid"],
         "state" => node["state"],
         "mergeStateStatus" => node["mergeStateStatus"],
-        "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"] } },
+        # repository{nameWithOwner} 必须透传：下游按它拆分本仓/异仓关联
+        # （#307 五轮 review）。剥离会让本仓编号全判异仓。
+        "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"], "repository" => n["repository"] } },
         "url" => node["url"],
         "isCrossRepository" => false
       }
@@ -1061,6 +1083,94 @@ end
         data = YAML.safe_load_file(path)
         Array(data && data["coordinators"]).map(&:to_s).reject(&:empty?)
       end
+    end
+
+    # 跨机 ref 锁 TTL（#306）：.github/agents.yml 的 `lock_ttl_minutes` 键，分钟。
+    # 缺省 60——锁是命令级（秒级），TTL 只决定崩溃残锁多久后允许异机接管；
+    # 任务小时级，宁大勿小：调大不削弱互斥、只拉长残锁等待。
+    # 仅接受正整数（口径同 capacity）：显式 null、浮点、字符串一律 fail-closed。
+    def lock_ttl_seconds
+      @lock_ttl_seconds ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return RefLock::DEFAULT_TTL_MINUTES * 60 unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        # 空文件（nil）按缺键处理；根值不是映射（String/Array/false 等结构
+        # 非法）直接拒绝，不得静默回落默认 TTL（#307 七轮 review）。
+        unless data.nil? || data.is_a?(Hash)
+          raise CommandError.new(".github/agents.yml 的根值必须是映射：#{data.inspect[0, 120]}", command: ["read", path])
+        end
+        return RefLock::DEFAULT_TTL_MINUTES * 60 unless data&.key?("lock_ttl_minutes")
+
+        raw = data["lock_ttl_minutes"]
+        unless raw.is_a?(Integer) && raw >= 1
+          raise CommandError.new(".github/agents.yml 的 lock_ttl_minutes 必须是正整数（分钟）：#{raw.inspect}", command: ["read", path])
+        end
+
+        raw * 60
+      end
+    end
+
+    # 演练模式透传（#306）：锁的获取/释放据此跳过远端访问——dry-run 没有
+    # 写动作，互斥无从谈起；离线快照下 GitHub 侧锁也不可读。
+    def dry_run?
+      @runner.dry_run?
+    end
+
+    # ---- git-ref 锁原语（#306）：ref 创建即服务端原子 CAS ----
+    # GET（matching-refs / commits）天然只读；三个写意图在 ALLOWED_WRITES
+    # 有逐条正则，ref 名限制在 refs/locks/sebas/ 前缀内。
+
+    # 建无父 commit（空树），message 即锁凭据 JSON。
+    def create_lock_commit(message, allow_write: false)
+      call = ["gh", "api", "repos/#{@repo}/git/commits", "-f", "tree=#{RefLock::EMPTY_TREE_SHA}", "-f", "message=#{message}"]
+      allow_write ? @runner.with_write(:create_lock_commit) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    # 建锁 ref。并发同名建 ref 时 GitHub 返回 422 "Reference already exists"，
+    # 由 RefLock 捕获判定为未拿到锁。
+    def create_lock_ref(ref, sha, allow_write: false)
+      call = ["gh", "api", "repos/#{@repo}/git/refs", "-f", "ref=#{ref}", "-f", "sha=#{sha}"]
+      allow_write ? @runner.with_write(:create_ref) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def delete_lock_ref(ref, allow_write: false)
+      # DELETE 路径参数与 matching-refs 同口径：不含前导 refs/（否则实际指向
+      # refs/refs/... 永远 404）。ref 名里的 / 编码成 %2F 防止被当路径分段。
+      call = ["gh", "api", "-X", "DELETE", "repos/#{@repo}/git/refs/#{ref.delete_prefix("refs/").gsub("/", "%2F")}"]
+      allow_write ? @runner.with_write(:delete_ref) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    # 删除容错：ref 已不存在（协议方先行删除，如接管声明竞争）按已删除处理，
+    # 不当失败上抛；其余错误照常抛。
+    def delete_lock_ref!(ref, allow_write: false)
+      delete_lock_ref(ref, allow_write: allow_write)
+    rescue CommandError => e
+      raise unless e.message.match?(/does\s+not\s+exist/i)
+
+      nil
+    end
+
+    # 锁内前置复查用的轻量读（#307 二轮 review）：不取全快照。
+    def issue_state(number)
+      @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")["state"].to_s
+    end
+
+    def pull_state(number)
+      @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}")["state"].to_s
+    end
+
+    # 按前缀查询锁 ref：matching-refs 的路径参数**不含** refs/ 前缀（官方口径，
+    # 如 matching-refs/tags/）；带 refs%2F 查询对已存在的锁返回空集，会让
+    # 持有者判定误判为无锁。创建/删除请求体仍用完整 ref 名。
+    def get_matching_refs(ref)
+      @runner.json!("gh", "api", "repos/#{@repo}/git/matching-refs/#{ref.delete_prefix("refs/").gsub("/", "%2F")}")
+    end
+
+    # 读锁凭据：message 即凭据 JSON。
+    def get_lock_commit(sha)
+      @runner.json!("gh", "api", "repos/#{@repo}/git/commits/#{sha}")
     end
 
     private

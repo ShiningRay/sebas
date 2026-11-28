@@ -10,6 +10,10 @@ module SebasAgents
     EXIT_OK = 0
     EXIT_REFUSED = 1
     EXIT_USAGE = 2
+    # 拿不到跨机 ref 锁（#306；续篇 §4 口径「第二实例退出码 2」）。
+    # 与 EXIT_USAGE 同值：本次调用都未执行写动作；输出 JSON 里以
+    # status=refused + lock_holder 与用法错误区分。
+    EXIT_LOCKED = 2
 
     def initialize(out: $stdout, err: $stderr)
       @out = out
@@ -366,6 +370,33 @@ end
         return EXIT_OK
       end
 
+      # 合并链全局锁（#306 / §7.2 合并串行）：run_queue 每轮只推进一步并立即
+      # 返回（CI 等待发生在两轮调用之间），锁只包住本轮一步的执行段。
+      merge_gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
+      merge_lock = acquire_ref_lock!(merge_gateway, ref: RefLock.merge_ref, purpose: "merge", payload: payload)
+      return EXIT_LOCKED if merge_lock.held?
+      payload["lock_takeover"] = merge_lock.previous if merge_lock.previous
+
+      code = nil
+      begin
+        code = queue_apply_step!(snap, options, payload, queue, merge_gateway)
+      rescue CommandError => e
+        payload["ok"] = false
+        payload["reasons"] = ["合并队列写段异常：#{e.message}"]
+        code = EXIT_REFUSED
+      ensure
+        finalize_lock_release!(merge_gateway, RefLock.merge_ref, merge_lock, payload)
+      end
+      code = EXIT_REFUSED if payload["lock_release_failed"]
+      Output.emit(payload, out: @out)
+      code
+    end
+
+    # 队列单步推进（--apply）：changelog / update_branch / verify_pre / merge 各
+    # 一轮一步。单步内的读改写（verify → 记 head → 复核 → 合并 → 回读）是
+    # 临界区，由调用方的 merge 锁串行化。只填 payload、返回退出码，输出由
+    # 调用方在锁释放后统一进行（review 整改：释放失败不得被业务结果掩盖）。
+    def queue_apply_step!(snap, options, payload, queue, merge_gateway)
       entry = queue.entries.first
       pr = snap.pull_request(entry.pr)
 
@@ -373,7 +404,7 @@ end
       # 永远停在 changelog，重跑队列仍是同一步。追加后再走一次标准合并路径。
       if entry.step == "changelog"
         result = append_changelog!(options, entry, snap)
-        Output.emit(payload.merge(result), out: @out)
+        payload.update(result)
         return result["ok"] ? EXIT_OK : EXIT_REFUSED
       end
 
@@ -382,7 +413,7 @@ end
       # 必须由下一轮的 verify merge --pre 与独立核验重新给结论。
       if entry.step == "update_branch"
         result = update_branch!(options, entry, snap)
-        Output.emit(payload.merge(result), out: @out)
+        payload.update(result)
         return result["ok"] ? EXIT_OK : EXIT_REFUSED
       end
 
@@ -391,7 +422,7 @@ end
       # 等于当前 head，而没有任何东西会把它写成非空，形成死锁。
       if entry.step == "verify_pre"
         result = run_queue_verify_pre(options, entry, snap)
-        Output.emit(payload.merge(result), out: @out)
+        payload.update(result)
         return result["ok"] ? EXIT_OK : EXIT_REFUSED
       end
 
@@ -400,7 +431,6 @@ end
         payload["step"] = entry.step
         payload["reasons"] = [queue.blocked_by]
         payload["ok"] = false
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
 
@@ -412,7 +442,6 @@ end
         payload["ok"] = false
         payload["reasons"] = ["verify merge --pre 未通过"] +
                              pre.to_h["items"].to_a.map { |item| item["message"] }
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
 
@@ -422,13 +451,13 @@ end
       remember_verified_head(options, entry.issue, pr.head_sha)
 
       # 快照是规划时取的，写之前必须重读：head 与 base 都可能已经变了。
-      gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
-      current = gateway.snapshot.pull_request(pr.number)
+      # （#307 review 整改：merge_gateway 与调用方持锁的是同一 runner，复用
+      # 它取新快照，保证合并门禁读到的远端状态在锁内。）
+      current = merge_gateway.snapshot.pull_request(pr.number)
       unless current&.open?
         payload["status"] = "refused"
         payload["ok"] = false
         payload["reasons"] = ["合并前复核：PR ##{pr.number} 已不是 open"]
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
       # 目标分支必须明确是 main。空值不放行：合并前复核的价值就在于「看到才认」，
@@ -437,24 +466,35 @@ end
         payload["status"] = "refused"
         payload["ok"] = false
         payload["reasons"] = ["合并前复核：PR ##{pr.number} 的目标分支是 #{current.base.inspect}（只允许 main；缺失即不可判定）"]
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
       if current.head_sha != pr.head_sha
         payload["status"] = "refused"
         payload["ok"] = false
         payload["reasons"] = ["合并前复核：head 已从 #{pr.head_sha[0, 8]} 变为 #{current.head_sha[0, 8]}，须重新核验"]
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
 
-      gateway.merge_pr(pr.number, pr.head_sha, allow_write: true)
-      merged = gateway.snapshot.pull_request(pr.number)
+      # 合并门禁的仓库级复核（#307 review 整改）：Evidence 背压不能只看本机
+      # 记录——另一台机器合并的卡在本机 runs/ 里没有记录，锁前快照也看不到
+      # 锁后发生的合并。锁内取全仓新快照，扫「已合并但 Evidence 未升级」的
+      # 卡，存在即停：main 侧 CI 的 pending 位只有一位，先升级再合下一张。
+      backlog = repo_pending_evidence!(merge_gateway.snapshot, skip_issue: entry.issue)
+      unless backlog.empty?
+        payload["status"] = "blocked"
+        payload["ok"] = false
+        payload["reasons"] = ["仓库级 Evidence 背压：" +
+                              backlog.map { |n| "##{n}" }.join("、") +
+                              " 已合并但 Evidence 未升级（merged_into_main != true），按串行单位先等升级完成（含未知/缺失）"]
+        return EXIT_REFUSED
+      end
+
+      merge_gateway.merge_pr(pr.number, pr.head_sha, allow_write: true)
+      merged = merge_gateway.snapshot.pull_request(pr.number)
       unless merged&.merged?
         payload["status"] = "aborted"
         payload["ok"] = false
         payload["reasons"] = ["合并后远端复核未确认 MERGED，需人工核对 PR ##{pr.number}"]
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
       # 第三次核对目标分支：gh pr merge 绑不住 base，写前复核与合并之间仍可能被改。
@@ -465,7 +505,6 @@ end
         payload["ok"] = false
         payload["reasons"] = ["合并后复核：PR ##{pr.number} 的目标分支是 #{merged.base.inspect}（缺失即不可判定），" \
                               "已合并但目标分支不可确认，须人工核对"]
-        Output.emit(payload, out: @out)
         return EXIT_REFUSED
       end
 
@@ -473,8 +512,32 @@ end
       payload["pr"] = pr.number
       payload["issue"] = entry.issue
       payload["head_sha"] = pr.head_sha
-      Output.emit(payload, out: @out)
       EXIT_OK
+    end
+
+    # 仓库级 Evidence 背压（#307 review 整改）：快照（state=all）里所有已合并
+    # PR 的关联卡，凡 Evidence 的 merged_into_main != true（含缺失/解析失败，
+    # 未知按未完成处理，口径同 pending_evidence_issues）即入列。
+    # skip_issue 是本轮正要合并的卡自身——它的 PR 还没合并，不构成背压。
+    # proposal 卡排除（#307 二轮 review）：登记脚本明确跳过 proposal，其
+    # Evidence 永远不会升级；历史设计 PR 合并后不得永久阻塞队列。
+    # 异仓编号（#307 五轮 review）：`Fixes owner/repo#N` 命中的异仓 issue
+    # 由 gateway 按 nameWithOwner 拆进 foreign_issues，closing_issues 恒为
+    # 本仓编号——本方法只扫 closing_issues，不做减法（同号异仓不得删除
+    # 本仓关联，#307 六轮 review）。
+    # 缺卡不排除（#307 三轮 review）：state=all 快照缺卡即分页/引用异常，
+    # snap_evidence_merged? 对缺卡返回 nil（未知），编号保留继续阻塞——
+    # 不静默放行。
+    def repo_pending_evidence!(fresh_snap, skip_issue: nil)
+      fresh_snap.pull_requests.select(&:merged?)
+        .flat_map(&:closing_issues)
+        .uniq.reject { |n| n == skip_issue }
+        .filter_map do |number|
+          issue = fresh_snap.issue(number)
+          next if issue&.proposal?
+
+          number unless snap_evidence_merged?(fresh_snap, number) == true
+        end
     end
 
     # 记录某卡当前 head 已通过 verify merge --pre。只动本卡记录，不碰远端。
@@ -725,118 +788,207 @@ end
         "reasons" => result.reasons
       }
       if options[:apply] && result.ready?
-        # 快照决定校验对象；写入必须落在同一仓库，否则会认领一张没校验过的卡。
-        repo = claim_write_repo(snap, options)
-        # 显式 --record 优先（测试与离线快照用）；缺省走 v2 per-issue 路径。
-        record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
-        gateway = GithubGateway.new(runner(options), repo: repo)
-        whitelist = gateway.coordinators
+        return claim_write_section!(snap, issue, options, payload)
+      end
 
-        # 租约唯一性预检（F9）：state != released 的租约评论已存在即拒绝——
-        # 重复认领判定的两种归宿（§5.2 + 续篇 F1/F4）：
-        # - 本地记录处于 claiming/aborted，且凭据身份能对上（lease_id 或评论
-        #   id 与记录一致）→ 恢复路径：复用既有凭据继续认领（不重发、不双开）；
-        # - 否则（无本地归属/已释放）→ 有主凭据即拒绝，fail-closed。
-        prior = record.load
-        comments = gateway.issue_comments(issue.number)
-        existing = Lease.active_lease(comments, author_whitelist: whitelist)
-        adopted = nil
-        if existing
-          recoverable = prior && %w[claiming aborted].include?(prior["phase"]) &&
-                        prior["branch"] == existing["branch"] &&
-                        lease_identity_matches?(prior, existing, comments)
-          unless recoverable
-            payload["ok"] = false
-            payload["claim"] = "refused"
-            payload["reasons"] = ["issue ##{issue.number} 已持有有效租约（lease_id=#{existing["lease_id"].inspect}），且无可对账的本机记录，禁止重复认领"]
-            Output.emit(payload, out: @out)
-            return EXIT_REFUSED
-          end
-          adopted = existing
-        end
+      Output.emit(payload, out: @out)
+      payload["ok"] ? EXIT_OK : EXIT_REFUSED
+    end
 
-        generated_lease_id = adopted ? adopted["lease_id"] : Lease.new_lease_id
-        claimed_at = Time.now.utc.iso8601
-        payload["run_record"] = record.save({
-          "issue" => issue.number,
-          "branch" => "feat/#{issue.number}",
-          "phase" => "claiming",
-          "attempts" => 0,
-          # coordinator 串行认领（§5.2）：lease_id 生成后先落记录再发评论——
-          # 崩溃后按它检索复用既有评论，不会留下第二份有效凭据。
-          # 恢复路径复用既有凭据的 lease_id（补记评论 id 由下方回填）。
-          "lease_id" => generated_lease_id,
-          "scope" => issue.respond_to?(:automation) && issue.automation.is_a?(Hash) ? issue.automation["scope"] : nil,
-          "base_sha" => snap.main_sha,
-          "coordinator_id" => ENV["SEBAS_COORDINATOR_ID"] || Socket.gethostname,
-          "host" => Socket.gethostname,
-          "claimed_at" => claimed_at,
-          # F5：认领成功即写首个心跳，之后由 `heartbeat` 子命令续写。
-          # 没有这个起点，`heartbeat_expired?` 的「缺字段不判过期」会让新卡
-          # 永远不进入失联判定。
-          "last_heartbeat_at" => claimed_at
-        })
+    # 跨机 ref 锁通用入口（#306）：拿不到即输出 refused JSON，调用方返回
+    # EXIT_LOCKED。payload 用 lock=held 标记（不占用各命令自有 status 键的
+    # 语义——mark-review 的 status 是目标状态、unclaim 的 status 是生命周期）；
+    # lock_holder 带持有者凭据供排障。
+    def acquire_ref_lock!(gateway, ref:, purpose:, issue: nil, payload:)
+      # dry-run 演练没有写动作，互斥无从谈起（离线快照下 GitHub 侧锁也不可
+      # 读）——返回合成凭据直接放行，release! 同口径跳过。
+      if gateway.dry_run?
+        return RefLock::Outcome.new(status: :acquired, credential: {"lock_id" => nil},
+          holder: nil, reasons: [], previous: nil)
+      end
 
-        # 逐步留痕（CR-2/CR-3）：每步成功即更新对应标志，失败落 aborted 时
-        # 能精确说明远端推进到了哪一步。
-        record_saved = true
-        comment_created = false
-        status_written = false
-        label_written = false
-        confirmed = false
-        begin
-          # 发租约评论：先按生成的 lease_id 检索既有评论（评论已发出而 id 未
-          # 落盘的崩溃窗口），找到就复用；没有才发。随后把评论 id 补记为租约 id。
-          reused = Lease.find_by_lease_id(gateway.issue_comments(issue.number), generated_lease_id,
-            author_whitelist: whitelist)
-          if reused
-            comment_created = true
-            comment_id, _credential = reused
-          else
-            body = Lease.comment_body(
-              lease_id: generated_lease_id, issue: issue.number, branch: "feat/#{issue.number}",
-              base_sha: snap.main_sha, coordinator_id: payload["run_record"]["coordinator_id"],
-              host: payload["run_record"]["host"], claimed_at: claimed_at
-            )
-            posted = gateway.create_comment(issue.number, body, allow_write: true)
-            comment_id = posted.is_a?(Hash) ? posted["id"] : nil
-            comment_created = true
-          end
-          payload["run_record"] = record.save(payload["run_record"].merge("lease_id" => comment_id || generated_lease_id))
+      lock = RefLock.acquire!(gateway, ref: ref, purpose: purpose, issue: issue,
+        ttl_seconds: gateway.lock_ttl_seconds)
+      if lock.held?
+        payload["ok"] = false
+        payload["lock"] = "held"
+        payload["reasons"] = lock.reasons
+        payload["lock_holder"] = lock.holder == :unreadable ? "unreadable" : lock.holder
+        Output.emit(payload, out: @out)
+      end
+      lock
+    end
 
-          gateway.set_status(issue.number, Model::STATUS_IN_PROGRESS, allow_write: true)
-          status_written = true
-          gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
-          label_written = true
+    # 释放收尾（review 整改）：release 结果先于最终输出处理——释放失败/
+    # 异常必须进入最终可见结果，不得让先前填好的业务成功掩盖它。
+    # 声明锁的 TTL 判定与 acquire 同源（gateway.lock_ttl_seconds）。
+    def finalize_lock_release!(gateway, ref, lock, payload)
+      ok = begin
+        RefLock.release!(gateway, ref: ref, lock_id: lock.credential["lock_id"],
+          payload: payload, ttl_seconds: gateway.lock_ttl_seconds)
+      rescue StandardError => e
+        payload["lock_release_error"] = "锁 #{ref} 释放异常：#{e.message}"
+        false
+      end
+      return if ok
 
-          # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
-          confirmed = gateway.status?(issue.number, Model::STATUS_IN_PROGRESS) &&
-                      gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) &&
-                      lease_readback_confirmed?(gateway, issue.number, whitelist, payload["run_record"])
-        rescue CommandError => e
-          payload["reasons"] = ["认领写入失败：#{e.message}"]
-          confirmed = false
-        end
+      payload["ok"] = false
+      payload["lock_release_failed"] = true
+      msg = payload.delete("lock_release_mismatch") || payload.delete("lock_release_error")
+      (payload["reasons"] ||= []) << msg if msg
+    end
 
-        if confirmed
-          payload["run_record"] = record.save(payload["run_record"].merge("phase" => "claimed"))
-          payload["claim"] = "claimed"
-        else
-          # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有被推进。
-          # lease_id 保留在记录里：恢复按它对账凭据（续篇 F1–F4），而不是重发评论。
-          payload["run_record"] = record.save(
-            payload["run_record"].merge("phase" => "aborted", "status_written" => status_written,
-                                        "label_written" => label_written)
-          )
+    # 认领写段（--apply，#306）：跨机 ref 锁包住「租约预检 → 发凭据 → 写状态 →
+    # 回读」整个临界区。GitHub 服务端原子 CAS 保证两台机器同时认领同一张卡时
+    # 恰一个拿到锁，另一个读出持有者凭据即退出——拿到锁的进程做租约预检，
+    # 天然看不到并发双凭据，F9 只兜底锁外故障。锁是命令级的：返回前释放。
+    # 输出在释放收尾之后统一进行（review 整改：释放失败不得被业务结果掩盖）。
+    def claim_write_section!(snap, issue, options, payload)
+      # 快照决定校验对象；写入必须落在同一仓库，否则会认领一张没校验过的卡。
+      repo = claim_write_repo(snap, options)
+      # 显式 --record 优先（测试与离线快照用）；缺省走 v2 per-issue 路径。
+      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
+      gateway = GithubGateway.new(runner(options), repo: repo)
+      whitelist = gateway.coordinators
+      ref = RefLock.lease_ref(issue.number)
+      lock = acquire_ref_lock!(gateway, ref: ref, purpose: "lease", issue: issue.number, payload: payload)
+      return EXIT_LOCKED if lock.held?
+      payload["lock_takeover"] = lock.previous if lock.previous
+
+      code = nil
+      begin
+        code = claim_write_body!(snap, issue, options, payload, record, gateway, whitelist)
+      rescue CommandError => e
+        payload["ok"] = false
+        (payload["reasons"] ||= []) << "认领写段异常：#{e.message}"
+        code = EXIT_REFUSED
+      ensure
+        finalize_lock_release!(gateway, ref, lock, payload)
+      end
+      code = EXIT_REFUSED if payload["lock_release_failed"]
+      Output.emit(payload, out: @out)
+      code
+    end
+
+    # 认领写段本体：只填 payload、返回退出码，不做输出（由调用方在锁释放后
+    # 统一 emit）。
+    def claim_write_body!(snap, issue, options, payload, record, gateway, whitelist)
+      # 租约唯一性预检（F9）：state != released 的租约评论已存在即拒绝——
+      # 重复认领判定的两种归宿（§5.2 + 续篇 F1/F4）：
+      # - 本地记录处于 claiming/aborted，且凭据身份能对上（lease_id 或评论
+      #   id 与记录一致）→ 恢复路径：复用既有凭据继续认领（不重发、不双开）；
+      # - 否则（无本地归属/已释放）→ 有主凭据即拒绝，fail-closed。
+      prior = record.load
+      comments = gateway.issue_comments(issue.number)
+      existing = Lease.active_lease(comments, author_whitelist: whitelist)
+      adopted = nil
+      if existing
+        recoverable = prior && %w[claiming aborted].include?(prior["phase"]) &&
+                      prior["branch"] == existing["branch"] &&
+                      lease_identity_matches?(prior, existing, comments)
+        unless recoverable
           payload["ok"] = false
-          payload["claim"] = "claim_aborted"
-          payload["reasons"] ||= []
-          payload["reasons"] << "认领步骤未全部确认：" \
-            "record=#{record_saved} comment=#{comment_created} status=#{status_written} " \
-            "label=#{label_written} readback=#{confirmed}；远端可能已推进，恢复按 lease_id 对账"
+          payload["claim"] = "refused"
+          payload["reasons"] = ["issue ##{issue.number} 已持有有效租约（lease_id=#{existing["lease_id"].inspect}），且无可对账的本机记录，禁止重复认领"]
+          return EXIT_REFUSED
+        end
+        adopted = existing
+      end
+
+      # 活状态复查（#306）：目标卡已 status=执行中且无可对账的本机认领，
+      # 说明它被旧式/手工认领占有，不重复开工。恢复路径（adopted）放行：
+      # 半途崩溃的认领可能已写过 status，续做正是恢复的职责。
+      unless adopted
+        live_status = gateway.status_of(issue.number).to_s
+        if Model::WORKING_STATUSES.any? { |name| live_status.casecmp?(name) }
+          payload["ok"] = false
+          payload["claim"] = "refused"
+          payload["reasons"] = ["issue ##{issue.number} 已是 #{live_status} 且无可对账的本机认领，禁止重复认领"]
+          return EXIT_REFUSED
         end
       end
-      Output.emit(payload, out: @out)
+
+      generated_lease_id = adopted ? adopted["lease_id"] : Lease.new_lease_id
+      claimed_at = Time.now.utc.iso8601
+      payload["run_record"] = record.save({
+        "issue" => issue.number,
+        "branch" => "feat/#{issue.number}",
+        "phase" => "claiming",
+        "attempts" => 0,
+        # coordinator 串行认领（§5.2）：lease_id 生成后先落记录再发评论——
+        # 崩溃后按它检索复用既有评论，不会留下第二份有效凭据。
+        # 恢复路径复用既有凭据的 lease_id（补记评论 id 由下方回填）。
+        "lease_id" => generated_lease_id,
+        "scope" => issue.respond_to?(:automation) && issue.automation.is_a?(Hash) ? issue.automation["scope"] : nil,
+        "base_sha" => snap.main_sha,
+        "coordinator_id" => ENV["SEBAS_COORDINATOR_ID"] || Socket.gethostname,
+        "host" => Socket.gethostname,
+        "claimed_at" => claimed_at,
+        # F5：认领成功即写首个心跳，之后由 `heartbeat` 子命令续写。
+        # 没有这个起点，`heartbeat_expired?` 的「缺字段不判过期」会让新卡
+        # 永远不进入失联判定。
+        "last_heartbeat_at" => claimed_at
+      })
+
+      # 逐步留痕（CR-2/CR-3）：每步成功即更新对应标志，失败落 aborted 时
+      # 能精确说明远端推进到了哪一步。
+      record_saved = true
+      comment_created = false
+      status_written = false
+      label_written = false
+      confirmed = false
+      begin
+        # 发租约评论：先按生成的 lease_id 检索既有评论（评论已发出而 id 未
+        # 落盘的崩溃窗口），找到就复用；没有才发。随后把评论 id 补记为租约 id。
+        reused = Lease.find_by_lease_id(gateway.issue_comments(issue.number), generated_lease_id,
+          author_whitelist: whitelist)
+        if reused
+          comment_created = true
+          comment_id, _credential = reused
+        else
+          body = Lease.comment_body(
+            lease_id: generated_lease_id, issue: issue.number, branch: "feat/#{issue.number}",
+            base_sha: snap.main_sha, coordinator_id: payload["run_record"]["coordinator_id"],
+            host: payload["run_record"]["host"], claimed_at: claimed_at
+          )
+          posted = gateway.create_comment(issue.number, body, allow_write: true)
+          comment_id = posted.is_a?(Hash) ? posted["id"] : nil
+          comment_created = true
+        end
+        payload["run_record"] = record.save(payload["run_record"].merge("lease_id" => comment_id || generated_lease_id))
+
+        gateway.set_status(issue.number, Model::STATUS_IN_PROGRESS, allow_write: true)
+        status_written = true
+        gateway.add_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+        label_written = true
+
+        # 状态不是分布式事务：写后必须回读，只有回读确认才算 claimed。
+        confirmed = gateway.status?(issue.number, Model::STATUS_IN_PROGRESS) &&
+                    gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL) &&
+                    lease_readback_confirmed?(gateway, issue.number, whitelist, payload["run_record"])
+      rescue CommandError => e
+        payload["reasons"] = ["认领写入失败：#{e.message}"]
+        confirmed = false
+      end
+
+      if confirmed
+        payload["run_record"] = record.save(payload["run_record"].merge("phase" => "claimed"))
+        payload["claim"] = "claimed"
+      else
+        # 写入成功但回读失败时保留不确定性，恢复流程不能假设远端没有被推进。
+        # lease_id 保留在记录里：恢复按它对账凭据（续篇 F1–F4），而不是重发评论。
+        payload["run_record"] = record.save(
+          payload["run_record"].merge("phase" => "aborted", "status_written" => status_written,
+                                      "label_written" => label_written)
+        )
+        payload["ok"] = false
+        payload["claim"] = "claim_aborted"
+        payload["reasons"] ||= []
+        payload["reasons"] << "认领步骤未全部确认：" \
+          "record=#{record_saved} comment=#{comment_created} status=#{status_written} " \
+          "label=#{label_written} readback=#{confirmed}；远端可能已推进，恢复按 lease_id 对账"
+      end
+
       payload["ok"] ? EXIT_OK : EXIT_REFUSED
     end
 
@@ -1094,45 +1246,73 @@ end
       if options[:apply]
         repo = claim_write_repo(snap, options)
         gateway = GithubGateway.new(runner(options), repo: repo)
-        # 启动搬迁（Q10=B）：写路径才触发迁移（CR-0 只读路径不迁移）。
-        RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) unless options[:record]
-        # 已完成的卡保持 Done：写回 Todo 会抹掉终态，让看板重新出现待办。
-        unless issue.status?(Model::STATUS_DONE)
-          gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
-          unless gateway.status?(issue.number, Model::STATUS_TODO)
-            payload["reasons"] << "写回 status=#{Model::STATUS_TODO} 后回读不符，需人工核对"
-            payload["status"] = "aborted"
-            Output.emit(payload, out: @out)
-            return EXIT_REFUSED
-          end
+        # 收口写段同样受跨机 ref 锁保护（#306）：与 claim/mark-review 串行，
+        # 防止两台机器同时对同一张卡做收口与状态迁移。
+        ref = RefLock.lease_ref(issue.number)
+        lock = acquire_ref_lock!(gateway, ref: ref, purpose: "lease", issue: issue.number, payload: payload)
+        return EXIT_LOCKED if lock.held?
+        payload["lock_takeover"] = lock.previous if lock.previous
+
+        code = nil
+        begin
+          code = unclaim_write_body!(issue, options, payload, gateway, snap)
+        rescue CommandError => e
+          payload["ok"] = false
+          (payload["reasons"] ||= []) << "收口写段异常：#{e.message}"
+          code = EXIT_REFUSED
+        ensure
+          finalize_lock_release!(gateway, ref, lock, payload)
         end
-        record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
-        current = record.load
-        # 释放租约凭据（F12 + CR-4）：本地记录缺失/缺 lease_id 也要核对远端
-        # 租约——认领成功后丢本地记录时，卡上凭据仍必须置 released。
-        release_lease_comment!(gateway, issue.number, current, payload)
-        if payload["status"] == "aborted"
-          Output.emit(payload, out: @out)
-          return EXIT_REFUSED
+        # 成功时补齐终态字段；apply 分支只输出一份 JSON 并显式返回实际退出码
+        # （#307 二轮 review：不得落入非 apply 分支造成双输出/退出码恒 0）。
+        if code == EXIT_OK && !payload["lock_release_failed"]
+          payload["ok"] = true
+          payload["status"] = "released"
         end
-        # 人类可读信号同步摘除（CR-6）：凭据已释放，卡上不得残留执行中标签。
-        # 迁移窗口内的旧认领可能本就没打标签——缺席即无需摘除。
-        if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
-          gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
-          if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
-            payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍在，需人工核对"
-            payload["status"] = "aborted"
-            Output.emit(payload, out: @out)
-            return EXIT_REFUSED
-          end
-        end
-        # 只更新属于本 issue 的记录：传错 --record 时不能把别张卡的记录改脏。
-        record.save(current.merge("phase" => "released")) if current && current["issue"].to_i == issue.number
+        code = EXIT_REFUSED if payload["lock_release_failed"]
+        Output.emit(payload, out: @out)
+        return code
       end
 
       payload["ok"] = true
       payload["status"] = "released"
       Output.emit(payload, out: @out)
+      EXIT_OK
+    end
+
+    # 收口写段本体：只填 payload、返回退出码，不做输出。
+    def unclaim_write_body!(issue, options, payload, gateway, snap)
+      # 启动搬迁（Q10=B）：写路径才触发迁移（CR-0 只读路径不迁移）。
+      RunRecord.migrate_legacy!(options[:record] || RunRecord::DEFAULT_PATH) unless options[:record]
+      # 已完成的卡保持 Done：写回 Todo 会抹掉终态，让看板重新出现待办。
+      unless issue.status?(Model::STATUS_DONE)
+        gateway.set_status(issue.number, Model::STATUS_TODO, allow_write: true)
+        unless gateway.status?(issue.number, Model::STATUS_TODO)
+          payload["reasons"] << "写回 status=#{Model::STATUS_TODO} 后回读不符，需人工核对"
+          payload["status"] = "aborted"
+          return EXIT_REFUSED
+        end
+      end
+      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue.number)
+      current = record.load
+      # 释放租约凭据（F12 + CR-4）：本地记录缺失/缺 lease_id 也要核对远端
+      # 租约——认领成功后丢本地记录时，卡上凭据仍必须置 released。
+      release_lease_comment!(gateway, issue.number, current, payload)
+      if payload["status"] == "aborted"
+        return EXIT_REFUSED
+      end
+      # 人类可读信号同步摘除（CR-6）：凭据已释放，卡上不得残留执行中标签。
+      # 迁移窗口内的旧认领可能本就没打标签——缺席即无需摘除。
+      if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+        gateway.remove_label(issue.number, Model::IN_PROGRESS_LABEL, allow_write: true)
+        if gateway.label_present?(issue.number, Model::IN_PROGRESS_LABEL)
+          payload["reasons"] << "移除 #{Model::IN_PROGRESS_LABEL} 后回读仍在，需人工核对"
+          payload["status"] = "aborted"
+          return EXIT_REFUSED
+        end
+      end
+      # 只更新属于本 issue 的记录：传错 --record 时不能把别张卡的记录改脏。
+      record.save(current.merge("phase" => "released")) if current && current["issue"].to_i == issue.number
       EXIT_OK
     end
 
@@ -1215,13 +1395,59 @@ end
       payload["pr"] = pr.number if pr
       if options[:apply] && reasons.empty?
         gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
-        gateway.set_status(issue.number, Model::STATUS_IN_REVIEW, allow_write: true)
-        confirmed = gateway.status?(issue.number, Model::STATUS_IN_REVIEW)
-        payload["ok"] = payload["status_written"] = confirmed
-        payload["reasons"] << "写入 status=#{Model::STATUS_IN_REVIEW} 后回读未确认，需人工核对" unless confirmed
+        # 状态迁移写段受跨机 ref 锁保护（#306）：与 claim/unclaim 对同一张卡串行。
+        ref = RefLock.lease_ref(issue.number)
+        lock = acquire_ref_lock!(gateway, ref: ref, purpose: "lease", issue: issue.number, payload: payload)
+        return EXIT_LOCKED if lock.held?
+        payload["lock_takeover"] = lock.previous if lock.previous
+
+        code = nil
+        begin
+          # 锁内重查前置（#307 二轮 review）：快照是锁前取的，B 可能在 A 等锁
+          # 期间完成合并收口——已关闭/Done/PR 已合并的卡不得写回 In review。
+          state = gateway.issue_state(issue.number)
+          unless state == "open"
+            payload["ok"] = false
+            payload["reasons"] << "锁内复核：issue ##{issue.number} 已不是 open（state=#{state}），不推进 In review"
+            code = EXIT_REFUSED
+          end
+          if code.nil?
+            live = gateway.status_of(issue.number).to_s
+            unless live.casecmp?(Model::STATUS_IN_PROGRESS)
+              payload["ok"] = false
+              payload["reasons"] << "锁内复核：issue ##{issue.number} 当前 status=#{live || "未设置"}，不再是 In progress，不推进 In review"
+              code = EXIT_REFUSED
+            end
+          end
+          if code.nil?
+            pr_state = gateway.pull_state(pr.number)
+            unless pr_state == "open"
+              payload["ok"] = false
+              payload["reasons"] << "锁内复核：PR ##{pr.number} 已不是 open（state=#{pr_state}），不推进 In review"
+              code = EXIT_REFUSED
+            end
+          end
+          if code.nil?
+            gateway.set_status(issue.number, Model::STATUS_IN_REVIEW, allow_write: true)
+            confirmed = gateway.status?(issue.number, Model::STATUS_IN_REVIEW)
+            payload["ok"] = payload["status_written"] = confirmed
+            payload["reasons"] << "写入 status=#{Model::STATUS_IN_REVIEW} 后回读未确认，需人工核对" unless confirmed
+            code = payload["ok"] ? EXIT_OK : EXIT_REFUSED
+          end
+        rescue CommandError => e
+          payload["ok"] = false
+          payload["reasons"] << "状态迁移写段异常：#{e.message}"
+          code = EXIT_REFUSED
+        ensure
+          finalize_lock_release!(gateway, ref, lock, payload)
+        end
+        code = EXIT_REFUSED if payload["lock_release_failed"]
+        Output.emit(payload, out: @out)
+        code
+      else
+        Output.emit(payload, out: @out)
+        payload["ok"] ? EXIT_OK : EXIT_REFUSED
       end
-      Output.emit(payload, out: @out)
-      payload["ok"] ? EXIT_OK : EXIT_REFUSED
     end
 
     def verify_docs(argv)

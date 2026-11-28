@@ -129,7 +129,13 @@ module SebasAgents
       merge_pr: /\Agh\s+pr\s+merge\s+\d+\s+--repo\s+\S+\s+--squash\s+--match-head-commit\s+[0-9a-f]{7,40}\z/,
       # BEHIND 处理：更新分支。
       update_branch: %r{\Agh\s+pr\s+update-branch\s+\d+\s+--repo\s+\S+(\s+--rebase)?\z},
-      pin_comment: %r{\Agh\s+api\s+graphql\s+-f\s+query=mutation\s+\{\s+pinIssueComment\(input:\{issueCommentId:"[^"]+"\}\)\s+\{\s+clientMutationId\s+\}\s+\}\z}
+      pin_comment: %r{\Agh\s+api\s+graphql\s+-f\s+query=mutation\s+\{\s+pinIssueComment\(input:\{issueCommentId:"[^"]+"\}\)\s+\{\s+clientMutationId\s+\}\s+\}\z},
+      # 跨机 ref 锁（#306）：ref 创建即服务端原子 CAS。三个意图都只碰
+      # refs/locks/sebas/ 前缀下的锁对象，不碰分支、标签或 issue。
+      # 锁凭据 JSON 是多行 message，故 message=.+ 加 /m。
+      create_lock_commit: %r{\Agh\s+api\s+repos/\S+/git/commits\s+-f\s+tree=[0-9a-f]{40}\s+-f\s+message=.+\z}m,
+      create_ref: %r{\Agh\s+api\s+repos/\S+/git/refs\s+-f\s+ref=refs/locks/sebas/\S+\s+-f\s+sha=[0-9a-f]{40}\z},
+      delete_ref: %r{\Agh\s+api\s+-X\s+DELETE\s+repos/\S+/git/refs/refs%2Flocks%2Fsebas%2F\S+\z}
     }.freeze
 
     def allowed_write?(argv)

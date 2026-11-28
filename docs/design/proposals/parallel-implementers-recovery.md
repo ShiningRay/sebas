@@ -57,13 +57,24 @@ F13 是从 [ci.yml](../../../.github/workflows/ci.yml) 的 `cancel-in-progress: 
 
 首期只允许一个 coordinator 进程，并且只在一台机器上运行。同一台机器上出现两个，靠本地锁在认领之前拦下；两台机器各跑一个，首期只能事后检出，见下文。
 
-- **本地锁**：`.sebas-agent/coordinator.lock`，用 `File::CREAT` 加 `File::EXCL` 原子创建，内容是 `coordinator_id`、`host`、`pid` 与创建时间。`coordinator_id` 标识一台机器上的一个 coordinator，跨重启稳定，不是进程号。不用 `flock`。
-- **拿不到锁时**读出持有者再判。同机且 pid 存活：退出码 2，不重试。同机且 pid 不存活：过了宽限期才接管，并留下接管记录。机器不同：不接管，转人工。
-- **首期只允许一台机器担任 coordinator**。本地锁只管一台机器，两台机器各持各的锁时互不知情。这条约束靠配置强制：coordinator 身份在仓库配置里只登记一个（主篇 S2），启动时本机不是那个身份就拒绝启动。Q1 选 C 时没有 GitHub 侧身份可查，这条约束只能靠约定。
-- **GitHub 侧兜底**（Q1 选 A 或 B 时才有判据）：认领前重扫所有带认领标签的卡的凭据，`coordinator_id` 不是自己就拒绝认领，再按 F5、F6 处置。这是事后检测，不是互斥：两台机器都在对方写入前完成扫描，仍可能同时认领，要靠 F9 在下一轮对账时拦下。跨机器的原子互斥不在首期范围。
-- **coordinator 日后移入 Actions**：用 `concurrency` 组 `sebas-coordinator` 加 `cancel-in-progress: false`。Actions 与本地同时启用不在首期范围。
+> **实现口径更新（#306）**：跨机原子互斥由 GitHub git-ref 原子锁承担，下文「本地锁」设计已被取代（保留作历史裁决记录）。本地锁曾要求 `File::CREAT`+`File::EXCL` 原子创建 `.sebas-agent/coordinator.lock`、不用 `flock`——它只覆盖同机同目录，两台机器各持各的锁互不知情，跨机互斥当时被推迟到「事后 F9 检出」。
 
-Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordinator 所在机器离线时全部在途租约停摆，因为 worker 与它同机。跨机接管只有在 Q1 选 A 或 B 时才有判据，留待后续。
+### git-ref 原子锁（#306 实现，取代本地锁）
+
+- **原语**：并发 `POST /repos/*/git/refs` 同名 ref，服务端恰一个 201、另一个 422 "Reference already exists"——跨机互斥的仲裁者是 GitHub 本身，不引入新服务。`refs/locks/*` 非分支/标签，不出现在分支列表，不触发 push 类 workflow。
+- **锁名**：逐卡 `refs/locks/sebas/lease-<issue>`（claim / unclaim / mark-review，不同卡的写命令互不阻塞）；全局 `refs/locks/sebas/merge`（queue 合并链，§7.2）。锁凭据 JSON（`purpose/issue/coordinator_id/host/pid/created_at/lock_id`）存放在 ref 指向 commit 的 message，可回读判定归属；写意图在 `CommandRunner::ALLOWED_WRITES` 白名单内逐条放行。
+- **时长分层**：锁是**命令级**的——只包住写命令执行段（秒级），任务开工后即释放；任务级所有权由租约评论（§5.1）承担，F9 语义不动。`run_queue` 每轮只推进一步并立即返回，CI 等待发生在两轮调用之间、不持锁。
+- **拿不到锁时**回读持有者凭据再判：同机且 pid 存活（锁龄未过 TTL）：退出码 2，不重试；同机且 pid 不存活：过了宽限期才接管；机器不同：锁龄未过 TTL 不接管，过了 TTL 视为持锁进程崩溃才接管。锁龄 ≥ TTL 时同机「存活 pid」也接管（Windows pid 回收护栏：陈旧锁不会被无关进程顶到永远 held）。接管 = 删旧建新，接管事实写进输出 JSON。
+- **TTL**：缺省 60 分钟，`.github/agents.yml` 的 `lock_ttl_minutes` 键可调（正整数，非法值 fail-closed）。任务小时级，TTL 宁大勿小：调大不削弱互斥，只拉长残锁等待；残锁按逐卡 ref 命名，只阻塞对应那张卡的写命令。
+- **残余风险（fencing 缺口披露，#307 review）**：锁不向下游写入提供 fencing token。
+  - 触发条件：持锁进程存活但写段时长超过 TTL（缺省 60 分钟，可经 `lock_ttl_minutes` 调整）。
+  - 后果：接管方重建锁后，原持有者的后续 gh 写入不会被服务端拒绝；原持有者释放时 lock_id 不匹配会拒绝删锁并上报，但拦不回已发生的写入。
+  - 适用范围：「互斥」只对按协议行事的短写段成立，不承诺对超时存活的写段成立。
+  - 下游兜底：任务期的所有权冲突由租约凭据（F7/F9）与逐写回读承担，不经由本锁。
+- **释放**：先回读凭据，`lock_id` 是自己的才删；锁已被他人接管时不删他人锁并上报，需人工核对。
+- **dry-run**：演练没有写动作，锁的获取/释放整体跳过。
+- **coordinator 移入 Actions**：仍沿用原条目——`concurrency` 组 `sebas-coordinator` 加 `cancel-in-progress: false`；与本地同时启用不在首期范围。
+- **必测场景**：见 §8.1 第 8 条；并发争锁恰一个胜出、TTL 配置三态、释放不删他人锁均已覆盖（`tools/tests/process/test_ref_lock.rb`）。
 
 ## 5. 容量与轨：Q3
 
@@ -105,7 +116,7 @@ Q2 尚未回答的部分：单 coordinator 是否足够。已知短板是 coordi
 5. 逐租约动作：`wait` 的租约不占算力；一张租约 `needs_human` 不影响另一张；任一租约 `invalid_plan` 则整体拒绝；归属不符的租约即使检查全绿也不得给出 `merge_ready`。
 6. 租约唯一性：两张卡共用 `branch`、`worktree` 或 PR 号即 `invalid_plan`；PR 关联多张卡即 `invalid_plan`。
 7. 队列：`merge_ready` 按先后入队；`verify_queue.depth` 正确。
-8. 锁：第二实例拿不到锁，退出码 2；残锁按存活、死亡、异机三种判据处置。
+8. 锁（#306 git-ref 原子锁）：第二实例拿不到锁退出码 2；残锁按存活、死亡（过宽限）、异机（过 TTL）三种判据处置；真并发争锁恰一个胜出。
 9. 写守卫：Q1 选 B 时，新增的写意图逐条断言放行形态，其余命令仍被拦截。
 10. 迁移：v1 记录、schema 不是 2 的记录、迁移期容量恒为 1。
 11. 租约评论：评论已发出而评论 id 未落盘时崩溃，恢复按 `lease_id` 复用既有评论，不重发。
