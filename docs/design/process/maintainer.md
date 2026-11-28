@@ -102,6 +102,23 @@ Maintainer 不主动执行任务，而是**响应两种输入**：
 
 不做没有证据支撑的决定。如果证据不足，打回给对应 Agent 补证据。
 
+### 自动合并开关（auto_merge_enabled，#222）
+
+合并队列自动触发（阶段 4）由 `.github/agents.yml` 的 `auto_merge_enabled` 控制，
+**缺省 false**——不显式启用就保持阶段 3 的人工触发，任何机器上的 `queue --auto`
+都会整体拒绝。
+
+- **启用**：把该键置 `true` 并合入 main。启用前自检三件事：分支保护规则未被放宽、
+  `trusted_bots` / `coordinators` 白名单未扩、近一周无未收口的 Evidence 链异常。
+  启用后 coordinator 在条件齐备时自动推进合并队列（触发条件与接续边界见
+  [implementer-loop.md §3.8](implementer-loop.md)）。
+- **关停**：置回 `false` 即回到阶段 3 行为，进行中的自动链在下一步自然停轮；
+  无需清理运行记录。紧急关停只改这一处配置，不需要撤 PR 或动 workflow 权限。
+- **巡检**：`plan` 输出的 `merge_queue` 字段是自动链的观察窗（队首 PR、队列长度、
+  阻塞原因）；自动失败达 2 次的卡会停在 `auto_gate` 报错上等人工
+  `queue --apply` 成功一步重置。终验「有条件通过」的 PR 永远不会自动合并，
+  由 Maintainer 逐张裁决。
+
 ## 与其他角色的交互
 
 | 交互方 | 方向 | 内容 |

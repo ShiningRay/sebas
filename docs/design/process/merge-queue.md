@@ -148,3 +148,28 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 
 测试断言「子进程是否真的被调用」，不看 `runner.calls`（后者在拦截前就记录，用它断言会把
 「被拦」与「被执行」看成同一件事）。
+
+## 4. 自动触发（阶段 4，#222）
+
+阶段 3 的合并链由人工逐步触发（`queue --apply` 每轮一步）。阶段 4 换成条件齐备即
+自动推进（`queue --auto`）；门禁不放宽、权限不新增（沿用 `GITHUB_TOKEN` 与分支保护），
+每步仍走 `queue --apply` 的同一执行段与合并链 ref 锁。
+
+触发条件（全满足才执行，任一不满足停在队外，不强推）：
+
+1. 队首 PR 下一步就绪：CI 全绿、`mergeStateStatus=CLEAN`、thread 清零、head 已核验
+   （`next_step` 的既有判定）；
+2. `verify merge --pre` 退出码 0（含 Evidence 预登记已就位）；
+3. 独立核验与终验两关结论为「通过」——终验 check 对「通过」与「有条件通过」同为绿，
+   以 verifier 摘要评论（`<!-- verify-pr:summary -->`）的 `unverified` 计数区分；
+4. `.github/agents.yml` 的 `auto_merge_enabled: true`（缺省 false，关停时整体拒绝，
+   行为与阶段 3 完全一致；启停操作见 [maintainer.md](maintainer.md)）。
+
+「有条件通过」（`unverified > 0`）与摘要缺失恒交 Maintainer，不自动合并。同一轮只允许
+`verify_pre` 成功后接续下一步（merge 在锁内全量复核）；`update_branch` 与 CHANGELOG
+追加作废已核验 head（重核验是异步的），merge 之后是等 Evidence 升级的串行单位——
+三者都停轮，等待发生在两次调用之间。失败回退 fail-closed：执行失败计入
+`auto_merge_failures`，达 2 次（初次 + 一次重试）自动路径对本卡拒绝，人工
+`queue --apply` 成功一步即重置；门拒判（有条件通过、缺摘要）是交人工的正常停轮，
+不计入预算。`plan` 输出追加 `merge_queue`（队首 PR、队列长度、阻塞原因），与
+`queue` 同一构造点，口径同源。

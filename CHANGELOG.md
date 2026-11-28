@@ -5,6 +5,7 @@
 
 ## [Unreleased]
 
+- **合并队列自动触发（阶段 4）**（M4x-Parallel-WP4，[#222](https://github.com/ShiningRay/sebas/issues/222)）：`queue --auto` 在条件齐备（CI 全绿且 CLEAN、`verify merge --pre` 通过、终验结论为「通过」、Evidence 预登记就位）时自动推进合并链，沿用既有权限模型与合并锁；终验「有条件通过」（verifier 摘要 `unverified>0` 或摘要缺失）恒交 Maintainer；执行失败按 fail-closed 回退，同一张卡自动失败达 2 次停轮，人工成功一步重置；`.github/agents.yml` 新键 `auto_merge_enabled`（缺省 false，关停时行为与阶段 3 一致）；`plan` 输出追加 `merge_queue` 状态。(#222)
 - **修复 Crash-recovery drill 编译在 CI 三平台失败**（[#308](https://github.com/ShiningRay/sebas/issues/308)）：drill 单文件编译子集缺 `plugins/capabilities` 显式 require，gateway_plugins 的类型注解引用未定义类型；补 require、加编译期守卫，release 构建另加 `--error-trace`。(#311)
 - **应用根目录 `~/.sebas` / `SEBAS_HOME` 路径契约落地**（M5.0-WP3，[#278](https://github.com/ShiningRay/sebas/issues/278)）：默认配置 `<home>/config.yaml`、省略 `gateway.data_dir` 取 `<home>/data`；相对 `data_dir`/`persona_file`/`plugins.dir` 以实际配置文件目录为基准；空白 `SEBAS_HOME` 拒启；一个版本的旧布局受限回退（只警告不搬移文件）；热更新不重读 `SEBAS_HOME`、`data_dir` 变更 restart-required；POSIX 权限过宽只告警。(#304)
 ### Added

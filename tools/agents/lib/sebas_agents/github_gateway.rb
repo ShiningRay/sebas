@@ -1085,6 +1085,38 @@ end
       end
     end
 
+    # 合并队列自动触发开关（M4x-WP4，#222）：.github/agents.yml 的
+    # `auto_merge_enabled` 键。缺键即 false——关着时自动路径整体拒绝，
+    # 行为与阶段 3 的人工触发完全一致（fail-closed：宁可少自动化）。
+    # 仅接受布尔：字符串 "true"、数字等一律 fail-closed，不静默转真值。
+    def auto_merge_enabled?
+      @auto_merge_enabled ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return false unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        return false unless data && data.key?("auto_merge_enabled")
+
+        raw = data["auto_merge_enabled"]
+        unless raw.is_a?(TrueClass) || raw.is_a?(FalseClass)
+          raise CommandError.new(".github/agents.yml 的 auto_merge_enabled 必须是布尔值：#{raw.inspect}", command: ["read", path])
+        end
+
+        raw
+      end
+    end
+
+    # 取 PR 的 verifier 核验摘要评论（verify.yml verifier job 发布，同一 PR
+    # 重跑时原位更新，至多一条）。返回解析后的计数 Hash，找不到返回 nil。
+    # 分页取全（fail-closed：评论缺页不能当「没有评论」）后取 marker 命中的
+    # 最后一条；解析交给 MergeQueue.verifier_summary_from_body（纯函数）。
+    def verifier_summary(pr_number)
+      comments = paginate("repos/#{@repo}/issues/#{pr_number}/comments")
+      body = comments.reverse.find { |c| c["body"].to_s.include?(MergeQueue::VERIFIER_SUMMARY_MARKER) }
+      MergeQueue.verifier_summary_from_body(body && body["body"])
+    end
+
     # 跨机 ref 锁 TTL（#306）：.github/agents.yml 的 `lock_ttl_minutes` 键，分钟。
     # 缺省 60——锁是命令级（秒级），TTL 只决定崩溃残锁多久后允许异机接管；
     # 任务小时级，宁大勿小：调大不削弱互斥、只拉长残锁等待。

@@ -30,3 +30,12 @@ capacity: 2
 # TTL 宁大勿小——调大不削弱互斥，只拉长残锁等待，残锁按逐卡 ref 命名，
 # 只阻塞对应那张卡的写命令。缺键即 60；非法值 fail-closed。
 lock_ttl_minutes: 60
+
+# 合并队列自动触发（M4x-Parallel-WP4，#222；Proposal §8 阶段 4）。
+# false = 关停：`queue --auto` 整体拒绝，合并链回到阶段 3 的人工触发
+# （`queue --apply` 每步一人按）。启用即 true：条件齐备（CI 全绿且 CLEAN、
+# verify merge --pre 通过、终验结论为「通过」、Evidence 预登记就位）的队首
+# PR 由 coordinator 自动推进；「有条件通过」（verifier 摘要 unverified>0）
+# 恒交 Maintainer。缺键即 false；非法值 fail-closed。启用/关停操作见
+# docs/design/process/maintainer.md。
+auto_merge_enabled: false

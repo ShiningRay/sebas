@@ -25,7 +25,7 @@ module SebasAgents
     FIELDS = %w[
       issue branch worktree pr base_sha phase attempts status_written label_written
       worker_id coordinator_id lease_id scope host claimed_at last_heartbeat_at pid
-      verified_head
+      verified_head auto_merge_failures auto_failed_step
     ].freeze
     # 活动 phase（续篇 §7）：这些记录代表持有中的租约，缺 v2 字段不能自动搬。
     ACTIVE_PHASES = %w[claiming claimed pr_open merging paused].freeze

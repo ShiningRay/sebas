@@ -252,6 +252,14 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 工作包卡创建时，契约声明只引**已合入 main** 的文本路径。引用未合并文档时必须显式标注「待合入，开工前以最新合并版为准」。Scribe 对账周期性扫描 OPEN 卡，回填已过时的契约声明（例如「文档未合入 main」在 PR 合并后即失效）。
 
+### 3.8 合并队列自动触发（阶段 4，#222）
+
+阶段 4 在条件齐备时由 coordinator 自动推进合并链（`queue --auto`）：触发条件、
+「有条件通过」恒交 Maintainer 的口径、同一轮接续边界、失败回退预算与 `plan` 的
+`merge_queue` 观察窗，见 [merge-queue.md §4](merge-queue.md)。开关是
+`.github/agents.yml` 的 `auto_merge_enabled`（缺省 false，关停时行为与阶段 3
+完全一致；启停操作见 [maintainer.md](maintainer.md)）。
+
 ## 4. 输出契约与停止条件
 
 每次选择只返回一个结构化动作：
@@ -319,6 +327,8 @@ ruby tools/sebas-process plan                  # 只读多候选视图：就绪�
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
 ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（#220）：协调评论为凭据，按 lease_id 对账恢复
 ruby tools/sebas-process queue                 # 只读合并队列：队首与链上步骤（#221）
+ruby tools/sebas-process queue --apply         # 推进队首一步（#221）：verify_pre / changelog / update_branch / merge
+ruby tools/sebas-process queue --auto          # 自动触发（#222 §3.8）：auto_merge_enabled 开启时条件齐备即自动推进
 ruby tools/sebas-process heartbeat 39 --apply  # 写存活心跳（F5）：长任务期间定期调用
 ```
 
