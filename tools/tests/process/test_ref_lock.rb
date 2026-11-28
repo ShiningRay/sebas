@@ -637,11 +637,13 @@ class RefLockTest < Minitest::Test
     # snap_evidence_merged? 返回 nil（未知按未完成），不静默放行。
     assert_equal [99], cli.send(:repo_pending_evidence!, fresh_snapshot([], [99]))
 
-    # 异仓编号排除（#307 五轮 review）：`Fixes owner/repo#N` 命中的异仓
-    # issue 由 gateway 拆进 foreign_issues——异仓 Evidence 无法在本仓升级，
-    # 编号即使与本仓某卡同号也不得按本仓卡判定或阻塞。
-    assert_empty cli.send(:repo_pending_evidence!,
-      fresh_snapshot([plain_issue(99)], [99, 99], foreign_issues: [99]))
+    # 异仓编号（#307 五轮 review）：gateway 把 `Fixes owner/repo#N` 命中的
+    # 异仓 issue 拆进 foreign_issues，closing_issues 恒本仓。扫描只认
+    # closing_issues：同号异仓**不得**删除本仓关联（#307 六轮 review），
+    # 仅异仓关联时为空集。
+    assert_equal [99], cli.send(:repo_pending_evidence!,
+      fresh_snapshot([plain_issue(99)], [99], foreign_issues: [99]))
+    assert_empty cli.send(:repo_pending_evidence!, fresh_snapshot([], [], foreign_issues: [99]))
   end
 
   # 场景 8：mark-review 的状态迁移写段受同一把逐卡锁保护（正常路径不受影响）。

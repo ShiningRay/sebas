@@ -521,15 +521,16 @@ end
     # skip_issue 是本轮正要合并的卡自身——它的 PR 还没合并，不构成背压。
     # proposal 卡排除（#307 二轮 review）：登记脚本明确跳过 proposal，其
     # Evidence 永远不会升级；历史设计 PR 合并后不得永久阻塞队列。
-    # 异仓编号排除（#307 五轮 review）：`Fixes owner/repo#N` 命中的异仓
-    # issue 由 gateway 按 nameWithOwner 拆进 foreign_issues——异仓 Evidence
-    # 无法在本仓升级，留在扫描里会永久阻塞。
+    # 异仓编号（#307 五轮 review）：`Fixes owner/repo#N` 命中的异仓 issue
+    # 由 gateway 按 nameWithOwner 拆进 foreign_issues，closing_issues 恒为
+    # 本仓编号——本方法只扫 closing_issues，不做减法（同号异仓不得删除
+    # 本仓关联，#307 六轮 review）。
     # 缺卡不排除（#307 三轮 review）：state=all 快照缺卡即分页/引用异常，
     # snap_evidence_merged? 对缺卡返回 nil（未知），编号保留继续阻塞——
     # 不静默放行。
     def repo_pending_evidence!(fresh_snap, skip_issue: nil)
       fresh_snap.pull_requests.select(&:merged?)
-        .flat_map { |pr| pr.closing_issues - pr.foreign_issues }
+        .flat_map(&:closing_issues)
         .uniq.reject { |n| n == skip_issue }
         .filter_map do |number|
           issue = fresh_snap.issue(number)
