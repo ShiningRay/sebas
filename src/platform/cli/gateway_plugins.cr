@@ -4,6 +4,15 @@ require "../../plugins/manifest"
 require "../../plugins/registry"
 require "../../plugins/runner"
 require "../../plugins/dispatch"
+# 本文件直接消费 HookBus/HookDispatcher/CapabilityDispatcher::MemoryDriver
+# （#308）。此前 capabilities 只能经 src/sebas.cr 的 `plugins/**` glob 加载，
+# 而本文件所在的编译子集——Crash-recovery drill（`crystal spec
+# spec/platform/cli/gateway_spec.cr`，release build job 的收尾步）——只含
+# gateway 链、不含该 glob，ivar 类型注解引用未定义类型即编译失败；hook_bus
+# 有显式 require 源（agents/runtime 等）所以只有 MemoryDriver 报错。
+# 显式 require 使单元自带定义，不再依赖 sebas.cr 的 glob 兜底。
+require "../../plugins/hook_bus"
+require "../../plugins/capabilities"
 
 # 插件面装配（M3-WP4，#16；design.md §12）：gateway 启动/热更新时扫描
 # plugins.dir，runner+派发接线，非生命周期 action 注册进宿主工具面

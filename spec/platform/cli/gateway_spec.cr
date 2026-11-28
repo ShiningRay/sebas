@@ -7,6 +7,23 @@ require "../../support/gateway_spec_helper"
 require "../../support/fake_imap_server"
 require "../../support/fake_smtp_server"
 
+# 编译单元自足性守卫（#308）：本文件是 release build job 收尾的
+# Crash-recovery drill（单文件 spec 子集），编译闭包只含 gateway 链——不含
+# src/sebas.cr 的 plugins/** glob。gateway_plugins 消费的 plugins 类型必须有
+# 显式 require 源，否则整单元编译失败（2026-11-28 main 三平台同红即此）。
+# 守卫让缺依赖在任何子集编译里第一时间报出可读错误，而非藏在 ivar 注解里。
+{% unless Sebas::Plugins.has_constant?("CapabilityDispatcher") %}
+  {% raise "gateway drill compile unit is missing plugins/capabilities (#308): " \
+           "gateway_plugins consumers must carry explicit requires" %}
+{% else %}
+  {% unless Sebas::Plugins::CapabilityDispatcher.has_constant?("MemoryDriver") %}
+    {% raise "gateway drill compile unit is missing CapabilityDispatcher::MemoryDriver (#308)" %}
+  {% end %}
+{% end %}
+{% unless Sebas::Plugins.has_constant?("HookBus") %}
+  {% raise "gateway drill compile unit is missing plugins/hook_bus (#308)" %}
+{% end %}
+
 module Sebas
   describe "gateway M0 gate drill (M0-WP8)" do
     it "runs the full loop: mail in → agent turn → reply out (§14 M0 收发全链路)" do
