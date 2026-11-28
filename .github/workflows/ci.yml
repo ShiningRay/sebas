@@ -475,9 +475,8 @@ jobs:
         shell: bash
         run: mkdir -p bin
 
-      # --error-trace 只影响失败时的输出详细度（#308：runner 环境特有的
-      # 编译期错误曾因只报「最后一帧」无法定位，加它换取失败即全链可读）；
-      # 成功构建输出不变。
+      # --error-trace 只影响失败时的输出详细度（#308 排障时只报「最后一帧」
+      # 无法定位，加它换取失败即全链可读）；成功构建输出不变。
       - name: Build release binary
         run: crystal build --release --no-debug --error-trace -o bin/sebas src/main.cr
 
