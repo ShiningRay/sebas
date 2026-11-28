@@ -101,6 +101,16 @@ module Sebas
         # ameba:disable Metrics/CyclomaticComplexity — 幂等查表+双重授权+终态登记的状态机，分支即语义
         def write(plugin_id : String, params : JSON::Any, context : JSON::Any,
                   hook_bus : HookBus = @hook_bus, idempotency_key : String? = nil) : JSON::Any
+          # 幂等重放查表先于 before hook（M3-WP5 review）：已提交的同 key
+          # 重放直接返回既有 memory_id——不重跑 before hook；重载后新总线的
+          # hook memo 为空、可能拒绝同 key 重放，但已提交承诺不受影响（同 key
+          # 同 memory_id 契约）。提交临界区内仍有并发复查。
+          if key = idempotency_key
+            existing_id = @mutex.synchronize { @idempotency[key]? }
+            if existing_id
+              return JSON.parse(%({"ok": true, "memory_id": #{existing_id.to_json}}))
+            end
+          end
           entry = JSON.parse(JSON.build do |json|
             json.object do
               json.field "kind", params["kind"]?.try(&.as_s?) || "memory"
@@ -129,13 +139,6 @@ module Sebas
           end)
           tags = final_entry["tags"].as_a.map(&.as_s)
 
-          # 幂等重放查表：同 key 已提交 → 返回既有 id，不重复写不重复 observe
-          if key = idempotency_key
-            existing_id = @mutex.synchronize { @idempotency[key]? }
-            if existing_id
-              return JSON.parse(%({"ok": true, "memory_id": #{existing_id.to_json}}))
-            end
-          end
           memory_id = "mem-#{Random::Secure.hex(8)}"
           stored = JSON.parse(JSON.build do |json|
             json.object do

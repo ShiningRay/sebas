@@ -148,6 +148,28 @@ module Sebas
         @mutex.synchronize { (@subscriptions[hook]? || [] of Subscription).dup }
       end
 
+      # 当前 fiber 的调用链深度（M3-WP5 review）：observe 子派发在新 fiber
+      # 上，深度按 fiber 键隔离会从 1 重计——递归链（observe→插件→capability
+      # →write→observe→…）跨 fiber 累计依赖继承本值。
+      def current_chain_depth : Int32
+        @chain_depths_mutex.synchronize { chain_depth[Fiber.current.object_id]? || 0 }
+      end
+
+      # 子 fiber observe 派发：以调用方 fiber 的链深度为初始深度执行 observe，
+      # max_depth 跨 fiber 继续生效；结束时清除本 fiber 的深度键。
+      def observe_with_inherited_depth(hook : String, context : JSON::Any, payload : JSON::Any,
+                                       budget : Budget?, idempotency_key : String?,
+                                       parent_depth : Int32) : Nil
+        fiber_id = Fiber.current.object_id
+        @chain_depths_mutex.synchronize { chain_depth[fiber_id] = parent_depth }
+        observe(hook, context, payload, budget: budget, idempotency_key: idempotency_key)
+      ensure
+        snapshot = fiber_id
+        if snapshot
+          @chain_depths_mutex.synchronize { chain_depth.delete(snapshot) }
+        end
+      end
+
       # observe：按注册快照逐个派发，忽略返回值；任何失败（插件错误/超时/
       # payload 非法/预算超限）记脱敏日志并跳过，绝不阻塞主流程。
       def observe(hook : String, context : JSON::Any, payload : JSON::Any,

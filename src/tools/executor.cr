@@ -62,7 +62,10 @@ module Sebas
       # payload schema。
       private def hook_before(tool : Tool, args : JSON::Any, ctx : ToolContext) : HookBefore
         payload = tool_payload(tool.name, args, ctx)
-        verdict = @hook_bus.gate("tool.call.before", hook_context(ctx), payload)
+        # transform 派发（M3-WP5 review）：tool.call.before 是 GateTransform——
+        # gate 的 interpret 对裸返回值不替换，DSL modify! 会被丢弃；transform
+        # 路径 deny 短路与替换重校验同源
+        verdict = @hook_bus.transform("tool.call.before", hook_context(ctx), payload)
         if verdict.denied
           return HookBefore.new(true, args, "#{verdict.code}: #{verdict.reason}")
         end
@@ -75,6 +78,16 @@ module Sebas
 
       private def hook_after(tool : Tool, ctx : ToolContext, result : ToolResult, duration_ms : Int64) : Nil
         status = result.ok? ? "success" : (result.error.to_s.includes?("crashed") ? "exception" : "error")
+        # result_summary 不含正文（M3-WP5 review，CWE-200）：tool.call.after 非
+        # sensitive，摘要只承载非正文状态（digest/状态词）——输出/异常文本留在
+        # 宿主日志与账本，插件读正文须走敏感批准面
+        summary = if result.ok?
+                    result.digest ? "digest:#{result.digest}" : "ok"
+                  elsif status == "exception"
+                    "exception"
+                  else
+                    "error"
+                  end
         payload = JSON.parse(JSON.build do |json|
           json.object do
             json.field "tool_id", tool.name
@@ -82,7 +95,7 @@ module Sebas
             json.field "session_key", ctx.session_key
             json.field "status", status
             json.field "duration_ms", duration_ms
-            json.field "result_summary", (result.ok? ? result.output : result.error.to_s)[0, 200]
+            json.field "result_summary", summary
           end
         end)
         @hook_bus.observe("tool.call.after", hook_context(ctx), payload)
@@ -205,7 +218,9 @@ module Sebas
             json.field "attachments", [] of String
           end
         end)
-        verdict = hook_bus.gate("message.sending", JSON.parse("{}"), payload, idempotency_key: memo_key)
+        # transform 派发（M3-WP5 review）：message.sending 是 GateTransform，
+        # DSL modify! 的替换经重校验生效（同 tool.call.before 口径）
+        verdict = hook_bus.transform("message.sending", JSON.parse("{}"), payload, idempotency_key: memo_key)
         if verdict.denied
           # deny 写非 intent 终态：run 层按持久 memo 短路（同 key 重试不再过
           # gate 投递）；dispatcher 的同 key deny memo 只在进程内生效——重启

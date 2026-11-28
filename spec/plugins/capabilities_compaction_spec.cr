@@ -115,6 +115,71 @@ module Sebas
       other_plugin.should_not eq(same_task)
       ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key(nil, "p", params).should be_nil # hook 路径不 memo
     end
+
+    it "已提交重放先于 before hook 返回既有 memory_id（换总线后仍守同 key 同 id，M3-WP5 review）" do
+      driver = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new
+      permissive = ::Sebas::Plugins::HookBus.new(::Sebas::Plugins::HookDispatcher.new)
+      params = JSON.parse(%({"kind": "memory", "text": "committed", "tags": []}))
+      first = driver.write("p", params, JSON.parse("{}"), hook_bus: permissive, idempotency_key: "task-1")
+      first["ok"].as_bool.should be_true
+      committed_id = first["memory_id"].as_s
+
+      # 重载后新总线：hook memo 为空且 before 恒 deny——已提交承诺不受影响，
+      # 同 key 重放直接返回既有 memory_id，before hook 不再执行
+      denying_dispatcher = ::Sebas::Plugins::HookDispatcher.new
+      denying_dispatcher.subscribe("memory.remember.before", manifest_for("gatekeeper2", "memory.remember.before"))
+      denying_dispatcher.dispatch = DenyOnceDispatch.new
+      denying = ::Sebas::Plugins::HookBus.new(denying_dispatcher)
+      second = driver.write("p", params, JSON.parse("{}"), hook_bus: denying, idempotency_key: "task-1")
+      second["ok"].as_bool.should be_true
+      second["memory_id"].as_s.should eq(committed_id)
+      driver.entries.size.should eq(1) # 不重复写入
+    end
+
+    it "observe 子派发继承链深度：max_depth 跨 fiber 生效（M3-WP5 review）" do
+      # 链路：主 fiber gate(before) → before 插件内 hook_bus.observe(after)
+      # （模拟 write→observe 的跨 fiber 一跳）→ 子 fiber 继承父深度后计数。
+      # 深度预算内 after 可达插件（管道成立）；继承后越限即拒绝。
+      run_scenario = ->(max_depth : Int32) do
+        dispatcher = ::Sebas::Plugins::HookDispatcher.new
+        dispatcher.subscribe("memory.remember.before", manifest_for("deep-before", "memory.remember.before"))
+        dispatcher.subscribe("memory.remember.after", manifest_for("deep-after", "memory.remember.after"))
+        after_called = false
+        bus_ref = nil
+        script = ->(_pid : String, hook : String) do
+          if hook == "memory.remember.after"
+            after_called = true
+          else
+            bus = bus_ref
+            if bus
+              bus.observe("memory.remember.after", JSON.parse("{}"),
+                JSON.parse(%({"memory_id": "m", "kind": "memory", "tags": []})))
+            end
+          end
+          ::Sebas::Plugins::CallOutcome.success(nil, 0)
+        end
+        dispatcher.dispatch = ObservingDispatch.new("deep", script: script)
+        # 共享预算工厂（turn 级装配口径）：gate 与 observe 子派发同一 Budget
+        budget = ::Sebas::Plugins::HookDispatcher::Budget.new(max_calls: 64, max_depth: max_depth, max_total_ms: 10_000)
+        bus = ::Sebas::Plugins::HookBus.new(dispatcher, budget_factory: -> { budget })
+        bus_ref = bus
+        # bus.gate 经共享预算工厂取得同一 Budget 实例（不直传 budget）
+        verdict = bus.gate("memory.remember.before", JSON.parse("{}"),
+          JSON.parse(%({"entry": {"kind": "memory", "text": "x", "tags": []}})))
+        verdict.denied.should be_false
+        deadline = Time.instant + 2.seconds
+        if max_depth == 1
+          sleep 200.milliseconds # 子派发完成窗口后再断言未达
+        else
+          until after_called || Time.instant >= deadline
+            sleep 10.milliseconds
+          end
+        end
+        after_called
+      end
+      run_scenario.call(4).should be_true  # 深度预算内：子派发可达插件
+      run_scenario.call(1).should be_false # 继承深度后越限：after 插件不被调用
+    end
   end
 
   describe "SessionCompactor 接口与协议（M3-WP5，WBS：无生产压缩器）" do

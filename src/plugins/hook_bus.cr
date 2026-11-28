@@ -42,8 +42,9 @@ module Sebas
         d = @dispatcher
         return unless d
         budget = budget_for_call
+        parent_depth = d.current_chain_depth # 子派发继承调用链深度（M3-WP5 review）
         spawn(name: "hook-observe:#{hook}") do
-          d.observe(hook, context, payload, budget: budget, idempotency_key: idempotency_key)
+          d.observe_with_inherited_depth(hook, context, payload, budget, idempotency_key, parent_depth)
         rescue ex : ::Exception
           Log.warn(exception: ex) { "observe hook #{hook} failed (isolated)" }
         end
