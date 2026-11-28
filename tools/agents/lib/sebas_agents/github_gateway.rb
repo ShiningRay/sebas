@@ -1063,6 +1063,68 @@ end
       end
     end
 
+    # 跨机 ref 锁 TTL（#306）：.github/agents.yml 的 `lock_ttl_minutes` 键，分钟。
+    # 缺省 60——锁是命令级（秒级），TTL 只决定崩溃残锁多久后允许异机接管；
+    # 任务小时级，宁大勿小：调大不削弱互斥、只拉长残锁等待。
+    # 仅接受正整数（口径同 capacity）：显式 null、浮点、字符串一律 fail-closed。
+    def lock_ttl_seconds
+      @lock_ttl_seconds ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return RefLock::DEFAULT_TTL_MINUTES * 60 unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        return RefLock::DEFAULT_TTL_MINUTES * 60 unless data && data.key?("lock_ttl_minutes")
+
+        raw = data["lock_ttl_minutes"]
+        unless raw.is_a?(Integer) && raw >= 1
+          raise CommandError.new(".github/agents.yml 的 lock_ttl_minutes 必须是正整数（分钟）：#{raw.inspect}", command: ["read", path])
+        end
+
+        raw * 60
+      end
+    end
+
+    # 演练模式透传（#306）：锁的获取/释放据此跳过远端访问——dry-run 没有
+    # 写动作，互斥无从谈起；离线快照下 GitHub 侧锁也不可读。
+    def dry_run?
+      @runner.dry_run?
+    end
+
+    # ---- git-ref 锁原语（#306）：ref 创建即服务端原子 CAS ----
+    # GET（matching-refs / commits）天然只读；三个写意图在 ALLOWED_WRITES
+    # 有逐条正则，ref 名限制在 refs/locks/sebas/ 前缀内。
+
+    # 建无父 commit（空树），message 即锁凭据 JSON。
+    def create_lock_commit(message, allow_write: false)
+      call = ["gh", "api", "repos/#{@repo}/git/commits", "-f", "tree=#{RefLock::EMPTY_TREE_SHA}", "-f", "message=#{message}"]
+      allow_write ? @runner.with_write(:create_lock_commit) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    # 建锁 ref。并发同名建 ref 时 GitHub 返回 422 "Reference already exists"，
+    # 由 RefLock 捕获判定为未拿到锁。
+    def create_lock_ref(ref, sha, allow_write: false)
+      call = ["gh", "api", "repos/#{@repo}/git/refs", "-f", "ref=#{ref}", "-f", "sha=#{sha}"]
+      allow_write ? @runner.with_write(:create_ref) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    def delete_lock_ref(ref, allow_write: false)
+      # ref 名里的 / 必须编码成 %2F，否则被当作路径分段。
+      call = ["gh", "api", "-X", "DELETE", "repos/#{@repo}/git/refs/#{ref.gsub("/", "%2F")}"]
+      allow_write ? @runner.with_write(:delete_ref) { @runner.run!(*call) } : @runner.run!(*call)
+    end
+
+    # 按前缀精确匹配锁 ref：不存在返回 []，存在恰一条（多条是服务端不可能
+    # 状态，RefLock.read_holder fail-closed 上抛）。
+    def get_matching_refs(ref)
+      @runner.json!("gh", "api", "repos/#{@repo}/git/matching-refs/#{ref.gsub("/", "%2F")}")
+    end
+
+    # 读锁凭据：message 即凭据 JSON。
+    def get_lock_commit(sha)
+      @runner.json!("gh", "api", "repos/#{@repo}/git/commits/#{sha}")
+    end
+
     private
 
     def paginate(path)

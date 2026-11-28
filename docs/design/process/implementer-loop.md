@@ -80,6 +80,8 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 认领由 `ruby tools/sebas-process claim <issue> --apply` 执行：先写本地记录（`phase=claiming`），
 再把 status 写成 `In progress`，回读确认后才转为 `claimed`；回读失败则记 `claim_aborted`
 （含 `status_written`），不启动 Harness。提 PR 后 `mark-review` 推进到 `In review`，`unclaim` 写回 `Todo`。
+认领/收口/状态迁移的写段受跨机 ref 锁保护（[parallel-implementers-recovery.md §4](../proposals/parallel-implementers-recovery.md)，#306）：
+第二个并发实例退出码 2，锁是命令级的，任务期所有权由租约凭据承担。
 `claim` **不校验 milestone**（只要求 open、无 `needs:human`/`metadata:invalid`、无其它在途认领与 open PR、
 `kind=work_package` 且依赖就绪），所以**独立小修**（type=Task、无 milestone）只能人工点名 claim 开工；
 自动选卡不挑它是设计意图，见 [development-workflow.md](development-workflow.md) 四种归宿第 3 条。
@@ -347,6 +349,8 @@ Harness 输入至少包含：issue URL 与完整契约、验收清单、允许�
 
 - 每个工作包从最新 `origin/main` 建独立 worktree，不在用户工作目录中写代码。
 - 本地运行记录保存在 worktree 之外，原子写入；至少含 issue、branch、worktree、PR、base SHA、阶段和尝试次数。
+- 认领与合并的写段由跨机 ref 锁互斥（`refs/locks/sebas/*`，#306）：GitHub git-ref 创建即原子 CAS，
+  锁是命令级的，dry-run 不加锁；第二实例退出码 2。长任务的跨机失联仍按 F5 + 转人工处理。
 - 首版用单进程 runner；若由 GitHub Actions 或 cron 触发，再用同一 concurrency group 防止运行重叠。
 - 标签不是分布式事务。即使只有一个 Implementer，也要在启动 Harness 前回读认领，并在写操作前重读 GitHub。
 - 推送前 fetch 并检查远端新提交；不 force-push，不直接写 `main`，不清理用户改动。

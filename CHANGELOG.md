@@ -7,6 +7,18 @@
 
 ### Added
 
+- **跨机 ref 锁：claim 写段原子互斥**（[#306](https://github.com/ShiningRay/sebas/issues/306)，recovery §4 实现口径更新）：
+  - 以 GitHub git-ref 创建为 CAS 原语（`refs/locks/sebas/lease-<issue>` 逐卡、`refs/locks/sebas/merge` 全局）：
+    并发 `POST /git/refs` 同名 ref 服务端恰一个 201、另一个 422——两个（跨机）coordinator 同时
+    `claim` 同一张卡时不再双双通过租约预检，第二实例退出码 2 并输出持有者凭据。
+  - claim / unclaim / mark-review / queue 的写段受锁保护；锁是命令级的（秒级），任务期所有权仍由
+    租约凭据承担，F9 语义不动；dry-run 演练整体跳过锁。
+  - 残锁接管：同机 pid 判死过宽限（30s）接管；异机过 TTL 接管；锁龄 ≥ TTL 时同机「存活 pid」也接管
+    （Windows pid 回收护栏）。TTL 由 `.github/agents.yml` 新键 `lock_ttl_minutes` 设定（缺省 60 分钟，
+    非法值 fail-closed）；释放先回读凭据，不删他人锁并上报。
+  - claim 新增活状态复查：目标卡已 `status=In progress` 且无可对账本机认领时拒绝（旧式/手工认领不再可绕过）。
+  - 写守卫新增 `:create_lock_commit` / `:create_ref` / `:delete_ref` 三条意图，ref 名限
+    `refs/locks/sebas/` 前缀；测试 `tools/tests/process/test_ref_lock.rb`（含真双线程争锁）。
 - **代码卡并行与合并队列**（M4x-Parallel-WP3，[#221](https://github.com/ShiningRay/sebas/issues/221)）：
   - 逐租约动作：`next`/`plan` 对每张在途卡分别求值（归属校验 → 失败检查/thread/BEHIND → wait → `merge_ready`），`wait` 不占算力、`needs:human` 只停本卡；`plan` 输出 `leases`。
   - scope 冲突预算生效：前缀互相包含即冲突，缺 scope 独占容量；`plan` 与 `claim` 同口径（`claim` 不再能绕过预算）。共享文件靠声明进 scope 进入预算。

@@ -184,6 +184,10 @@ PR 的 CI 成功后先写 `merged_into_main: false`，合并后升级为 `true`�
   `coordinators:` 白名单）。写入序：本地记录（claiming）→ 租约评论 →
   `agent:in-progress` 标签 + 回读 → claimed；任一步失败落 aborted。
   重跑 `claim` 按 lease_id 对账复用既有凭据（不双开）。
+- **跨机互斥锁（#306）**：认领/收口/状态迁移/合并队列的写段先拿
+  `refs/locks/sebas/*` ref 锁（GitHub 原子 CAS，[续篇 §4](../proposals/parallel-implementers-recovery.md)）；
+  并发第二实例退出码 2 并在 JSON 里给出持有者凭据。锁是命令级的，任务期
+  所有权由租约凭据承担；TTL 由 `lock_ttl_minutes` 键设定（缺省 60 分钟）。
 - **运行记录迁移（Q10=B）**：`.sebas-agent/run.json` 自动搬迁至
   `.sebas-agent/runs/<issue>.json`（schema 2）；非活动记录自动搬，活动记录
   缺 v2 字段须人工确认；迁移窗口内有效容量钳回 1。
