@@ -44,7 +44,9 @@ module Sebas
         dispatcher.dispatch = rec
         %w[session.compact.before session.compact.after].each do |hook|
           pid = hook.gsub(".", "-").sub("session-", "")
-          manifest = ::Sebas::Plugins::Manifest.parse(%({"schema_version":1,"id":"#{pid}","version":"1.0.0","api_version":"1","hooks":["#{hook}"]}))
+          # session.compact.after 含摘要文本（sensitive，M3-WP5 review）——
+          # 订阅须声明 hooks.sensitive
+          manifest = ::Sebas::Plugins::Manifest.parse(%({"schema_version":1,"id":"#{pid}","version":"1.0.0","api_version":"1","hooks":["#{hook}"],"capabilities":["hooks.sensitive"]}))
           dispatcher.subscribe(hook, manifest, pid)
         end
         bus = ::Sebas::Plugins::HookBus.new(dispatcher)
@@ -64,6 +66,12 @@ module Sebas
         lifecycle.archive("sess-1").should be_true
 
         # before 与 after 都在生产路径真实派发（顺序：before 先于 after）
+        # observe 异步派发（§12.11 不阻塞主流程）：轮询等待完成窗口
+        deadline = Time.instant + 2.seconds
+        until rec.hooks_seen.size == 2
+          break if Time.instant >= deadline
+          sleep 10.milliseconds
+        end
         rec.hooks_seen.should eq(["session.compact.before", "session.compact.after"])
         compactor.sessions.should eq(["sess-1"])
         # 摘要落转写（role=compaction）

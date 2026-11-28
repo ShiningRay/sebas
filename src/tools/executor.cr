@@ -38,7 +38,14 @@ module Sebas
         deny_result, approval_reason = irreversible_gate?(tool, args, ctx)
         return deny_result if deny_result
         tool_started = Time.instant
-        result = tool.run(args, ctx)
+        result = begin
+          tool.run(args, ctx)
+        rescue ex : ::Exception
+          # 异常就地转值（M3-WP5 review）：转结构化结果后仍走公共 after 通知
+          # 路径——订阅者收到 exception 终态；错误返回口径不变
+          Log.error(exception: ex) { "tool #{name} crashed" }
+          ToolResult.error("tool crashed: #{ex.message}")
+        end
         tool_duration_ms = (Time.instant - tool_started).total_milliseconds.to_i64
         record_side_effect(tool, args, ctx, result, approval_reason)
         result = hook_result(tool, ctx, result)

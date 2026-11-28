@@ -60,18 +60,25 @@ module Sebas
                   fork_id : String? = nil) : Nil
           # 纳秒精度：默认 to_rfc3339 无小数秒，同秒相等会使 < 阈值判定失效
           now = ::Time.utc.to_rfc3339(fraction_digits: 9)
-          existed = get(session_key)
-          @store.db.exec(
+          # 两段式 upsert（M3-WP5 review）：先 DO NOTHING 原子插入，以影响
+          # 行数判定真实插入——并发首次 touch 只有其一发送 session.start，
+          # 不再依赖写前读取快照（get-exec 间协程切换会双发）
+          inserted = @store.db.exec(
             "INSERT INTO sessions (session_key, agent_id, kind, fork_id, status, last_active_at, created_at) " \
             "VALUES (?, ?, ?, ?, 'active', ?, ?) " \
-            "ON CONFLICT(session_key) DO UPDATE SET last_active_at = excluded.last_active_at, " \
-            "agent_id = excluded.agent_id, kind = excluded.kind, " \
-            "fork_id = COALESCE(excluded.fork_id, sessions.fork_id)",
+            "ON CONFLICT(session_key) DO NOTHING",
             session_key, agent_id, kind, fork_id, now, now
-          )
+          ).rows_affected > 0
+          unless inserted
+            @store.db.exec(
+              "UPDATE sessions SET last_active_at = ?, agent_id = ?, kind = ?, " \
+              "fork_id = COALESCE(?, fork_id) WHERE session_key = ?",
+              now, agent_id, kind, fork_id, session_key
+            )
+          end
           # session.start（M3-WP5，#17 §12.11）：新会话上下文建立后仅通知；
-          # 仅通知、不得在每次消息时误触发——仅 INSERT（非 conflict update）触发
-          if existed.nil?
+          # 发送条件=本次写入的真实插入结果（仅插入触发，冲突更新不触发）
+          if inserted
             begin
               hook_bus.observe("session.start", ::JSON.parse("{}"),
                 ::JSON.parse(%({"session_key": #{session_key.to_json}})))

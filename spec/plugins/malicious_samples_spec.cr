@@ -124,8 +124,39 @@ module Sebas
           request_id: Random::Secure.hex(6), plugin_id: "memory-bomb",
           action: "memory.remember.before", context: JSON.parse("{}"),
           payload: MaliciousHelpers.payload, config: JSON.parse("{}"), idempotency_key: nil)
+        started = Time.instant
         outcome = runner.call(plugin, request)
+        elapsed = (Time.instant - started).total_milliseconds
         outcome.ok.should be_false
+        # 归因收紧（M3-WP5 review）：挂起到 watchdog 的 timeout 不算配额生效，
+        # 失败必须早于 watchdog——证明是虚存上限杀进程
+        outcome.error_code.should_not eq("timeout")
+        elapsed.should be < 20_000
+      end
+
+      it "内存限额对照（Linux）：相同限额下低占用插件正常完成" do
+        interp2 = interp
+        unless interp2
+          pending "需要解释器"
+          next
+        end
+        # 成功对照（M3-WP5 review）：与 memory-bomb 同解释器同 memory_mb=96，
+        # 低占用样本正常返回——配额配置合法且解释器可在其下完成，bomb 用例
+        # 的失败可归因于配额本身
+        plugin = MaliciousHelpers.plugin("memory-small")
+        registry = ::Sebas::Plugins::Registry.new
+        registry.load_dir(MaliciousHelpers::FIXTURES)
+        limits = ::Sebas::Plugins::ResourceLimits.from_config(memory_mb: 96, cpu_seconds: nil)
+        runner = ::Sebas::Plugins::Runner.new(interp2, global_timeout_ms: 30_000_i64, limits: limits)
+        request = ::Sebas::Plugins::Protocol::Request.new(
+          request_id: Random::Secure.hex(6), plugin_id: "memory-small",
+          action: "memory.remember.before", context: JSON.parse("{}"),
+          payload: MaliciousHelpers.payload, config: JSON.parse("{}"), idempotency_key: nil)
+        started = Time.instant
+        outcome = runner.call(plugin, request)
+        elapsed = (Time.instant - started).total_milliseconds
+        outcome.ok.should be_true
+        elapsed.should be < 30_000
       end
     {% end %}
   end

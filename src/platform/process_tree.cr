@@ -9,6 +9,13 @@
 #
 # 语义（runner 契约）：watchdog 超时、协议违规、正常终态后都调用
 # kill_tree——幂等（进程已退/无后代即 no-op），迟到输出由 runner 侧排水丢弃。
+#
+# Windows-only FFI（process_tree_ffi_windows.cr）在本文件按平台宏条件装载：
+# JobObject 模块只在该 FFI 文件定义，单文件编译闭包（如 spec 单独编译
+# runner_spec）经此拿到定义，不依赖 src/sebas.cr 的通配装载。
+{% if flag?(:windows) %}
+  require "./process_tree_ffi_windows"
+{% end %}
 module Sebas
   module Platform
     module ProcessTree

@@ -42,7 +42,7 @@ module Sebas
         def run(compactor : SessionCompactor, session_key : String,
                 transcript : Array(String), &commit : CompactionResult ->) : CompactionResult
           hook_bus.observe("session.compact.before", JSON.parse("{}"),
-            JSON.parse(%({"session_key": #{session_key.inspect}})))
+            JSON.parse(%({"session_key": #{session_key.to_json}}))) # inspect 的 \#{ 转义非合法 JSON
           result = compactor.compact(session_key, transcript)
           commit.call(result) # 摘要提交先于成功通知：提交失败不触发 after
           hook_bus.observe("session.compact.after", JSON.parse("{}"),

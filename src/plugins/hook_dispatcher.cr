@@ -329,6 +329,14 @@ module Sebas
           end
           if budget
             budget.total_ms += (Time.instant - started).total_milliseconds.to_i64
+            # 时间上限后置检查（M3-WP5 review）：只查时间维度——调用次数恰
+            # 用满的合法调用不误拒（exceeded? 的 calls 维度归下轮前置检查）；
+            # 超限映射 hook_budget_exceeded，gate/transform 经 interpret 判
+            # deny（链中耗尽不得放行），observe 记日志跳过
+            if budget.total_ms >= budget.max_total_ms
+              return CallOutcome.error("hook_budget_exceeded",
+                "hook budget exceeded (total_ms=#{budget.total_ms} >= #{budget.max_total_ms})", 0)
+            end
           end
           outcome
         end

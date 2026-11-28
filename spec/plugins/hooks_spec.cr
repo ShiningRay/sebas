@@ -71,6 +71,7 @@ module Sebas
         Hooks.definition!("tool.call.before").sensitive.should be_true
         Hooks.definition!("tool.result.transform").sensitive.should be_true
         Hooks.definition!("memory.remember.before").sensitive.should be_true
+        Hooks.definition!("session.compact.after").sensitive.should be_true # 摘要文本（M3-WP5 review）
         Hooks.definition!("llm.request.before").sensitive.should be_true
         Hooks.definition!("message.received").sensitive.should be_false
         Hooks.definition!("tool.call.after").sensitive.should be_false

@@ -224,14 +224,15 @@ module Sebas
         # admitted_session：批次派发路径传入 admission 时确定的会话键——路由不再
         # 重解析（binding 热换不改在途批次归属），turn 在被调度的会话下执行。
         def process_message(message : Bus::InboundMessage, replay : Bool = false, admitted_session : String? = nil) : Nil
-          # message.received（M3-WP5，#17 §12.11）：渠道验真/去重/解析完成后、
-          # 路由前 observe（只读，失败不阻断接收——HookBus 内部隔离）
-          observe_message_received(message) # message.received hook（M3-WP5 #17）
           # 重放（崩溃恢复）跳过 intent 排重：已存在 intent 继续 dispatch（send 幂等键防重复投递）
           intent_new = replay || @store.record_intent(message.event_id, "message", message.to_json)
           confirm_telegram_consumer(message) # M3-WP8 §4.2：消费者确认（含已有 intent 分支，防永卡 dispatched=false）
           return unless intent_new
           @store.finish_intent(message.event_id, "dispatched")
+          # message.received（M3-WP5，#17 §12.11）：渠道验真/鉴权/**去重**并解析
+          # 完成后、路由前 observe（M3-WP5 review：持久去重拒绝的重复投递不再
+          # 进 hook 派发路径；只读，失败不阻断接收——HookBus 异步隔离）
+          observe_message_received(message) # message.received hook（M3-WP5 #17）
 
           if admitted_session
             # 调度派发路径：agent_id 取自五段键 agent 段（Agents.session_key 格式），

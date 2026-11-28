@@ -63,7 +63,8 @@ module Sebas
       # 从 stderr 抓孙 pid，确认已被树终止（轮询 2s）
       diag = outcome.diagnostics.to_s
       pid_line = diag.lines.find(&.starts_with?("GRANDCHILD-PID="))
-      pending "无法捕获孙 pid" unless pid_line
+      # PID 证据缺失即失败（M3-WP5 review）：timeout 终态不能替代后代证据，
+      # 不以 pending 绕过存活检查
       grand = (pid_line.should_not be_nil).split("=").last.to_i
       deadline = Time.instant + 2.seconds
       alive = true
@@ -117,11 +118,32 @@ module Sebas
         outcome = runner.call(RunnerWp5Helpers.stub_plugin, RunnerWp5Helpers.request)
         elapsed = (Time.instant - started).total_milliseconds
         outcome.ok.should be_false
+        # 排除限额配置失败（M3-WP5 review）：ulimit 设置失败走 exit 126 且
+        # stderr 带标记——那不是配额生效的证据
+        outcome.diagnostics.to_s.should_not contain("resource limit setup failed")
         # CPU 上限杀进程后无 result 帧：plugin_crash（exit 非零）或
         # plugin_no_result（EOF 干净退出）；二者都证明配额生效即终止
         {"plugin_crash", "plugin_no_result"}.should contain(outcome.error_code)
         # CPU 上限生效即秒级终止，而不是跑满 30 秒
         elapsed.should be < 15_000
+      end
+
+      it "OS 资源约束（对照）：相同限额下低 CPU 消耗调用正常完成" do
+        # 成功对照（M3-WP5 review）：同解释器同 cpu_seconds=1 限额，无忙循环
+        # 脚本写完 result 正常返回——证明限额配置合法且解释器可在其下完成，
+        # 使上一用例的终止可归因于配额本身
+        code = <<-RUBY # ameba:disable Style/HeredocEscape, Style/HeredocIndent
+          $stdout.sync = true
+          request = $stdin.gets
+          $stdout.puts JSON.generate({"type" => "registered", "actions" => [], "hooks" => []})
+          req = JSON.parse(request)
+          $stdout.puts JSON.generate({"type" => "result", "request_id" => req["request_id"], "ok" => true, "value" => {"done" => true}})
+        RUBY
+        interp = RunnerWp5Helpers.script_interpreter(code)
+        limits = ::Sebas::Plugins::ResourceLimits.from_config(memory_mb: nil, cpu_seconds: 1)
+        runner = ::Sebas::Plugins::Runner.new(interp, global_timeout_ms: 30_000_i64, limits: limits)
+        outcome = runner.call(RunnerWp5Helpers.stub_plugin, RunnerWp5Helpers.request)
+        outcome.ok.should be_true
       end
     {% end %}
   end

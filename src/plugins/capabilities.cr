@@ -108,12 +108,26 @@ module Sebas
               json.field "tags", params["tags"]?.try(&.as_a?).try(&.map(&.as_s?)) || [] of String
             end
           end)
-          verdict = hook_bus.gate("memory.remember.before", context,
+          # transform 路径（M3-WP5 review）：gate 的 interpret 对裸返回值不
+          # 替换——DSL modify! 的修改会被丢弃；gate_transform 用 transform
+          # 派发（deny 与替换重校验同路径）
+          verdict = hook_bus.transform("memory.remember.before", context,
             JSON.parse(%({"entry": #{entry.to_json}})), idempotency_key: idempotency_key)
           if verdict.denied
             return JSON.parse({ok: false, error: "#{verdict.code}: #{verdict.reason}"}.to_json)
           end
-          final_entry = verdict.payload.try(&.as_h?).try(&.[]?("entry")) || entry
+          resolved = verdict.payload.try(&.as_h?).try(&.[]?("entry")) || entry
+          # 最终字段在提交前定形（M3-WP5 review）：非字符串标签元素就地过滤
+          # ——否则提交成功但 after payload 被 StrArray 契约拒绝，订阅者收
+          # 不到成功通知而调用方已拿到 ok:true
+          final_entry = JSON.parse(JSON.build do |json|
+            json.object do
+              json.field "kind", resolved["kind"]?.try(&.as_s?) || "memory"
+              json.field "text", resolved["text"]?.try(&.as_s?) || ""
+              json.field "tags", resolved["tags"]?.try(&.as_a?).try(&.compact_map(&.as_s?)) || [] of String
+            end
+          end)
+          tags = final_entry["tags"].as_a.map(&.as_s)
 
           # 幂等重放查表：同 key 已提交 → 返回既有 id，不重复写不重复 observe
           if key = idempotency_key
@@ -128,6 +142,7 @@ module Sebas
               json.field "memory_id", memory_id
               json.field "kind", final_entry["kind"]?.try(&.as_s?) || "memory"
               json.field "text", final_entry["text"]?.try(&.as_s?) || ""
+              json.field "tags", tags # 条目与 after payload 同源（M3-WP5 review）
               json.field "plugin_id", plugin_id
             end
           end)
@@ -149,7 +164,6 @@ module Sebas
           end
           # 提交成功后 observe（§12.11：失败或 deny 不触发 after）
           kind = stored["kind"]?.try(&.as_s?) || "memory"
-          tags = final_entry["tags"]?.try(&.as_a?).try(&.map(&.as_s?)) || [] of String
           after = JSON.parse(JSON.build do |json|
             json.object do
               json.field "memory_id", memory_id

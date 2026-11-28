@@ -143,7 +143,7 @@ module Sebas
           "session_key"    => Field.new(FieldType::Str),
           "summary_tokens" => Field.new(FieldType::Int),
           "summary"        => Field.new(FieldType::Str),
-        }, false),
+        }, true), # summary 是会话转写摘要文本——sensitive（M3-WP5 review CWE-862）
         "memory.remember.before" => Def.new("memory.remember.before", Kind::GateTransform, {
           "entry" => Field.new(FieldType::Hash),
         }, true),
@@ -159,10 +159,10 @@ module Sebas
         "task.end" => Def.new("task.end", Kind::Observe, {
           "task_id" => Field.new(FieldType::Str),
           "status"  => Field.new(FieldType::Str),
-          "error"   => Field.new(FieldType::Hash, optional: true, subfields: {
+          "error"   => Field.new(FieldType::Hash, optional: true, nullable: true, subfields: {
             "code"    => Field.new(FieldType::Str),
             "message" => Field.new(FieldType::Str, optional: true),
-          }),
+          }), # §12.11：error 为 object|null——nullable 允许显式 null
         }, false),
         "gateway.start" => Def.new("gateway.start", Kind::Observe, {} of String => Field, false),
         "gateway.stop"  => Def.new("gateway.stop", Kind::Observe, {} of String => Field, false),

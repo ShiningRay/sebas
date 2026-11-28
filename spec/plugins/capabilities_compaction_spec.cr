@@ -52,13 +52,28 @@ module Sebas
       driver = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new
       denied_dispatcher = ::Sebas::Plugins::HookDispatcher.new
       denied_dispatcher.subscribe("memory.remember.before", manifest_for("gatekeeper", "memory.remember.before"))
-      denied_dispatcher.dispatch = DenyOnceDispatch.new
+      denied_after = [] of String
+      # before 恒 deny；after 记录（若实现错误在 deny 路径发出 after，此处必红）
+      deny_script = ->(pid : String, hook : String) do
+        if hook == "memory.remember.after"
+          denied_after << pid
+          ::Sebas::Plugins::CallOutcome.success(nil, 0)
+        else
+          ::Sebas::Plugins::CallOutcome.error("hook_deny", "always_deny: spec", 0)
+        end
+      end
+      denied_dispatcher.subscribe("memory.remember.after", manifest_for("after-spy", "memory.remember.after"))
+      denied_dispatcher.dispatch = ObservingDispatch.new("deny-spy", script: deny_script)
       bus = ::Sebas::Plugins::HookBus.new(denied_dispatcher)
       result = driver.write("p", JSON.parse(%({"kind": "memory", "text": "hello", "tags": []})),
         JSON.parse("{}"), hook_bus: bus)
       result["ok"].as_bool.should be_false
       result["error"].as_s.should contain("plugin_deny")
       driver.entries.size.should eq(0) # deny 不落库
+      # 否定路径可观察（M3-WP5 review）：装 after 订阅者并断言零派发——
+      # 实现错误发出 after 时此处必红；留异步派发完成窗口
+      sleep 100.milliseconds
+      denied_after.size.should eq(0)
     end
 
     it "memory_driver.write：成功路径落库并触发 memory.remember.after" do
@@ -79,7 +94,13 @@ module Sebas
       entry = driver.entries.values.first
       entry["kind"].as_s.should eq("fact")
       entry["text"].as_s.should eq("sebas rocks")
-      observed.size.should eq(1) # after 触发（提交成功后）
+      # observe 异步派发（§12.11 不阻塞主流程）：轮询等待完成窗口
+      deadline = Time.instant + 2.seconds
+      while observed.empty? && Time.instant < deadline
+        sleep 10.milliseconds
+      end
+      observed.size.should eq(1)                      # after 触发（提交成功后）
+      entry["tags"].as_a.map(&.as_s).should eq(["x"]) # 条目与 after 同源（M3-WP5 review）
     end
 
     it "幂等键派生：replay_key/plugin_id/内容指纹共同编码（M3-WP5 review）" do
@@ -102,8 +123,8 @@ module Sebas
       fake_dispatcher = ::Sebas::Plugins::HookDispatcher.new
       fake_dispatcher.subscribe("session.compact.before", manifest_for("cb", "session.compact.before"))
       fake_dispatcher.subscribe("session.compact.after", manifest_for("ca", "session.compact.after"))
-      script = ->(_pid : String, _hook : String) do
-        order << "hooked"
+      script = ->(_pid : String, hook : String) do
+        order << (hook == "session.compact.before" ? "hooked-before" : "hooked-after")
         ::Sebas::Plugins::CallOutcome.success(nil, 0)
       end
       fake_dispatcher.dispatch = ObservingDispatch.new("hooked", script: script)
@@ -112,9 +133,23 @@ module Sebas
       runner = ::Sebas::Sessions::Compaction::CompactionRunner.new(bus)
       result = runner.run(compactor, "sess-1", ["m1", "m2"]) { |result| order << "committed:#{result.summary}" }
       result.summary.should eq("summary-2")
-      # before 观察先于压缩执行；commit（摘要提交）先于 after——成功通知
-      # 不得先于落库（M3-WP5 review，observe_id 相同以序判定）
-      order.should eq(["hooked", "compact", "committed:summary-2", "hooked"])
+      # observe 异步派发（§12.11 不阻塞主流程）：轮询等四个记录点齐再断言
+      deadline = Time.instant + 2.seconds
+      until order.size == 4
+        break if Time.instant >= deadline
+        sleep 10.milliseconds
+      end
+      order.size.should eq(4)
+      # 确定性不变式（异步 observe 下可确序的口径）：
+      # ① 压缩先于 commit（同步链）；② commit（摘要提交）先于 after 成功通知
+      # ——不得先于落库（M3-WP5 review 核心）。before 观察与 compact 的先后
+      # 不再可确序（observe 已异步），只断言其到场。
+      compact_idx = order.index("compact").should_not be_nil
+      committed_idx = order.index("committed:summary-2").should_not be_nil
+      after_idx = order.index("hooked-after").should_not be_nil
+      compact_idx.should be < committed_idx
+      committed_idx.should be < after_idx
+      order.count("hooked-before").should eq(1)
     end
 
     it "压缩失败：不触发 compact.after（§12.11 失败/取消不触发 after）" do
@@ -129,10 +164,27 @@ module Sebas
       bus = ::Sebas::Plugins::HookBus.new(fake_dispatcher)
       boom = FailingCompactor.new
       runner = ::Sebas::Sessions::Compaction::CompactionRunner.new(bus)
+      after_seen = [] of String
+      after_script = ->(pid : String, hook : String) do
+        after_seen << pid if hook == "session.compact.after" # 只记 after；before 仍入 order
+        order << "before-observed" unless hook == "session.compact.after"
+        ::Sebas::Plugins::CallOutcome.success(nil, 0)
+      end
+      fake_dispatcher.subscribe("session.compact.after", manifest_for("ca2", "session.compact.after"))
+      fake_dispatcher.dispatch = ObservingDispatch.new("hooked", script: after_script)
       expect_raises(::Exception, /compaction failed/) do
         runner.run(boom, "sess-2", ["m1"]) { |_r| raise "commit must not run" }
       end
-      order.size.should eq(1) # 只有 before；after 不触发
+      # before 观察已异步发出：轮询等其记录点；after 派发从未发起（失败
+      # 路径不 spawn），完成窗口后断言零派发（可观察否定路径，M3-WP5 review）
+      deadline = Time.instant + 2.seconds
+      until order.size == 1
+        break if Time.instant >= deadline
+        sleep 10.milliseconds
+      end
+      sleep 100.milliseconds
+      after_seen.size.should eq(0) # 只有 before；after 不触发
+      order.size.should eq(1)
     end
   end
 end
