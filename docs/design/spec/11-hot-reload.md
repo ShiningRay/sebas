@@ -31,6 +31,7 @@
 | 渠道凭据（app_id+secret） | ⚠️ | token 本就是 ~2h TTL 生命周期对象；换 secret 后保守做法=等 TTL 自然过期（≤2h）或维护失效标记——「主动作废旧 token」的 API 行为未验证（§15.1） |
 | **账号增删** | ⚠️ | = **账号监督体（§5.1 账号生命周期）下的 fiber 创建/优雅停止**：加账号=spawn 新长连接 fiber；删账号=drain 在途消息后 close。与多账号设计合流，无需重启进程 |
 | 监听端口/协议栈 | ❌ restart | 套接字绑定属进程资源，单进程内换端口会丢包；校验阶段对这类配置给出明确「此项需重启」提示（OpenClaw hybrid 的 restart 子集语义） |
+| 数据根（`SEBAS_HOME` / `gateway.data_dir`） | ❌ restart | 数据库/vault/会话/工作流/IPC discovery 以解析后的数据路径为根，属启动资源（#274 sebas-home.md §3）：热更新不重读 `SEBAS_HOME`、不改换数据路径，`data_dir` 配置变更一律标记 restart-required，不允许半途换根；配置内相对资源路径（persona_file、plugins.dir）仍按同一配置文件目录重新解析（数据类热换） |
 
 （依据热更新笔记 §6 组件矩阵；账号增删行与渠道笔记「每账号长连接配监督体」建议合流。）
 

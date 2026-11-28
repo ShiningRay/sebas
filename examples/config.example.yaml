@@ -56,4 +56,5 @@ gateway:
   ipc:
     mode: auto                        # auto | unix | tcp | off
     port: 18791
-  data_dir: data
+  data_dir: data                     # 相对值以本配置文件所在目录为基准；省略时默认 <home>/data
+                                     # home 根：默认 ~/.sebas，可用 SEBAS_HOME 覆盖（空白值拒启）

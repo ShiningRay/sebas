@@ -118,6 +118,20 @@ The gateway:
 Configuration hot reload is on by default — editing `config.yaml` re-applies the change
 without restarting the process.
 
+## Home root
+
+All default locations resolve from a single application root: `~/.sebas`, overridable via
+`SEBAS_HOME` (a blank value refuses to start; `~` is expanded; a relative value is resolved
+against the startup directory and never changes in-process afterwards). Without `--config`,
+the gateway reads `<home>/config.yaml` and defaults data to `<home>/data`; an explicit
+`--config` only selects the config file and never moves the home root or the default data
+directory. Relative paths inside the config (`gateway.data_dir`, `agents.<name>.persona_file`,
+`plugins.dir`) resolve against the directory of the actual config file. As a one-version
+fallback, when `<home>/config.yaml` does not exist and a `config.yaml` exists in the startup
+directory, the legacy file is read with a migration warning — nothing is copied or moved.
+Hot reload never re-reads `SEBAS_HOME` and never switches the database/vault paths; a
+`gateway.data_dir` change is flagged restart-required.
+
 ## Configuration
 
 See [`examples/config.example.yaml`](examples/config.example.yaml) for the full shape and

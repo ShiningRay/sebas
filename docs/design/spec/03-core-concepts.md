@@ -129,7 +129,11 @@ gateway:
 
 要点：
 
-- **应用根目录（#274，accepted-design，待实现）**：默认 `~/.sebas`，可由 `SEBAS_HOME` 覆盖；默认配置为 `<home>/config.yaml`，省略 `gateway.data_dir` 时为 `<home>/data`。显式 `--config` 不改根目录，配置内相对路径以实际配置文件目录为基准。完整契约见 [proposals/sebas-home.md](../proposals/sebas-home.md)。
+- **应用根目录（#274，M5.0-WP3 已实现）**：完整契约见 [proposals/sebas-home.md](../proposals/sebas-home.md)。
+    - **根目录与默认路径**：默认 `~/.sebas`，可由 `SEBAS_HOME` 覆盖（空白值拒启不回退；`~` 在路径层展开；相对值以启动目录立即绝对化，解析后进程内不再改变）。默认配置为 `<home>/config.yaml`，配置缺失 fail-fast 并展示实际查找的绝对路径。
+    - **相对资源路径**：省略 `gateway.data_dir` 时解析期取 `<home>/data`（不向 YAML 树注入绝对路径）；显式相对值与相对 `agents.<name>.persona_file`、`plugins.dir` 均以实际配置文件目录为基准。显式 `--config` 只决定配置文件，不反向改变根目录或默认数据目录。
+    - **旧布局回退**：未传 `--config` 且 `<home>/config.yaml` 不存在、启动目录有旧 `config.yaml` 时，一个版本的受限回退读旧文件并警告（展示配置与实际数据路径；绝不自动复制或搬移）。
+    - **热更新**：不重读 `SEBAS_HOME`、不改换数据库/vault/IPC discovery；`data_dir` 变更 restart-required。POSIX 目录权限过宽只告警。
 
 - **端口**：`http.port` / `ipc.port` 可填 `0`，表示由内核分配空闲端口（listen 后回写实际端口）；spec 与同机多实例用它避开默认 18790/18791。
 

@@ -161,13 +161,16 @@ module Sebas
         include YAML::Serializable
         getter http : HttpConfig?
         getter ipc : IpcConfig = IpcConfig.new
-        getter data_dir : String = "data"
+        # data_dir 省略（nil）= 解析期取 <home>/data（M5.0-WP3 sebas-home.md §2.2）；
+        # 显式值保持原样（相对值由消费方相对实际配置文件目录解析），不向配置树
+        # 注入机器相关绝对路径——热更新仍比较配置本身的语义
+        getter data_dir : String?
         # 会话输入调度系统级默认（session-input-scheduling.md §3.1；作用于所有支持对话调度的 agent）
         getter session : SessionPolicyConfig?
         # agent 间协作（design.md §8.1）：max_hops = 一轮交换内 agent-to-agent 传递上限
         getter collaboration : CollaborationConfig = CollaborationConfig.new
 
-        def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = "data", @session = nil,
+        def initialize(@http = nil, @ipc = IpcConfig.new, @data_dir = nil, @session = nil,
                        @collaboration = CollaborationConfig.new)
         end
       end
