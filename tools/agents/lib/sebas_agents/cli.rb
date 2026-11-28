@@ -517,25 +517,36 @@ end
         executed = false
         begin
           begin
+            # nil = 记录缺失/非本卡（预算不可判定）——与「有效记录的 0 次
+            # 失败」严格区分，缺失必须拒判不得按 0 放行（#312 四轮 review：
+            # 规划后、取锁前记录被删的窗口，放行等于预算外执行且无法计数）。
             failures = fresh_auto_failures(options, entry.issue)
-            summary = nil
-            if step == "merge" && failures < AutoMerge::MAX_FAILURES
-              # 摘要与 head 绑定（#312 二轮 review）：旧 head 的残留摘要对新
-              # head 不成立，传当前 head 供 gateway 过滤。
-              summary = merge_gateway.verifier_summary(entry.pr, entry.head_sha)
-            end
-            allowed, reason = AutoMerge.gate(step: step, summary: summary, failures: failures)
-            unless allowed
-              # 门拒判是「交人工」的停轮，不是执行失败——不计数（只有真
-              # 执行过的步才进计数/清零分支）。
+            if failures.nil?
               payload["status"] = "blocked"
               payload["step"] = step
-              payload["auto_gate"] = reason
+              payload["auto_gate"] = "运行记录缺失或非本卡记录（##{entry.issue}），失败预算不可判定——fail-closed 拒绝执行"
               payload["ok"] = false
               code = EXIT_REFUSED
             else
-              executed = true
-              code = queue_apply_step!(snap, options, payload, queue, merge_gateway)
+              summary = nil
+              if step == "merge" && failures < AutoMerge::MAX_FAILURES
+                # 摘要与 head 绑定（#312 二轮 review）：旧 head 的残留摘要对新
+                # head 不成立，传当前 head 供 gateway 过滤。
+                summary = merge_gateway.verifier_summary(entry.pr, entry.head_sha)
+              end
+              allowed, reason = AutoMerge.gate(step: step, summary: summary, failures: failures)
+              unless allowed
+                # 门拒判是「交人工」的停轮，不是执行失败——不计数（只有真
+                # 执行过的步才进计数/清零分支）。
+                payload["status"] = "blocked"
+                payload["step"] = step
+                payload["auto_gate"] = reason
+                payload["ok"] = false
+                code = EXIT_REFUSED
+              else
+                executed = true
+                code = queue_apply_step!(snap, options, payload, queue, merge_gateway)
+              end
             end
           rescue CommandError => e
             payload["ok"] = false
@@ -549,8 +560,13 @@ end
           reset_result = :ok
           if executed && code != EXIT_OK && code != EXIT_LOCKED
             result = with_record_retry { record_auto_failure(options, entry.issue, step) }
-            payload["auto_budget_note"] =
-              "运行记录锁被占（心跳写入中），本次失败未能计入预算（有界重试后仍失败）" if result == :locked
+            if result == :locked
+              payload["auto_budget_note"] =
+                "运行记录锁被占（心跳写入中），本次失败未能计入预算（有界重试后仍失败）"
+            elsif result == :missing
+              payload["auto_budget_note"] =
+                "运行记录缺失（#{result}），本次失败未能计入预算——先恢复本机认领记录"
+            end
           elsif executed && code == EXIT_OK
             reset_result = with_record_retry { record_auto_success(options, entry.issue) }
             unless reset_result == :ok
@@ -602,13 +618,16 @@ end
     end
 
     # 合并链锁内的预算重读：不走循环顶的 records 快照（可能已被上一轮
-    # 调用改写），读当前记录的真实计数。
+    # 调用改写），读当前记录的真实计数。nil = 记录缺失或非本卡记录
+    # （预算不可判定），调用方必须拒判——不得与「0 次失败」混同。
     def fresh_auto_failures(options, issue)
       record, = owned_record(options, issue)
-      return 0 if record.nil?
+      return nil if record.nil?
 
       data = record.load
-      data && data["issue"].to_i == issue.to_i ? data["auto_merge_failures"].to_i : 0
+      return nil if data.nil? || data["issue"].to_i != issue.to_i
+
+      data["auto_merge_failures"].to_i
     end
 
     # 自动失败计数（AutoMerge 回退预算的载体）。只动本卡记录，不碰远端；

@@ -427,9 +427,9 @@ class QueueAutoCommandTest < Minitest::Test
     end
   end
 
-  # 他机租约（本机 runs/ 无记录）：verify merge --pre 即使通过，核验结论也写
-  # 不进运行记录——必须拒绝本步，否则自动链会在同一头上无限重跑 verify_pre
-  # 并堵住身后队列（#312 review）。
+  # 他机租约（本机 runs/ 无记录）：预算不可判定 → 锁内门禁直接拒判（#312
+  # 四轮 review 把该判定提到执行前）；即便漏过，verify_pre 的核验结论也写
+  # 不进运行记录而拒绝——两道闸都保证本机不执行非自己持有的卡。
   def test_foreign_lease_verify_pre_refuses_without_local_record
     Dir.mktmpdir do |dir|
       write_config(dir, switch: true)
@@ -438,8 +438,8 @@ class QueueAutoCommandTest < Minitest::Test
       FileUtils.rm_f(record_path)
       status, payload = run_auto(dir, snap, changelog, apply: true, runner: AutoFakeRunner.new)
       assert_equal 1, status
-      assert_equal "refused", payload["status"]
-      assert_includes payload["reasons"].first, "未能写入本地运行记录"
+      assert_equal "blocked", payload["status"]
+      assert_includes payload["auto_gate"], "预算不可判定"
       refute File.exist?(record_path)
     end
   end
@@ -519,6 +519,21 @@ class QueueAutoCommandTest < Minitest::Test
       status = Dir.chdir(dir) { cli.run(manual) }
       assert_equal 0, status
       assert_equal 0, counter.call, "人工清零必须写回自定义记录"
+    end
+  end
+
+  # 记录在规划后被删（#312 四轮 review）：预算不可判定时必须拒判，
+  # 不得按「0 次失败」放行执行。
+  def test_missing_record_blocks_execution
+    Dir.mktmpdir do |dir|
+      write_config(dir, switch: true)
+      snap, changelog, record_path = verified_pr_fixture(dir)
+      FileUtils.rm_f(record_path)
+      status, payload = run_auto(dir, snap, changelog, apply: true, runner: AutoFakeRunner.new)
+      assert_equal 1, status
+      assert_equal "blocked", payload["status"]
+      assert_includes payload["auto_gate"], "预算不可判定"
+      refute File.exist?(record_path), "拒判不得触碰记录文件"
     end
   end
 
