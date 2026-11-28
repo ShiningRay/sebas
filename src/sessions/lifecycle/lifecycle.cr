@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "../../plugins/hook_bus"
 require "file_utils"
 
 # 会话生命周期治理（M4.4-WP3，Q8 拆分第二块；提案 M4 门槛）：
@@ -47,18 +48,44 @@ module Sebas
         end
 
         # upsert：admission 时登记/刷新 last_active_at（status 不回退）
+        # hook 门面（M3-WP5，#17）：session.start/end 注入；缺省 disabled
+        property hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+        # 压缩 runner（M3-WP5 review）：归档路径的真实触发点——生产装配
+        # （gateway）注入；nil = 压缩未装配（hook 语义经 runner 覆盖，无生产
+        # 压缩器时 compactor 缺省实现为「全量转写拼接」——接口完整、无假 hook）
+        property compaction_runner : ::Sebas::Sessions::Compaction::CompactionRunner? = nil
+        property session_compactor : ::Sebas::Sessions::Compaction::SessionCompactor? = nil
+
         def touch(session_key : String, agent_id : String, kind : String = "user",
                   fork_id : String? = nil) : Nil
           # 纳秒精度：默认 to_rfc3339 无小数秒，同秒相等会使 < 阈值判定失效
           now = ::Time.utc.to_rfc3339(fraction_digits: 9)
-          @store.db.exec(
+          # 两段式 upsert（M3-WP5 review）：先 DO NOTHING 原子插入，以影响
+          # 行数判定真实插入——并发首次 touch 只有其一发送 session.start，
+          # 不再依赖写前读取快照（get-exec 间协程切换会双发）
+          inserted = @store.db.exec(
             "INSERT INTO sessions (session_key, agent_id, kind, fork_id, status, last_active_at, created_at) " \
             "VALUES (?, ?, ?, ?, 'active', ?, ?) " \
-            "ON CONFLICT(session_key) DO UPDATE SET last_active_at = excluded.last_active_at, " \
-            "agent_id = excluded.agent_id, kind = excluded.kind, " \
-            "fork_id = COALESCE(excluded.fork_id, sessions.fork_id)",
+            "ON CONFLICT(session_key) DO NOTHING",
             session_key, agent_id, kind, fork_id, now, now
-          )
+          ).rows_affected > 0
+          unless inserted
+            @store.db.exec(
+              "UPDATE sessions SET last_active_at = ?, agent_id = ?, kind = ?, " \
+              "fork_id = COALESCE(?, fork_id) WHERE session_key = ?",
+              now, agent_id, kind, fork_id, session_key
+            )
+          end
+          # session.start（M3-WP5，#17 §12.11）：新会话上下文建立后仅通知；
+          # 发送条件=本次写入的真实插入结果（仅插入触发，冲突更新不触发）
+          if inserted
+            begin
+              hook_bus.observe("session.start", ::JSON.parse("{}"),
+                ::JSON.parse(%({"session_key": #{session_key.to_json}})))
+            rescue ex
+              Log.warn(exception: ex) { "session.start hook skipped (already admitted, session=#{session_key})" }
+            end
+          end
         end
 
         def get(session_key : String) : SessionRow?
@@ -123,11 +150,52 @@ module Sebas
           dormant
         end
 
-        # 归档（人工确认由调用方/admin 命令承担）：dormant/active → archived
+        # 归档（人工确认由调用方/admin 命令承担）：dormant/active → archived。
+        # 归档前压缩（M3-WP5 review：session.compact.* 的生产触发点）——
+        # runner+compactor 已装配则真实执行；压缩失败不阻断归档（observe
+        # 口径），仅记日志
         def archive(session_key : String) : Bool
-          @store.db.exec(
+          # 重复归档幂等（M3-WP5 review）：已归档直接 no-op——压缩与
+          # session.compact.* 不重复执行；终态仍以 UPDATE 条件原子判定兜底
+          return false if archived?(session_key)
+          run_compaction_on_archive(session_key)
+          affected = @store.db.exec(
             "UPDATE sessions SET status = 'archived' WHERE session_key = ? AND status != 'archived'",
             session_key).rows_affected > 0
+          if affected
+            # session.end（M3-WP5，#17 §12.11）：归档为明确会话边界，带 reason；
+            # observe 隔离，失败不阻断归档——已确定的提交结果不被覆盖
+            begin
+              hook_bus.observe("session.end", ::JSON.parse("{}"),
+                ::JSON.parse(%({"session_key": #{session_key.to_json}, "reason": "archived"})))
+            rescue ex
+              Log.warn(exception: ex) { "session.end hook skipped (already archived, session=#{session_key})" }
+            end
+          end
+          affected
+        end
+
+        # 归档前压缩：转写 → compactor → 摘要落 store（session_note）；
+        # hook_bus.observe("session.compact.before"/"after") 由 CompactionRunner
+        # 真实派发（生产路径证据）。compactor 未装配 = 跳过（无假 hook 声称
+        # 生产压缩——WBS 依赖节口径）；装配了 compactor 才算真实触发。
+        private def run_compaction_on_archive(session_key : String) : Nil
+          runner = @compaction_runner
+          compactor = @session_compactor
+          return unless runner && compactor
+          begin
+            # 转写读取纳入隔离（M3-WP5 review）：读失败与压缩失败同路径，
+            # 归档不因压缩链路中断
+            transcript = @store.transcripts(session_key).map(&.content)
+            return if transcript.empty?
+            runner.run(compactor, session_key, transcript) do |result|
+              # 摘要落转写（唯一提交方=调用方，role=compaction；compact.after
+              # 于提交成功后由 runner 派发）
+              @store.append_transcript(session_key, "compaction", result.summary)
+            end
+          rescue ex
+            Log.warn(exception: ex) { "compaction on archive failed (session=#{session_key}); archiving continues" }
+          end
         end
 
         # 写路径拒绝：archived 会话不可写（append_transcript 前置检查用）

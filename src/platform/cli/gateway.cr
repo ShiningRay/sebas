@@ -15,6 +15,7 @@ require "../../agents/pool"
 require "../../agents/agents"
 require "../../agents/reception/reception"
 require "../../sessions/lifecycle/lifecycle"
+require "../../sessions/compaction/compactor"
 require "../../channels/registry"
 require "../../providers/providers"
 require "../../providers/pool"
@@ -104,16 +105,16 @@ module Sebas
           @data_dir = Path[data_dir]
           @store = Store::Store.new(@data_dir / "sebas.db")
           @lifecycle_store = Sessions::Lifecycle::Store.new(@store, @data_dir)
-          # secrets 收敛（M4.2-WP4 §5.3）：明文迁 vault，factory 包装见 GatewaySecrets
           @vault = Keys::EncryptedFileVault.open(@data_dir / "secrets.vault", platform_keyring)
-          migrate_secrets(@config)
+          migrate_secrets(@config) # secrets 收敛（M4.2-WP4 §5.3，包装见 GatewaySecrets）
           @provider_factory = wire_secret_factory(original_factory)
           @bus = Bus::Bus.new
           @channels = Channels::Registry.new
           @providers = Providers::Pool.new
           @tools_registry = Tools.default_registry(@channels)
           @executor = Tools::Executor.new(@tools_registry, @channels)
-          wire_plugins(@config) # 插件面装配（M3-WP4）：先于 pool/agent 工具面构建
+          wire_plugins(@config)            # 插件面装配（M3-WP4）：先于 pool/agent 工具面构建
+          wire_hook_faces; wire_compaction # hook 门面+归档压缩接线（M3-WP5 #17）
           @rules = build_rules(config)
           @pool = build_pool
           @scheduling = Sessions::Scheduling::Registry.new(@store)
@@ -172,6 +173,7 @@ module Sebas
           raise Store::StoreError.new("engine fork factory: no main agent") unless cfg
           @provider_factory.call(cfg, nil)           end
           @engine = Orchestration::Engine.new(@store, @executor, "engine", nil, fork_factory)
+          @engine.hook_bus = @hook_bus # task 域 hook 注入（M3-WP5，#17）
           @triggers = Orchestration::TriggerManager.new(@engine, @bus)
           load_workflows(@engine)
           @ipc.lifecycle_store = @lifecycle_store # 管理面注入（M4.4-WP4）
@@ -179,10 +181,9 @@ module Sebas
           @http.lifecycle = @lifecycle_store
           @http.templates = @agent_registry
           @http.steer_center = @steer_center
-          wire_hook_handler
-          wire_scheduling_admin
+          wire_hook_handler; wire_scheduling_admin
           @fork_manager = Orchestration::Fork::ForkManager.new(@store, @agent_registry, @providers, @approvals)
-          @join_writer = Orchestration::Fork::JoinWriter.new(@store)
+          @join_writer = Orchestration::Fork::JoinWriter.new(@store) # fork/join 装配
           spawn_adapters
         end
 
@@ -195,6 +196,7 @@ module Sebas
           scheduling.recover_dispatch     # 持久待发批次重派（§5.2：sealed/queued 重新入队）
           confirm_telegram_after_recovery # M3-WP8：replay 后统一补确认 telegram dispatched（窗口 C）
           @steer_dispatch_ready.set(true) # 恢复完成后启用 queued steer 派发（QWvO）
+          fire_gateway_start              # gateway.start hook（M3-WP5，#17）
           consume_bus
           if @config_path.empty?
             Log.info { "gateway running (data_dir=#{@data_dir}; config reload disabled: no config path)" }
@@ -206,53 +208,8 @@ module Sebas
           end
         end
 
-        # 组件重应用矩阵（§11.3）：数据类热换；账号增删=监督体启停；端口类标 restart
-        private def apply_config(new_config : Config::Config) : Array(String)
-          restart_required = [] of String
-
-          old_http = @config.gateway.http
-          new_http = new_config.gateway.http
-          if old_http && new_http && (old_http.port != new_http.port || old_http.bind != new_http.bind)
-            restart_required << "gateway.http.port/bind changed: sockets are process resources, restart required"
-          end
-
-          # 路由 binding（数据类：换引用即生效）
-          @rules = build_rules(new_config)
-
-          # provider key 热换（下个 turn 生效）；热更新带入的明文同样收敛
-          migrate_secrets(new_config)
-          new_config.agents.each do |name, agent|
-            @providers.replace(name, @provider_factory.call(agent, nil))
-          end
-          # 协作防环上限（数据类热换，#185）：在途链路不变，下条投递按新值判
-          @collaboration_messenger.try(&.max_hops = new_config.gateway.collaboration.max_hops)
-
-          # 账号增删 = 监督体启停（email 渠道；wecom/lark M1-WP4/5 合流）
-          old_accounts = @config.channels.email.try(&.accounts.map(&.id)) || [] of String
-          new_accounts = new_config.channels.email.try(&.accounts.map(&.id)) || [] of String
-          (old_accounts - new_accounts).each do |removed|
-            @channels.remove("email", removed)
-            @supervisor.remove_account(removed)
-          end
-          (new_accounts - old_accounts).each do |added|
-            account = new_config.channels.email.try(&.accounts.find(&.id.==(added)))
-            next unless account
-            adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
-            @channels.register(adapter)
-            @supervisor.register(adapter)
-          end
-
-          # Telegram 账号热换（M3-WP8 装配）：增删=监督体启停
-          reapply_telegram_accounts(new_config)
-
-          wire_plugins(new_config) # 插件面热更新（M3-WP4 数据类）：每动作新进程，重扫即生效
-
-          @config = new_config
-          restart_required
-        end
-
         def shutdown : Nil
-          @stopping_scan.set(true) # 扫描协程先退（在 scheduling/store 关闭前，CodeRabbit）
+          fire_gateway_stop; @stopping_scan.set(true) # gateway.stop hook（M3-WP5 #17）+ 扫描协程先退（CodeRabbit）
           @reload_manager.try(&.stop_watching)
           @http.close
           @supervisor.stop_all
@@ -272,6 +229,10 @@ module Sebas
           confirm_telegram_consumer(message) # M3-WP8 §4.2：消费者确认（含已有 intent 分支，防永卡 dispatched=false）
           return unless intent_new
           @store.finish_intent(message.event_id, "dispatched")
+          # message.received（M3-WP5，#17 §12.11）：渠道验真/鉴权/**去重**并解析
+          # 完成后、路由前 observe（M3-WP5 review：持久去重拒绝的重复投递不再
+          # 进 hook 派发路径；只读，失败不阻断接收——HookBus 异步隔离）
+          observe_message_received(message) # message.received hook（M3-WP5 #17）
 
           if admitted_session
             # 调度派发路径：agent_id 取自五段键 agent 段（Agents.session_key 格式），
@@ -349,7 +310,16 @@ module Sebas
           register_dialog_fork_tool(registry, agent_name, agent)
           front_desk = agent_name == ::Sebas::Agents::Reception::FRONT_DESK_AGENT
           restrict_registry_to_read_only(registry) if front_desk
-          executor = Tools::Executor.new(registry, @channels)
+          # 每 turn 共享 Budget（M3-WP5 review，§12.11 预算按 turn 划界）：
+          # agent/llm、tool、message 三域 hook 派发绑定同一预算实例，turn 级
+          # 累计上限生效；turn 结束随局部变量丢弃
+          turn_budget = ::Sebas::Plugins::HookDispatcher::Budget.new
+          hook_bus = ::Sebas::Plugins::HookBus.new(@hook_bus.dispatcher,
+            budget_factory: -> { turn_budget })
+          if send_tool = registry.find("message.send").as?(Tools::MessageSendTool)
+            send_tool.hook_bus = hook_bus # 消息域注入（per-turn 实例，M3-WP5 #17）
+          end
+          executor = Tools::Executor.new(registry, @channels, hook_bus) # 工具域注入（M3-WP5 #17）
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
           # 工具协议说明（M4.3-WP1 CodeRabbit）：模型必须知道可用工具与调用
@@ -365,6 +335,7 @@ module Sebas
             @steer_center.drain(session, turn_id, generation)
           end
           runtime = Agents::AgentRuntime.new(@store, @approvals, drain)
+          inject_runtime_hooks(runtime, hook_bus) # agent/llm 域 hook（M3-WP5 #17，turn 级 Budget）
           turn_id = "turn:#{event_id}"
           lease = @steer_registry.register(session_key, turn_id)
           turn_ctx = Agents::TurnContext.new(session_key, lease.turn_id, lease.generation)

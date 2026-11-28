@@ -1,5 +1,7 @@
+require "json"
 require "../log"
 require "../platform/store/store"
+require "../plugins/hook_bus"
 require "../providers/providers"
 require "../providers/tool_call_parser"
 require "../tools/registry"
@@ -23,6 +25,9 @@ module Sebas
       # nil = steer 未装配（无注入，行为与 WP4 之前一致）。
       alias SteerDrain = Proc(String, String, Int64, Array(String))
 
+      # hook 门面（M3-WP5，#17）：agent×2 + llm×4 注入；缺省 disabled 零开销
+      property hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+
       def initialize(@store : ::Sebas::Platform::Store::Store,
                      @approvals : ::Sebas::Orchestration::Approvals::Center?,
                      @steer_drain : SteerDrain? = nil)
@@ -35,12 +40,40 @@ module Sebas
               provider : Providers::Provider, executor : Tools::Executor,
               messages : Array(Providers::Message), task_id : String?, event_id : String,
               collab_hops : Int64? = nil) : String
+        # agent.turn.before（M3-WP5，#17 §12.11 gate）：可拒绝整个 turn
+        verdict = hook_bus.gate("agent.turn.before", hook_context(session_key),
+          JSON.parse(%({"agent_id": #{agent_id_of(session_key).to_json}, "session_key": #{session_key.to_json}})),
+          idempotency_key: "turn:#{turn.turn_id}")
+        if verdict.denied
+          Log.warn { "agent turn denied: #{verdict.code}: #{verdict.reason}" }
+          return "(turn denied: #{verdict.reason})"
+        end
+        started = Time.instant
+        text = run_rounds(session_key, turn, provider, executor, messages, task_id, event_id, collab_hops)
+        # agent.turn.after（observe）：含成功/失败/中断，不再次启动隐式 turn
+        after = JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "agent_id", agent_id_of(session_key)
+            json.field "status", text.starts_with?("(provider error") || text.starts_with?("(turn denied") ? "error" : "success"
+            json.field "duration_ms", (Time.instant - started).total_milliseconds.to_i64
+          end
+        end)
+        hook_bus.observe("agent.turn.after", hook_context(session_key), after)
+        text
+      end
+
+      private def run_rounds(session_key : String, turn : TurnContext,
+                             provider : Providers::Provider, executor : Tools::Executor,
+                             messages : Array(Providers::Message), task_id : String?, event_id : String,
+                             collab_hops : Int64? = nil) : String
         (1..MAX_TOOL_ROUNDS).each do |round|
-          completion = provider.complete(messages)
+          completion = llm_request(session_key, provider, messages, round)
           unless completion.ok?
             Log.error { "provider error: #{completion.error}" }
             return "(provider error: #{completion.error})"
           end
+          # llm.response.transform（§12.11 transform）：可替换文本；宿主再次
+          # 解析与校验（ToolCallParser/终答即解析路径不变）
           call = Providers::ToolCallParser.parse(completion.text)
           return finish_round(task_id, round, completion.text) if call.nil?
 
@@ -66,9 +99,63 @@ module Sebas
           @store.checkpoint(task_id, round) if task_id
         end
         # 轮数上限：不再解析工具调用，要求模型给终答
-        final = provider.complete(messages + [Providers::Message.new("user",
-          "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")])
+        final = llm_request(session_key, provider, messages + [Providers::Message.new("user",
+          "tool round limit (#{MAX_TOOL_ROUNDS}) reached; give your final answer now without tool calls.")], MAX_TOOL_ROUNDS)
         final.ok? ? final.text : "(provider error: #{final.error})"
+      end
+
+      # llm.request 域三 hook（§12.11）：before（gate+transform——system_append
+      # 追加受控 context，model/provider 由宿主固定）、after（observe usage）、
+      # error（observe 重试序号）。model/provider/凭据/endpoint 不暴露给插件。
+      private def llm_request(session_key : String, provider : Providers::Provider,
+                              messages : Array(Providers::Message), attempt : Int32) : Providers::Completion
+        request_payload = JSON.parse(%({"provider": #{provider.class.name.split("::").last.to_json}, "model": #{provider.model.to_json}, "message_count": #{messages.size}, "system_append": ""}))
+        verdict = hook_bus.gate("llm.request.before", hook_context(session_key), request_payload)
+        if verdict.denied
+          return Providers::Completion.error("llm hook denied: #{verdict.reason}")
+        end
+        append_text = verdict.payload.try(&.as_h?).try(&.[]?("system_append")).try(&.as_s?)
+        effective = messages
+        if append_text && !append_text.empty?
+          effective = [Providers::Message.new("system", append_text)] + messages
+        end
+        started = Time.instant
+        completion = provider.complete(effective)
+        if completion.ok?
+          after = JSON.parse(JSON.build do |json|
+            json.object do
+              json.field "provider", provider.class.name.split("::").last
+              json.field "model", provider.model
+              json.field "duration_ms", (Time.instant - started).total_milliseconds.to_i64
+              json.field "usage", JSON.parse("{}")
+            end
+          end)
+          hook_bus.observe("llm.request.after", hook_context(session_key), after)
+          text = completion.text
+          tv = hook_bus.transform("llm.response.transform", hook_context(session_key),
+            JSON.parse(%({"provider": #{provider.class.name.split("::").last.to_json}, "model": #{provider.model.to_json}, "text": #{text.to_json}})))
+          return Providers::Completion.error("llm hook denied: #{tv.reason}") if tv.denied
+          replaced = tv.payload.try(&.as_h?).try(&.[]?("text")).try(&.as_s?)
+          replaced ? Providers::Completion.new(replaced, nil) : completion
+        else
+          err = JSON.parse(JSON.build do |json|
+            json.object do
+              json.field "provider", provider.class.name.split("::").last
+              json.field "attempt", attempt
+              json.field "error_code", (completion.error || "error")[0, 64]
+            end
+          end)
+          hook_bus.observe("llm.request.error", hook_context(session_key), err)
+          completion
+        end
+      end
+
+      private def hook_context(session_key : String) : JSON::Any
+        JSON.parse(%({"session_key": #{session_key.to_json}}))
+      end
+
+      private def agent_id_of(session_key : String) : String
+        session_key.split(":")[1]? || ""
       end
 
       # 终答轮收尾：checkpoint（终答轮也计入 phase）+ 返回终答
