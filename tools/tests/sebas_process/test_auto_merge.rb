@@ -16,23 +16,28 @@ require_relative "../../agents/lib/sebas_agents"
 
 # 带锁路由与可配置评论响应的替身 runner：继承 CommandRunner（dry_run? 契约），
 # ref 锁走 RefLockStub，PR 评论分页返回预置数组；其余远端调用一律 CommandError
-# （fail-closed，防止测试悄悄放行未预期的 gh 调用）。
+# （fail-closed，防止测试悄悄放行未预期的 gh 调用）。on_ref_create 回调在
+# git/refs 创建（拿合并锁）时触发，用于模拟「规划后、锁内预算读取前」记录
+# 消失的窗口（#312 五轮 review）。
 class AutoFakeRunner < SebasAgents::CommandRunner
   include RefLockStub
 
   COMMENTS_PATH = %r{\Arepos/o/r/issues/\d+/comments\?}
+  REFS_POST = %r{\Arepos/[^/]+/[^/]+/git/refs\z}
 
   attr_reader :argvs
 
-  def initialize(comments: [])
+  def initialize(comments: [], on_ref_create: nil)
     super(dry_run: false)
     @comments = comments
+    @on_ref_create = on_ref_create
     @argvs = []
   end
 
   def run!(*argv, chdir: Dir.pwd)
     @argvs << argv
     if (write = ref_lock_write(argv))
+      @on_ref_create&.call if argv[2].to_s.match?(REFS_POST)
       return write
     end
     ""
@@ -522,18 +527,60 @@ class QueueAutoCommandTest < Minitest::Test
     end
   end
 
-  # 记录在规划后被删（#312 四轮 review）：预算不可判定时必须拒判，
-  # 不得按「0 次失败」放行执行。
-  def test_missing_record_blocks_execution
+  # 记录在规划后、锁内预算读取前被删（#312 五轮 review）：on_ref_create
+  # 在拿合并锁的瞬间删记录——锁内 fresh_auto_failures 必须重读磁盘并按
+  # 不可判定拒判，而不是沿用规划期的 records 快照。
+  def test_record_deleted_between_plan_and_lock_blocks_execution
     Dir.mktmpdir do |dir|
       write_config(dir, switch: true)
       snap, changelog, record_path = verified_pr_fixture(dir)
-      FileUtils.rm_f(record_path)
-      status, payload = run_auto(dir, snap, changelog, apply: true, runner: AutoFakeRunner.new)
+      data = JSON.parse(File.read(record_path))
+      File.write(record_path, JSON.generate(data.merge("verified_head" => "sha50")), encoding: "UTF-8")
+      runner = AutoFakeRunner.new(comments: summary_comment(unverified: 0),
+        on_ref_create: -> { FileUtils.rm_f(record_path) })
+      status, payload = run_auto(dir, snap, changelog, apply: true, runner: runner)
       assert_equal 1, status
       assert_equal "blocked", payload["status"]
-      assert_includes payload["auto_gate"], "预算不可判定"
-      refute File.exist?(record_path), "拒判不得触碰记录文件"
+      assert_includes payload["auto_gate"], "预算不可判定",
+        "锁内必须重读磁盘记录，规划期快照不得替代"
+      refute File.exist?(record_path), "拒判不得重建记录"
+    end
+  end
+
+  # 对照：同样带 verified_head 走到 merge 步，记录完好时预算门放行
+  #（下一步撞远端桩），证明上面用例的拒判确实由「记录消失」触发。
+  def test_intact_record_passes_budget_gate
+    Dir.mktmpdir do |dir|
+      write_config(dir, switch: true)
+      snap, changelog, record_path = verified_pr_fixture(dir)
+      data = JSON.parse(File.read(record_path))
+      File.write(record_path, JSON.generate(data.merge("verified_head" => "sha50")), encoding: "UTF-8")
+      status, payload = run_auto(dir, snap, changelog, apply: true,
+        runner: AutoFakeRunner.new(comments: summary_comment(unverified: 0)))
+      assert_equal 1, status
+      refute_includes payload["auto_gate"].to_s, "预算不可判定"
+      assert_includes payload["reasons"].first, "合并队列写段异常",
+        "预算门放行后链应走到 merge 段"
+    end
+  end
+
+  # auto_merge_failures 存在但非法（负数 / 非数字）时预算不可判定，
+  # 必须拒判——负数会让 count < MAX 恒真多执行尝试，非法字符串 to_i=0
+  # 与有效零次失败无法区分（#312 五轮 review）。
+  def test_invalid_failure_value_blocks_execution
+    [-1, "invalid"].each do |value|
+      Dir.mktmpdir do |dir|
+        write_config(dir, switch: true)
+        snap, changelog, record_path = verified_pr_fixture(dir)
+        data = JSON.parse(File.read(record_path))
+        File.write(record_path, JSON.generate(data.merge("verified_head" => "sha50",
+          "auto_merge_failures" => value)), encoding: "UTF-8")
+        status, payload = run_auto(dir, snap, changelog, apply: true,
+          runner: AutoFakeRunner.new(comments: summary_comment(unverified: 0)))
+        assert_equal 1, status
+        assert_equal "blocked", payload["status"]
+        assert_includes payload["auto_gate"], "预算不可判定"
+      end
     end
   end
 

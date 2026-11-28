@@ -618,8 +618,11 @@ end
     end
 
     # 合并链锁内的预算重读：不走循环顶的 records 快照（可能已被上一轮
-    # 调用改写），读当前记录的真实计数。nil = 记录缺失或非本卡记录
-    # （预算不可判定），调用方必须拒判——不得与「0 次失败」混同。
+    # 调用改写），读当前记录的真实计数。nil = 预算不可判定，调用方必须
+    # 拒判——不得与「0 次失败」混同。不可判定的三种情形：记录缺失、
+    # 非本卡记录、auto_merge_failures 存在但不是非负整数（#312 五轮
+    # review：负数会让 count < MAX 恒真多执行尝试；非法字符串 to_i=0
+    # 与有效零次失败无法区分——口径同 capacity 的 fail-closed）。
     def fresh_auto_failures(options, issue)
       record, = owned_record(options, issue)
       return nil if record.nil?
@@ -627,7 +630,10 @@ end
       data = record.load
       return nil if data.nil? || data["issue"].to_i != issue.to_i
 
-      data["auto_merge_failures"].to_i
+      raw = data["auto_merge_failures"]
+      return nil unless raw.nil? || (raw.is_a?(Integer) && raw >= 0)
+
+      raw.to_i
     end
 
     # 自动失败计数（AutoMerge 回退预算的载体）。只动本卡记录，不碰远端；
