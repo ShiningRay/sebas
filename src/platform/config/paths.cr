@@ -46,14 +46,22 @@ module Sebas
             expand_tilde(raw, home_dir).expand(base: cwd)
           else
             hd = home_dir || raise ConfigError.new("cannot resolve default home: no user home directory available (set SEBAS_HOME explicitly)")
-            Path[hd, ".sebas"]
+            # 默认主目录必须绝对可用（fail-closed）：HOME="" 等空白值会退化成
+            # 相对 `.sebas`（config_path 被展开而 data_dir 不会），相对主目录
+            # 同样让根目录依赖 cwd（CodeRabbit #304 复审）
+            raise ConfigError.new("cannot resolve default home: user home directory is blank (set SEBAS_HOME explicitly)") if hd.strip.empty?
+            raise ConfigError.new("cannot resolve default home: user home directory '#{hd}' is not an absolute path (set SEBAS_HOME explicitly)") unless Path[hd].absolute?
+            Path[hd, ".sebas"].expand(base: cwd)
           end
         end
 
-        # 前导 `~` 展开：`~` 本身或 `~<sep>...` 以平台主目录为基准；主目录缺失报错。
+        # 前导 `~` 展开：`~` 本身或 `~<sep>...` 以平台主目录为基准；主目录缺失、
+        # 空白或非绝对均报错（同默认分支的 fail-closed 口径）。
         def expand_tilde(raw : String, home_dir : String?) : Path
           if raw == "~" || raw.starts_with?("~/") || raw.starts_with?("~\\")
             hd = home_dir || raise ConfigError.new("cannot expand '~' in SEBAS_HOME: no user home directory available")
+            raise ConfigError.new("cannot expand '~' in SEBAS_HOME: user home directory is blank") if hd.strip.empty?
+            raise ConfigError.new("cannot expand '~' in SEBAS_HOME: user home directory '#{hd}' is not an absolute path") unless Path[hd].absolute?
             rest = raw[1..]
             rest = rest.lstrip('/').lstrip('\\') if rest.size > 1
             rest.empty? ? Path[hd] : Path[hd, rest]

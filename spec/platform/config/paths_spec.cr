@@ -85,6 +85,40 @@ module Sebas
             HomeResolver.resolve_home(nil, nil, Path["/x"])
           end
         end
+
+        {% if flag?(:windows) %}
+          # HOME=""（空串非 nil）会让默认主目录退化成相对 `.sebas`（CodeRabbit
+          # #304 复审）：空白与相对主目录均 fail-closed 拒启
+          it "空白主目录变量且无 SEBAS_HOME：拒启" do
+            expect_raises(ConfigError, /user home directory is blank/) do
+              PathContext.resolve(nil, cwd: Path["C:\\work"], env: {"USERPROFILE" => ""})
+            end
+          end
+
+          it "相对主目录变量且无 SEBAS_HOME：拒启" do
+            expect_raises(ConfigError, /not an absolute path/) do
+              PathContext.resolve(nil, cwd: Path["C:\\work"], env: {"USERPROFILE" => "relative\\home"})
+            end
+          end
+        {% else %}
+          it "空白主目录变量且无 SEBAS_HOME：拒启" do
+            expect_raises(ConfigError, /user home directory is blank/) do
+              PathContext.resolve(nil, cwd: Path["/work"], env: {"HOME" => ""})
+            end
+          end
+
+          it "相对主目录变量且无 SEBAS_HOME：拒启" do
+            expect_raises(ConfigError, /not an absolute path/) do
+              PathContext.resolve(nil, cwd: Path["/work"], env: {"HOME" => "relative/home"})
+            end
+          end
+        {% end %}
+
+        it "~ 展开遇空白主目录：拒启" do
+          expect_raises(ConfigError, /cannot expand '~'/) do
+            HomeResolver.expand_tilde("~/x", "")
+          end
+        end
       end
 
       describe PathContext do
