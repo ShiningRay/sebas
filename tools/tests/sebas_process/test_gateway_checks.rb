@@ -105,7 +105,8 @@ class ChecksLoadingTest < Minitest::Test
                        "headRefOid" => "sha10", "mergeStateStatus" => "CLEAN", "url" => "u",
                        "isCrossRepository" => false,
                        "closingIssuesReferences" => {"pageInfo" => {"hasNextPage" => false},
-                                                     "nodes" => [{"number" => 10}]}}]
+                                                     "nodes" => [{"number" => 10,
+                                                                  "repository" => {"nameWithOwner" => "o/r"}}]}}]
         }}}})
       }
     end

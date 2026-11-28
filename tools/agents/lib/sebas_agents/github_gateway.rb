@@ -744,9 +744,21 @@ end
         # 有效，实证 hive-mind#2561 → start#263）：按 nameWithOwner 拆分，
         # 本仓编号进 closing_issues（既有消费方按同仓语义使用），异仓编号
         # 进 foreign_issues 供仓库级背压扫描排除（#307 五轮 review）。
+        # 比较忽略大小写（@repo 来自 origin/SEBAS_REPO/--repo，大小写未
+        # 规范化，#307 七轮 review）；归属缺失按结构非法拒绝，不静默归异仓。
         closing_refs = Array(item["closingIssuesReferences"])
+        closing_refs.each do |ref|
+          next if ref["number"].is_a?(Integer) &&
+                  ref.dig("repository", "nameWithOwner").is_a?(String) &&
+                  !ref.dig("repository", "nameWithOwner").empty?
+
+          raise CommandError.new(
+            "PR ##{item["number"]} 的 closingIssuesReferences 节点缺编号或仓库归属：#{ref.inspect[0, 160]}",
+            command: ["gh", "api", "graphql"]
+          )
+        end
         closing, foreign = closing_refs.map { |ref| [ref["number"], ref.dig("repository", "nameWithOwner")] }
-          .partition { |_number, owner| owner == @repo }
+          .partition { |_number, owner| owner.casecmp?(@repo) }
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -1084,7 +1096,12 @@ end
 
         require "yaml"
         data = YAML.safe_load_file(path)
-        return RefLock::DEFAULT_TTL_MINUTES * 60 unless data && data.key?("lock_ttl_minutes")
+        # 空文件（nil）按缺键处理；根值不是映射（String/Array/false 等结构
+        # 非法）直接拒绝，不得静默回落默认 TTL（#307 七轮 review）。
+        unless data.nil? || data.is_a?(Hash)
+          raise CommandError.new(".github/agents.yml 的根值必须是映射：#{data.inspect[0, 120]}", command: ["read", path])
+        end
+        return RefLock::DEFAULT_TTL_MINUTES * 60 unless data&.key?("lock_ttl_minutes")
 
         raw = data["lock_ttl_minutes"]
         unless raw.is_a?(Integer) && raw >= 1
