@@ -1109,12 +1109,23 @@ end
 
     # 取 PR 的 verifier 核验摘要评论（verify.yml verifier job 发布，同一 PR
     # 重跑时原位更新，至多一条）。返回解析后的计数 Hash，找不到返回 nil。
-    # 分页取全（fail-closed：评论缺页不能当「没有评论」）后取 marker 命中的
-    # 最后一条；解析交给 MergeQueue.verifier_summary_from_body（纯函数）。
+    #
+    # 身份门（#312 review，CWE-863）：摘要只认受信自动化身份（trusted_bots，
+    # 即 GITHUB_TOKEN 的 github-actions[bot]）发布的——marker 与计数格式
+    # 不构成作者证明，任何有评论权限的账号都能伪造「unverified=0」的同
+    # marker 评论来骗过有条件通过门。不可信的同 marker 评论一律无视；
+    # 可信摘要不存在时返回 nil，由 AutoMerge.gate 按缺证据拒绝。
     def verifier_summary(pr_number)
       comments = paginate("repos/#{@repo}/issues/#{pr_number}/comments")
-      body = comments.reverse.find { |c| c["body"].to_s.include?(MergeQueue::VERIFIER_SUMMARY_MARKER) }
-      MergeQueue.verifier_summary_from_body(body && body["body"])
+      trusted = trusted_bots
+      summaries = comments.select do |c|
+        next false unless c.is_a?(Hash)
+
+        c["body"].to_s.include?(MergeQueue::VERIFIER_SUMMARY_MARKER) &&
+          trusted.include?(c.dig("user", "login").to_s)
+      end
+      body = summaries.empty? ? nil : summaries.last["body"]
+      MergeQueue.verifier_summary_from_body(body)
     end
 
     # 跨机 ref 锁 TTL（#306）：.github/agents.yml 的 `lock_ttl_minutes` 键，分钟。

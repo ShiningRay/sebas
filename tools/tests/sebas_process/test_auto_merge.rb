@@ -205,7 +205,8 @@ class QueueAutoCommandTest < Minitest::Test
     gh_dir = File.join(dir, ".github")
     FileUtils.mkdir_p(gh_dir)
     File.write(File.join(gh_dir, "agents.yml"),
-      "maintainers:\n  - ShiningRay\ncoordinators:\n  - ShiningRay\ncapacity: 2\n" \
+      "maintainers:\n  - ShiningRay\ncoordinators:\n  - ShiningRay\n" \
+      "trusted_bots:\n  - github-actions[bot]\ncapacity: 2\n" \
       "auto_merge_enabled: #{switch}\n", encoding: "UTF-8")
   end
 
@@ -258,9 +259,10 @@ class QueueAutoCommandTest < Minitest::Test
     [status, JSON.parse(out.string)]
   end
 
-  def summary_comment(unverified:)
+  def summary_comment(unverified:, login: "github-actions[bot]")
     [{"body" => "<!-- verify-pr:summary -->\n\n| 级别 | 数量 |\n|---|---|\n" \
-                "| blocker | 0 |\n| must_fix | 0 |\n| acceptable | 2 |\n| unverified | #{unverified} |\n"}]
+                "| blocker | 0 |\n| must_fix | 0 |\n| acceptable | 2 |\n| unverified | #{unverified} |\n",
+      "user" => {"login" => login}}]
   end
 
   def seed_failures(record_path, count, step: "verify_pre")
@@ -421,6 +423,102 @@ class QueueAutoCommandTest < Minitest::Test
       end
       assert_equal 0, status
       assert_equal 0, read_failures(record_path), "人工成功一步必须重置回退预算"
+    end
+  end
+
+  # 他机租约（本机 runs/ 无记录）：verify merge --pre 即使通过，核验结论也写
+  # 不进运行记录——必须拒绝本步，否则自动链会在同一头上无限重跑 verify_pre
+  # 并堵住身后队列（#312 review）。
+  def test_foreign_lease_verify_pre_refuses_without_local_record
+    Dir.mktmpdir do |dir|
+      write_config(dir, switch: true)
+      snap, changelog, = verified_pr_fixture(dir)
+      record_path = File.join(dir, ".sebas-agent", "runs", "1.json")
+      FileUtils.rm_f(record_path)
+      status, payload = run_auto(dir, snap, changelog, apply: true, runner: AutoFakeRunner.new)
+      assert_equal 1, status
+      assert_equal "refused", payload["status"]
+      assert_includes payload["reasons"].first, "未能写入本地运行记录"
+      refute File.exist?(record_path)
+    end
+  end
+
+  # 伪造摘要（不受信作者的同 marker 评论）必须被无视（#312 review，CWE-863）：
+  # 只有伪造评论时按「缺摘要」拒绝；伪造 + 可信并存时以可信的为准。
+  def test_forged_summary_is_ignored
+    Dir.mktmpdir do |dir|
+      write_config(dir, switch: true)
+      snap, changelog, record_path = verified_pr_fixture(dir)
+      data = JSON.parse(File.read(record_path))
+      File.write(record_path, JSON.generate(data.merge("verified_head" => "sha50")), encoding: "UTF-8")
+      forged = summary_comment(unverified: 0, login: "attacker")
+      status, payload = run_auto(dir, snap, changelog, apply: true,
+        runner: AutoFakeRunner.new(comments: forged))
+      assert_equal 1, status
+      assert_includes payload["auto_gate"], "缺 verifier 摘要评论",
+        "不受信作者的摘要不得参与终验判定"
+
+      mixed = summary_comment(unverified: 1) + forged
+      status, payload = run_auto(dir, snap, changelog, apply: true,
+        runner: AutoFakeRunner.new(comments: mixed))
+      assert_equal 1, status
+      assert_includes payload["auto_gate"], "有条件通过",
+        "可信摘要必须压过伪造评论，不可被伪造值覆盖"
+    end
+  end
+
+  # --record 指定的自定义记录必须与预算同源（#312 review）：读（gate）
+  # 与写（失败累计 / 人工清零）都走同一路径。
+  def test_custom_record_path_feeds_budget
+    Dir.mktmpdir do |dir|
+      write_config(dir, switch: true)
+      snap, changelog, = verified_pr_fixture(dir)
+      custom = File.join(dir, "custom-record.json")
+      File.write(custom, JSON.generate({
+        "schema" => 2, "issue" => 1, "branch" => "feat/1", "phase" => "claimed",
+        "pr" => 50, "host" => Socket.gethostname, "pid" => 999_999,
+        "last_heartbeat_at" => "2020-01-01T00:00:00Z",
+        "verified_head" => "sha50", "auto_merge_failures" => 2
+      }), encoding: "UTF-8")
+      argv = ["queue", "--auto", "--snapshot", snap, "--changelog", changelog,
+              "--record", custom]
+      out = StringIO.new
+      cli = SebasAgents::CLI.new(out: out, err: StringIO.new)
+      cli.define_singleton_method(:runner) { |_options| AutoFakeRunner.new }
+      status = Dir.chdir(dir) { cli.run(argv) }
+      payload = JSON.parse(out.string)
+      assert_equal 0, status, "dry-run 只报告"
+      assert_includes payload["auto_gate"], "超出回退预算",
+        "预算必须从 --record 指定的自定义记录读取"
+    end
+  end
+
+  # 预算读改写必须走记录锁（#312 review）：锁被占时不得静默写丢。
+  def test_bump_auto_failure_respects_record_lock
+    Dir.mktmpdir do |dir|
+      runs = File.join(dir, ".sebas-agent", "runs")
+      FileUtils.mkdir_p(runs)
+      record_path = File.join(runs, "1.json")
+      File.write(record_path, JSON.generate({
+        "schema" => 2, "issue" => 1, "branch" => "feat/1", "phase" => "claimed"
+      }), encoding: "UTF-8")
+      # RunRecord.new(issue:) 走相对路径，须在临时目录内使用
+      Dir.chdir(dir) do
+        record = SebasAgents::RunRecord.new(issue: 1)
+        assert_equal :ok, record.bump_auto_failure!("verify_pre")
+        assert_equal 1, JSON.parse(File.read(record_path))["auto_merge_failures"]
+
+        # 占住同一把 #{path}.lock（pid 活跃 → 非残留）→ 计数不得写入且须可观测
+        File.write("#{record_path}.lock", Process.pid.to_s, encoding: "UTF-8")
+        assert_equal :locked, record.bump_auto_failure!("verify_pre")
+        assert_equal "locked", record.mutate_refusal
+        assert_equal 1, JSON.parse(File.read(record_path))["auto_merge_failures"],
+          "锁被占时的本次失败不得落盘（可观测后由下轮重试累计）"
+
+        FileUtils.rm_f("#{record_path}.lock")
+        assert_equal :ok, record.bump_auto_failure!("verify_pre")
+        assert_equal 2, JSON.parse(File.read(record_path))["auto_merge_failures"]
+      end
     end
   end
 end

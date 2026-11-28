@@ -328,7 +328,7 @@ ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
 ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（#220）：协调评论为凭据，按 lease_id 对账恢复
 ruby tools/sebas-process queue                 # 只读合并队列：队首与链上步骤（#221）
 ruby tools/sebas-process queue --apply         # 推进队首一步（#221）：verify_pre / changelog / update_branch / merge
-ruby tools/sebas-process queue --auto          # 自动触发（#222 §3.8）：auto_merge_enabled 开启时条件齐备即自动推进
+ruby tools/sebas-process queue --auto --apply  # 自动触发（#222 §3.8）：auto_merge_enabled 开启时条件齐备即自动推进；不加 --apply 只做 dry-run
 ruby tools/sebas-process heartbeat 39 --apply  # 写存活心跳（F5）：长任务期间定期调用
 ```
 

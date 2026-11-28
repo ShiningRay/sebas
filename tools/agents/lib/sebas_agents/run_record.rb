@@ -206,6 +206,62 @@ module SebasAgents
     # 「锁被占」与「身份不符」这两种完全不同的处置。
     attr_reader :heartbeat_refusal
 
+    # 上一次 mutate_record! 被拒绝的原因（:missing / :locked / nil）。
+    attr_reader :mutate_refusal
+
+    # 锁内读改写原语（#312 review）：与 heartbeat! 共用同一把 #{path}.lock，
+    # 块内拿到的是锁内重读的 data——调用方不得复用锁外读到的快照，否则
+    # 心跳旧数据会在写回时覆盖本次字段（丢失 auto_merge_failures 等）。
+    # 返回块的返回值；记录缺失 → nil 且 mutate_refusal=:missing；
+    # 锁被占 → nil 且 mutate_refusal=:locked（块未执行，调用方须可观测地
+    # 上报，不得把本次变更静默丢弃）。
+    def mutate_record!
+      @mutate_refusal = nil
+      result = with_record_lock(@path) do
+        data = load
+        if data.nil? || data.empty?
+          @mutate_refusal = "missing"
+          break nil
+        end
+
+        yield data
+      end
+      @mutate_refusal = "locked" if result.nil? && @mutate_refusal.nil?
+      result
+    end
+
+    # 自动失败预算 +1（锁内）。返回 :ok / :mismatch / :missing / :locked。
+    def bump_auto_failure!(step)
+      result = mutate_record! do |data|
+        next :mismatch unless data["issue"].to_i == @issue.to_i
+
+        save(data.merge("auto_merge_failures" => data["auto_merge_failures"].to_i + 1,
+          "auto_failed_step" => step.to_s))
+        :ok
+      end
+      normalize_mutate_result(result)
+    end
+
+    # 自动失败预算清零（锁内；无计数时幂等返回 :ok）。
+    def reset_auto_failure!
+      result = mutate_record! do |data|
+        next :mismatch unless data["issue"].to_i == @issue.to_i
+        next :ok unless data["auto_merge_failures"]
+
+        save(data.merge("auto_merge_failures" => 0, "auto_failed_step" => nil))
+        :ok
+      end
+      normalize_mutate_result(result)
+    end
+
+    # mutate_record! 用 nil + mutate_refusal 表达「missing / locked」，
+    # 这里归一成符号，调用方不必回查拒绝原因。
+    def normalize_mutate_result(result)
+      return result unless result.nil?
+
+      @mutate_refusal == "missing" ? :missing : :locked
+    end
+
     # 心跳是否过期（§F5）。
     # - 缺字段（key 不存在）→ 不判过期：老记录没有该字段，否则升级当次
     #   每张在途卡都被判死。仅这一种情形保留兼容。

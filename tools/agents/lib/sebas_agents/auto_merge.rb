@@ -21,8 +21,12 @@ module SebasAgents
     module_function
 
     # 自动失败预算：初次 + 一次重试。第 2 次失败后自动路径对本卡拒绝，
-    # 直到人工通道成功一步重置（见 CLI 的 reset_auto_failures）。
+    # 直到人工通道成功一步重置（见 CLI 的 record_auto_success）。
     MAX_FAILURES = 2
+
+    # 单次调用的接续步数护栏（#312 review）：正常链 verify_pre→merge 至多
+    # 两步；接续逻辑若因未来改动失去收敛性，这里兜底停轮而不是无限打转。
+    MAX_AUTO_STEPS = 4
 
     # 单步自动判定。返回 [allowed, reason]；reason 非 nil 时 allowed 必为 false。
     # step     —— MergeQueue.next_step 给出的当前步（verify_pre/update_branch/
