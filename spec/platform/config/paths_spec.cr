@@ -104,6 +104,27 @@ module Sebas
           ctx.config_path.should eq(Path[root, "conf", "app.yaml"])
         end
 
+        {% if flag?(:windows) %}
+          # Windows 根相对路径（`\foo`，无盘符 absolute? 为 false）：须继承基准
+          # 盘符的根语义（expand(base:)），不得 join 进 cwd（CodeRabbit #304）
+          it "Windows 根相对 --config 保留盘符根定位语义" do
+            ctx = PathContext.resolve("\\cfg\\config.yaml", cwd: Path["C:\\work"],
+              env: {} of String => String, home_dir: "C:\\userhome")
+            ctx.config_path.should eq(Path["C:\\cfg\\config.yaml"])
+          end
+
+          it "Windows 根相对 SEBAS_HOME 保留盘符根定位语义" do
+            ctx = PathContext.resolve(nil, cwd: Path["C:\\work"],
+              env: {"SEBAS_HOME" => "\\root-home"})
+            ctx.home.should eq(Path["C:\\root-home"])
+          end
+
+          it "Windows 根相对 data_dir 保留盘符根定位语义" do
+            PathContext.resolve_data_dir("\\state", Path["C:\\h", ".sebas"], Path["C:\\cfg"])
+              .should eq(Path["C:\\state"])
+          end
+        {% end %}
+
         it "旧布局受限回退：未显式传 --config、默认配置缺失且 CWD 有 config.yaml" do
           root = Sebas.paths_spec_root
           legacy = Path[root, "config.yaml"]

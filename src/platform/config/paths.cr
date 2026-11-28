@@ -36,13 +36,14 @@ module Sebas
 
         # 应用根解析（sebas-home.md §2.1）：SEBAS_HOME 非空白取其值（~ 展开、
         # 相对值以 cwd 绝对化），未设置取平台主目录下 .sebas。
+        # 直接 expand(base: cwd) 而非先拼接：Windows 根相对路径（`\foo`，无盘符
+        # absolute? 为 false）须继承基准盘符的根语义，join 会错挂到 cwd 下
         def resolve_home(sebas_home : String?, home_dir : String?, cwd : Path) : Path
           if raw = sebas_home
             if raw.strip.empty?
               raise ConfigError.new("SEBAS_HOME is set but blank; set it to a non-empty path or unset the variable")
             end
-            expanded = expand_tilde(raw, home_dir)
-            expanded.absolute? ? expanded.expand(base: cwd) : Path[cwd, expanded].expand(base: cwd)
+            expand_tilde(raw, home_dir).expand(base: cwd)
           else
             hd = home_dir || raise ConfigError.new("cannot resolve default home: no user home directory available (set SEBAS_HOME explicitly)")
             Path[hd, ".sebas"]
@@ -106,8 +107,9 @@ module Sebas
           fallback = false
           config_path =
             if explicit_config
-              p = Path[explicit_config]
-              p.absolute? ? p : Path[cwd, p]
+              # 直接交给末尾 expand(base: cwd)：Windows 根相对路径（`\foo`）
+              # 继承基准盘符根，保留与旧 CLI 一致的定位语义（CodeRabbit #304）
+              Path[explicit_config]
             else
               default = Path[home, "config.yaml"]
               legacy = Path[cwd, "config.yaml"]
@@ -150,11 +152,12 @@ module Sebas
           PathContext.new(@home, @config_path, @config_dir, data_dir, @legacy_fallback, warnings)
         end
 
-        # 数据目录解析纯函数：nil → <home>/data；绝对 → 规范化；相对 → 配置目录基准。
+        # 数据目录解析纯函数：nil → <home>/data；显式值直接 expand(base: 配置
+        # 目录)——普通相对值相对配置文件目录，Windows 根相对值继承配置文件所在
+        # 盘符的根（与显式 --config 同一语义，CodeRabbit #304）；绝对值规范化。
         def self.resolve_data_dir(raw : String?, home : Path, config_dir : Path) : Path
           if raw
-            p = Path[raw]
-            p.absolute? ? p.expand(base: config_dir) : Path[config_dir, p].expand(base: config_dir)
+            Path[raw].expand(base: config_dir)
           else
             Path[home, "data"]
           end
