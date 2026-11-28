@@ -81,6 +81,19 @@ module Sebas
       entry["text"].as_s.should eq("sebas rocks")
       observed.size.should eq(1) # after 触发（提交成功后）
     end
+
+    it "幂等键派生：replay_key/plugin_id/内容指纹共同编码（M3-WP5 review）" do
+      params = JSON.parse(%({"kind": "memory", "text": "same", "tags": []}))
+      same_task = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key("t-1", "p", params)
+      replay = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key("t-1", "p", params)
+      other_task = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key("t-2", "p", params)
+      other_plugin = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key("t-1", "q", params)
+      same_task.should_not be_nil
+      same_task.should eq(replay)         # 同 task 同内容重放 → 同键（memo 复用）
+      other_task.should_not eq(same_task) # 不同 task 写同内容 → 不误并
+      other_plugin.should_not eq(same_task)
+      ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key(nil, "p", params).should be_nil # hook 路径不 memo
+    end
   end
 
   describe "SessionCompactor 接口与协议（M3-WP5，WBS：无生产压缩器）" do

@@ -1,5 +1,4 @@
 require "json"
-require "digest"
 require "../../log"
 require "../../plugins/manifest"
 require "../../plugins/registry"
@@ -26,6 +25,12 @@ module Sebas
 
         # hook 门面（M3-WP5，#17）：gateway.start/stop 及各子系统注入点共用
         @hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
+
+        # 受控 memory.backend 实例（M3-WP5 review）：memory_id 与幂等表是
+        # 已返回给插件/账本的持久承诺，配置重载不重置——所有权在 wire_plugins
+        # 之外，gateway 进程生命周期内惰性建一次、跨重载复用；重载只经 write
+        # 的显式 hook_bus 传参刷新派发总线（不重建实例）
+        @memory_driver : ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver? = nil
 
         # 插件面装配：返回 false = 装配失败（降级）——工具面/hook 门面全量
         # 停用且热更新结果记降级（M3-WP5 review）。all-or-nothing：全部构件
@@ -87,13 +92,15 @@ module Sebas
           # 提供 remember 写路径并承载 memory.remember 双 hook 注入点
           caps = ::Sebas::Plugins::CapabilityDispatcher.new
           caps.hook_bus = hook_bus
-          memory_driver = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new(hook_bus)
+          memory_driver = @memory_driver ||= ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new
           caps.register("memory_driver.write") do |plugin_id, params, context, replay_key|
             # 幂等键派生（M3-WP5 review）：task 重放身份（工具面 idempotency_key
-            # 随 Request 透传）+ 写入内容指纹——同 task 同内容重放命中同 key，
-            # gate memo 与 write memo 一并复用；无 task 身份（hook 路径）不 memo
-            key = replay_key ? "memory_driver.write:#{plugin_id}:#{Digest::SHA256.hexdigest(params.to_json)}" : nil
-            memory_driver.write(plugin_id, params, context, idempotency_key: key)
+            # 随 Request 透传）与 plugin_id、内容指纹共同编码——同 task 同内容
+            # 重放命中同 key（gate/write memo 一并复用），不同 task 不误并；
+            # 无 task 身份（hook 路径）不 memo。hook_bus 显式传参：重载换总线
+            # 不随实例（实例跨重载复用）
+            key = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.idempotency_key(replay_key, plugin_id, params)
+            memory_driver.write(plugin_id, params, context, hook_bus: hook_bus, idempotency_key: key)
           end
           runner.capability_handler = ->(plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, params : JSON::Any, replay_key : String?) do
             # scope 注入（§12.10）：身份由宿主合成，插件传参仅 params

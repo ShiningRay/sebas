@@ -35,7 +35,7 @@
   - 派发语义：gate/transform 同步链（deny fail-closed、替换重过 schema）、observe 隔离、priority 稳定序、按 fiber 链隔离的递归深度、预算 outcome 化（链中耗尽判 deny；agent turn 级共享同一 Budget 实例，跨派发累计）、idempotency memo。
   - 宿主注入：22/22 全量接线（gateway/消息/Agent/LLM/工具/会话/记忆/任务八域；per-turn executor 与热更新路径同步刷新；插件面装配失败 all-or-nothing 归零并经 `config.reload` 结果的 `degraded` 维度体现）。
   - runner 隔离：终态前置进程树清扫（POSIX pgrep 树遍历 + 调用级进程组长立组与组级 SIGKILL 兜收养态后代、失败区分「无后代/枚举失败」、pgrep 无匹配按空数组；Windows 调用级 Job Object FFI，终态先于诊断等待终止）、终态后有界帧校验（跨读取块行重组）、迟到输出时间/字节双预算排水（剩余预算施加到读取本身，后代持管道不悬挂）、OS 资源约束（POSIX ulimit 全成功才 exec（失败 exit 126 停启动留诊断）+ 包装前解释器可启动性检查保持装配错误语义；Windows Job 内存上限；生产装配经 `plugins.memory_mb/cpu_seconds` 配置承载）。
-  - capability：双重白名单第二关 + scope 宿主注入 + 受控 memory.backend（幂等重放同 key 同 id，不重复副作用；task 重放身份经 Request 透传生产装配生效，检查与提交同临界区）。
+  - capability：双重白名单第二关 + scope 宿主注入 + 受控 memory.backend（幂等重放同 key 同 id，不重复副作用；幂等键由 task 重放身份与 plugin_id、内容指纹共同编码派生，检查与提交同临界区；驱动实例跨配置重载复用，gateway 进程生命周期内保留记录）。
   - 压缩：SessionCompactor 接口与 CompactionRunner 协议（无生产压缩器，hook 语义先行；摘要唯一提交方=调用方 commit 回调，提交成功才派发 compact.after，重复归档幂等不重触发）。
   - DSL：`deny!`/`modify!`；manifest `hook_priorities`（向后兼容）。
 - **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：

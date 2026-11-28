@@ -1,4 +1,5 @@
 require "json"
+require "digest"
 require "./hooks"
 require "./hook_dispatcher"
 
@@ -74,6 +75,17 @@ module Sebas
         MAX_ENTRIES = 4096
 
         def initialize(@hook_bus : HookBus = HookBus.disabled)
+        end
+
+        # 生产装配的幂等键派生（M3-WP5 review）：task 重放身份（replay_key，
+        # 即工具面 idempotency_key）与 plugin_id、写入内容指纹**共同编码**——
+        # 同 task 同内容重放命中同键（gate/write memo 一并复用）；不同 task
+        # 写同内容不误并（各自独立写入）；无 task 身份（hook 路径）返回 nil
+        # 不 memo。
+        def self.idempotency_key(replay_key : String?, plugin_id : String,
+                                 params : JSON::Any) : String?
+          return unless replay_key
+          "memory_driver.write:#{replay_key}:#{plugin_id}:#{Digest::SHA256.hexdigest(params.to_json)}"
         end
 
         def entries

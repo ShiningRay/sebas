@@ -188,18 +188,17 @@ module Sebas
       {% if flag?(:unix) %}
         # 包装前解释器可启动性检查（M3-WP5 review）：limits 走 /bin/sh 包装
         # 后 Process.new 不再直接触碰解释器，缺解释器报 plugin_crash(exit 127)
-        # 而非装配错误——按 PATH 语义解析可执行文件，缺失保持 RunnerError
-        # （配置错误类）语义。PATH 中的命令名与绝对路径都覆盖。
+        # 而非装配错误。解析与实际启动同源——用同一个 /bin/sh 的 command -v
+        # 检查（空 PATH 分量=当前目录、未设 PATH 走 sh 默认搜索路径，与
+        # Crystal 手写 PATH 语义不漂移）；缺失保持 RunnerError（配置错误类）
+        # 语义。每次调用多一次 sh spawn（毫秒级，相对解释器启动可忽略）。
         private def ensure_interpreter_spawnable(command : String) : Nil
-          if command.includes?('/')
-            return if File::Info.executable?(command)
-          else
-            found = (ENV["PATH"]? || "").split(':').any? do |dir|
-              !dir.empty? && File::Info.executable?(File.join(dir, command))
-            end
-            return if found
-          end
-          raise RunnerError.new("failed to spawn plugin interpreter #{interpreter.inspect}: executable not found in PATH")
+          res = Process.run("/bin/sh", ["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", command],
+            input: Process::Redirect::Close,
+            output: Process::Redirect::Close,
+            error: Process::Redirect::Close)
+          return if res.success?
+          raise RunnerError.new("failed to spawn plugin interpreter #{interpreter.inspect}: executable not found")
         end
       {% end %}
 
@@ -226,6 +225,11 @@ module Sebas
           when finished.receive
           when timeout(timeout_ms.milliseconds)
             timed_out.set(true)
+            # Windows 先行终止调用级 Job（M3-WP5 review）：后代持 stdout 时
+            # gets 读不到 EOF、循环无法结束——终止 Job 断开管道，帧循环随之
+            # 收尾（幂等，循环后的先行终止调用此时返回 false）。POSIX 无 Job，
+            # kill_tree 承担（进程组清扫断管道）。
+            job_terminate.try(&.call)
             # 进程树终止（M3-WP5 §12.4 ④）：Windows 走调用级 Job（覆盖全部
             # 后代）；POSIX 先清后代再杀根，防孤儿逃逸；再对直接子进程兜底。
             {% unless flag?(:windows) %}
