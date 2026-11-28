@@ -588,6 +588,55 @@ class RefLockTest < Minitest::Test
     end
   end
 
+  # ---- repo_pending_evidence! 直测（#307 四轮 review）----
+
+  # 直测夹具：Model::Snapshot + 一张已合并 PR（from_hash 收原始 Hash）。
+  def fresh_snapshot(issues, closing_issues)
+    SebasAgents::Model::Snapshot.from_hash(
+      "repo" => "o/r", "main_sha" => "deadbeef", "milestones" => [], "issues" => issues,
+      "pull_requests" => [{"number" => 9, "state" => "MERGED", "head_sha" => "abc",
+                           "closing_issues" => closing_issues}],
+      "maintainers" => [], "source_authors" => {}, "gates" => {},
+      "externals" => {}, "trusted_bots" => [], "source_bodies" => {}
+    )
+  end
+
+  def evidence_body(subject:, merged:)
+    "```json evidence\n#{JSON.pretty_generate({"schema" => 1, "subject" => subject, "status" => "accepted",
+      "source" => "maintainer", "source_ref" => "u", "pr" => 9, "merge_commit" => "abc",
+      "checks" => nil, "gate_status" => nil, "evidence_path" => nil, "untested" => [],
+      "ready" => nil, "merged_into_main" => merged})}\n```"
+  end
+
+  def plain_issue(number, labels: [], type: "Task")
+    {"number" => number, "state" => "CLOSED", "state_reason" => "completed",
+     "labels" => labels, "type" => type, "milestone" => nil,
+     "body" => "## 说明\n", "blocked_by" => [], "status" => "Done"}
+  end
+
+  def test_repo_pending_evidence_branches
+    cli = SebasAgents::CLI.new(out: StringIO.new, err: StringIO.new)
+
+    # proposal 卡（标签或 type 命中）排除：登记脚本跳过 proposal，Evidence
+    # 永不升级，不得永久阻塞队列。
+    proposal_snap = fresh_snapshot([plain_issue(11, labels: ["proposal"])], [11])
+    assert_empty cli.send(:repo_pending_evidence!, proposal_snap)
+
+    # 普通卡未升级（merged_into_main != true）保留。
+    plain = plain_issue(11)
+    plain["body"] = evidence_body(subject: "issue #11", merged: false)
+    assert_equal [11], cli.send(:repo_pending_evidence!, fresh_snapshot([plain], [11]))
+
+    # 已升级（merged_into_main == true）排除。
+    upgraded = plain_issue(11)
+    upgraded["body"] = evidence_body(subject: "issue #11", merged: true)
+    assert_empty cli.send(:repo_pending_evidence!, fresh_snapshot([upgraded], [11]))
+
+    # 缺卡编号保留（fail-closed）：state=all 快照缺卡即引用/数据异常，
+    # snap_evidence_merged? 返回 nil（未知按未完成），不静默放行。
+    assert_equal [99], cli.send(:repo_pending_evidence!, fresh_snapshot([], [99]))
+  end
+
   # 场景 8：mark-review 的状态迁移写段受同一把逐卡锁保护（正常路径不受影响）。
   def test_mark_review_gated_by_lease_lock
     pr = {"number" => 9, "state" => "OPEN", "head_ref_name" => "feat/11",
