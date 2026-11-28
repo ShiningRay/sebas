@@ -854,7 +854,9 @@ end
         "headRefOid" => node["headRefOid"],
         "state" => node["state"],
         "mergeStateStatus" => node["mergeStateStatus"],
-        "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"] } },
+        # repository{nameWithOwner} 必须透传：下游按它拆分本仓/异仓关联
+        # （#307 五轮 review）。剥离会让本仓编号全判异仓。
+        "closingIssuesReferences" => closing_nodes.map { |n| { "number" => n["number"], "repository" => n["repository"] } },
         "url" => node["url"],
         "isCrossRepository" => false
       }
