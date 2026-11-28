@@ -591,11 +591,12 @@ class RefLockTest < Minitest::Test
   # ---- repo_pending_evidence! 直测（#307 四轮 review）----
 
   # 直测夹具：Model::Snapshot + 一张已合并 PR（from_hash 收原始 Hash）。
-  def fresh_snapshot(issues, closing_issues)
+  def fresh_snapshot(issues, closing_issues, foreign_issues: [])
     SebasAgents::Model::Snapshot.from_hash(
       "repo" => "o/r", "main_sha" => "deadbeef", "milestones" => [], "issues" => issues,
       "pull_requests" => [{"number" => 9, "state" => "MERGED", "head_sha" => "abc",
-                           "closing_issues" => closing_issues}],
+                           "closing_issues" => closing_issues,
+                           "foreign_issues" => foreign_issues}],
       "maintainers" => [], "source_authors" => {}, "gates" => {},
       "externals" => {}, "trusted_bots" => [], "source_bodies" => {}
     )
@@ -635,6 +636,12 @@ class RefLockTest < Minitest::Test
     # 缺卡编号保留（fail-closed）：state=all 快照缺卡即引用/数据异常，
     # snap_evidence_merged? 返回 nil（未知按未完成），不静默放行。
     assert_equal [99], cli.send(:repo_pending_evidence!, fresh_snapshot([], [99]))
+
+    # 异仓编号排除（#307 五轮 review）：`Fixes owner/repo#N` 命中的异仓
+    # issue 由 gateway 拆进 foreign_issues——异仓 Evidence 无法在本仓升级，
+    # 编号即使与本仓某卡同号也不得按本仓卡判定或阻塞。
+    assert_empty cli.send(:repo_pending_evidence!,
+      fresh_snapshot([plain_issue(99)], [99, 99], foreign_issues: [99]))
   end
 
   # 场景 8：mark-review 的状态迁移写段受同一把逐卡锁保护（正常路径不受影响）。

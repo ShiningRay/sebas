@@ -36,7 +36,7 @@ module SebasAgents
               mergeStateStatus
               url
               isCrossRepository
-              closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number } }
+              closingIssuesReferences(first: 10) { pageInfo { hasNextPage } nodes { number repository { nameWithOwner } } }
             }
           }
         }
@@ -740,6 +740,13 @@ end
         elsif item["state"].to_s.casecmp?("OPEN")
           fetch_checks(item["number"], expected_head: item["headRefOid"])
         end
+        # closingIssuesReferences 可含**跨仓库** issue（`Fixes owner/repo#N`
+        # 有效，实证 hive-mind#2561 → start#263）：按 nameWithOwner 拆分，
+        # 本仓编号进 closing_issues（既有消费方按同仓语义使用），异仓编号
+        # 进 foreign_issues 供仓库级背压扫描排除（#307 五轮 review）。
+        closing_refs = Array(item["closingIssuesReferences"])
+        closing, foreign = closing_refs.map { |ref| [ref["number"], ref.dig("repository", "nameWithOwner")] }
+          .partition { |_number, owner| owner == @repo }
         Model::PullRequest.from_hash(
           "number" => item["number"],
           "head_ref_name" => item["headRefName"],
@@ -749,7 +756,8 @@ end
           "merge_state_status" => item["mergeStateStatus"],
           "checks" => checks,
           "review_threads" => threads,
-          "closing_issues" => Array(item["closingIssuesReferences"]).map { |ref| ref["number"] },
+          "closing_issues" => closing.map(&:first),
+          "foreign_issues" => foreign.map(&:first),
           "url" => item["url"]
         ).merge_pr_details(details)
       end
