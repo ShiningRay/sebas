@@ -42,6 +42,9 @@ module SebasAgents
         opts.on("--pid PID") { |value| options[:pid] = value }
         opts.on("--apply") { options[:apply] = true }
         opts.on("--dry-run") { options[:apply] = false }
+        # 合并队列自动触发（M4x-WP4，#222）：条件齐备即自动推进队列；
+        # 受 .github/agents.yml 的 auto_merge_enabled 开关约束。
+        opts.on("--auto") { options[:auto] = true }
         # 合并前自检：跳过「已合并 / 已关闭」这两条只有合并后才可能成立的条件。
         opts.on("--pre") { options[:pre] = true }
         # 终验（#124）：基于核验报告对 must_fix 逐项复跑 checker，产出终验结论。

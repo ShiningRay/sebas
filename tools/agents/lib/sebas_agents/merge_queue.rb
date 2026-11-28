@@ -61,6 +61,27 @@ module SebasAgents
 
     CHANGELOG_MARKER = "<!-- sebas-changelog -->"
 
+    # Verifier 核验摘要评论的 marker（verify.yml verifier job 写入 PR 评论）。
+    # 自动合并用它区分「终验通过」与「有条件通过」：两者的 CI check 都是绿
+    # （有证据的未实测项不算打回），只有这张评论里的 unverified 计数能区分。
+    VERIFIER_SUMMARY_MARKER = "<!-- verify-pr:summary -->"
+
+    # 从 verifier 摘要评论正文解析核验计数。返回：
+    #   {"blocker" => n, "must_fix" => n, "acceptable" => n, "unverified" => n}
+    # 无 marker 返回 nil（正文不是摘要评论）；有 marker 但计数表残缺抛
+    # InvalidPlan——结构坏了不能猜成 0 放行（口径同 changelog 的空块判定）。
+    def verifier_summary_from_body(body)
+      text = body.to_s
+      return nil unless text.include?(VERIFIER_SUMMARY_MARKER)
+
+      %w[blocker must_fix acceptable unverified].to_h do |level|
+        match = text.match(/\|\s*#{level}\s*\|\s*(\d+)\s*\|/)
+        raise InvalidPlan, "verifier 摘要评论缺 #{level} 计数，无法判定终验结论" unless match
+
+        [level, Integer(match[1])]
+      end
+    end
+
     # 从 PR 正文抽出待追加条目（scribe.md §5 修订版：条目由 PR 携带）。
     # 返回 nil 表示没声明（旧路径：worker 自己写了 CHANGELOG）；返回 [] 表示
     # 声明了块但没有条目——那也算 pending，避免「空块 = 已完成」的静默放行。

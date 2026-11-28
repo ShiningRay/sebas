@@ -190,12 +190,15 @@ module SebasAgents
 # 返回全部就绪候选（容量取快照 capacity，缺省 1；迁移窗口钳回 1）、带枚举
 # 码的排除集与验证背压（待验收 PR 数）。不改任何写行为；exit 0 正常 / 1
 # invalid_plan。
-def run_plan(argv)
-  options, = Argv.parse(argv)
-  snap = snapshot(options)
-  records = active_records_for(options)
-  view = Policy::Selection.plan(snap, record: records.first, records: records)
-  candidates = view.ready.map.with_index do |issue, index|
+  def run_plan(argv)
+    options, = Argv.parse(argv)
+    snap = snapshot(options)
+    records = active_records_for(options)
+    view = Policy::Selection.plan(snap, record: records.first, records: records)
+    changelog = read_changelog(options)
+    queue = build_merge_queue(snap, options, view, records, changelog)
+    head_entry = queue.entries.first
+    candidates = view.ready.map.with_index do |issue, index|
     {
       "issue" => issue.number,
       "title" => issue.title,
@@ -223,6 +226,15 @@ def run_plan(argv)
     end,
     # 逐租约动作表（§4.1）：每张在途卡的下一步与所属关系，coordinator 据此派活。
     "leases" => view.leases.map(&:to_h),
+    # 合并队列状态（M4x-WP4，#222）：队首 PR、队列长度、当前阻塞原因。
+    # 与 queue 子命令同一构造点（build_merge_queue），口径同源。
+    "merge_queue" => {
+      "head" => queue.head,
+      "head_pr" => head_entry&.pr,
+      "depth" => queue.entries.length,
+      "step" => queue.step,
+      "blocked_by" => queue.blocked_by
+    }.compact,
     "observed_main" => snap.main_sha
   }
   payload["invalid_reason"] = view.invalid_reason if view.invalid_reason
@@ -333,6 +345,7 @@ end
     #   核验归属与目标分支 → verify merge --pre → 绑定 head squash 合并 → 远端复核。
     # 不循环、不追加 CHANGELOG、不等 Evidence：那三件事各需要一次独立决策，
     # 由 coordinator 重跑队列决定（§7.2 的串行单位）。
+    # `--auto`（M4x-WP4，#222）：自动触发，见 run_queue_auto。
     # `--changelog <path>` 提供 CHANGELOG.md 正文，缺省读仓库根。
     def run_queue(argv)
       return help if argv.include?("--help") || argv.include?("-h")
@@ -342,22 +355,23 @@ end
       records = active_records_for(options)
       view = Policy::Selection.plan(snap, record: records.first, records: records)
       changelog = read_changelog(options)
-      queue = MergeQueue.plan(view.leases, snap, changelog: changelog,
-        pending_evidence: pending_evidence_issues(snap, records),
-        verified_heads: verified_heads(records))
+      queue = build_merge_queue(snap, options, view, records, changelog)
 
       payload = {
         "ok" => true,
         "dry_run" => !options[:apply],
+        "auto" => !options[:auto].nil?,
         "capacity" => snap.capacity,
         "capacity_used" => snap.in_progress_issues.length,
         "capacity_limit" => snap.capacity,
         # 验收背压口径见 MergeQueue.verifier_queue_depth：只数待核验的 merge_ready。
-    "verifier_queue_depth" => MergeQueue.verifier_queue_depth(view.leases),
+        "verifier_queue_depth" => MergeQueue.verifier_queue_depth(view.leases),
         "observed_main" => snap.main_sha,
         "changelog_loaded" => !changelog.nil?,
         "queue" => queue.to_h
       }
+
+      return run_queue_auto(snap, options, payload, queue, records, changelog, view) if options[:auto]
 
       unless options[:apply]
         Output.emit(payload, out: @out)
@@ -380,6 +394,15 @@ end
       code = nil
       begin
         code = queue_apply_step!(snap, options, payload, queue, merge_gateway)
+        # 人工通道成功一步即重置该卡的自动失败计数（AutoMerge 的回退预算
+        # 只针对自动重试；人工修完并走通一次，说明卡面状态已恢复）。
+        # 清零失败（记录锁被占）不得静默：payload 上报，退出码不动——业务
+        # 步已成功，但自动路径下一轮可能继续拒判（#312 三轮 review）。
+        if code == EXIT_OK && !queue.entries.empty?
+          reset = with_record_retry { record_auto_success(options, queue.entries.first.issue) }
+          payload["auto_budget_note"] =
+            "auto_merge_failures 清零未完成（#{reset}）：自动路径下一轮可能继续拒判，人工成功后再走一步" if reset != :ok
+        end
       rescue CommandError => e
         payload["ok"] = false
         payload["reasons"] = ["合并队列写段异常：#{e.message}"]
@@ -390,6 +413,260 @@ end
       code = EXIT_REFUSED if payload["lock_release_failed"]
       Output.emit(payload, out: @out)
       code
+    end
+
+    # 队列规划的唯一构造点：run_queue / run_queue_auto / run_plan 三处共用，
+    # 保证「plan 里看到的队列」与「queue 实际执行的队列」同源（口径分叉会让
+    # 观察与执行互相矛盾）。
+    def build_merge_queue(snap, options, view, records, changelog)
+      MergeQueue.plan(view.leases, snap, changelog: changelog,
+        pending_evidence: pending_evidence_issues(snap, records),
+        verified_heads: verified_heads(records))
+    end
+
+    # 合并队列自动触发（M4x-WP4，#222；Proposal §8 阶段 4）。
+    #
+    # 把阶段 3 的「每步都要人按一次」换成条件齐备即自动推进；门禁不放宽、
+    # 权限不新增——每一步仍走 queue_apply_step! 的同一执行段与合并链 ref 锁。
+    #
+    # auto_merge_enabled 缺省 false：关着时自动路径整体拒绝（dry-run 如实报告
+    # disabled，--apply 拒绝执行），行为与阶段 3 完全一致。
+    #
+    # 同一轮内只接续 verify_pre → 下一步：它不改 head、不清核验记录，且下一步
+    # 在锁内全量复核。update_branch / changelog 会作废已核验 head（重核验是
+    # 异步的，发生在两轮调用之间），merge 之后是等 Evidence 升级的串行单位——
+    # 三者都停轮，等待发生在两次调用之间。
+    #
+    # 失败回退（fail-closed）：本卡自动失败计入运行记录，达
+    # AutoMerge::MAX_FAILURES（初次 + 一次重试）后自动路径拒绝，人工
+    # `queue --apply` 成功一步即重置。
+    def run_queue_auto(snap, options, payload, queue, records, changelog, view)
+      merge_gateway = GithubGateway.new(runner(options), repo: claim_write_repo(snap, options))
+
+      unless merge_gateway.auto_merge_enabled?
+        payload["status"] = "disabled"
+        payload["reasons"] = [".github/agents.yml 的 auto_merge_enabled 未开启：自动路径拒绝，" \
+          "行为与阶段 3 的人工触发完全一致（维护者显式置 true 才启用）"]
+        payload["ok"] = false if options[:apply]
+        Output.emit(payload, out: @out)
+        return options[:apply] ? EXIT_REFUSED : EXIT_OK
+      end
+
+      code = EXIT_OK
+      steps = []
+      emitted = false
+      loop do
+        entry = queue.entries.first
+        if entry.nil?
+          if queue.head.nil?
+            payload["status"] = "empty"
+          else
+            # 队首在链上被异步条件挡住（Evidence 背压等）：这是正常等待，
+            # 不是失败——按 wait 报告，等待发生在两次调用之间。
+            payload["status"] = "wait"
+            payload["reasons"] = [queue.blocked_by].compact
+          end
+          break
+        end
+
+        if steps.length >= AutoMerge::MAX_AUTO_STEPS
+          # 护栏（#312 review）：接续链有界。正常路径 verify_pre→merge 至多
+          # 两步就停；到不了这里。真到了说明链上出现了无进展的推进，停下
+          # 交下一轮调用，不让单次调用无限打转。
+          payload["status"] = "wait"
+          payload["reasons"] = ["单次调用已连续推进 #{steps.length} 步，达到上限，停轮等下一轮"]
+          break
+        end
+
+        step = entry.step
+
+        unless options[:apply]
+          # dry-run 只读预览：预算用锁外读到的近值（信息用途，不执行）。
+          failures = auto_failures(records, entry.issue)
+          summary = nil
+          if step == "merge" && failures < AutoMerge::MAX_FAILURES
+            summary = merge_gateway.verifier_summary(entry.pr, entry.head_sha)
+          end
+          allowed, reason = AutoMerge.gate(step: step, summary: summary, failures: failures)
+          if allowed
+            payload["status"] = "would_execute"
+            payload["step"] = step
+            payload["reasons"] = ["自动模式将执行队列步 #{step}" +
+              (AutoMerge.continue_after?(step) ? "，成功后同一轮接续下一步" : "，成功后停轮")]
+          else
+            payload["status"] = "blocked"
+            payload["step"] = step
+            payload["auto_gate"] = reason
+          end
+          break
+        end
+
+        # --apply：预算重读、终验门、执行、失败计数必须在**同一把合并链锁内**
+        # 完成（#312 三轮 review）：锁外准入会让两个重叠调用都拿旧计数过门，
+        # 多执行一次失败尝试；失败计数若在锁外补记，后续调用同锁内看不到。
+        # 锁冲突时 acquire_ref_lock! 已经输出拒绝 JSON（含 lock_holder）——
+        # 本方法不得再 emit 第二份（双 JSON 会让按单文档解析的调用方炸）。
+        merge_lock = acquire_ref_lock!(merge_gateway, ref: RefLock.merge_ref, purpose: "merge", payload: payload)
+        if merge_lock.held?
+          code = EXIT_LOCKED
+          emitted = true
+          break
+        end
+        payload["lock_takeover"] = merge_lock.previous if merge_lock.previous
+
+        executed = false
+        begin
+          begin
+            # nil = 记录缺失/非本卡（预算不可判定）——与「有效记录的 0 次
+            # 失败」严格区分，缺失必须拒判不得按 0 放行（#312 四轮 review：
+            # 规划后、取锁前记录被删的窗口，放行等于预算外执行且无法计数）。
+            failures = fresh_auto_failures(options, entry.issue)
+            if failures.nil?
+              payload["status"] = "blocked"
+              payload["step"] = step
+              payload["auto_gate"] = "运行记录缺失或非本卡记录（##{entry.issue}），失败预算不可判定——fail-closed 拒绝执行"
+              payload["ok"] = false
+              code = EXIT_REFUSED
+            else
+              summary = nil
+              if step == "merge" && failures < AutoMerge::MAX_FAILURES
+                # 摘要与 head 绑定（#312 二轮 review）：旧 head 的残留摘要对新
+                # head 不成立，传当前 head 供 gateway 过滤。
+                summary = merge_gateway.verifier_summary(entry.pr, entry.head_sha)
+              end
+              allowed, reason = AutoMerge.gate(step: step, summary: summary, failures: failures)
+              unless allowed
+                # 门拒判是「交人工」的停轮，不是执行失败——不计数（只有真
+                # 执行过的步才进计数/清零分支）。
+                payload["status"] = "blocked"
+                payload["step"] = step
+                payload["auto_gate"] = reason
+                payload["ok"] = false
+                code = EXIT_REFUSED
+              else
+                executed = true
+                code = queue_apply_step!(snap, options, payload, queue, merge_gateway)
+              end
+            end
+          rescue CommandError => e
+            payload["ok"] = false
+            payload["reasons"] = ["合并队列写段异常：#{e.message}"]
+            code = EXIT_REFUSED
+          end
+
+          # 锁内计数/清零（释放前完成，后续调用同锁可见）。清零失败只上报
+          # 不停摆：锁内重读的预算就是真实状态，下一步准入会自洽拒判；但
+          # 清零未完成时不得接续下一步（#312 三轮 review）。
+          reset_result = :ok
+          if executed && code != EXIT_OK && code != EXIT_LOCKED
+            result = with_record_retry { record_auto_failure(options, entry.issue, step) }
+            if result == :locked
+              payload["auto_budget_note"] =
+                "运行记录锁被占（心跳写入中），本次失败未能计入预算（有界重试后仍失败）"
+            elsif result == :missing
+              payload["auto_budget_note"] =
+                "运行记录缺失（#{result}），本次失败未能计入预算——先恢复本机认领记录"
+            end
+          elsif executed && code == EXIT_OK
+            reset_result = with_record_retry { record_auto_success(options, entry.issue) }
+            unless reset_result == :ok
+              payload["auto_budget_note"] =
+                "auto_merge_failures 清零未完成（#{reset_result}）：预算保持旧值，本轮停止接续"
+            end
+          end
+        ensure
+          finalize_lock_release!(merge_gateway, RefLock.merge_ref, merge_lock, payload)
+        end
+
+        if payload["lock_release_failed"]
+          # 业务步可能已成功，但锁没放干净：与人工路径同口径（exit 非 0），
+          # 不掩盖未完成的收尾；成功信息留在 payload["status"] 里可审计。
+          code = EXIT_REFUSED
+          break
+        end
+
+        break if code != EXIT_OK
+
+        steps << {"issue" => entry.issue, "step" => step, "result" => payload["status"]}
+
+        break unless AutoMerge.continue_after?(step) && reset_result == :ok
+
+        # verify_pre 成功 → 用新记录重新规划：核验写入后队列应给出下一步。
+        # 快照不重取：verify_pre 与其后续步骤之间没有异步事件。
+        records = active_records_for(options)
+        queue = build_merge_queue(snap, options, view, records, changelog)
+      end
+      unless emitted
+        payload["auto_steps"] = steps unless steps.empty?
+        Output.emit(payload, out: @out)
+      end
+      code
+    end
+
+    # 锁内有界重试（#312 三轮 review）：记录锁是心跳级短临界区，短暂等待
+    # 重试几乎必得；仍 :locked 就把最后结果交调用方上报——不无限等，也
+    # 不把「未能累计/清零」伪装成成功。
+    def with_record_retry(limit = 5)
+      result = yield
+      attempt = 1
+      while result == :locked && attempt < limit
+        sleep 0.2
+        attempt += 1
+        result = yield
+      end
+      result
+    end
+
+    # 合并链锁内的预算重读：不走循环顶的 records 快照（可能已被上一轮
+    # 调用改写），读当前记录的真实计数。nil = 预算不可判定，调用方必须
+    # 拒判——不得与「0 次失败」混同。不可判定的三种情形：记录缺失、
+    # 非本卡记录、auto_merge_failures 存在但不是非负整数（#312 五轮
+    # review：负数会让 count < MAX 恒真多执行尝试；非法字符串 to_i=0
+    # 与有效零次失败无法区分——口径同 capacity 的 fail-closed）。
+    def fresh_auto_failures(options, issue)
+      record, = owned_record(options, issue)
+      return nil if record.nil?
+
+      data = record.load
+      return nil if data.nil? || data["issue"].to_i != issue.to_i
+
+      raw = data["auto_merge_failures"]
+      return nil unless raw.nil? || (raw.is_a?(Integer) && raw >= 0)
+
+      raw.to_i
+    end
+
+    # 自动失败计数（AutoMerge 回退预算的载体）。只动本卡记录，不碰远端；
+    # 读改写必须走 RunRecord 的记录锁（与 heartbeat! 同一把）。
+    def record_auto_failure(options, issue, step)
+      record, = owned_record(options, issue)
+      return :missing if record.nil?
+
+      record.bump_auto_failure!(step)
+    end
+
+    # 成功一步即清零（自动成功与人工 `queue --apply` 成功都走这里）。
+    def record_auto_success(options, issue)
+      record, = owned_record(options, issue)
+      return :missing if record.nil?
+
+      record.reset_auto_failure!
+    end
+
+    # 本机持有的该卡记录（存在且 issue 匹配）；异机租约没有本地记录，返回空。
+    # --record 指定时与 remember_verified_head 同口径读该路径（#312 review），
+    # 否则走 per-issue 路径——两条入口不一致会让预算在自定义记录上失灵。
+    # 显式路径分支也必须带 issue:（#312 二轮）：bump/reset 的身份检查比对
+    # 记录的 issue 与 @issue，缺了它自定义记录恒判 mismatch、预算失灵。
+    def owned_record(options, issue)
+      record = options[:record] ? RunRecord.new(path: options[:record], issue: issue) : RunRecord.new(issue: issue)
+      data = record.load
+      data && !data.empty? && data["issue"].to_i == issue.to_i ? [record, data] : [nil, nil]
+    end
+
+    def auto_failures(records, issue)
+      data = Array(records).find { |r| r["issue"].to_i == issue.to_i }
+      data ? data["auto_merge_failures"].to_i : 0
     end
 
     # 队列单步推进（--apply）：changelog / update_branch / verify_pre / merge 各
@@ -447,8 +724,15 @@ end
 
       # 核验通过即把 head 记进运行记录：队列下一轮靠它判断「当前 head 是否已核验」。
       # 不记的话，update-branch 改完 head 后队列会以为还没核验（正确但永远卡住），
-      # 或在没有这层判定时直接合并（错误）。记与判必须成对。
-      remember_verified_head(options, entry.issue, pr.head_sha)
+      # 或在没有这层判定时直接合并（错误）。记与判必须成对——写不进记录（他机
+      # 租约或记录缺失）就拒绝本步，不能报成功后让队列原地打转（#312 review）。
+      unless remember_verified_head(options, entry.issue, pr.head_sha)
+        payload["status"] = "refused"
+        payload["ok"] = false
+        payload["reasons"] = ["verified_head 未能写入本地运行记录（##{entry.issue} 非本机持有租约或记录缺失），" \
+                              "队列无法据此推进；本机只续跑自己持有的卡"]
+        return EXIT_REFUSED
+      end
 
       # 快照是规划时取的，写之前必须重读：head 与 base 都可能已经变了。
       # （#307 review 整改：merge_gateway 与调用方持锁的是同一 runner，复用
@@ -541,21 +825,22 @@ end
     end
 
     # 记录某卡当前 head 已通过 verify merge --pre。只动本卡记录，不碰远端。
+    # 返回是否真的写入（#312 review）：记录缺失、非本卡记录或记录锁被占时
+    # 返回 false，调用方（run_queue_verify_pre / merge 段）据此拒绝本步，
+    # 不得报成功。写必须走记录锁（#312 二轮）：锁外整份写回会覆盖并发写入
+    # 的 auto_merge_failures 等字段——所有写者共用同一跨进程更新边界。
     def remember_verified_head(options, issue_number, head_sha)
-      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue_number)
-      current = record.load
-      return if current.nil? || current.empty? || current["issue"].to_i != issue_number.to_i
-
-      record.save(current.merge("verified_head" => head_sha))
+      record = options[:record] ? RunRecord.new(path: options[:record], issue: issue_number) : RunRecord.new(issue: issue_number)
+      result = record.set_verified_head!(head_sha)
+      result == :ok
     end
 
     # head 已变（update_branch / CHANGELOG 追加）→ 旧核验结论作废。
+    # 同走记录锁（口径同 remember_verified_head）。
     def forget_verified_head(options, issue_number)
-      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue_number)
-      current = record.load
-      return if current.nil? || current.empty? || current["issue"].to_i != issue_number.to_i
-
-      record.save(current.merge("verified_head" => nil))
+      record = options[:record] ? RunRecord.new(path: options[:record], issue: issue_number) : RunRecord.new(issue: issue_number)
+      record.set_verified_head!(nil)
+      nil
     end
 
     # 本机记录里各卡的「上一次通过 verify merge --pre 的 head」。
@@ -629,7 +914,13 @@ end
         return payload
       end
 
-      remember_verified_head(options, entry.issue, pr.head_sha)
+      unless remember_verified_head(options, entry.issue, pr.head_sha)
+        # 核验结论写不进本地记录（他机租约或记录缺失）：报成功会让自动链
+        # 在同一头上无限重跑 verify_pre，还堵住身后整条队列（#312 review）。
+        payload["reasons"] = ["verified_head 未能写入本地运行记录（##{entry.issue} 非本机持有租约或记录缺失），" \
+                              "队列无法据此推进；本机只续跑自己持有的卡"]
+        return payload
+      end
       payload["ok"] = true
       payload["status"] = "verified"
       payload["head_sha"] = pr.head_sha
@@ -1770,6 +2061,11 @@ end
           next            读取 GitHub，输出单一动作（默认只读）
           plan            只读多候选视图：全部就绪候选 + 枚举排除集 + 逐租约动作（#218/#221）
           queue           只读合并队列：队首 PR 与它在合并链上的下一步（#221）
+                          --apply 推进队首一步（#221）；--auto --apply 自动触发
+                          （#222）：auto_merge_enabled 开启时条件齐备即自动推进
+                          （不加 --apply 只做 dry-run），verify_pre 通过后同一轮
+                          接续；「有条件通过」（可信 verifier 摘要 unverified>0）
+                          与连续自动失败达 2 次都停轮交人工
           heartbeat <issue> [--pid <worker pid>] [--ttl <秒>] [--apply]
                           写存活心跳（F5）。--apply 才写，且此时 --pid 必填：
                           它必须是 worker 自己的 pid（别用 shell 的 $$）。

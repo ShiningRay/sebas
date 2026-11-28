@@ -1085,6 +1085,55 @@ end
       end
     end
 
+    # 合并队列自动触发开关（M4x-WP4，#222）：.github/agents.yml 的
+    # `auto_merge_enabled` 键。缺键即 false——关着时自动路径整体拒绝，
+    # 行为与阶段 3 的人工触发完全一致（fail-closed：宁可少自动化）。
+    # 仅接受布尔：字符串 "true"、数字等一律 fail-closed，不静默转真值。
+    def auto_merge_enabled?
+      @auto_merge_enabled ||= begin
+        path = File.join(Dir.pwd, ".github", "agents.yml")
+        return false unless File.exist?(path)
+
+        require "yaml"
+        data = YAML.safe_load_file(path)
+        return false unless data && data.key?("auto_merge_enabled")
+
+        raw = data["auto_merge_enabled"]
+        unless raw.is_a?(TrueClass) || raw.is_a?(FalseClass)
+          raise CommandError.new(".github/agents.yml 的 auto_merge_enabled 必须是布尔值：#{raw.inspect}", command: ["read", path])
+        end
+
+        raw
+      end
+    end
+
+    # 取 PR 的 verifier 核验摘要评论（verify.yml verifier job 发布，同一 PR
+    # 重跑时原位更新，至多一条）。返回解析后的计数 Hash，找不到返回 nil。
+    #
+    # 身份门（#312 review，CWE-863）：摘要只认受信自动化身份（trusted_bots，
+    # 即 GITHUB_TOKEN 的 github-actions[bot]）发布的——marker 与计数格式
+    # 不构成作者证明，任何有评论权限的账号都能伪造「unverified=0」的同
+    # marker 评论来骗过有条件通过门。不可信的同 marker 评论一律无视。
+    #
+    # head 绑定（#312 二轮 review）：摘要发布步骤 continue-on-error，失败时
+    # 旧 head 的摘要会残留，而旧结论对新 head 不成立——摘要正文含被核验的
+    # head sha（verify.yml 写入），只接受含当前 head_sha 的摘要；不匹配即
+    # 视同缺失，由 AutoMerge.gate 按缺证据拒绝。
+    def verifier_summary(pr_number, head_sha)
+      comments = paginate("repos/#{@repo}/issues/#{pr_number}/comments")
+      trusted = trusted_bots
+      summaries = comments.select do |c|
+        next false unless c.is_a?(Hash)
+
+        body = c["body"].to_s
+        body.include?(MergeQueue::VERIFIER_SUMMARY_MARKER) &&
+          body.include?(head_sha.to_s) &&
+          trusted.include?(c.dig("user", "login").to_s)
+      end
+      body = summaries.empty? ? nil : summaries.last["body"]
+      MergeQueue.verifier_summary_from_body(body)
+    end
+
     # 跨机 ref 锁 TTL（#306）：.github/agents.yml 的 `lock_ttl_minutes` 键，分钟。
     # 缺省 60——锁是命令级（秒级），TTL 只决定崩溃残锁多久后允许异机接管；
     # 任务小时级，宁大勿小：调大不削弱互斥、只拉长残锁等待。
