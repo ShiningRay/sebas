@@ -4,6 +4,13 @@ require "../../plugins/manifest"
 require "../../plugins/registry"
 require "../../plugins/runner"
 require "../../plugins/dispatch"
+# 本文件直接消费 HookBus/HookDispatcher/CapabilityDispatcher::MemoryDriver
+# （#308）：此前全靠 src/sebas.cr 的 `plugins/**` glob 兜底加载，且该 glob 在
+# platform/** 之后展开——类型注解引用晚于定义加载，`--release --no-debug`
+# 下在 CI 三平台报 undefined constant（本机不可复现，runner 环境特有）。
+# 显式 require 使定义先于引用，不再依赖 glob 展开顺序。
+require "../../plugins/hook_bus"
+require "../../plugins/capabilities"
 
 # 插件面装配（M3-WP4，#16；design.md §12）：gateway 启动/热更新时扫描
 # plugins.dir，runner+派发接线，非生命周期 action 注册进宿主工具面
