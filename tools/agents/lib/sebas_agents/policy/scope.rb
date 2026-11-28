@@ -2,7 +2,7 @@
 
 module SebasAgents
   module Policy
-    # scope 冲突预算（M4x-Parallel-WP2，#220；Proposal parallel-implementers.md §6）。
+    # scope 冲突预算（M4x-Parallel-WP2，#220 落地纯函数，M4x-Parallel-WP3，#221 接线）。
     #
     # scope 是调度预算，不是沙箱：越界靠事后检测（worker 推送前自查 +
     # coordinator 合并队列前用 pr.files 复查），安全边界不依赖模型守约。
@@ -10,8 +10,10 @@ module SebasAgents
     # `src/` 与 `src/bus/x.cr` 冲突，`src/bus/` 与 `src/keys/` 不冲突；
     # 不猜测「同目录不同文件能否共存」。
     #
-    # 本期容量固定 1，scope 冲突过滤处于待命状态：纯函数先落地并测试，
-    # 容量 >1 时由 plan 按「任一前缀互相包含即冲突」过滤候选（§6.1）。
+    # 缺 scope 的独占语义（Proposal §6.2 Q4=A 强制）：
+    # - 在途任一租约缺 scope → 不认领任何新卡（无从判定是否重叠）；
+    # - 候选缺 scope → 只在没有任何在途租约时可认领。
+    # 两条合起来是「缺 scope 的卡独占全部容量」。
     module Scope
       module_function
 
@@ -30,8 +32,10 @@ module SebasAgents
             raise InvalidPlan, "#{prefix}automation.scope 条目必须是非空字符串"
           end
           raise InvalidPlan, "#{prefix}automation.scope 不允许 `..`（#{value.inspect}）" if value.include?("..")
-          # 归一 ./ 前缀（./docs 与 docs 同义，须先归一再判冲突）
-          value = value.sub(%r{\A\./}, "")
+          # 归一 ./ 前缀（./docs 与 docs 同义，须先归一再判冲突）。
+          # 必须**反复**剥离：`././src/` 只剥一次会剩 `./src/`，它与 `src/`
+          # 前缀互不包含，冲突判定就会漏判。
+          value = value.sub(%r{\A(?:\./)+}, "")
           raise InvalidPlan, "#{prefix}automation.scope 不允许以 / 开头（#{value.inspect}）" if value.start_with?("/")
           raise InvalidPlan, "#{prefix}automation.scope 条目不能只剩空（#{value.inspect}）" if value.empty?
 
@@ -40,29 +44,155 @@ module SebasAgents
       end
 
       # 冲突判定：归一化后任一路径前缀互相包含即冲突。
-      # 空数组/nil（未声明）不参与冲突判定——缺 scope 的独占语义由容量层处理。
+      # 空数组/nil（未声明）不参与冲突判定——缺 scope 的独占语义由 blocking_lease 处理。
       def conflict?(scope_a, scope_b)
         return false if scope_a.nil? || scope_b.nil?
 
         scope_a.any? { |a| scope_b.any? { |b| a.start_with?(b) || b.start_with?(a) } }
       end
 
-      # 容量 >1 时的候选过滤：与任一在途租约 scope 冲突的候选进 excluded。
-      # 返回 [ready_candidates, excluded_rows]；excluded 行 reason 写明对方卡
-      # （§8.1 必测场景 4）。本期容量恒为 1，此方法暂不被 plan 调用，
-      # 先以纯函数形态落地并测试（容量参数化是阶段 3 的事）。
+      # 候选与在途租约之间的阻断判定（§6.2 Q4=A）。
+      # 返回 [原因文本, 对方 issue 号] 或 nil（可并行）。三条规则按序：
+      #   1. 候选缺 scope：只有在没有任何在途租约时才放行；
+      #   2. 任一在途租约缺 scope：不认领新卡（无从判定重叠）；
+      #   3. 前缀包含即冲突。
+      # 原因文本直接进 excluded.detail，保持与 next 的措辞一致口径。
+      def blocking_lease(candidate_scope, active_leases)
+        return nil if active_leases.empty?
+
+        if candidate_scope.nil?
+          other = active_leases.first
+          return ["候选缺 scope，只能在无其他在途租约时认领（在途 ##{other[:issue]}）", other[:issue]]
+        end
+
+        missing = active_leases.find { |lease| lease[:scope].nil? }
+        if missing
+          return ["在途 ##{missing[:issue]} 未声明 scope，无法判定冲突，暂停新认领", missing[:issue]]
+        end
+
+        hit = active_leases.find { |lease| conflict?(candidate_scope, lease[:scope]) }
+        return nil unless hit
+
+        ["scope 与在途 ##{hit[:issue]} 重叠（#{overlap_detail(candidate_scope, hit[:scope])}）", hit[:issue]]
+      end
+
+      # 命中的前缀对，用于 reason 里说清重叠在哪。
+      def overlap_detail(scope_a, scope_b)
+        pairs = scope_a.product(scope_b).select do |a, b|
+          a.start_with?(b) || b.start_with?(a)
+        end
+        pairs.map { |a, b| a == b ? a : "#{a} ↔ #{b}" }.uniq.join("；")
+      end
+
+      # 把在途 issue 转成 budget 输入。scope 归一失败按未声明处理：
+      # 在途卡的声明非法不该静默变成「不冲突」，而 blocking_lease 的
+      # 「在途缺 scope」分支会让它独占容量——保守方向正确。
+      def lease_of(issue)
+        raw = issue.automation.is_a?(Hash) ? issue.automation["scope"] : nil
+        scope = begin
+          normalize(raw, issue_number: issue.number)
+        rescue InvalidPlan
+          nil
+        end
+        {issue: issue.number, scope: scope}
+      end
+
+      # 合并队列自己会往租约分支追加这些文件（§6.3 Q3=B：worker 不写
+      # CHANGELOG，由队列统一追加）。它们出现在 pr.files 里不是 worker 越界，
+      # 若一并判越界，合法 PR 会在追加后被自己的队列动作挡成 needs_human。
+      QUEUE_OWNED_PATHS = ["CHANGELOG.md"].freeze
+
+      # 从变更清单里剔掉队列自有的路径。非数组原样返回，让 violations 自己报
+      # 「形状不对」——这里不替它兜底。
+      def without_queue_owned(files)
+        return files unless files.is_a?(Array)
+
+        files.reject do |file|
+          paths = candidate_paths(file)
+          # 空候选路径必须留下——`[].all?` 恒真，会把它当队列自有文件删掉，
+          # 于是 `violations([])` 返回 nil（零变更）静默放行。留下它，
+          # violations 会按「解析不出路径」拒绝。
+          !paths.empty? && paths.all? { |path| QUEUE_OWNED_PATHS.include?(path) }
+        end
+      end
+
+      # 越界检测（§6 §F14）：PR 变更文件必须落在租约 scope 内。
+      # scope 是调度预算、不是沙箱——这里只做事后检测，越界即停本卡。
+      #
+      # **租约缺 scope 不算越界**：Q4=A 给缺 scope 的语义是「独占容量」——
+      # 它由认领侧（blocking_lease）承担，表现为不许开新卡。把同一件事再当成
+      # 越界，等于让存量缺 scope 的租约永久 needs_human：既没机会开新卡，也
+      # 不能合并已有 PR，比串行还退。§6 只把「事后检测」限定为「worker 干了
+      # scope 外的事」，缺声明不是干错事。
+      #
+      # 清单自身的缺失与畸形**一律先拒**，与 scope 无关：`violations(nil, nil)`
+      # 或 `violations({}, nil)` 若因缺 scope 直接返回 nil，非法输入就被静默放行。
+      # 校验顺序是「先看输入形状，再看能不能判」，不是反过来。
+      # 返回 nil（未越界）或错误描述字符串。
+      def violations(files, lease_scope)
+        return "PR 变更文件清单未取回，无法判定越界" if files.nil?
+        # 非数组同样是「取回的形状不对」：Array("x") 会变成 ["x"]、Array({}) 变
+        # 空数组，后者会被当成「零变更」静默放行。显式拒绝，交由调用方 fail-closed。
+        return "PR 变更文件清单不是数组（#{files.class}），无法判定越界" unless files.is_a?(Array)
+        outside = []
+        unparsable = 0
+        files.each do |file|
+          paths = candidate_paths(file)
+          if paths.empty?
+            # 解析不出路径就等于「无从判定」——按越界计，不放行。
+            unparsable += 1
+            next
+          end
+          # 重命名条目要查两个路径：原路径也可能落在 scope 外（搬走别人的
+          # 文件同样是越界），只查新路径会漏。
+          paths.each do |path|
+            outside << path unless lease_scope.nil? || lease_scope.any? { |prefix| path.start_with?(prefix) }
+          end
+        end
+        # 解析不出路径与 scope 无关：先判它，缺 scope 也不能把畸形条目放过。
+        if outside.empty? && unparsable.positive?
+          return "PR 变更条目有 #{unparsable} 条解析不出路径，无法判定越界"
+        end
+        # 形状已校验、条目也都能解析，缺 scope 到此才算「无从比较」。
+        return nil if lease_scope.nil?
+
+        outside.uniq!
+        return nil if outside.empty?
+
+        text = "变更文件不在 scope 内：#{outside.first(5).join("、")}" \
+          "#{outside.length > 5 ? " 等 #{outside.length} 个" : ""}"
+        text += "（另有 #{unparsable} 条解析不出路径）" if unparsable.positive?
+        text
+      end
+
+      # 一条变更记录涉及的路径：filename（或 :path）加上重命名前的
+      # previous_filename。两项都查，任一越界即算越界。
+      def candidate_paths(file)
+        if file.is_a?(Hash)
+          [file["filename"] || file[:path],
+            file["previous_filename"] || file[:previous_filename]].compact
+        else
+          [file].compact
+        end.select { |path| path.is_a?(String) && !path.empty? }
+      end
+
+      def leases_of(issues)
+        Array(issues).map { |issue| lease_of(issue) }
+      end
+
+      # 候选过滤（plan 与 evaluate_milestone 共用）：与在途租约冲突的候选
+      # 进 excluded。返回 [ready, excluded_rows]；excluded 行含 reason/other。
+      # 候选之间不比：它们不是同时在途，每次 claim 只取一张，下一轮会重算。
       def filter_candidates(candidates, active_leases)
         return [candidates, []] if active_leases.empty?
 
         ready = []
         excluded = []
         candidates.each do |issue|
-          scope = issue.automation["scope"]
-          other = active_leases.find do |lease|
-            conflict?(scope, lease[:scope]) || (scope.nil? || lease[:scope].nil?)
-          end
-          if other
-            excluded << {issue: issue.number, other: other[:issue], scope: scope}
+          scope = issue.automation.is_a?(Hash) ? issue.automation["scope"] : nil
+          reason, other = blocking_lease(scope, active_leases)
+          if reason
+            excluded << {issue: issue.number, reason: reason, other: other, scope: scope}
           else
             ready << issue
           end

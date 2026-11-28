@@ -4,10 +4,11 @@
 # 各测试文件原先各自复制一份 issue/automation/evidence 构造器，字段一改就
 # 多处漂移；统一到这里，字段形态只有一处定义。
 require "json"
+require "socket"
 
 module SnapshotHelpers
   # 工作包卡面：automation 块前放可选的前置依赖散文，供 prose↔automation 对账用例使用。
-  def automation(kind: "work_package", order: [1], depends_on: [], external: [], prose: nil)
+  def automation(kind: "work_package", order: [1], depends_on: [], external: [], prose: nil, scope: nil)
     prose_section = prose ? "\n## 前置依赖\n\n#{prose}\n" : ""
     body = <<~MD
       ## 目标
@@ -16,15 +17,15 @@ module SnapshotHelpers
       ```json automation
       #{" "}
       MD
-    body.sub("#{" "}\n", "") + JSON.pretty_generate(
-      {
-        "schema" => 1,
-        "kind" => kind,
-        "order" => order,
-        "depends_on" => depends_on,
-        "external" => external
-      }
-    ) + "\n```\n"
+    block = {
+      "schema" => 1,
+      "kind" => kind,
+      "order" => order,
+      "depends_on" => depends_on,
+      "external" => external
+    }
+    block["scope"] = scope unless scope.nil?
+    body.sub("#{" "}\n", "") + JSON.pretty_generate(block) + "\n```\n"
   end
 
   def evidence(subject:, status: "accepted", ready: nil, merged: true, untested: [],
@@ -103,11 +104,34 @@ module SnapshotHelpers
   end
 
 
-  def select(data, record: nil)
-    SebasAgents::Policy::Selection.select_action(SebasAgents::Model::Snapshot.from_hash(data), record: record)
+  # records：per-issue 多租约（§4.1 逐租约路由）。record 保留为单条兼容入口。
+  #
+  # 入参默认补齐「worker 已失联」的证据（本机 host + 过期心跳 + 已不存在的
+  # pid）。F5 契约只允许有心跳过期 + pid 不在的证据时才自动续做，否则一律
+  # `wait`。绝大多数用例想测的是路由的其他分支，不该每条都重述这套证据；
+  # 需要测 F5 本身的用例显式传 record/records，不经过这里。
+  def select(data, record: nil, records: [])
+    SebasAgents::Policy::Selection.select_action(
+      SebasAgents::Model::Snapshot.from_hash(data),
+      record: dead_worker_record(record), records: Array(records).map { |r| dead_worker_record(r) }.compact)
   end
 
-  def plan(data, record: nil)
-    SebasAgents::Policy::Selection.plan(SebasAgents::Model::Snapshot.from_hash(data), record: record)
+  def plan(data, record: nil, records: [])
+    SebasAgents::Policy::Selection.plan(
+      SebasAgents::Model::Snapshot.from_hash(data),
+      record: dead_worker_record(record), records: Array(records).map { |r| dead_worker_record(r) }.compact)
+  end
+
+  # 把记录补成「worker 已失联」：本机 host、过期心跳、已不存在的 pid。
+  # 已有 pid 的用例不动它——那是用例自己声明了存活状态。
+  def dead_worker_record(record)
+    return record unless record.is_a?(Hash)
+    return record if record.key?("pid")
+
+    record.merge(
+      "host" => Socket.gethostname,
+      "pid" => 999_999,
+      "last_heartbeat_at" => "2020-01-01T00:00:00Z"
+    )
   end
 end

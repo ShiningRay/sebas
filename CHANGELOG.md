@@ -7,6 +7,28 @@
 
 ### Added
 
+- **代码卡并行与合并队列**（M4x-Parallel-WP3，[#221](https://github.com/ShiningRay/sebas/issues/221)）：
+  - 逐租约动作：`next`/`plan` 对每张在途卡分别求值（归属校验 → 失败检查/thread/BEHIND → wait → `merge_ready`），`wait` 不占算力、`needs:human` 只停本卡；`plan` 输出 `leases`。
+  - scope 冲突预算生效：前缀互相包含即冲突，缺 scope 独占容量；`plan` 与 `claim` 同口径（`claim` 不再能绕过预算）。共享文件靠声明进 scope 进入预算。
+  - 合并队列：`queue` 只读规划队首与链上步骤（`verify_pre → changelog → merge → evidence → release`），`queue --apply` 只推进一步「合并」；`gh pr merge --squash --match-head-commit` 绑定已核验 head，base 三次核对。
+  - CHANGELOG 改由队列追加：PR 正文 marker 块携带条目，按 `(#PR)` 引用幂等识别；`scribe.md` §5 同步修订。
+  - 写守卫新增 `:merge_pr` / `:update_branch` 两条独立意图，形态完整匹配才放行（多余参数如 `--admin` 一律拦）。
+- **故障矩阵收敛与越界/心跳判据**（[#221](https://github.com/ShiningRay/sebas/issues/221) §5/§6，[#294](https://github.com/ShiningRay/sebas/pull/294)）：
+  - F14 越界检测：`Scope.violations` 判 PR 变更文件是否落在租约 `scope` 内，越界即转 `needs_human`。
+    - 缺清单、非数组、条目解析不出路径按**不可判定**处理（fail-closed），与 scope 无关——缺 scope 不能成为放过畸形输入的借口。
+    - **租约缺 scope 不算越界**：那是认领侧的「独占容量」，若在越界侧再判一次，存量缺 scope 的租约就会永久 `needs_human`（既不许开新卡也不许合并已有 PR）。
+    - 重命名同时查原路径与新路径；队列自有的 `CHANGELOG.md` 由 `Scope.without_queue_owned` 先行剔除，空路径条目不被剔除。
+  - F5 心跳：`RunRecord#heartbeat!` / `#heartbeat_expired?`——缺 `last_heartbeat_at` 不判过期（兼容老记录），非法/空时间戳判过期；写入用 `O_CREAT|O_EXCL` 跨进程锁，活跃持有者跳过且不删锁，pid 已退出则接管（`ESRCH` 才算残留，`EPERM` 视为活跃）。
+  - F15 合并中途崩溃：`reconcile_merging` 先于 settled 判定，逐条对账每条 `phase=merging` 记录。已合并且 base 明确为 main → `release_ready`；base 缺失/非 main → `invalid_plan`；PR 仍 open → 重走核验，但卡已 completed 时属矛盾态 → `invalid_plan`；已关闭未合并 → `invalid_plan`。
+  - `release_ready` 动作写入 `role_prompts`、`implementer.md`、`implementer-loop.md`；`merge-queue.md` 新增故障矩阵覆盖表（F1–F15 逐条对到实现与测试，并说明 F13 为何不入表）。
+  - 合并队列补 `update_branch` 步骤：BEHIND 的 PR 由队列同步 main，改 head 后强制重核验；
+    合并准入收紧为 `merge_state_status=CLEAN`（DIRTY/BLOCKED/UNKNOWN 一律回 `verify_pre`）。
+  - head 核验绑定：运行记录新增 `verified_head`，`queue --apply` 的 `verify_pre` 步骤跑
+    `verify merge --pre` 并落记录；`update_branch` 与 CHANGELOG 追加改 head 后清空它。
+  - F5 心跳落地：`claim --apply` 写首个心跳；新增 `heartbeat <issue> --apply --pid <pid>`
+    子命令（锁内复核 lease_id/phase）；`Policy::Worker.state` 用「心跳过期 + 本机 pid 不存在」
+    双证据判失联，跨机/缺 host/证据不足一律不自动接管。
+  - `verifier_queue_depth` 改为「待核验的 `merge_ready` 数」，不再数 open PR。
 - **CI 并发语义按事件区分**（[#221](https://github.com/ShiningRay/sebas/issues/221)）：`ci.yml` 的 `cancel-in-progress` 改为只在 `pull_request` 事件为 true。main 侧不再互相取消——被顶掉的 main CI 会让 Evidence 停在 `merged_into_main: false`、后继卡永久 blocked。理由与边界见 [pr-gate.md](docs/design/process/pr-gate.md)。
 - **插件沙箱与 22 钩子（M3-WP5）**（[#17](https://github.com/ShiningRay/sebas/issues/17)）：
   - 钩子契约：§12.11 22 钩子闭集目录 + payload schema 机读权威（键集闭/枚举/可空/结构化错误/深度封顶；敏感 hook 需 manifest `hooks.sensitive`）。
@@ -23,6 +45,7 @@
   - `plan` 输出：新增 `capacity`（快照容量）与 `capacity_used`（在途卡数）。
   - 迁移窗口：v1 记录仍活动时有效容量钳回 1（Q10=B）；默认记录损坏不吞异常，命令 fail-closed 拒绝；`aborted` 遗留记录属认领未确认异常态，迁移拒绝自动搬迁（F3/F4 对账前置），不随迁移解除容量钳制。
   - 试点豁免：docs-only 双卡豁免仅在容量 1 时生效（试点上限两张语义不变）。
+  - `plan` 追加 `capacity_limit`（同 `capacity`）——`used/limit` 并存便于观察背压；注意 `limit - used` 不等于可派活数（docs-only 试点豁免会让差值为 0 仍可认领）。
 - **流程工具 per-issue 租约与运行记录迁移**（M4x-Parallel-WP2，[#220](https://github.com/ShiningRay/sebas/issues/220)）：`claim --apply` 发带 `<!-- sebas-lease -->` marker 的协调评论作租约凭据（comment id 即 lease_id，作者须 `.github/agents.yml` `coordinators:` 白名单；写入序 claiming→评论→标签+回读→claimed，失败按 lease_id 对账恢复不双开）；Automation 可选 `scope` 路径前缀预算（前缀互相包含即冲突，缺 scope 独占容量，本期容量恒 1 待命）；`.sebas-agent/run.json` 迁移至 `runs/<issue>.json` schema 2（非活动自动搬、活动 fail-closed 待人工、迁移期容量 1）；unclaim 释放租约先置 released（F12 幂等）。
 - **流程工具 plan 子命令**（M4x-Parallel-WP1，[#218](https://github.com/ShiningRay/sebas/issues/218)）：`sebas-process plan` 只读多候选视图——与 `next` 同快照同策略同评估结果，输出全部就绪候选（`issue/title/order/scope_conflict/selected`，capacity 固定 1）、带枚举码的排除集（`depends_on_unmet/has_pr/needs_human/already_in_progress` 等）与 `verifier_queue_depth`（待验收 PR 数，验收背压可观察，[Proposal §7](docs/design/proposals/parallel-implementers.md)）；首选与 `next` 恒等，不改任何写行为。
 - **M3-WP4 插件层产品化**：每动作裁剪 mruby 子进程 runner（合成 prelude+plugin.rb 程序、stdin 单行 request、NDJSON 帧协议、watchdog 超时 kill、崩溃隔离、结构化错误）；`on_action`/`on_hook` 声明式 DSL 与 `capability` 同步 host-call（帧字段闭集、manifest 双重授权、未声明/未注册/重复注册拒绝）；manifest fail-closed 校验（id/SemVer/api_version/钩子闭集/超时上限）；`plugins:` 配置段接入 gateway（`plugin.<id>.<action>` 进宿主工具面，生命周期动作不进）；沙箱解释器 gembox 扩展 `sebas_read` 与自研 `mruby-sebas-json`（`mruby-sandbox` workflow 构建发布 + 插件验收 spec 注解释器直跑）（[#16](https://github.com/ShiningRay/sebas/issues/16)）。

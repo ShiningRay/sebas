@@ -9,7 +9,12 @@
 
 首版坚持以下不变量：
 
-1. **同一时刻在途工作卡不超过配置容量（`capacity`，缺省 1），每卡一个分支、一个 PR、一个写入 worktree。**容量 1 时即单卡语义；提升只能由 Maintainer 经 `.github/agents.yml` 的 `capacity` 键显式配置（[Proposal recovery §5](../proposals/parallel-implementers-recovery.md)）。Verifier 和 Reviewer 的只读独立核验不属于另一个 Implementer。
+1. **同一时刻在途工作卡不超过配置容量（`capacity`，缺省 1），每卡一个分支、一个 PR、
+   一个写入 worktree。** 容量 1 时即单卡语义；提升只能由 Maintainer 经
+   `.github/agents.yml` 的 `capacity` 键显式配置
+   （[Proposal recovery §5](../proposals/parallel-implementers-recovery.md)）。
+   Verifier 和 Reviewer 的只读独立核验不属于另一个 Implementer。
+   在途多卡时每张卡各自求值动作（§3.6.1）：等 CI 的那张不拖住另一张，`needs:human` 只停本卡。
 2. **GitHub 是当前事实源，本地运行记录只保存执行上下文。**每次选择都重新读取 milestone、issue、依赖和 PR，不使用本地游标猜下一张卡。
 3. **父子关系不等于依赖。**sub-issue 只表达分组；`blocked_by`、期门禁和外部依赖分别核验。
 4. **缺少元数据不等于没有依赖。**数据不完整、冲突或成环时 fail-closed，交 Maintainer 处理。
@@ -142,42 +147,8 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 ### 2.5 自动登记（workflow 段位）
 
-`workflow` 段位的实际承载是 [`.github/workflows/evidence-register.yml`](../../../.github/workflows/evidence-register.yml)：
-以 `github-actions[bot]` 身份发一条含 Evidence 块的评论，并把同一块回填进 issue 正文的 `Evidence` 小节。
-
-**分两阶段登记（#126）**，因为合并前门禁要求 Evidence 已存在，而合并后才能证实 merge commit：
-
-| 阶段 | 触发 | 写入 |
-|---|---|---|
-| 合并前 | PR 仍 open、目标 `main`、CI 全绿、issue 仍 open | `merged_into_main: false`、`merge_commit: null` |
-| 合并后 | PR 已合并、issue `completed`、merge commit 属 main | 升级同一块为 `true` + 真实 commit |
-
-合并前登记让 `verify merge --pre` 有据可依；合并后升级由 `workflow_run` 在合并事件上完成。
-
-| 性质 | 行为 |
-|---|---|
-| 幂等 | 已有**有效** Evidence 时跳过；结构非法则 fail-closed 报错，不假装成功 |
-| fail-closed | 目标非 main / issue 非 open（合并前）或非 completed（合并后）/ 无唯一 `Fixes #n` 时跳过，零写入 |
-| CI 证据 | 合并前反查 head sha 的 check-runs：为空、有未完成、有失败一律拒绝；合并后由 `workflow_run` 携带 |
-| 原子性 | 评论发出后若回填正文失败，先重读正文核对；仅当正文未引用该评论时才删除 |
-| 不伪造 | `untested` 唯一来源是 issue 正文的「未实测」小节；升级时沿用登记期冻结值，不重新读取 |
-| 防伪造 | 未合并却带 `merged_into_main: true` 的块一律拒绝（登记路径与门禁两侧都查） |
-
-补充三条判定口径：
-
-- **`merged_into_main` 由 git 祖先关系证实**（`git merge-base --is-ancestor <sha> origin/main`），
-  不因 `merged_at` 存在就置 `true`——手动触发可以选择合并进 release 分支的 PR。
-- **`push` 事件必须反查 PR**：合并后 main 上的 CI 里 `pull_requests` 通常为空，
-  脚本用 `head_sha` 走 `commits/{sha}/pulls` 找已合并的那个。
-- **中间态按 blocked 处理**：`merged_into_main: false` 期间下游前置仍是 blocked，这是正确语义
-  （稍后重跑即通过），不得为消除这个窗口放宽判据。
-- **`status` 与 `merged_into_main` 正交**：合并前块写 `status=accepted` 表示「验收判断已成立」，
-  不表示「已合并」；合并事实只由 `merged_into_main` 承载。因此 `accepted + false` 是合法中间态，
-  而 `true` 必须由合并事件写入。
-
-**它自动化的是机械登记，不是验收判断。** 门禁要求的「必须实测」项仍由 Verifier 判定并写入
-`untested`；workflow 只负责在条件满足后把结论落成可机读凭据。里程碑级验收（M-gate、冻结口径、
-发版终审）依旧由人在 PR 级自动化之上裁决。
+合并前后的两阶段自动登记、幂等与防伪造口径见
+[evidence-registration.md](evidence-registration.md)。
 
 ## 3. 每次运行的完整流程
 
@@ -273,6 +244,8 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 
 `--pre` 之所以要查 Evidence 与 thread，是因为这两项在合并前就已确定，且无法在合并后补救——带着未验收结论合并，事后再核验只能发现错误，不能撤销。第三方审阅（`CodeRabbit`）的进行中状态不参与「未完成检查」判定，见 [implementer.md](implementer.md) §2。
 
+§4.1 的逐租约动作、scope 冲突预算与合并队列见 [merge-queue.md](merge-queue.md)。
+
 ### 3.7 卡面契约的时效
 
 工作包卡创建时，契约声明只引**已合入 main** 的文本路径。引用未合并文档时必须显式标注「待合入，开工前以最新合并版为准」。Scribe 对账周期性扫描 OPEN 卡，回填已过时的契约声明（例如「文档未合入 main」在 PR 合并后即失效）。
@@ -286,6 +259,8 @@ issue status 表示进度（Todo / In progress / In review / Done）。
 | `resume_issue` | 续做已认领但尚无 PR 的卡 | 是，沿用原 worktree |
 | `resume_pr` | 修复或推进自己的在途 PR | 按需 |
 | `claim_issue` | 认领一张新的就绪卡 | 认领成功后启动 |
+| `merge_ready` | 在途 PR 已 CLEAN 且 thread 清零，进合并队列 | 否（队列推进） |
+| `release_ready` | PR 已合并、等 Evidence 升级后释放租约 | 否 |
 | `wait` | 等 CI、review 或其他正常异步事件 | 否 |
 | `blocked` | 当前没有就绪卡；列出前置与依赖原因，并在 `metadata_gaps` 列出挂不到 active milestone 的工作包 | 否 |
 | `needs_human` | 需要 Maintainer 决策或外部输入 | 否 |
@@ -338,10 +313,15 @@ evaluation = SebasAgents::Policy::Dependencies.evaluate(issue, snapshot)
 
 ```sh
 ruby tools/sebas-process next                  # 读取 GitHub，输出单一动作
-ruby tools/sebas-process plan                  # 只读多候选视图：与 next 同策略同路由，返回全部就绪候选（capacity 取 .github/agents.yml 的 capacity 键，缺省 1；输出 capacity/capacity_used、首选恒等、含验收背压），不改写行为（#218；契约详见 quickstart Implementer）
+ruby tools/sebas-process plan                  # 只读多候选视图：就绪候选 + 排除集 + 逐租约动作（#218/#221）
 ruby tools/sebas-process claim 39 --dry-run    # 校验可认领
-ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（M4x-WP2，#220）：协调评论为凭据，lease_id 对账恢复；详见 quickstart 租约与迁移节
+ruby tools/sebas-process claim 39 --apply      # 认领含租约凭据（#220）：协调评论为凭据，按 lease_id 对账恢复
+ruby tools/sebas-process queue                 # 只读合并队列：队首与链上步骤（#221）
+ruby tools/sebas-process heartbeat 39 --apply  # 写存活心跳（F5）：长任务期间定期调用
 ```
+
+心跳只由 worker 自己写：coordinator 代写等于把「我读过它的记录」当成「它还活着」，
+F5 就永远判不出来。判失联看两个证据——心跳过期 **且** 本机 pid 不存在。
 
 `policy/` 不执行网络、Git 或模型调用；所有副作用集中在 CLI 与 `CommandRunner`，
 并在每个写入点后回读确认。
@@ -376,16 +356,18 @@ Harness 输入至少包含：issue URL 与完整契约、验收清单、允许�
 纯函数测试至少覆盖：
 
 1. active milestone 的排序、并行轨排除、缺字段、主线内重复顺序，以及 M4/M4x 同号共存。
-2. 并行轨回退：主线 blocked 时补位、主线有就绪卡时不抢位、`handoff_release` 不被截走、`invalid_plan` 不被掩盖、并行轨也空时报主线 blocked。
-3. 父卡、人工卡、无依赖首卡、多前置、跨 milestone 前置和依赖环。
-4. 前置 open、completed、not planned、缺证据和外部依赖未就绪。
-5. 多张就绪卡按 `order` 稳定选择；同顺序和 issue/PR 关系歧义被拒绝。
-6. 自己的 PR 优先续跑；无关 PR 不被接管；pending CI 返回 `wait`。
-7. 重复运行不重复认领、不重复建分支或 PR；合并后依据新快照解锁后继。
-8. milestone 清零但未发版时返回 `handoff_release`，不进入下一版本。
-9. API 错误、分页遗漏、认领写入失败和 GitHub/本地状态冲突均 fail-closed。
+2. 并行轨回退：主线 blocked 时补位、主线有就绪卡时不抢位、`handoff_release` 不被截走、
+   `invalid_plan` 不被掩盖、并行轨也空时报主线 blocked。
+3. 父卡、人工卡、无依赖首卡、多前置、跨 milestone 前置和依赖环；前置 open、completed、
+   not planned、缺证据和外部依赖未就绪。
+4. 多张就绪卡按 `order` 稳定选择；同顺序和 issue/PR 关系歧义被拒绝；自己的 PR 优先续跑、
+   无关 PR 不被接管、pending CI 返回 `wait`。
+5. 重复运行不重复认领、不重复建分支或 PR；合并后依据新快照解锁后继；milestone 清零但未发版时
+   返回 `handoff_release`。
+6. API 错误、分页遗漏、认领写入失败和 GitHub/本地状态冲突均 fail-closed。
 
-执行器另做故障注入：在认领后、PR 创建后、合并后分别中断并重启，验证都能续跑而不是重复产生副作用。
+执行器另做故障注入：认领后、PR 创建后、合并后分别中断并重启，验证能续跑而非重复产生副作用。
+合并链与逐租约动作的必测场景见 [merge-queue.md](merge-queue.md)。
 
 ## 7. 推荐启用顺序
 
@@ -395,4 +377,4 @@ Harness 输入至少包含：issue URL 与完整契约、验收清单、允许�
 4. **单卡试运行**：选择一张低风险文档卡，由 Maintainer 明确批准后允许认领和调用 Harness。
 5. **逐阶段开放**：先完成单卡闭环，再开放自动修 CI/review；自动合并和发版仍遵守各自既有权限与门禁。
 
-本流程的交付是确定性的工作循环，不是“让 Agent 自己看板决定做什么”。
+本流程的交付是确定性的工作循环，不是「让 Agent 自己看板决定做什么」。

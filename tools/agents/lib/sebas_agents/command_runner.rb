@@ -123,6 +123,12 @@ module SebasAgents
       # 评论），只是允许 body 跨行。配套守卫测试见 tools/tests/process/test_lease.rb。
       create_comment: %r{\Agh\s+api\s+repos/\S+/issues/\d+/comments\s+-f\s+body=.+\z}m,
       update_comment: %r{\Agh\s+api\s+-X\s+PATCH\s+repos/\S+/issues/comments/\d+\s+-f\s+body=.+\z}m,
+      # 合并队列（M4x-Parallel-WP3，#221 §7.2）：squash 合并绑定已核验的 head。
+      # 必须带 --match-head-commit：核验之后 head 若再变，GitHub 会拒绝合并，
+      # 不会把没核验过的提交合进去。--repo 与 --squash 都是必需项，缺一不匹配。
+      merge_pr: /\Agh\s+pr\s+merge\s+\d+\s+--repo\s+\S+\s+--squash\s+--match-head-commit\s+[0-9a-f]{7,40}\z/,
+      # BEHIND 处理：更新分支。
+      update_branch: %r{\Agh\s+pr\s+update-branch\s+\d+\s+--repo\s+\S+(\s+--rebase)?\z},
       pin_comment: %r{\Agh\s+api\s+graphql\s+-f\s+query=mutation\s+\{\s+pinIssueComment\(input:\{issueCommentId:"[^"]+"\}\)\s+\{\s+clientMutationId\s+\}\s+\}\z}
     }.freeze
 

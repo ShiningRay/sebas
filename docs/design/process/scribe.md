@@ -124,7 +124,12 @@ ruby tools/sebas-process claim <新卡号>
 
 ### 5. CHANGELOG 维护
 
-- 每个 PR 往 `CHANGELOG.md` 的 `[Unreleased]` 段落写一行
+- **CHANGELOG 由合并队列统一追加**（#221 起）：worker 不改 `CHANGELOG.md`，
+  PR 正文用 marker 块携带待追加条目（格式见
+  [merge-queue.md](merge-queue.md) §3.3），队列在核验后、合并前写进 `[Unreleased]`。
+  条目必须以 `(#<PR号>)` 结尾——幂等与核验都按它识别，不按文本比较。
+  拒绝并行的根因正是这个文件：任意两张 PR 都要改它，留在 scope 预算里等于取消并行。
+- 没声明 marker 的 PR 仍按旧路径处理：worker 自己往 `[Unreleased]` 写一行，队列不追加。
 - 发版时转正：`[Unreleased]` → `[X.Y.Z] - 日期`
 - 遵循 Keep a Changelog 格式 + semver
 - **`[Unreleased]` 只能人工/Agent 手写**：`auto-release.yml` 的 Promote 步骤只做转正，
