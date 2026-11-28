@@ -74,7 +74,15 @@ module RefLockStub
         return JSON.generate({"ref" => ref})
       end
       if argv[2] == "-X" && argv[3] == "DELETE" && (m = argv[4].to_s.match(GIT_REFS_DELETE))
-        @ref_lock_refs.delete(m[1].gsub("%2F", "/"))
+        # 真实 API 的 DELETE 路径不含前导 refs%（否则指向 refs/refs/... 恒
+        # 404，#307 二轮 review 整改）——桩拒绝该形态防回归假绿。
+        if m[1].start_with?("refs%2F")
+          raise SebasAgents::CommandError.new(
+            "stub: DELETE 路径不得带 refs%2F 前缀（#{m[1]}）", command: argv
+          )
+        end
+        # 真实 API 按「path 段 + refs/ 前缀」定位 ref：删的是完整名 refs/<path>。
+        @ref_lock_refs.delete("refs/#{m[1].gsub('%2F', '/')}")
         return "{}"
       end
       nil

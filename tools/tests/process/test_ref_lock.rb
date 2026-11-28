@@ -13,12 +13,15 @@ require_relative "../../agents/lib/sebas_agents"
 # 有状态的假 gh：评论/状态/标签 + 内存 ref 表。
 class FakeRefGhStore
   attr_reader :comments, :labels, :statuses, :refs
+  attr_accessor :pull_states, :states
 
   def initialize
     @mutex = Mutex.new
     @comments = []
     @labels = Hash.new { |hash, key| hash[key] = [] }
     @statuses = {}
+    @states = Hash.new("open")   # issue 编号 => open/closed
+    @pull_states = Hash.new("open")
     @refs = {}     # ref 名 => commit sha
     @commits = {}  # sha => message（锁凭据 JSON）
     @next_id = 900
@@ -68,11 +71,21 @@ class FakeRefGhStore
                   .map { |name, sha| {"ref" => name, "object" => {"sha" => sha}} }
       return JSON.generate(rows)
     end
-    # DELETE git/refs/<ref>
+    # DELETE git/refs/<ref>：路径不含 refs%（真实口径），带前缀直接拒绝。
     if argv[0] == "gh" && argv[1] == "api" && argv[2] == "-X" && argv[3] == "DELETE" &&
        (m = argv[4].to_s.match(%r{repos/o/r/git/refs/(\S+)\z}))
-      @refs.delete(m[1].gsub("%2F", "/"))
+      if m[1].start_with?("refs%2F")
+        raise SebasAgents::CommandError.new(
+          "stub: DELETE 路径不得带 refs%2F 前缀（#{m[1]}）", command: argv
+        )
+      end
+      # 真实 API 按「path 段 + refs/ 前缀」定位 ref：删的是完整名 refs/<path>。
+      @refs.delete("refs/#{m[1].gsub('%2F', '/')}")
       return "{}"
+    end
+    # 读单 PR（mark-review 锁内复查 pull_state）
+    if (m = joined.match(%r{repos/o/r/pulls/(\d+)\z}))
+      return JSON.generate({"state" => @pull_states[Regexp.last_match(1).to_i] || "open"})
     end
     # POST 评论（作者固定白名单成员）
     if argv[0] == "gh" && argv[1] == "api" && argv[2] != "-X" &&
@@ -88,12 +101,13 @@ class FakeRefGhStore
       list = @comments.select { |item| item[:issue_number] == Regexp.last_match(1).to_i }
       return JSON.generate(list)
     end
-    # 读单卡（label_present? / status_of）
+    # 读单卡（label_present? / status_of / issue_state）
     if (m = joined.match(%r{repos/o/r/issues/(\d+)\z}))
       number = Regexp.last_match(1).to_i
       return JSON.generate({
         "labels" => @labels[number].map { |name| {"name" => name} },
-        "status" => {"name" => @statuses[number].to_s}
+        "status" => {"name" => @statuses[number].to_s},
+        "state" => @states[number] || "open"
       })
     end
     # PATCH status
@@ -191,6 +205,23 @@ class RefLockTest < Minitest::Test
   # 确定性死 pid：Windows 的 pid 回收很快，reap 子进程的 pid 可能被无关进程
   # 复用而误判存活；高位 pid（超出本机 pid 范围）恒 ESRCH，稳定判死。
   STALE_PID = 2147483647
+
+  # 双向屏障（#307 二轮 review）：N 个线程都完成各自的初始读取后才同时放行。
+  # `barrier << :ready` 只发通知不阻塞，「A 全部做完 B 才开始」不是并发。
+  def run_two_way_barrier(count, &block)
+    arrive = Queue.new
+    go = Queue.new
+    threads = count.times.map do
+      Thread.new do
+        arrive << :ready
+        go.pop
+        block.call
+      end
+    end
+    count.times { arrive.pop }
+    count.times { go << :go }
+    threads.each(&:join)
+  end
 
   def payload_of(out)
     JSON.parse(out.string)
@@ -335,17 +366,10 @@ class RefLockTest < Minitest::Test
       runner = make_fake(store)
       gateway_for = lambda { SebasAgents::GithubGateway.new(runner.new(dry_run: false), repo: "o/r") }
       results = []
-      barrier = Queue.new
-      threads = 2.times.map do
-        Thread.new do
-          barrier << :ready
-          result = SebasAgents::RefLock.acquire!(gateway_for.call,
-            ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11)
-          results << result
-        end
+      run_two_way_barrier(2) do
+        results << SebasAgents::RefLock.acquire!(gateway_for.call,
+          ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11)
       end
-      2.times { barrier.pop }
-      threads.each(&:join)
 
       assert_equal 2, results.length
       assert_equal 1, results.count(&:acquired?), "恰一个拿到锁"
@@ -366,24 +390,39 @@ class RefLockTest < Minitest::Test
   def test_same_host_alive_pid_ttl_boundary
     with_repo do |_snap, _dir|
       store = FakeRefGhStore.new
-      seed_lock(store, "refs/locks/sebas/lease-11",
-        lock_credential(pid: Process.pid, host: Socket.gethostname,
-          created_at: (Time.now.utc - 10).iso8601))
-      held = SebasAgents::RefLock.acquire!(gateway_over(store),
-        ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 60)
-      assert held.held?
-      assert held.reasons.join.include?("存活")
-      assert_equal 1, store.refs.size, "TTL 内不得动锁"
+      # 异 pid 存活（真实外部进程）：TTL 内视为真持有者。
+      other = Process.spawn(RbConfig.ruby, "-e", "sleep 30")
+      begin
+        seed_lock(store, "refs/locks/sebas/lease-11",
+          lock_credential(pid: other, host: Socket.gethostname,
+            created_at: (Time.now.utc - 10).iso8601))
+        held = SebasAgents::RefLock.acquire!(gateway_over(store),
+          ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 60)
+        assert held.held?
+        assert held.reasons.join.include?("存活")
+        assert_equal 1, store.refs.size, "TTL 内不得动锁"
+      ensure
+        Process.kill("KILL", other) rescue nil
+        Process.wait(other) rescue nil
+      end
 
       store2 = FakeRefGhStore.new
-      seed_lock(store2, "refs/locks/sebas/lease-11",
-        lock_credential(pid: Process.pid, host: Socket.gethostname,
-          created_at: (Time.now.utc - 120).iso8601))
-      taken = SebasAgents::RefLock.acquire!(gateway_over(store2),
-        ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 60)
-      assert taken.acquired?, "超 TTL 的同机存活 pid 按 pid 复用护栏接管：#{taken.reasons.inspect}"
-      refute_equal "seed-lock", taken.credential["lock_id"], "接管后是新凭据"
-      assert_equal 1, store2.refs.size, "声明锁收尾不得残留"
+      # pid 复用护栏针对「异 pid 存活」：本进程重入走幂等路径（own_process_
+      # credential?），这里用一个真实存活的外部进程模拟被回收的旧 pid。
+      recycled = Process.spawn(RbConfig.ruby, "-e", "sleep 30")
+      begin
+        seed_lock(store2, "refs/locks/sebas/lease-11",
+          lock_credential(pid: recycled, host: Socket.gethostname,
+            created_at: (Time.now.utc - 120).iso8601))
+        taken = SebasAgents::RefLock.acquire!(gateway_over(store2),
+          ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 60)
+        assert taken.acquired?, "超 TTL 的同机异 pid 存活按 pid 复用护栏接管：#{taken.reasons.inspect}"
+        refute_equal "seed-lock", taken.credential["lock_id"], "接管后是新凭据"
+        assert_equal 1, store2.refs.size, "声明锁收尾不得残留"
+      ensure
+        Process.kill("KILL", recycled) rescue nil
+        Process.wait(recycled) rescue nil
+      end
     end
   end
 
@@ -423,6 +462,8 @@ class RefLockTest < Minitest::Test
 
   # 场景 12：真双线程并发接管同一把残锁——声明锁 CAS 保证恰一个接管成功，
   # 另一个 held；不出现双双 acquired（#307 review 整改的协议验证）。
+  # 双向屏障（#307 二轮 review）：两线程都完成初始读取准备后才同时放行，
+  # 避免「A 全部完成 B 才开始」的假并发。
   def test_concurrent_takeover_single_winner
     with_repo do |_snap, _dir|
       store = FakeRefGhStore.new
@@ -430,20 +471,120 @@ class RefLockTest < Minitest::Test
         lock_credential(pid: STALE_PID, host: Socket.gethostname,
           created_at: (Time.now.utc - 60).iso8601))
       results = []
-      barrier = Queue.new
-      threads = 2.times.map do
-        Thread.new do
-          barrier << :ready
-          results << SebasAgents::RefLock.acquire!(gateway_over(store),
-            ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 3600)
-        end
+      run_two_way_barrier(2) do |slot, wait_others, release_others|
+        results << SebasAgents::RefLock.acquire!(gateway_over(store),
+          ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 3600)
       end
-      2.times { barrier.pop }
-      threads.each(&:join)
 
       assert_equal 1, results.count(&:acquired?), "并发接管恰一个成功"
       assert_equal 1, results.count(&:held?), "另一个按 held 退出"
       assert_equal 1, store.refs.size, "主锁恰一条，声明锁不残留"
+    end
+  end
+
+  # 场景 13：普通争锁测试同样用双向屏障（#307 二轮 review）。
+  def test_concurrent_acquire_two_way_barrier
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      results = []
+      run_two_way_barrier(2) do |_slot, _wait, _release|
+        results << SebasAgents::RefLock.acquire!(gateway_over(store),
+          ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11)
+      end
+
+      assert_equal 1, results.count(&:acquired?)
+      assert_equal 1, results.count(&:held?)
+      assert_equal 1, store.refs.size
+    end
+  end
+
+  # 场景 14：创建结果不确定（超时重放撞上自己的创建）——422 后回读 lock_id
+  # 是本次凭据 → :ok 视为已持有（#307 二轮 review）。等价终态：服务端已有
+  # 同名 ref，凭据与本次待建凭据 lock_id 一致/不一致两种分支。
+  def test_duplicate_with_own_lock_id_recognized_as_acquired
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      fixed = {"purpose" => "lease", "issue" => 11, "coordinator_id" => "fixed",
+               "host" => Socket.gethostname, "pid" => Process.pid,
+               "created_at" => Time.now.utc.iso8601, "lock_id" => "fixed-uuid"}
+      seed_lock(store, "refs/locks/sebas/lease-11", JSON.generate(fixed))
+      gateway = gateway_over(store)
+
+      assert_equal :ok, SebasAgents::RefLock.create_lock(gateway, "refs/locks/sebas/lease-11", fixed.dup),
+                   "422 但持有者 lock_id 是自己 → :ok（超时重放的等价终态）"
+
+      stranger = fixed.merge("lock_id" => "other-uuid")
+      assert_equal :duplicate, SebasAgents::RefLock.create_lock(gateway, "refs/locks/sebas/lease-11", stranger),
+                   "422 且持有者 lock_id 不是自己 → :duplicate"
+    end
+  end
+
+  # 场景 15：残声明接管与活声明保护（#307 二轮 review 的交错语义，顺序化）。
+  # 先到者建立的新声明（pid 活、age 小）对后到者必须 held 且原样保留。
+  def test_stale_claim_takeover_and_live_claim_protection
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      claim_ref = "refs/locks/sebas-claims/lease-11"
+      seed_lock(store, claim_ref,
+        lock_credential(pid: STALE_PID, host: Socket.gethostname,
+          created_at: (Time.now.utc - 120).iso8601, lock_id: "stale-claim"))
+
+      first, held1 = SebasAgents::RefLock.with_claim_exclusivity(
+        gateway_over(store), claim_ref, issue: 11, ttl_seconds: 3600, grace_seconds: 30)
+      assert first, "残声明（死 pid 超宽限）应被接管"
+      assert held1.nil?
+
+      second, held2 = SebasAgents::RefLock.with_claim_exclusivity(
+        gateway_over(store), claim_ref, issue: 11, ttl_seconds: 3600, grace_seconds: 30)
+      assert second.nil?, "活声明（本进程刚建）不得被后到者接管"
+      assert held2
+      current = JSON.parse(store.route(["gh", "api", "repos/o/r/git/commits/#{store.refs[claim_ref]}"]))
+      assert_equal first["lock_id"], JSON.parse(current["message"])["lock_id"], "先到者的声明原样保留"
+    end
+  end
+
+  # 场景 16：mark-review 锁内复核——快照是锁前取的，卡已关闭时拒绝迁移。
+  def test_mark_review_lock_time_recheck
+    pr = {"number" => 9, "state" => "OPEN", "head_ref_name" => "feat/11",
+          "base_ref_name" => "main", "head_sha" => "abc123", "merged" => false,
+          "closing_issues" => [11], "checks" => [], "review_threads" => []}
+    with_repo do |_snap, _dir|
+      data = snapshot(issues: [docs_issue(11, status: "In progress")],
+        milestones: [milestone(number: 1, order: "4x", track: "parallel", open_issues: 1)],
+        pull_requests: [pr])
+      snap = File.join(Dir.pwd, "snapshot.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      store = FakeRefGhStore.new
+      store.states[11] = "closed" # 远端在锁前快照后被合并收口
+      out = StringIO.new
+      assert_equal 1, cli(store, out).run(["mark-review", "11", "--snapshot", snap, "--apply"])
+      payload = payload_of(out)
+      assert payload["reasons"].to_s.include?("锁内复核")
+      refute payload["status_written"]
+    end
+  end
+
+  # 场景 17：unclaim --apply 只输出一份 JSON 且退出码与之一致（#307 二轮
+  # review：修复前 apply 分支输出后落入非 apply 分支，双输出且恒 EXIT_OK）。
+  def test_unclaim_apply_single_output
+    pr = {"number" => 9, "state" => "MERGED", "merged" => true, "head_ref_name" => "feat/11",
+          "base_ref_name" => "main", "head_sha" => "abc123", "closing_issues" => [11],
+          "checks" => [], "review_threads" => []}
+    with_repo do |_snap, _dir|
+      done = docs_issue(11, status: "Done")
+      done["state"] = "CLOSED"
+      done["state_reason"] = "completed"
+      data = snapshot(issues: [done],
+        milestones: [milestone(number: 1, order: "4x", track: "parallel", open_issues: 0)],
+        pull_requests: [pr])
+      snap = File.join(Dir.pwd, "snapshot.json")
+      File.write(snap, JSON.generate(data), encoding: "UTF-8")
+      store = FakeRefGhStore.new
+      out = StringIO.new
+      assert_equal 0, cli(store, out).run(["unclaim", "11", "--snapshot", snap, "--apply"])
+      payload = JSON.parse(out.string) # 恰一份 JSON：双输出会解析失败
+      assert_equal true, payload["ok"]
+      assert_equal "released", payload["status"]
     end
   end
 
@@ -466,6 +607,8 @@ class RefLockTest < Minitest::Test
       assert_equal "held", payload_of(out)["lock"]
 
       store2 = FakeRefGhStore.new
+      # 锁内复核读的是远端（假 gh）：把 In progress 同步进桩。
+      store2.route(["gh", "api", "-X", "PATCH", "repos/o/r/issues/11", "-f", "status=In progress"])
       out2 = StringIO.new
       assert_equal 0, cli(store2, out2).run(["mark-review", "11", "--snapshot", snap, "--apply"])
       assert payload_of(out2)["status_written"]

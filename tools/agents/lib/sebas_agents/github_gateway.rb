@@ -1109,8 +1109,9 @@ end
     end
 
     def delete_lock_ref(ref, allow_write: false)
-      # ref 名里的 / 必须编码成 %2F，否则被当作路径分段。
-      call = ["gh", "api", "-X", "DELETE", "repos/#{@repo}/git/refs/#{ref.gsub("/", "%2F")}"]
+      # DELETE 路径参数与 matching-refs 同口径：不含前导 refs/（否则实际指向
+      # refs/refs/... 永远 404）。ref 名里的 / 编码成 %2F 防止被当路径分段。
+      call = ["gh", "api", "-X", "DELETE", "repos/#{@repo}/git/refs/#{ref.delete_prefix("refs/").gsub("/", "%2F")}"]
       allow_write ? @runner.with_write(:delete_ref) { @runner.run!(*call) } : @runner.run!(*call)
     end
 
@@ -1122,6 +1123,15 @@ end
       raise unless e.message.match?(/does\s+not\s+exist/i)
 
       nil
+    end
+
+    # 锁内前置复查用的轻量读（#307 二轮 review）：不取全快照。
+    def issue_state(number)
+      @runner.json!("gh", "api", "repos/#{@repo}/issues/#{number}")["state"].to_s
+    end
+
+    def pull_state(number)
+      @runner.json!("gh", "api", "repos/#{@repo}/pulls/#{number}")["state"].to_s
     end
 
     # 按前缀查询锁 ref：matching-refs 的路径参数**不含** refs/ 前缀（官方口径，

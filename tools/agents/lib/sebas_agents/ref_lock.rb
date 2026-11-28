@@ -85,7 +85,8 @@ module SebasAgents
           credential = new_credential(purpose: purpose, issue: issue)
           return acquired_outcome(credential) if create_lock(gateway, ref, credential) == :ok
 
-          next # 422：并发方先建——重读重判
+          next # 422：并发方先建——重读重判（创建结果不确定时的自识别在
+               # create_lock 内按 lock_id 精确比对，不做宽泛的 pid 判定）
         end
         return held_unreadable(ref) if holder == :unreadable
 
@@ -380,8 +381,10 @@ module SebasAgents
     end
 
     # 建 commit（message=凭据 JSON）→ 建 ref。ref 已存在（422 already exists）
-    # 返回 :duplicate——本次未拿到锁；commit 对象无 ref 指向会被 GitHub 回收，
-    # 无需清理。其余错误上抛。
+    # 时回读持有者比对 lock_id：正是本次凭据（首次 POST 已在服务端生效、
+    # 但响应超时被 CommandRunner 重放撞上自己的创建）→ :ok 视为已持有；
+    # 是他人 → :duplicate。commit 对象无 ref 指向会被 GitHub 回收，无需清理。
+    # 其余错误上抛。
     def create_lock(gateway, ref, credential)
       raw = gateway.create_lock_commit(JSON.generate(credential), allow_write: true)
       commit = raw.is_a?(String) ? JSON.parse(raw) : raw
@@ -393,6 +396,9 @@ module SebasAgents
         :ok
       rescue CommandError => e
         raise unless e.message.match?(/already\s+exists/i)
+
+        holder = read_holder(gateway, ref)
+        return :ok if holder.is_a?(Hash) && holder["lock_id"] == credential["lock_id"]
 
         :duplicate
       end

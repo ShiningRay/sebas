@@ -380,6 +380,10 @@ end
       code = nil
       begin
         code = queue_apply_step!(snap, options, payload, queue, merge_gateway)
+      rescue CommandError => e
+        payload["ok"] = false
+        payload["reasons"] = ["合并队列写段异常：#{e.message}"]
+        code = EXIT_REFUSED
       ensure
         finalize_lock_release!(merge_gateway, RefLock.merge_ref, merge_lock, payload)
       end
@@ -515,11 +519,15 @@ end
     # PR 的关联卡，凡 Evidence 的 merged_into_main != true（含缺失/解析失败，
     # 未知按未完成处理，口径同 pending_evidence_issues）即入列。
     # skip_issue 是本轮正要合并的卡自身——它的 PR 还没合并，不构成背压。
+    # proposal 卡排除（#307 二轮 review）：登记脚本明确跳过 proposal，其
+    # Evidence 永远不会升级；历史设计 PR 合并后不得永久阻塞队列。
     def repo_pending_evidence!(fresh_snap, skip_issue: nil)
       fresh_snap.pull_requests.select(&:merged?).flat_map(&:closing_issues)
         .uniq.reject { |n| n == skip_issue }
         .filter_map do |number|
-          next unless fresh_snap.issue(number)
+          issue = fresh_snap.issue(number)
+          next unless issue
+          next if issue.proposal?
 
           number unless snap_evidence_merged?(fresh_snap, number) == true
         end
@@ -843,6 +851,10 @@ end
       code = nil
       begin
         code = claim_write_body!(snap, issue, options, payload, record, gateway, whitelist)
+      rescue CommandError => e
+        payload["ok"] = false
+        (payload["reasons"] ||= []) << "认领写段异常：#{e.message}"
+        code = EXIT_REFUSED
       ensure
         finalize_lock_release!(gateway, ref, lock, payload)
       end
@@ -1237,12 +1249,22 @@ end
         code = nil
         begin
           code = unclaim_write_body!(issue, options, payload, gateway, snap)
+        rescue CommandError => e
+          payload["ok"] = false
+          (payload["reasons"] ||= []) << "收口写段异常：#{e.message}"
+          code = EXIT_REFUSED
         ensure
           finalize_lock_release!(gateway, ref, lock, payload)
         end
+        # 成功时补齐终态字段；apply 分支只输出一份 JSON 并显式返回实际退出码
+        # （#307 二轮 review：不得落入非 apply 分支造成双输出/退出码恒 0）。
+        if code == EXIT_OK && !payload["lock_release_failed"]
+          payload["ok"] = true
+          payload["status"] = "released"
+        end
         code = EXIT_REFUSED if payload["lock_release_failed"]
         Output.emit(payload, out: @out)
-        code
+        return code
       end
 
       payload["ok"] = true
@@ -1374,11 +1396,41 @@ end
 
         code = nil
         begin
-          gateway.set_status(issue.number, Model::STATUS_IN_REVIEW, allow_write: true)
-          confirmed = gateway.status?(issue.number, Model::STATUS_IN_REVIEW)
-          payload["ok"] = payload["status_written"] = confirmed
-          payload["reasons"] << "写入 status=#{Model::STATUS_IN_REVIEW} 后回读未确认，需人工核对" unless confirmed
-          code = payload["ok"] ? EXIT_OK : EXIT_REFUSED
+          # 锁内重查前置（#307 二轮 review）：快照是锁前取的，B 可能在 A 等锁
+          # 期间完成合并收口——已关闭/Done/PR 已合并的卡不得写回 In review。
+          state = gateway.issue_state(issue.number)
+          unless state == "open"
+            payload["ok"] = false
+            payload["reasons"] << "锁内复核：issue ##{issue.number} 已不是 open（state=#{state}），不推进 In review"
+            code = EXIT_REFUSED
+          end
+          if code.nil?
+            live = gateway.status_of(issue.number).to_s
+            unless live.casecmp?(Model::STATUS_IN_PROGRESS)
+              payload["ok"] = false
+              payload["reasons"] << "锁内复核：issue ##{issue.number} 当前 status=#{live || "未设置"}，不再是 In progress，不推进 In review"
+              code = EXIT_REFUSED
+            end
+          end
+          if code.nil?
+            pr_state = gateway.pull_state(pr.number)
+            unless pr_state == "open"
+              payload["ok"] = false
+              payload["reasons"] << "锁内复核：PR ##{pr.number} 已不是 open（state=#{pr_state}），不推进 In review"
+              code = EXIT_REFUSED
+            end
+          end
+          if code.nil?
+            gateway.set_status(issue.number, Model::STATUS_IN_REVIEW, allow_write: true)
+            confirmed = gateway.status?(issue.number, Model::STATUS_IN_REVIEW)
+            payload["ok"] = payload["status_written"] = confirmed
+            payload["reasons"] << "写入 status=#{Model::STATUS_IN_REVIEW} 后回读未确认，需人工核对" unless confirmed
+            code = payload["ok"] ? EXIT_OK : EXIT_REFUSED
+          end
+        rescue CommandError => e
+          payload["ok"] = false
+          payload["reasons"] << "状态迁移写段异常：#{e.message}"
+          code = EXIT_REFUSED
         ensure
           finalize_lock_release!(gateway, ref, lock, payload)
         end
