@@ -28,8 +28,18 @@ module RefLockStub
       return nil unless argv[0] == "gh" && argv[1] == "api"
 
       if argv[2].to_s.match?(GIT_REFS_GET)
-        prefix = argv[2].split("matching-refs/").last.gsub("%2F", "/")
-        return @ref_lock_refs.select { |name, _| name.start_with?(prefix) }
+        path = argv[2].split("matching-refs/").last
+        # GitHub 官方口径：matching-refs 的路径参数不含前导 refs/——带
+        # refs%2F 的查询对已存在的锁返回空集（#307 review 整改）。桩直接
+        # 拒绝该形态，防止回归悄悄变成「永远判无锁」。
+        if path.start_with?("refs%2F")
+          raise SebasAgents::CommandError.new(
+            "stub: matching-refs 查询路径不得带 refs%2F 前缀（#{path}）", command: argv
+          )
+        end
+        prefix = path.gsub("%2F", "/")
+        # GitHub 返回的 ref 名带完整 refs/ 前缀；查询参数不含。比对时补回。
+        return @ref_lock_refs.select { |name, _| name.start_with?("refs/#{prefix}") }
                              .map { |name, sha| {"ref" => name, "object" => {"sha" => sha}} }
       end
       if (m = argv[2].to_s.match(GIT_COMMITS_GET))

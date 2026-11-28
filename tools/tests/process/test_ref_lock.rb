@@ -53,10 +53,17 @@ class FakeRefGhStore
       @refs[ref] = argv.find { |arg| arg.to_s.start_with?("sha=") }.to_s.sub(/\Asha=/, "")
       return JSON.generate({"ref" => ref})
     end
-    # GET git/matching-refs/<prefix>
+    # GET git/matching-refs/<prefix>：路径参数不含 refs/（官方口径），ref 名
+    # 带完整 refs/ 前缀返回；带 refs%2F 的查询直接拒绝（#307 review 整改）。
     if argv[0] == "gh" && argv[1] == "api" &&
        (m = argv[2].to_s.match(%r{repos/o/r/git/matching-refs/(\S+)\z}))
-      prefix = m[1].gsub("%2F", "/")
+      path = m[1]
+      if path.start_with?("refs%2F")
+        raise SebasAgents::CommandError.new(
+          "stub: matching-refs 查询路径不得带 refs%2F 前缀（#{path}）", command: argv
+        )
+      end
+      prefix = "refs/#{path.gsub('%2F', '/')}"
       rows = @refs.select { |name, _| name.start_with?(prefix) }
                   .map { |name, sha| {"ref" => name, "object" => {"sha" => sha}} }
       return JSON.generate(rows)
@@ -344,6 +351,99 @@ class RefLockTest < Minitest::Test
       assert_equal 1, results.count(&:acquired?), "恰一个拿到锁"
       assert_equal 1, results.count(&:held?), "另一个按 held 退出"
       assert_equal 1, store.refs.size
+    end
+  end
+
+  # 直连 RefLock 的测试共用夹具：注入带 ref 路由的 gateway。
+  def gateway_over(store)
+    runner = make_fake(store)
+    SebasAgents::GithubGateway.new(runner.new(dry_run: false), repo: "o/r")
+  end
+
+  # 场景 9：同机存活 pid 在 TTL 两侧——TTL 内视为真持有者（不重试）；
+  # 超 TTL 按 pid 复用护栏接管（锁是命令级的，超 TTL 的「存活 pid」几乎
+  # 不可能是当年持有者）。
+  def test_same_host_alive_pid_ttl_boundary
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      seed_lock(store, "refs/locks/sebas/lease-11",
+        lock_credential(pid: Process.pid, host: Socket.gethostname,
+          created_at: (Time.now.utc - 10).iso8601))
+      held = SebasAgents::RefLock.acquire!(gateway_over(store),
+        ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 60)
+      assert held.held?
+      assert held.reasons.join.include?("存活")
+      assert_equal 1, store.refs.size, "TTL 内不得动锁"
+
+      store2 = FakeRefGhStore.new
+      seed_lock(store2, "refs/locks/sebas/lease-11",
+        lock_credential(pid: Process.pid, host: Socket.gethostname,
+          created_at: (Time.now.utc - 120).iso8601))
+      taken = SebasAgents::RefLock.acquire!(gateway_over(store2),
+        ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 60)
+      assert taken.acquired?, "超 TTL 的同机存活 pid 按 pid 复用护栏接管：#{taken.reasons.inspect}"
+      refute_equal "seed-lock", taken.credential["lock_id"], "接管后是新凭据"
+      assert_equal 1, store2.refs.size, "声明锁收尾不得残留"
+    end
+  end
+
+  # 场景 10：凭据不可解析（fail-closed）——拒绝获取，原 ref 原样保留。
+  def test_unreadable_credential_refused
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      sha = JSON.parse(store.route(["gh", "api", "repos/o/r/git/commits",
+        "-f", "tree=#{SebasAgents::RefLock::EMPTY_TREE_SHA}", "-f", "message=not-a-json"]))["sha"]
+      store.route(["gh", "api", "repos/o/r/git/refs",
+        "-f", "ref=refs/locks/sebas/lease-11", "-f", "sha=#{sha}"])
+
+      held = SebasAgents::RefLock.acquire!(gateway_over(store),
+        ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11)
+      assert held.held?
+      assert held.reasons.join.include?("不可解析")
+      assert_equal sha, store.refs["refs/locks/sebas/lease-11"], "原锁不得被动过"
+    end
+  end
+
+  # 场景 11：matching-refs 是前缀匹配——lease-306 与 lease-3060 必须按完整
+  # ref 名精确区分，不得互相误判（#307 review 整改）。
+  def test_prefix_collision_resolved_by_exact_ref_name
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      seed_lock(store, "refs/locks/sebas/lease-3060",
+        lock_credential(pid: 1, host: "other-machine", lock_id: "bigger-issue"))
+
+      acquired = SebasAgents::RefLock.acquire!(gateway_over(store),
+        ref: "refs/locks/sebas/lease-306", purpose: "lease", issue: 306, ttl_seconds: 3600)
+      assert acquired.acquired?, "lease-306 与 lease-3060 不同名，后者在也不得阻塞前者"
+      assert_equal 2, store.refs.size
+      neighbor = JSON.parse(store.route(["gh", "api", "repos/o/r/git/commits/#{store.refs["refs/locks/sebas/lease-3060"]}"]))
+      assert_equal "bigger-issue", JSON.parse(neighbor["message"])["lock_id"], "邻卡锁不得被动过"
+    end
+  end
+
+  # 场景 12：真双线程并发接管同一把残锁——声明锁 CAS 保证恰一个接管成功，
+  # 另一个 held；不出现双双 acquired（#307 review 整改的协议验证）。
+  def test_concurrent_takeover_single_winner
+    with_repo do |_snap, _dir|
+      store = FakeRefGhStore.new
+      seed_lock(store, "refs/locks/sebas/lease-11",
+        lock_credential(pid: STALE_PID, host: Socket.gethostname,
+          created_at: (Time.now.utc - 60).iso8601))
+      results = []
+      barrier = Queue.new
+      threads = 2.times.map do
+        Thread.new do
+          barrier << :ready
+          results << SebasAgents::RefLock.acquire!(gateway_over(store),
+            ref: "refs/locks/sebas/lease-11", purpose: "lease", issue: 11, ttl_seconds: 3600)
+        end
+      end
+      2.times { barrier.pop }
+      threads.each(&:join)
+
+      assert_equal 1, results.count(&:acquired?), "并发接管恰一个成功"
+      assert_equal 1, results.count(&:held?), "另一个按 held 退出"
+      assert_equal 1, store.refs.size, "主锁恰一条，声明锁不残留"
     end
   end
 

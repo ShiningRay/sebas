@@ -1114,10 +1114,21 @@ end
       allow_write ? @runner.with_write(:delete_ref) { @runner.run!(*call) } : @runner.run!(*call)
     end
 
-    # 按前缀精确匹配锁 ref：不存在返回 []，存在恰一条（多条是服务端不可能
-    # 状态，RefLock.read_holder fail-closed 上抛）。
+    # 删除容错：ref 已不存在（协议方先行删除，如接管声明竞争）按已删除处理，
+    # 不当失败上抛；其余错误照常抛。
+    def delete_lock_ref!(ref, allow_write: false)
+      delete_lock_ref(ref, allow_write: allow_write)
+    rescue CommandError => e
+      raise unless e.message.match?(/does\s+not\s+exist/i)
+
+      nil
+    end
+
+    # 按前缀查询锁 ref：matching-refs 的路径参数**不含** refs/ 前缀（官方口径，
+    # 如 matching-refs/tags/）；带 refs%2F 查询对已存在的锁返回空集，会让
+    # 持有者判定误判为无锁。创建/删除请求体仍用完整 ref 名。
     def get_matching_refs(ref)
-      @runner.json!("gh", "api", "repos/#{@repo}/git/matching-refs/#{ref.gsub("/", "%2F")}")
+      @runner.json!("gh", "api", "repos/#{@repo}/git/matching-refs/#{ref.delete_prefix("refs/").gsub("/", "%2F")}")
     end
 
     # 读锁凭据：message 即凭据 JSON。
