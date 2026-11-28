@@ -208,50 +208,6 @@ module Sebas
           end
         end
 
-        # 组件重应用矩阵（§11.3）：数据类热换；账号增删=监督体启停；端口类标 restart
-        private def apply_config(new_config : Config::Config) : Array(String)
-          restart_required = [] of String
-
-          old_http = @config.gateway.http
-          new_http = new_config.gateway.http
-          if old_http && new_http && (old_http.port != new_http.port || old_http.bind != new_http.bind)
-            restart_required << "gateway.http.port/bind changed: sockets are process resources, restart required"
-          end
-
-          # 路由 binding（数据类：换引用即生效）
-          @rules = build_rules(new_config)
-
-          # provider key 热换（下个 turn 生效）；热更新带入的明文同样收敛
-          migrate_secrets(new_config)
-          new_config.agents.each do |name, agent|
-            @providers.replace(name, @provider_factory.call(agent, nil))
-          end
-          # 协作防环上限（数据类热换，#185）：在途链路不变，下条投递按新值判
-          @collaboration_messenger.try(&.max_hops = new_config.gateway.collaboration.max_hops)
-
-          # 账号增删 = 监督体启停（email 渠道；wecom/lark M1-WP4/5 合流）
-          old_accounts = @config.channels.email.try(&.accounts.map(&.id)) || [] of String
-          new_accounts = new_config.channels.email.try(&.accounts.map(&.id)) || [] of String
-          (old_accounts - new_accounts).each do |removed|
-            @channels.remove("email", removed)
-            @supervisor.remove_account(removed)
-          end
-          (new_accounts - old_accounts).each do |added|
-            account = new_config.channels.email.try(&.accounts.find(&.id.==(added)))
-            next unless account
-            adapter = Channels::Email::EmailChannelAdapter.new(account, @bus)
-            @channels.register(adapter)
-            @supervisor.register(adapter)
-          end
-
-          # Telegram 账号热换（M3-WP8 装配）：增删=监督体启停
-          reapply_telegram_accounts(new_config)
-
-          wire_plugins(new_config); wire_hook_faces; @engine.hook_bus = @hook_bus # 插件面热更新（M3-WP4），hook 门面刷新含 task 域（M3-WP5 #17）
-          @config = new_config
-          restart_required
-        end
-
         def shutdown : Nil
           fire_gateway_stop; @stopping_scan.set(true) # gateway.stop hook（M3-WP5 #17）+ 扫描协程先退（CodeRabbit）
           @reload_manager.try(&.stop_watching)
@@ -353,10 +309,16 @@ module Sebas
           register_dialog_fork_tool(registry, agent_name, agent)
           front_desk = agent_name == ::Sebas::Agents::Reception::FRONT_DESK_AGENT
           restrict_registry_to_read_only(registry) if front_desk
+          # 每 turn 共享 Budget（M3-WP5 review，§12.11 预算按 turn 划界）：
+          # agent/llm、tool、message 三域 hook 派发绑定同一预算实例，turn 级
+          # 累计上限生效；turn 结束随局部变量丢弃
+          turn_budget = ::Sebas::Plugins::HookDispatcher::Budget.new
+          hook_bus = ::Sebas::Plugins::HookBus.new(@hook_bus.dispatcher,
+            budget_factory: -> { turn_budget })
           if send_tool = registry.find("message.send").as?(Tools::MessageSendTool)
-            send_tool.hook_bus = @hook_bus # 消息域注入（per-turn 实例，M3-WP5 #17）
+            send_tool.hook_bus = hook_bus # 消息域注入（per-turn 实例，M3-WP5 #17）
           end
-          executor = Tools::Executor.new(registry, @channels, @hook_bus) # 工具域注入（M3-WP5 #17）
+          executor = Tools::Executor.new(registry, @channels, hook_bus) # 工具域注入（M3-WP5 #17）
           provider = @providers.for_agent(agent_name) { @provider_factory.call(agent, nil) }
 
           # 工具协议说明（M4.3-WP1 CodeRabbit）：模型必须知道可用工具与调用
@@ -372,7 +334,7 @@ module Sebas
             @steer_center.drain(session, turn_id, generation)
           end
           runtime = Agents::AgentRuntime.new(@store, @approvals, drain)
-          inject_runtime_hooks(runtime) # agent/llm 域 hook（M3-WP5 #17）
+          inject_runtime_hooks(runtime, hook_bus) # agent/llm 域 hook（M3-WP5 #17，turn 级 Budget）
           turn_id = "turn:#{event_id}"
           lease = @steer_registry.register(session_key, turn_id)
           turn_ctx = Agents::TurnContext.new(session_key, lease.turn_id, lease.generation)

@@ -30,7 +30,7 @@ module PluginSpecSupport
 
   def self.make_runner(interpreter : Array(String)) : ::Sebas::Plugins::Runner
     runner = ::Sebas::Plugins::Runner.new(interpreter, global_timeout_ms: 5_000_i64)
-    runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, params : JSON::Any) do
+    runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, params : JSON::Any, _replay_key : String?) do
       case capability
       when "test.echo"
         params

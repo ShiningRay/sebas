@@ -171,6 +171,11 @@ module Sebas
         if memo == "intent"
           # 上次运行在发送中途崩溃——状态未知，保守不重发（fail-closed，Pi §4）
           ToolResult.interrupted("previous send in unknown state (key=#{key})")
+        elsif memo == "failed:hook_denied"
+          # gate deny 终态（M3-WP5 review）：dispatcher 的 gate memo 仅进程
+          # 内存级，重启后重试若重新过 gate，插件改判放行会发出被拒消息——
+          # 持久 memo 直接短路，同 key 重试不重投递
+          ToolResult.interrupted("message hook denied (recorded; key=#{key})")
         elsif memo && memo.starts_with?("done:")
           ToolResult.success("already delivered (memo=#{memo})") # 重放不重发
         else
@@ -195,14 +200,23 @@ module Sebas
         end)
         verdict = hook_bus.gate("message.sending", JSON.parse("{}"), payload, idempotency_key: memo_key)
         if verdict.denied
-          # deny 写非 intent 终态：同 key 重试返回「hook 拒绝的已记录裁决」，
-          # 不再误报「未知状态」；HookDispatcher gate memo 同 key 复用 deny
+          # deny 写非 intent 终态：run 层按持久 memo 短路（同 key 重试不再过
+          # gate 投递）；dispatcher 的同 key deny memo 只在进程内生效——重启
+          # 后由 run 的 failed:hook_denied 短路兜底（M3-WP5 review）
           ctx.store.memo_replace(memo_key, "failed:hook_denied")
           return ToolResult.interrupted("message hook denied: #{verdict.code}: #{verdict.reason}")
         end
         replaced = verdict.payload.try(&.as_h?).try(&.[]?("content")).try(&.as_s?)
         result = adapter.send(peer, replaced || content)
-        # message.sent（observe）：渠道返回投递结果后通知，不保证已读
+        if result.ok?
+          ctx.store.memo_replace(memo_key, "done:#{result.message_id || "sent"}")
+        else
+          # 发送失败清意图，允许上层重试（失败可安全重试≠重放重复投递）
+          ctx.store.memo_replace(memo_key, "failed:#{result.error}")
+        end
+        # message.sent（observe）：memo 落库后再通知（M3-WP5 review）——慢插件
+        # 不拖延记账，崩溃窗口不留「intent 态已送达」误判；observe 隔离，
+        # 不改投递结果
         sent = JSON.parse(JSON.build do |json|
           json.object do
             json.field "status", result.ok? ? "success" : "error"
@@ -215,14 +229,7 @@ module Sebas
         rescue ex
           Log.warn { "message.sent hook skipped: #{ex.message} (observe isolation)" }
         end
-        if result.ok?
-          ctx.store.memo_replace(memo_key, "done:#{result.message_id || "sent"}")
-          ToolResult.success("sent via #{adapter.channel_type}/#{adapter.account_id}")
-        else
-          # 发送失败清意图，允许上层重试（失败可安全重试≠重放重复投递）
-          ctx.store.memo_replace(memo_key, "failed:#{result.error}")
-          ToolResult.error(result.error || "send failed")
-        end
+        result.ok? ? ToolResult.success("sent via #{adapter.channel_type}/#{adapter.account_id}") : ToolResult.error(result.error || "send failed")
       end
     end
 

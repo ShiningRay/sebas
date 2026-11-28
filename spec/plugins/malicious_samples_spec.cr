@@ -87,13 +87,15 @@ module Sebas
       outer_dispatcher.subscribe("memory.remember.before", plugin.manifest, "recursive-hook")
 
       # capability 桥：hook.retrigger → 在同 fiber 再入外层 gate（深度 +1）
-      inner_code = Channel(String?).new(1)
-      runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, _params : JSON::Any) do
+      # 内层裁决记局部变量（M3-WP5 review）：解释器在重入前崩溃/超时时
+      # 回调不执行——变量保持 nil，断言失败而非 Channel receive 无限挂起
+      inner_code : String? = nil
+      runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, _params : JSON::Any, _replay_key : String?) do
         JSON.parse("null") unless capability == "hook.retrigger"
         inner_budget = ::Sebas::Plugins::HookDispatcher::Budget.new(max_calls: 64, max_depth: 1, max_total_ms: 10_000)
         inner = outer_dispatcher.gate("memory.remember.before",
           JSON.parse(%({"plugin_id": "recursive-hook"})), MaliciousHelpers.payload, budget: inner_budget)
-        inner_code.send(inner.code) rescue nil
+        inner_code = inner.code
         JSON.parse(%({"reentered": #{inner.denied.to_json}}))
       end
 
@@ -103,7 +105,7 @@ module Sebas
       # 严格断言：重入（同 fiber 再入外层 gate，深度 2 > max_depth=1）被
       # hook_depth_exceeded 拦截——插件借 hook 递归触发自身不可达（§12.11）；
       # 外层 allow 合规（插件收到的是「重入已被拦」的报告，非失败逃逸）
-      inner_code.receive.should eq("hook_depth_exceeded")
+      inner_code.should eq("hook_depth_exceeded")
     end
 
     {% if flag?(:linux) %}

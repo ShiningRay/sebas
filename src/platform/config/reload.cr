@@ -15,7 +15,9 @@ module Sebas
       # 进程级配置引用（整根替换宿主；EX-W1-03：reference type 全方法可用）
       CURRENT = Atomic(Config).new(Config.new)
 
-      record ReloadResult, accepted : Bool, errors : Array(String), restart_required : Array(String)
+      record ApplyOutcome, restart_required : Array(String), degraded : Array(String)
+      record ReloadResult, accepted : Bool, errors : Array(String),
+        restart_required : Array(String), degraded : Array(String)
 
       class ReloadManager
         Log = Sebas::Log.for("config.reload")
@@ -27,8 +29,9 @@ module Sebas
 
         getter config_path : String
 
-        # 组件重应用回调（§11.3 矩阵）：网关注册
-        def initialize(@config_path : String | Path, &@on_apply : Config -> Array(String))
+        # 组件重应用回调（§11.3 矩阵）：网关注册；降级项（组件装配失败等，
+        # M3-WP5 review）随 ApplyOutcome 体现到热更新结果
+        def initialize(@config_path : String | Path, &@on_apply : Config -> ApplyOutcome)
           @path = Path[@config_path].expand
           @mtime = File.exists?(@path) ? File.info(@path).modification_time : nil
         end
@@ -38,14 +41,14 @@ module Sebas
         def reload_from_content(raw : String) : ReloadResult
           config = Loader.from_content(raw) # 失败 raise ConfigError/ValidationError
           CURRENT.set(config)
-          restart_required = @on_apply.call(config)
+          applied = @on_apply.call(config)
           @mtime = File.exists?(@path) ? File.info(@path).modification_time : nil
           Log.info { "config reloaded (path=#{@path})" }
-          ReloadResult.new(true, [] of String, restart_required)
+          ReloadResult.new(true, [] of String, applied.restart_required, applied.degraded)
         rescue ex : ConfigError | ValidationError
           errors = ex.is_a?(ValidationError) ? ex.errors : [ex.message.to_s]
           Log.warn { "config reload rejected, keeping old config: #{errors.join("; ")}" }
-          ReloadResult.new(false, errors, [] of String)
+          ReloadResult.new(false, errors, [] of String, [] of String)
         end
 
         def reload_from_file : ReloadResult

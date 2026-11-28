@@ -46,8 +46,10 @@ module Sebas
       applied : Array(String) = [] of String
       manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) do |config|
         applied << config.agents.keys.join(",")
-        # 端口类：标 restart（OpenClaw hybrid 语义）
-        config.gateway.http.try(&.port) == 18791 ? ["gateway.http.port changed: restart required"] : [] of String
+        # 端口类：标 restart（OpenClaw hybrid 语义）；降级通道（M3-WP5 review）
+        # 为空——装配面成功
+        outcome = config.gateway.http.try(&.port) == 18791 ? ["gateway.http.port changed: restart required"] : [] of String
+        ::Sebas::Platform::Config::ApplyOutcome.new(outcome, [] of String)
       end
       result = manager.reload_from_file
       result.accepted.should be_true
@@ -70,7 +72,7 @@ module Sebas
       dir = reload_tmp_dir("broken")
       path = dir / "config.yaml"
       File.write(path, BASE_YAML)
-      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| [] of String }
+      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| ::Sebas::Platform::Config::ApplyOutcome.new([] of String, [] of String) }
       manager.reload_from_file.accepted.should be_true
       before = ::Sebas::Platform::Config::CURRENT.get.agents.keys.join(",")
 
@@ -86,7 +88,7 @@ module Sebas
       dir = reload_tmp_dir("dangling")
       path = dir / "config.yaml"
       File.write(path, BASE_YAML)
-      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| [] of String }
+      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| ::Sebas::Platform::Config::ApplyOutcome.new([] of String, [] of String) }
       manager.reload_from_file.accepted.should be_true
 
       dangling = BASE_YAML.gsub("agent: main }", "agent: ghost }")
@@ -103,7 +105,7 @@ module Sebas
       path = dir / "config.yaml"
       File.write(path, BASE_YAML)
       applied = Atomic(Int32).new(0)
-      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| applied.add(1); [] of String }
+      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| applied.add(1); ::Sebas::Platform::Config::ApplyOutcome.new([] of String, [] of String) }
       manager.reload_from_file
       manager.start_watching(poll_interval: 200.milliseconds)
 
@@ -128,13 +130,17 @@ module Sebas
       File.write(path, BASE_YAML)
       store = ::Sebas::Platform::Store::Store.new(dir / "sebas.db")
       applied = Atomic(Int32).new(0)
-      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) { |_| applied.add(1); [] of String }
+      manager = ::Sebas::Platform::Config::ReloadManager.new(path.to_s) do |_|
+        applied.add(1)
+        ::Sebas::Platform::Config::ApplyOutcome.new([] of String, [] of String)
+      end
       server = ::Sebas::Admin::IPC::Server.new(store, dir, port: 0) do
         result = manager.reload_from_file
         {
           "accepted"         => JSON::Any.new(result.accepted),
           "errors"           => JSON::Any.new(result.errors.map { |e| JSON::Any.new(e) }),
           "restart_required" => JSON::Any.new([] of JSON::Any),
+          "degraded"         => JSON::Any.new([] of JSON::Any),
         }
       end
       server.listen

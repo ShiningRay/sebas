@@ -19,6 +19,9 @@ module Sebas
       # 终止 pid 及其全部后代。幂等：进程已退出/无后代时不抛错。
       # 返回实际终止的数量（诊断用）。先杀后代再杀根：缩小父进程被杀后
       # 后代被重新收养导致漏杀的窗口。
+      # POSIX 第二道：进程组 kill（-pgid）——组长（track_call_root 立组，
+      # 或插件自行 setpgid/setsid）组内后代无论是否被 init 收养都在射程内，
+      # pgrep -P 对收养态已不可见。
       # Windows：调用级 Job 承载树终止（runner 终态路径 terminate_and_close），
       # 此处退化为 terminate 直接子进程兜底（后代由 Job 覆盖）。
       def self.kill_tree(pid : Int32) : Int32
@@ -32,6 +35,7 @@ module Sebas
               count += 1 if kill_process(child)
             end
           end
+          kill_process_group(pid) # 组级清扫收养态后代（诊断数不重复计）
         {% end %}
         count += 1 if kill_process(pid)
         count
@@ -70,7 +74,11 @@ module Sebas
 
       private def self.kill_process(pid : Int32) : Bool
         {% if flag?(:windows) %}
-          LibC.TerminateProcess(LibC.OpenProcess(PROCESS_TERMINATE_WIN, 0, pid.to_u32), 1_u32) != 0
+          handle = LibC.OpenProcess(PROCESS_TERMINATE_WIN, 0, pid.to_u32)
+          return false if handle.null? || handle == INVALID_HANDLE_VALUE
+          ok = LibC.TerminateProcess(handle, 1_u32) != 0
+          LibC.CloseHandle(handle) # 宿主句柄用毕即关：成功/失败都不随调用数累积
+          ok
         {% else %}
           LibC.kill(pid, LibC::SIGKILL)
           $?.success?
@@ -84,19 +92,56 @@ module Sebas
       {% end %}
 
       {% if flag?(:unix) %}
-        # pgrep 可用性与执行失败 → nil（区分「无后代」）；成功但无输出 → 空数组
+        # Crystal LibC 声明了 getpgid 但缺 setpgid（unistd 全平台口径）——
+        # 补绑根级 ::LibC（嵌套 lib 不重开根级，其内无法解析 PidT）
+        lib ::LibC
+          fun setpgid(pid : PidT, pgid : PidT) : Int
+        end
+
+        # 调用级进程身份（M3-WP5 review）：spawn 后立即把子进程立为组长
+        # （parent 侧 setpgid 需在子进程 exec 前落位——解释器启动窗口远大于
+        # 本调用间隔）。exec 后落位的 EACCES 仅降级为无组清扫（pgrep 逐个
+        # 杀仍有效）；清理路径 kill(-pid) 借此可达被收养的后代。
+        def self.track_call_root(pid : Int32) : Nil
+          return if LibC.setpgid(pid, pid) == 0
+          Log.warn { "setpgid(#{pid}) failed (errno=#{Errno.value}); process-group kill unavailable for this call" }
+        rescue
+          nil
+        end
+
+        # 进程组 SIGKILL（-pgid）：组不存在（组长从未立组/成员已尽）→
+        # ESRCH 无害跳过；组长已死但组内仍有成员时组依旧可寻址——正是
+        # 「解释器先退、后代被收养」场景的清扫通道。失败仅记日志。
+        private def self.kill_process_group(pid : Int32) : Nil
+          rc = LibC.kill(-pid, LibC::SIGKILL)
+          return if rc == 0
+          return if Errno.value == Errno::ESRCH
+          Log.warn { "process group kill failed (pgid=#{pid}, errno=#{Errno.value})" }
+        rescue
+          nil
+        end
+
+        # pgrep 可用性与执行失败 → nil（区分「无后代」）；退出码 1 = 无匹配
+        # （叶节点常态）→ 空数组（M3-WP5 review：当 nil 处理会丢弃已收集的
+        # PID 漏杀）；其余非零 = 用法/致命错误 → nil。
         private def self.direct_children(pid : Int32) : Array(Int32)?
           io = IO::Memory.new
           res = Process.run("pgrep", ["-P", pid.to_s],
             input: Process::Redirect::Close,
             output: io,
             error: Process::Redirect::Close)
+          return [] of Int32 if res.exit_code == 1
           return nil unless res.success?
           io.to_s.split(/\s+/).compact_map do |line|
             line.to_i?(10)
           end
         rescue
           nil
+        end
+      {% else %}
+        # Windows：调用级 Job 即进程身份（process_tree_ffi_windows.cr），
+        # 无需立组。
+        def self.track_call_root(pid : Int32) : Nil
         end
       {% end %}
     end

@@ -97,10 +97,11 @@ module Sebas
       bus = ::Sebas::Plugins::HookBus.new(fake_dispatcher)
       compactor = RecordingCompactor.new(order)
       runner = ::Sebas::Sessions::Compaction::CompactionRunner.new(bus)
-      result = runner.run(compactor, "sess-1", ["m1", "m2"])
+      result = runner.run(compactor, "sess-1", ["m1", "m2"]) { |result| order << "committed:#{result.summary}" }
       result.summary.should eq("summary-2")
-      # before 观察先于压缩执行，after 观察在成功提交后（observe_id 相同，以序判定）
-      order.should eq(["hooked", "compact", "hooked"])
+      # before 观察先于压缩执行；commit（摘要提交）先于 after——成功通知
+      # 不得先于落库（M3-WP5 review，observe_id 相同以序判定）
+      order.should eq(["hooked", "compact", "committed:summary-2", "hooked"])
     end
 
     it "压缩失败：不触发 compact.after（§12.11 失败/取消不触发 after）" do
@@ -116,7 +117,7 @@ module Sebas
       boom = FailingCompactor.new
       runner = ::Sebas::Sessions::Compaction::CompactionRunner.new(bus)
       expect_raises(::Exception, /compaction failed/) do
-        runner.run(boom, "sess-2", ["m1"])
+        runner.run(boom, "sess-2", ["m1"]) { |_r| raise "commit must not run" }
       end
       order.size.should eq(1) # 只有 before；after 不触发
     end

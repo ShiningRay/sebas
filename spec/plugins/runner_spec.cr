@@ -36,7 +36,7 @@ module Sebas
       it "跨 scope capability 拒绝：未在 manifest 声明即宿主拒绝，不调 driver" do
         dispatched = false
         dispatch = PluginSpecSupport.make_dispatch(interp.as(Array(String)))
-        dispatch.runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, _capability : String, _params : JSON::Any) do
+        dispatch.runner.capability_handler = ->(_plugin : ::Sebas::Plugins::LoadedPlugin, _capability : String, _params : JSON::Any, _replay_key : String?) do
           dispatched = true
           JSON::Any.new(nil)
         end

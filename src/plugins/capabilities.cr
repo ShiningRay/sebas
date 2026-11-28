@@ -20,19 +20,21 @@ require "./hook_dispatcher"
 # 生产持久化由 memory.backend 选择机制（§12.7 enable 校验）后续接入。
 module Sebas
   module Plugins
-    # 宿主侧 driver 注册表：(plugin, capability, params, context) → JSON-like。
+    # 宿主侧 driver 注册表：(plugin, capability, params, context,
+    # idempotency_key) → JSON-like。idempotency_key 是请求级 task 重放身份
+    # （可空——hook 路径无 task 身份），driver 据此派生重放 memo。
     # 线程安全：driver 内部自管。
     class CapabilityDispatcher
       Log = Hooks::Log
 
-      alias DriverHandler = Proc(String, JSON::Any, JSON::Any, JSON::Any)
+      alias DriverHandler = Proc(String, JSON::Any, JSON::Any, String?, JSON::Any)
 
       @drivers = Hash(String, DriverHandler).new
       @mutex = Mutex.new
 
       setter hook_bus : HookBus = HookBus.disabled
 
-      def register(capability : String, &handler : String, JSON::Any, JSON::Any -> JSON::Any) : Nil
+      def register(capability : String, &handler : String, JSON::Any, JSON::Any, String? -> JSON::Any) : Nil
         @mutex.synchronize { @drivers[capability] = handler }
       end
 
@@ -41,13 +43,13 @@ module Sebas
       end
 
       def dispatch(plugin_id : String, capability : String, params : JSON::Any,
-                   context : JSON::Any) : JSON::Any
+                   context : JSON::Any, idempotency_key : String? = nil) : JSON::Any
         handler = @mutex.synchronize { @drivers[capability]? }
         unless handler
           raise CapabilityError.new("capability_driver_missing",
             "no driver registered for '#{capability}'")
         end
-        handler.call(plugin_id, params, context)
+        handler.call(plugin_id, params, context, idempotency_key)
       rescue ex : CapabilityError
         raise ex
       rescue ex : ::Exception
@@ -118,12 +120,20 @@ module Sebas
             end
           end)
           @mutex.synchronize do
+            # 临界区内幂等复查（M3-WP5 review）：并发同 key 调用只有一个
+            # 插入+observe，其余返回首个写入者的 memory_id——检查与提交
+            # 同一临界区，两侧不隔锁
+            if key = idempotency_key
+              if prior_id = @idempotency[key]?
+                return JSON.parse(%({"ok": true, "memory_id": #{prior_id.to_json}}))
+              end
+            end
             if @entries.size >= MAX_ENTRIES
               raise CapabilityError.new("memory_overflow", "memory driver store cap (#{MAX_ENTRIES}) reached")
             end
             @entries[memory_id] = stored
-            # 幂等键登记（提交成功后）；竞态下首个写入者持有 id（first-write-wins）
-            @idempotency[idempotency_key] = memory_id if idempotency_key && !@idempotency.has_key?(idempotency_key)
+            # 幂等键登记（提交成功后，同临界区）；首个写入者持有 id
+            @idempotency[idempotency_key] = memory_id if idempotency_key
           end
           # 提交成功后 observe（§12.11：失败或 deny 不触发 after）
           kind = stored["kind"]?.try(&.as_s?) || "memory"

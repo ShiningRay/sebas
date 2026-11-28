@@ -23,8 +23,10 @@ module Sebas
       record CompactionResult, summary : String, summary_tokens : Int32, dropped_count : Int32
 
       abstract class SessionCompactor
-        # 压缩一个会话的转写：实现方负责摘要生成与转写提交；失败抛异常
-        # （runner 据此跳过 compact.after）。
+        # 压缩一个会话的转写：实现方只负责摘要生成，不落库——摘要提交（转写
+        # 落库）由调用方在 CompactionRunner#run 的 commit 回调完成（唯一提交方，
+        # M3-WP5 review：避免双写/成功先于落库）；失败抛异常（runner 据此
+        # 跳过 compact.after）。
         abstract def compact(session_key : String, transcript : Array(String)) : CompactionResult
       end
 
@@ -34,13 +36,15 @@ module Sebas
         def initialize(@hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled)
         end
 
-        # 压缩一个会话：before（observe）→ compactor → after（observe，仅成功）。
-        # 失败向上抛（调用方决定重试/放弃），不伪报成功。
+        # 压缩一个会话：before（observe）→ compactor → commit（摘要提交回调，
+        # 唯一提交方=调用方；失败抛异常）→ after（observe，仅提交成功后）。
+        # 失败/取消不触发 after（§12.11 统一执行规则），不伪报成功。
         def run(compactor : SessionCompactor, session_key : String,
-                transcript : Array(String)) : CompactionResult
+                transcript : Array(String), &commit : CompactionResult ->) : CompactionResult
           hook_bus.observe("session.compact.before", JSON.parse("{}"),
             JSON.parse(%({"session_key": #{session_key.inspect}})))
           result = compactor.compact(session_key, transcript)
+          commit.call(result) # 摘要提交先于成功通知：提交失败不触发 after
           hook_bus.observe("session.compact.after", JSON.parse("{}"),
             JSON.parse(JSON.build do |json|
               json.object do

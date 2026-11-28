@@ -1,4 +1,5 @@
 require "json"
+require "digest"
 require "../../log"
 require "../../plugins/manifest"
 require "../../plugins/registry"
@@ -26,8 +27,13 @@ module Sebas
         # hook 门面（M3-WP5，#17）：gateway.start/stop 及各子系统注入点共用
         @hook_bus : ::Sebas::Plugins::HookBus = ::Sebas::Plugins::HookBus.disabled
 
-        private def wire_plugins(config : Config::Config) : Nil
-          tools = @tools_registry || (Log.error { "plugins face wired before tool surface build" }; return)
+        # 插件面装配：返回 false = 装配失败（降级）——工具面/hook 门面全量
+        # 停用且热更新结果记降级（M3-WP5 review）。all-or-nothing：全部构件
+        # 就绪才换引用，装配中途失败时 @plugin_dispatch/@hook_bus 同步归零，
+        # 注入点不出现「hook 新代 + 工具 nil」的混合态。
+        # 返回 true 含「plugins.dir 未配置」的正常停用路径。
+        private def wire_plugins(config : Config::Config) : Bool
+          tools = @tools_registry || (Log.error { "plugins face wired before tool surface build" }; return false)
           # 工具面同步：先摘旧名单再挂新名单（registry.unregister 语义）
           @plugin_tool_names.each { |name| tools.unregister(name) }
           @plugin_tool_names = [] of String
@@ -37,7 +43,7 @@ module Sebas
           dir = config.plugins.dir
           unless dir
             Log.info { "plugins face disabled (no plugins.dir)" }
-            return
+            return true
           end
 
           registry = ::Sebas::Plugins::Registry.new
@@ -57,8 +63,6 @@ module Sebas
             config.plugins.cpu_seconds)
           runner = ::Sebas::Plugins::Runner.new([interpreter] + args, limits: limits)
           dispatch = ::Sebas::Plugins::Dispatch.new(registry, runner)
-          @plugin_dispatch = dispatch
-          @plugin_tool_names = dispatch.register_tools_into(tools)
 
           # hook 订阅链装配（M3-WP5，#17）：逐插件逐 hook 订阅；敏感批准缺失/
           # 重复/未知钩子按单插件单订阅 fail-logged 跳过，不炸 gateway 装配
@@ -76,27 +80,38 @@ module Sebas
               end
             end
           end
-          @hook_bus = ::Sebas::Plugins::HookBus.new(hook_dispatcher)
+          hook_bus = ::Sebas::Plugins::HookBus.new(hook_dispatcher)
 
           # capability driver 装配（M3-WP5，#17 §12.4 ③ §12.10）：双重白名单
           # 第二关——manifest 声明之外还须宿主登记 driver；受控 memory.backend
           # 提供 remember 写路径并承载 memory.remember 双 hook 注入点
           caps = ::Sebas::Plugins::CapabilityDispatcher.new
-          caps.hook_bus = @hook_bus
-          memory_driver = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new(@hook_bus)
-          caps.register("memory_driver.write") do |plugin_id, params, context|
-            memory_driver.write(plugin_id, params, context)
+          caps.hook_bus = hook_bus
+          memory_driver = ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver.new(hook_bus)
+          caps.register("memory_driver.write") do |plugin_id, params, context, replay_key|
+            # 幂等键派生（M3-WP5 review）：task 重放身份（工具面 idempotency_key
+            # 随 Request 透传）+ 写入内容指纹——同 task 同内容重放命中同 key，
+            # gate memo 与 write memo 一并复用；无 task 身份（hook 路径）不 memo
+            key = replay_key ? "memory_driver.write:#{plugin_id}:#{Digest::SHA256.hexdigest(params.to_json)}" : nil
+            memory_driver.write(plugin_id, params, context, idempotency_key: key)
           end
-          runner.capability_handler = ->(plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, params : JSON::Any) do
+          runner.capability_handler = ->(plugin : ::Sebas::Plugins::LoadedPlugin, capability : String, params : JSON::Any, replay_key : String?) do
             # scope 注入（§12.10）：身份由宿主合成，插件传参仅 params
             caps.dispatch(plugin.id, capability, params,
-              JSON.parse(%({"plugin_id": #{plugin.id.inspect}})))
+              JSON.parse(%({"plugin_id": #{plugin.id.inspect}})), replay_key)
           end
+
+          @plugin_dispatch = dispatch
+          @plugin_tool_names = dispatch.register_tools_into(tools)
+          @hook_bus = hook_bus # 全部就绪才换引用（all-or-nothing）
           Log.info { "plugins loaded: #{report.loaded.join(",")} (tools: #{@plugin_tool_names.size})" }
+          true
         rescue ex : ::Exception
           Log.error(exception: ex) { "plugins face wiring failed: #{ex.message}" }
           @plugin_dispatch = nil
           @plugin_tool_names = [] of String
+          @hook_bus = ::Sebas::Plugins::HookBus.disabled # 注入点一致：hook 门面随工具面同代停用
+          false
         end
 
         # gateway 生命周期 hook 触发（M3-WP5，#17）：单行门面，保 gateway.cr
@@ -123,8 +138,9 @@ module Sebas
           @hook_bus.observe("message.received", JSON.parse("{}"), received)
         end
 
-        def inject_runtime_hooks(runtime : ::Sebas::Agents::AgentRuntime) : Nil
-          runtime.hook_bus = @hook_bus # agent/llm 域注入
+        def inject_runtime_hooks(runtime : ::Sebas::Agents::AgentRuntime,
+                                 hook_bus : ::Sebas::Plugins::HookBus) : Nil
+          runtime.hook_bus = hook_bus # agent/llm 域注入（turn 级 Budget 总线由 agent_turn 传入）
         end
 
         # 归档压缩接线（M3-WP5 review）：CompactionRunner + 缺省 compactor

@@ -10,11 +10,11 @@
 - **CI 并发语义按事件区分**（[#221](https://github.com/ShiningRay/sebas/issues/221)）：`ci.yml` 的 `cancel-in-progress` 改为只在 `pull_request` 事件为 true。main 侧不再互相取消——被顶掉的 main CI 会让 Evidence 停在 `merged_into_main: false`、后继卡永久 blocked。理由与边界见 [pr-gate.md](docs/design/process/pr-gate.md)。
 - **插件沙箱与 22 钩子（M3-WP5）**（[#17](https://github.com/ShiningRay/sebas/issues/17)）：
   - 钩子契约：§12.11 22 钩子闭集目录 + payload schema 机读权威（键集闭/枚举/可空/结构化错误/深度封顶；敏感 hook 需 manifest `hooks.sensitive`）。
-  - 派发语义：gate/transform 同步链（deny fail-closed、替换重过 schema）、observe 隔离、priority 稳定序、按 fiber 链隔离的递归深度、预算 outcome 化（链中耗尽判 deny）、idempotency memo。
-  - 宿主注入：22/22 全量接线（gateway/消息/Agent/LLM/工具/会话/记忆/任务八域；per-turn executor 与热更新路径同步刷新）。
-  - runner 隔离：终态前置进程树清扫（POSIX pgrep 树遍历、失败区分「无后代/枚举失败」；Windows 调用级 Job Object FFI）、终态后有界帧校验、迟到输出时间/字节双预算排水、OS 资源约束（POSIX ulimit 全成功才 exec；Windows Job 内存上限；生产装配经 `plugins.memory_mb/cpu_seconds` 配置承载）。
-  - capability：双重白名单第二关 + scope 宿主注入 + 受控 memory.backend（幂等重放同 key 同 id，不重复副作用）。
-  - 压缩：SessionCompactor 接口与 CompactionRunner 协议（无生产压缩器，hook 语义先行）。
+  - 派发语义：gate/transform 同步链（deny fail-closed、替换重过 schema）、observe 隔离、priority 稳定序、按 fiber 链隔离的递归深度、预算 outcome 化（链中耗尽判 deny；agent turn 级共享同一 Budget 实例，跨派发累计）、idempotency memo。
+  - 宿主注入：22/22 全量接线（gateway/消息/Agent/LLM/工具/会话/记忆/任务八域；per-turn executor 与热更新路径同步刷新；插件面装配失败 all-or-nothing 归零并经 `config.reload` 结果的 `degraded` 维度体现）。
+  - runner 隔离：终态前置进程树清扫（POSIX pgrep 树遍历 + 调用级进程组长立组与组级 SIGKILL 兜收养态后代、失败区分「无后代/枚举失败」、pgrep 无匹配按空数组；Windows 调用级 Job Object FFI，终态先于诊断等待终止）、终态后有界帧校验（跨读取块行重组）、迟到输出时间/字节双预算排水（剩余预算施加到读取本身，后代持管道不悬挂）、OS 资源约束（POSIX ulimit 全成功才 exec（失败 exit 126 停启动留诊断）+ 包装前解释器可启动性检查保持装配错误语义；Windows Job 内存上限；生产装配经 `plugins.memory_mb/cpu_seconds` 配置承载）。
+  - capability：双重白名单第二关 + scope 宿主注入 + 受控 memory.backend（幂等重放同 key 同 id，不重复副作用；task 重放身份经 Request 透传生产装配生效，检查与提交同临界区）。
+  - 压缩：SessionCompactor 接口与 CompactionRunner 协议（无生产压缩器，hook 语义先行；摘要唯一提交方=调用方 commit 回调，提交成功才派发 compact.after，重复归档幂等不重触发）。
   - DSL：`deny!`/`modify!`；manifest `hook_priorities`（向后兼容）。
 - **流程工具容量配置化**（recovery §5 / Q3 前置片，[refs #221](https://github.com/ShiningRay/sebas/issues/221)；Maintainer 2026-11-27 指令提升）：
   - `capacity` 配置：`.github/agents.yml` 新增 `capacity` 键设定在途租约上限，缺键即 1（行为与单卡一致）；仅接受正整数，显式 null/浮点等非法值 fail-closed。

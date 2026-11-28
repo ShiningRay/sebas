@@ -76,16 +76,14 @@ module Sebas
     end
 
     it "迟到输出丢弃（实测）：watchdog 超时后的管道残留不阻塞、不炸宿主" do
-      # 受控时序到达超时清理路径：先发合法 registered → 静默期（注册帧已
-      # 合法消费）→ watchdog 超时杀树；子进程在 stdout 上持续灌非协议文本，
-      # 超时后排水必须吃干净且不阻塞 wait
+      # 受控时序（M3-WP5 review）：registered 合法消费后，子进程只写**无换行**
+      # 的残段——gets 等不到完整行，协议错误不可能提前结束调用；watchdog
+      # 超时杀树后，残段字节留在管道里由排水路径真实吃掉（覆盖超时后排水）
       code = <<-RUBY # ameba:disable Style/HeredocEscape, Style/HeredocIndent
         $stdout.sync = true
         request = $stdin.gets
         $stdout.puts JSON.generate({"type" => "registered", "actions" => [], "hooks" => []})
-        Thread.new do
-          loop { $stdout.puts "late noise line" } # 非协议文本：迟到输出口径
-        end
+        $stdout.print "late noise line" # 无换行残段：排水口径字节，永不构成可解析行
         sleep 30
       RUBY
       interp = RunnerWp5Helpers.script_interpreter(code)
@@ -94,10 +92,9 @@ module Sebas
       outcome = runner.call(RunnerWp5Helpers.stub_plugin, RunnerWp5Helpers.request)
       elapsed = (Time.instant - started).total_milliseconds
       outcome.ok.should be_false
-      # 到达 watchdog 清理路径的结构化终态：timeout（预期主口径）或杀树后
-      # audit 判定（protocol_violation——管道残留中混入协议形态行时成立）；
-      # 二者都证明排水不阻塞、宿主不炸、结果结构化返回
-      {"timeout", "protocol_violation"}.should contain(outcome.error_code)
+      # 收紧断言（M3-WP5 review）：残段没有换行不可能被判 protocol_violation，
+      # 结构化终态必须是 watchdog 超时本身——证明排水不阻塞、宿主不炸
+      outcome.error_code.should eq("timeout")
       elapsed.should be < 5_000
     end
 

@@ -148,6 +148,9 @@ module Sebas
         # runner+compactor 已装配则真实执行；压缩失败不阻断归档（observe
         # 口径），仅记日志
         def archive(session_key : String) : Bool
+          # 重复归档幂等（M3-WP5 review）：已归档直接 no-op——压缩与
+          # session.compact.* 不重复执行；终态仍以 UPDATE 条件原子判定兜底
+          return false if archived?(session_key)
           run_compaction_on_archive(session_key)
           affected = @store.db.exec(
             "UPDATE sessions SET status = 'archived' WHERE session_key = ? AND status != 'archived'",
@@ -173,12 +176,16 @@ module Sebas
           runner = @compaction_runner
           compactor = @session_compactor
           return unless runner && compactor
-          transcript = @store.transcripts(session_key).map(&.content)
-          return if transcript.empty?
           begin
-            result = runner.run(compactor, session_key, transcript)
-            # 摘要落转写（role=compaction，既有接口零改动；归档后仍可追溯）
-            @store.append_transcript(session_key, "compaction", result.summary)
+            # 转写读取纳入隔离（M3-WP5 review）：读失败与压缩失败同路径，
+            # 归档不因压缩链路中断
+            transcript = @store.transcripts(session_key).map(&.content)
+            return if transcript.empty?
+            runner.run(compactor, session_key, transcript) do |result|
+              # 摘要落转写（唯一提交方=调用方，role=compaction；compact.after
+              # 于提交成功后由 runner 派发）
+              @store.append_transcript(session_key, "compaction", result.summary)
+            end
           rescue ex
             Log.warn(exception: ex) { "compaction on archive failed (session=#{session_key}); archiving continues" }
           end
