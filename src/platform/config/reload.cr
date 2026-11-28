@@ -38,8 +38,10 @@ module Sebas
 
         # 读盘 → expand_env → YAML → validate → Atomic 换引用 → 组件重应用。
         # 校验失败保旧不崩溃（先验后换），返回 ReloadResult。
+        # 相对资源（persona_file）校验基准 = 同一配置文件目录（sebas-home.md §3）；
+        # SEBAS_HOME/数据路径是启动资源，热更新不重读不改换。
         def reload_from_content(raw : String) : ReloadResult
-          config = Loader.from_content(raw) # 失败 raise ConfigError/ValidationError
+          config = Loader.from_content(raw, config_dir: @path.parent) # 失败 raise ConfigError/ValidationError
           CURRENT.set(config)
           applied = @on_apply.call(config)
           @mtime = File.exists?(@path) ? File.info(@path).modification_time : nil

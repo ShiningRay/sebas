@@ -32,6 +32,13 @@ module Sebas
         # 的显式 hook_bus 传参刷新派发总线（不重建实例）
         @memory_driver : ::Sebas::Plugins::CapabilityDispatcher::MemoryDriver? = nil
 
+        # 配置内相对路径基准（sebas-home.md §2.2）：有配置路径上下文时相对实际
+        # 配置文件目录；无上下文（@config_path 空）回落 cwd，保留既有测试语义。
+        private def resolve_config_relative(path : Path) : Path
+          return path if path.absolute? || @config_path.empty?
+          Path[Path[@config_path].parent, path]
+        end
+
         # 插件面装配：返回 false = 装配失败（降级）——工具面/hook 门面全量
         # 停用且热更新结果记降级（M3-WP5 review）。all-or-nothing：全部构件
         # 就绪才换引用，装配中途失败时 @plugin_dispatch/@hook_bus 同步归零，
@@ -50,12 +57,14 @@ module Sebas
             Log.info { "plugins face disabled (no plugins.dir)" }
             return true
           end
-
+          # 相对 plugins.dir 以实际配置文件目录为基准（sebas-home.md §2.2）；
+          # 无配置路径上下文（Gateway 直构的测试语义）保留 cwd 相对
+          resolved_dir = resolve_config_relative(Path[dir])
           registry = ::Sebas::Plugins::Registry.new
-          report = registry.load_dir(Path[dir])
+          report = registry.load_dir(resolved_dir)
           report.errors.each { |e| Log.error { "plugin load failed: #{e}" } }
           if report.loaded.empty? && !report.errors.empty?
-            Log.warn { "plugins face configured but no plugin loaded (dir=#{dir})" }
+            Log.warn { "plugins face configured but no plugin loaded (dir=#{resolved_dir})" }
           end
 
           interpreter = config.plugins.interpreter || "mruby"

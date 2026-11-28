@@ -5,6 +5,7 @@
 
 ## [Unreleased]
 
+- **应用根目录 `~/.sebas` / `SEBAS_HOME` 路径契约落地**（M5.0-WP3，[#278](https://github.com/ShiningRay/sebas/issues/278)）：默认配置 `<home>/config.yaml`、省略 `gateway.data_dir` 取 `<home>/data`；相对 `data_dir`/`persona_file`/`plugins.dir` 以实际配置文件目录为基准；空白 `SEBAS_HOME` 拒启；一个版本的旧布局受限回退（只警告不搬移文件）；热更新不重读 `SEBAS_HOME`、`data_dir` 变更 restart-required；POSIX 权限过宽只告警。(#304)
 ### Added
 
 - **跨机 ref 锁：claim 写段原子互斥**（[#306](https://github.com/ShiningRay/sebas/issues/306)，recovery §4 实现口径更新）：

@@ -60,5 +60,24 @@ module Sebas
         File.delete(path) if File.exists?(path)
       end
     end
+
+    # M5.0-WP3（sebas-home.md §2.1②）：空白 SEBAS_HOME 拒启——在检查配置文件
+    # 之前失败，不回退默认目录或工作目录。临时设 SEBAS_HOME 并在 ensure 恢复；
+    # 全仓 spec 无其他 SEBAS_HOME 读写点（已核实），按 sebas-home.md §5
+    # 「串行或隔离子进程」约定视同串行。该用例不启动 gateway、不触文件系统。
+    it "空白 SEBAS_HOME 拒启退出码 1，文案含变量名" do
+      original = ENV["SEBAS_HOME"]?
+      ENV["SEBAS_HOME"] = "   "
+      begin
+        log = Sebas.capture_cli_log { Platform::CLI.run(["gateway"]).should eq(1) }
+        log.should contain("SEBAS_HOME is set but blank")
+      ensure
+        if original
+          ENV["SEBAS_HOME"] = original
+        else
+          ENV.delete("SEBAS_HOME")
+        end
+      end
+    end
   end
 end
