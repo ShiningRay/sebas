@@ -36,6 +36,14 @@ module Sebas
             restart_required << "gateway.http.port/bind changed: sockets are process resources, restart required"
           end
 
+          # 数据路径是启动资源（sebas-home.md §3）：热更新不重读 SEBAS_HOME、
+          # 不改换数据库/vault/IPC discovery；data_dir 配置变更一律标 restart-required，
+          # 不允许半途换根。比较配置本身的原始语义（省略 vs 显式值），不比较
+          # 解析后的机器相关绝对路径
+          if @config.gateway.data_dir != new_config.gateway.data_dir
+            restart_required << "gateway.data_dir changed: database/vault paths are startup resources, restart required"
+          end
+
           # 路由 binding（数据类：换引用即生效）
           @rules = build_rules(new_config)
 

@@ -26,20 +26,22 @@ module Sebas
         extend self
         Log = ::Sebas::Log.for("config.loader")
 
-        def load(path : String | Path) : Config
+        # config_dir：实际配置文件目录（sebas-home.md §2.2）——相对 persona_file 的
+        # 校验基准。nil 保留既有 cwd 相对语义（纯内容入口/既有测试）。
+        def load(path : String | Path, config_dir : Path? = nil) : Config
           path = Path[path]
           raise ConfigError.new("config file not found: #{path}") unless File.exists?(path)
           raw = File.read(path)
-          from_content(raw)
+          from_content(raw, config_dir || path.parent)
         rescue ex : YAML::ParseException
           # YAML::ParseException 消息自带行号列号（验收：坏 YAML 报错含行号）
           raise ConfigError.new("invalid YAML in #{path}: #{ex.message}")
         end
 
         # 纯函数入口（热更新管线复用）：内容 → typed Config → validate
-        def from_content(raw : String) : Config
+        def from_content(raw : String, config_dir : Path? = nil) : Config
           config = Config.from_yaml(expand_env_vars(raw))
-          errors = validate(config)
+          errors = validate(config, config_dir)
           raise ValidationError.new(errors) unless errors.empty?
           # 旧配置迁移指引（#214：不静默失败——加载可用，但逐条告知新形状）
           migration_hints(config).each { |hint| Log.warn { "migration hint: #{hint}" } }
@@ -61,16 +63,17 @@ module Sebas
         # 校验器（纯函数）：返回错误列表，空数组=合法。
         # M1-WP8 热更新「先验后换」复用本函数，不在此处 raise（拒启由 from_content 负责）。
         # 会话输入调度策略校验（session-input-scheduling.md §3.4；先验后换复用）
+        # config_dir：相对 persona_file 的校验基准（nil = cwd，既有语义）
         private def validate_session_policies(config : Config, errors : Array(String)) : Nil
           agents_policies = {} of String => Scheduling::SessionPolicyConfig?
           config.agents.each { |name, agent| agents_policies[name] = agent.session }
           errors.concat(Scheduling::Policy.validate_config_errors(config.gateway.session, agents_policies))
         end
 
-        def validate(config : Config) : Array(String)
+        def validate(config : Config, config_dir : Path? = nil) : Array(String)
           errors = [] of String
           validate_providers(config, errors)
-          validate_agents(config, errors)
+          validate_agents(config, config_dir, errors)
           validate_channels(config, errors)
           validate_bindings(config, errors)
           validate_gateway(config, errors)
@@ -156,14 +159,27 @@ module Sebas
           (1..64).covers?(value.size) && value.matches?(AGENT_CATEGORY_PATTERN)
         end
 
-        private def validate_agents(config : Config, errors : Array(String)) : Nil
+        # persona_file 校验基准：绝对路径原样；相对路径以配置目录为基准；
+        # 无配置目录上下文（纯内容入口）回落进程 cwd（既有测试语义）。
+        private def persona_base(pf : String, config_dir : Path?) : Path
+          p = Path[pf]
+          if p.absolute? || config_dir.nil?
+            p
+          else
+            Path[config_dir, p]
+          end
+        end
+
+        private def validate_agents(config : Config, config_dir : Path?, errors : Array(String)) : Nil
           errors << "at least one agent must be defined" if config.agents.empty?
           config.agents.each do |name, agent|
             errors << "agents.#{name}.model must not be empty" if agent.model.strip.empty?
             # persona_file 悬空引用校验（M4.4-WP1：悬空引用报错可读）——
-            # 相对路径基于进程 cwd 解析（与 Gateway 运行目录一致）
+            # 相对路径基于实际配置文件目录解析（M5.0-WP3 sebas-home.md §2.2：
+            # 校验与（未来）运行期读取共用同一基准）；nil config_dir = cwd（既有语义）
             if pf = agent.persona_file
-              errors << "agents.#{name}.persona_file not found: #{pf}" unless File.exists?(pf)
+              base = persona_base(pf, config_dir)
+              errors << "agents.#{name}.persona_file not found: #{pf} (resolved: #{base})" unless File.exists?(base)
             end
             (agent.skills || [] of String).each do |skill|
               errors << "agents.#{name}.skills entry must not be empty" if skill.strip.empty?
