@@ -259,8 +259,9 @@ class QueueAutoCommandTest < Minitest::Test
     [status, JSON.parse(out.string)]
   end
 
-  def summary_comment(unverified:, login: "github-actions[bot]")
-    [{"body" => "<!-- verify-pr:summary -->\n\n| 级别 | 数量 |\n|---|---|\n" \
+  def summary_comment(unverified:, login: "github-actions[bot]", head: "sha50")
+    [{"body" => "<!-- verify-pr:summary -->\n\n核验脚本取自 base `deadbeef`，被核验内容取自 head `#{head}`。\n\n" \
+                "| 级别 | 数量 |\n|---|---|\n" \
                 "| blocker | 0 |\n| must_fix | 0 |\n| acceptable | 2 |\n| unverified | #{unverified} |\n",
       "user" => {"login" => login}}]
   end
@@ -468,28 +469,73 @@ class QueueAutoCommandTest < Minitest::Test
   end
 
   # --record 指定的自定义记录必须与预算同源（#312 review）：读（gate）
-  # 与写（失败累计 / 人工清零）都走同一路径。
+  # 与写（失败累计 / 人工清零）都走同一路径；显式路径必须带 issue，
+  # 否则 bump/reset 恒 mismatch、预算失灵（#312 二轮 review）。
   def test_custom_record_path_feeds_budget
     Dir.mktmpdir do |dir|
       write_config(dir, switch: true)
-      snap, changelog, = verified_pr_fixture(dir)
+      snap, changelog, = unparseable_changelog_fixture(dir)
       custom = File.join(dir, "custom-record.json")
       File.write(custom, JSON.generate({
         "schema" => 2, "issue" => 1, "branch" => "feat/1", "phase" => "claimed",
         "pr" => 50, "host" => Socket.gethostname, "pid" => 999_999,
-        "last_heartbeat_at" => "2020-01-01T00:00:00Z",
-        "verified_head" => "sha50", "auto_merge_failures" => 2
+        "last_heartbeat_at" => "2020-01-01T00:00:00Z"
       }), encoding: "UTF-8")
       argv = ["queue", "--auto", "--snapshot", snap, "--changelog", changelog,
-              "--record", custom]
+              "--record", custom, "--apply"]
+      run = lambda do
+        out = StringIO.new
+        cli = SebasAgents::CLI.new(out: out, err: StringIO.new)
+        cli.define_singleton_method(:runner) { |_options| AutoFakeRunner.new }
+        status = Dir.chdir(dir) { cli.run(argv) }
+        [status, JSON.parse(out.string)]
+      end
+
+      # 空围栏 → verify_pre 写进自定义记录后接续 changelog，该步执行 refused
+      # → 失败累计必须落进自定义文件（而不是 mismatch 静默丢掉）
+      status, payload = run.call
+      assert_equal 1, status
+      assert_equal "aborted", payload["status"]
+      counter = -> { JSON.parse(File.read(custom))["auto_merge_failures"] }
+      assert_equal 1, counter.call, "自定义记录必须能累计执行失败"
+      run.call
+      assert_equal 2, counter.call
+
+      # 第三轮：预算从自定义记录读出，gate 直接拒
+      status, payload = run.call
+      assert_equal 1, status
+      assert_includes payload["auto_gate"], "超出回退预算"
+
+      # 人工通道成功一步（无 changelog 声明的夹具）→ 清零也要写自定义记录。
+      # 先清掉 verified_head 让队列回到 verify_pre（merge 步会撞远端桩）。
+      custom_data = JSON.parse(File.read(custom))
+      File.write(custom, JSON.generate(custom_data.merge("verified_head" => nil)), encoding: "UTF-8")
+      snap_ok, changelog_ok, = verified_pr_fixture(dir)
+      manual = ["queue", "--snapshot", snap_ok, "--changelog", changelog_ok,
+                "--record", custom, "--apply"]
       out = StringIO.new
       cli = SebasAgents::CLI.new(out: out, err: StringIO.new)
       cli.define_singleton_method(:runner) { |_options| AutoFakeRunner.new }
-      status = Dir.chdir(dir) { cli.run(argv) }
-      payload = JSON.parse(out.string)
-      assert_equal 0, status, "dry-run 只报告"
-      assert_includes payload["auto_gate"], "超出回退预算",
-        "预算必须从 --record 指定的自定义记录读取"
+      status = Dir.chdir(dir) { cli.run(manual) }
+      assert_equal 0, status
+      assert_equal 0, counter.call, "人工清零必须写回自定义记录"
+    end
+  end
+
+  # 摘要与 head 绑定（#312 二轮 review）：发布步骤 continue-on-error 时旧
+  # head 的摘要残留——不含当前 head 的可信摘要视同缺失，不得放行合并。
+  def test_stale_head_summary_is_ignored
+    Dir.mktmpdir do |dir|
+      write_config(dir, switch: true)
+      snap, changelog, record_path = verified_pr_fixture(dir)
+      data = JSON.parse(File.read(record_path))
+      File.write(record_path, JSON.generate(data.merge("verified_head" => "sha50")), encoding: "UTF-8")
+      stale = summary_comment(unverified: 0, head: "oldsha")
+      status, payload = run_auto(dir, snap, changelog, apply: true,
+        runner: AutoFakeRunner.new(comments: stale))
+      assert_equal 1, status
+      assert_includes payload["auto_gate"], "缺 verifier 摘要评论",
+        "旧 head 的摘要对新 head 不成立，必须按缺失拒绝"
     end
   end
 

@@ -1113,15 +1113,21 @@ end
     # 身份门（#312 review，CWE-863）：摘要只认受信自动化身份（trusted_bots，
     # 即 GITHUB_TOKEN 的 github-actions[bot]）发布的——marker 与计数格式
     # 不构成作者证明，任何有评论权限的账号都能伪造「unverified=0」的同
-    # marker 评论来骗过有条件通过门。不可信的同 marker 评论一律无视；
-    # 可信摘要不存在时返回 nil，由 AutoMerge.gate 按缺证据拒绝。
-    def verifier_summary(pr_number)
+    # marker 评论来骗过有条件通过门。不可信的同 marker 评论一律无视。
+    #
+    # head 绑定（#312 二轮 review）：摘要发布步骤 continue-on-error，失败时
+    # 旧 head 的摘要会残留，而旧结论对新 head 不成立——摘要正文含被核验的
+    # head sha（verify.yml 写入），只接受含当前 head_sha 的摘要；不匹配即
+    # 视同缺失，由 AutoMerge.gate 按缺证据拒绝。
+    def verifier_summary(pr_number, head_sha)
       comments = paginate("repos/#{@repo}/issues/#{pr_number}/comments")
       trusted = trusted_bots
       summaries = comments.select do |c|
         next false unless c.is_a?(Hash)
 
-        c["body"].to_s.include?(MergeQueue::VERIFIER_SUMMARY_MARKER) &&
+        body = c["body"].to_s
+        body.include?(MergeQueue::VERIFIER_SUMMARY_MARKER) &&
+          body.include?(head_sha.to_s) &&
           trusted.include?(c.dig("user", "login").to_s)
       end
       body = summaries.empty? ? nil : summaries.last["body"]

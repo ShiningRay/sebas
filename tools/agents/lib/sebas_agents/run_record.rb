@@ -262,6 +262,20 @@ module SebasAgents
       @mutate_refusal == "missing" ? :missing : :locked
     end
 
+    # 核验 head 写入（锁内读改写，#312 二轮 review）：verified_head 是整份
+    # 写回的单字段更新，与预算计数同份记录——不走记录锁会覆盖并发的预算
+    # 写入。返回 :ok / :mismatch / :missing / :locked；非 :ok 时调用方不得
+    # 声称核验记录已保存。
+    def set_verified_head!(head_sha)
+      result = mutate_record! do |data|
+        next :mismatch unless data["issue"].to_i == @issue.to_i
+
+        save(data.merge("verified_head" => head_sha))
+        :ok
+      end
+      normalize_mutate_result(result)
+    end
+
     # 心跳是否过期（§F5）。
     # - 缺字段（key 不存在）→ 不判过期：老记录没有该字段，否则升级当次
     #   每张在途卡都被判死。仅这一种情形保留兼容。

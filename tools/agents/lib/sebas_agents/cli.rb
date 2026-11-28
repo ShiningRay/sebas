@@ -477,7 +477,9 @@ end
         # 预算已超时直接判拒，不再打 GitHub 取摘要（fail-closed 且省一次远端调用）。
         summary = nil
         if step == "merge" && failures < AutoMerge::MAX_FAILURES
-          summary = merge_gateway.verifier_summary(entry.pr)
+          # 摘要与 head 绑定（#312 二轮 review）：旧 head 的残留摘要对新
+          # head 不成立，传当前 head 供 gateway 过滤。
+          summary = merge_gateway.verifier_summary(entry.pr, entry.head_sha)
         end
         allowed, reason = AutoMerge.gate(step: step, summary: summary, failures: failures)
         unless allowed
@@ -574,8 +576,10 @@ end
     # 本机持有的该卡记录（存在且 issue 匹配）；异机租约没有本地记录，返回空。
     # --record 指定时与 remember_verified_head 同口径读该路径（#312 review），
     # 否则走 per-issue 路径——两条入口不一致会让预算在自定义记录上失灵。
+    # 显式路径分支也必须带 issue:（#312 二轮）：bump/reset 的身份检查比对
+    # 记录的 issue 与 @issue，缺了它自定义记录恒判 mismatch、预算失灵。
     def owned_record(options, issue)
-      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue)
+      record = options[:record] ? RunRecord.new(path: options[:record], issue: issue) : RunRecord.new(issue: issue)
       data = record.load
       data && !data.empty? && data["issue"].to_i == issue.to_i ? [record, data] : [nil, nil]
     end
@@ -741,24 +745,22 @@ end
     end
 
     # 记录某卡当前 head 已通过 verify merge --pre。只动本卡记录，不碰远端。
-    # 返回是否真的写入（#312 review）：记录缺失或非本卡记录时返回 false，
-    # 调用方（run_queue_verify_pre / merge 段）据此拒绝本步，不得报成功。
+    # 返回是否真的写入（#312 review）：记录缺失、非本卡记录或记录锁被占时
+    # 返回 false，调用方（run_queue_verify_pre / merge 段）据此拒绝本步，
+    # 不得报成功。写必须走记录锁（#312 二轮）：锁外整份写回会覆盖并发写入
+    # 的 auto_merge_failures 等字段——所有写者共用同一跨进程更新边界。
     def remember_verified_head(options, issue_number, head_sha)
-      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue_number)
-      current = record.load
-      return false if current.nil? || current.empty? || current["issue"].to_i != issue_number.to_i
-
-      record.save(current.merge("verified_head" => head_sha))
-      true
+      record = options[:record] ? RunRecord.new(path: options[:record], issue: issue_number) : RunRecord.new(issue: issue_number)
+      result = record.set_verified_head!(head_sha)
+      result == :ok
     end
 
     # head 已变（update_branch / CHANGELOG 追加）→ 旧核验结论作废。
+    # 同走记录锁（口径同 remember_verified_head）。
     def forget_verified_head(options, issue_number)
-      record = options[:record] ? RunRecord.new(path: options[:record]) : RunRecord.new(issue: issue_number)
-      current = record.load
-      return if current.nil? || current.empty? || current["issue"].to_i != issue_number.to_i
-
-      record.save(current.merge("verified_head" => nil))
+      record = options[:record] ? RunRecord.new(path: options[:record], issue: issue_number) : RunRecord.new(issue: issue_number)
+      record.set_verified_head!(nil)
+      nil
     end
 
     # 本机记录里各卡的「上一次通过 verify merge --pre 的 head」。

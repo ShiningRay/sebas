@@ -163,7 +163,8 @@ worker 不再改 `CHANGELOG.md`。PR 正文用 marker 块携带待追加条目�
 3. 独立核验与终验两关结论为「通过」——终验 check 对「通过」与「有条件通过」同为绿，
    以 verifier 摘要评论（`<!-- verify-pr:summary -->`）的 `unverified` 计数区分；
    该评论只认受信自动化身份（`trusted_bots`）发布的，伪造的同 marker 评论一律无视
-   （#312 review，CWE-863）；
+   （#312 review，CWE-863），且摘要正文必须含当前 head sha（摘要发布步骤
+   continue-on-error，旧 head 的残留结论对新 head 不成立，#312 二轮 review）；
 4. `.github/agents.yml` 的 `auto_merge_enabled: true`（缺省 false，关停时整体拒绝，
    行为与阶段 3 完全一致；启停操作见 [maintainer.md](maintainer.md)）。
 
